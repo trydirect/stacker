@@ -2,19 +2,6 @@ use actix_web::{web, HttpResponse};
 use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
-
-
-pub struct Stack {
-    // that can be a stack or an app in the stack. feature, service, web app etc.
-    // id - is a unique identifier for the product
-    // user_id - is a unique identifier for the user
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub body: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
 
 
 #[derive(serde::Deserialize)]
@@ -23,7 +10,7 @@ pub struct FormData {
     stack_json: String,
 }
 
-pub async fn validate(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,

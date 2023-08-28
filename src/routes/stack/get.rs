@@ -3,7 +3,7 @@ use actix_web::{web, HttpResponse};
 use sqlx::PgPool;
 // use uuid::Uuid;
 
-pub async fn get_stack(
+pub async fn get(
     id: web::Path<String>,
     pool: web::Data<PgPool>,
 ) -> HttpResponse {

@@ -1,7 +1,7 @@
 use actix_web::dev::Server;
 use actix_web::middleware::Logger;
 use actix_web::{
-    http::header::HeaderName,
+    // http::header::HeaderName,
     web::{self, Form},
     App, HttpServer,
 };
@@ -23,21 +23,25 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                     .route(web::get()
                         .to(crate::routes::rating)),
             )
-            // .service(
-            //     web::resource("/stack/{id}")
-            //         .route(web::get()
-            //             .to(crate::routes::get_stack)),
-            // )
-            // .service(
-            //     web::resource("/stack")
-            //         .route(web::post()
-            //             .to(crate::routes::validate_stack)),
-            // )
-            // .service(
-            //     web::resource("/deploy")
-            //         .route(web::post()
-            //             .to(crate::routes::deploy)),
-            // )
+            .service(
+                web::resource("/stack/{id}")
+                    .route(web::get()
+                        .to(crate::routes::stack::get)),
+            )
+            .service(web::resource("/stack")
+                    .route(web::post()
+                        .to(crate::routes::stack::add)),
+            )
+            .service(
+                web::resource("/stack/{id}")
+                    .route(web::post()
+                        .to(crate::routes::stack::update)),
+            )
+            .service(
+                web::resource("/stack/deploy")
+                    .route(web::post()
+                        .to(crate::routes::stack::deploy)),
+            )
             .app_data(db_pool.clone())
     })
         .listen(listener)?
