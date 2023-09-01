@@ -1898,6 +1898,7 @@ dependencies = [
  "reqwest",
  "serde",
  "sqlx",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-bunyan-formatter",

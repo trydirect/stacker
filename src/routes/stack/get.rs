@@ -15,13 +15,13 @@ pub async fn get(
         SELECT id FROM user_stack
         WHERE id=$1
         "#,
-        id
+        id.parse::<i32>().unwrap()
     )
     .fetch_one(pool.get_ref())
     .await
     {
         Ok(_) => {
-            tracing::info!("Stack found by id {}", email);
+            tracing::info!("Stack found by id {}", id);
             HttpResponse::Ok().finish()
         }
         Err(e) => {

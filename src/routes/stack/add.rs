@@ -2,11 +2,14 @@ use actix_web::{web, HttpResponse};
 use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
+use chrono::Utc;
 
 
 #[derive(serde::Deserialize)]
 pub struct FormData {
-    id: String,
+    id: i32,
+    user_id: i32,
+    stack_name: String,
     stack_json: String,
 }
 
@@ -15,7 +18,7 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
         user_id=?form.user_id,
-        stack_json=?form.stack
+        stack_json=?form.stack_json
     );
 
     // using `enter` is an async function
@@ -37,9 +40,9 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
         INSERT INTO user_stack (id, user_id, name, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5)
         "#,
-        Uuid::new_v4(),
+        0_i32,
         form.user_id,
-        stack_name,
+        form.stack_name,
         Utc::now(),
         Utc::now()
     )
