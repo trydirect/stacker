@@ -1,2 +1,2 @@
-mod rating;
+pub mod rating;
 mod user;

@@ -1,5 +1,6 @@
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 pub struct Product {
     // Product - is an external object that we want to store in the database,
@@ -27,6 +28,20 @@ pub struct Rating {
     pub rate: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum RateCategory {
+    Application,      // app, feature, extension
+    Cloud,            // is user satisfied working with this cloud
+    Stack,            // app stack
+    DeploymentSpeed,
+    Documentation,
+    Design,
+    TechSupport,
+    Price,
+    MemoryUsage
 }
 
 pub struct Rules {
