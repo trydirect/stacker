@@ -7,18 +7,19 @@ use chrono::Utc;
 
 #[derive(serde::Deserialize)]
 pub struct FormData {
-    id: i32,
-    user_id: i32,
-    stack_name: String,
-    stack_json: String,
+    commonDomain: String,
+    region: String,
+    domainList: String,
+    user_id: i32
 }
 
 pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
-        user_id=?form.user_id,
-        stack_json=?form.stack_json
+        commonDomain=?form.commonDomain,
+        region=?form.region,
+        domainList=?form.domainList
     );
 
     // using `enter` is an async function
@@ -27,8 +28,8 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
     tracing::info!(
         "request_id {} Adding '{}' '{}' as a new stack",
         request_id,
-        form.user_id,
-        form.stack_json
+        form.commonDomain,
+        form.region
     );
 
     let query_span = tracing::info_span!(
@@ -42,7 +43,7 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
         "#,
         0_i32,
         form.user_id,
-        form.stack_name,
+        form.commonDomain,
         Utc::now(),
         Utc::now()
     )
