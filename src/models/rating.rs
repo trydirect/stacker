@@ -21,7 +21,7 @@ pub struct Product {
 pub struct Rating {
     pub id: i32,
     pub user_id: Uuid,             // external user_id, 100, taken using token (middleware?)
-    pub category: String,
+    pub category: String,          // rating of product | rating of service etc
     pub comment: String,           // always linked to a product
     pub hidden: bool,              // rating can be hidden for non-adequate user behaviour
     pub rate: u32,
