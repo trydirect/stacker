@@ -1,3 +1,4 @@
+-- Add up migration script here
 -- Add migration script here
 CREATE TABLE user_stack (
     id integer NOT NULL, PRIMARY KEY(id),

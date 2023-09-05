@@ -1,3 +1,3 @@
-mod rating;
-mod user;
-mod stack;
+pub mod rating;
+pub mod user;
+pub mod stack;
