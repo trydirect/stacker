@@ -11,13 +11,13 @@ use sqlx::PgPool;
 
 #[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct RatingForm {
-    pub obj_id: u32,               // product external id
-    pub category: RateCategory,    // rating of product | rating of service etc
+    pub obj_id: u32,                   // product external id
+    pub category: RateCategory,        // rating of product | rating of service etc
     #[validate(max_length = 1000)]
-    pub comment: Option<String>,           // always linked to a product
+    pub comment: Option<String>,       // always linked to a product
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
-    pub rate: u32,                 //
+    pub rate: u32,                     //
 }
 
 pub async fn rating(form: web::Json<RatingForm>, pool: web::Data<PgPool>) -> HttpResponse {
