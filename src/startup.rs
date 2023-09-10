@@ -23,14 +23,19 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                     .route(web::get().to(crate::routes::rating))
                     .route(web::post().to(crate::routes::rating)),
             )
+            // .service(
+            //     web::resource("/stack/{id}")
+            //         .route(web::get()
+            //             .to(crate::routes::stack::get))
+            //         .route(web::post()
+            //             .to(crate::routes::stack::update))
+            //         .route(web::post()
+            //             .to(crate::routes::stack::add)),
+            // )
             .service(
-                web::resource("/stack/{id}")
-                    .route(web::get()
-                        .to(crate::routes::stack::get))
+                web::resource("/stack")
                     .route(web::post()
-                        .to(crate::routes::stack::update))
-                    .route(web::post()
-                        .to(crate::routes::stack::add)),
+                        .to(crate::routes::stack::add::add)),
             )
             .service(
                 web::resource("/stack/deploy")

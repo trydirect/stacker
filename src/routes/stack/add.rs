@@ -4,16 +4,10 @@ use tracing::Instrument;
 use uuid::Uuid;
 use chrono::Utc;
 
-
-#[derive(serde::Deserialize)]
-pub struct FormData {
-    commonDomain: String,
-    region: String,
-    domainList: String,
-    user_id: i32
-}
-
 pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    tracing::debug!("we are here");
+    tracing::info!("we are here");
+
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
@@ -63,4 +57,5 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
             HttpResponse::InternalServerError().finish()
         }
     }
+
 }
