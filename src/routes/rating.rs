@@ -38,7 +38,8 @@ web::Data<PgPool>) -> HttpResponse {
 
     match sqlx::query!(
         r#"
-        INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,created_at,
+        INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,
+        created_at,
         updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
         "#,
