@@ -31,6 +31,9 @@ pub struct Rating {
 }
 
 
+#[derive(sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]
+#[sqlx(type_name = "category")]
 #[derive(Serialize, Deserialize, Debug)]
 pub enum RateCategory {
     Application,      // app, feature, extension

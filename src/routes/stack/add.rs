@@ -3,17 +3,22 @@ use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
 use chrono::Utc;
+use crate::models::stack::FormData;
+use crate::startup::AppState;
 
-pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+
+pub async fn add(app_state: web::Data<AppState>, form: web::Form<FormData>, pool:
+web::Data<PgPool>) -> HttpResponse {
     tracing::debug!("we are here");
     tracing::info!("we are here");
 
+    let user_id = app_state.user_id;
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
-        commonDomain=?form.commonDomain,
+        commonDomain=?form.common_domain,
         region=?form.region,
-        domainList=?form.domainList
+        domainList=?form.domain_list
     );
 
     // using `enter` is an async function
@@ -22,7 +27,7 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
     tracing::info!(
         "request_id {} Adding '{}' '{}' as a new stack",
         request_id,
-        form.commonDomain,
+        form.common_domain,
         form.region
     );
 
@@ -30,32 +35,33 @@ pub async fn add(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResp
         "Saving new stack details into the database"
     );
 
-    match sqlx::query!(
-        r#"
-        INSERT INTO user_stack (id, user_id, name, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5)
-        "#,
-        0_i32,
-        form.user_id,
-        form.commonDomain,
-        Utc::now(),
-        Utc::now()
-    )
-    .execute(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(_) => {
-            tracing::info!(
-                "req_id: {} New stack details have been saved to database",
-                request_id
-            );
-            HttpResponse::Ok().finish()
-        }
-        Err(e) => {
-            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            HttpResponse::InternalServerError().finish()
-        }
-    }
+    // match sqlx::query!(
+    //     r#"
+    //     INSERT INTO user_stack (id, user_id, name, created_at, updated_at)
+    //     VALUES ($1, $2, $3, $4, $5)
+    //     "#,
+    //     0_i32,
+    //     user_id,
+    //     form.common_domain,
+    //     Utc::now(),
+    //     Utc::now()
+    // )
+    // .execute(pool.get_ref())
+    // .instrument(query_span)
+    // .await
+    // {
+    //     Ok(_) => {
+    //         tracing::info!(
+    //             "req_id: {} New stack details have been saved to database",
+    //             request_id
+    //         );
+    //         HttpResponse::Ok().finish()
+    //     }
+    //     Err(e) => {
+    //         tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
+    //         HttpResponse::InternalServerError().finish()
+    //     }
+    // }
 
+    HttpResponse::Ok().finish()
 }

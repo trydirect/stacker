@@ -7,6 +7,12 @@ use actix_web::{
 };
 use sqlx::PgPool;
 use std::net::TcpListener;
+use uuid::Uuid;
+
+pub struct AppState {
+   pub user_id: i32 // @todo User must be move later to actix session and obtained from auth
+}
+
 
 pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> {
     let db_pool = web::Data::new(db_pool);
@@ -43,6 +49,9 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                         .to(crate::routes::stack::deploy)),
             )
             .app_data(db_pool.clone())
+            .app_data(web::Data::new(AppState {
+                user_id: 1,
+            }))
     })
         .listen(listener)?
         .run();
