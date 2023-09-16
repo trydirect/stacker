@@ -7,8 +7,10 @@ use actix_web::{
 };
 use sqlx::PgPool;
 use std::net::TcpListener;
+use serde_derive::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AppState {
    pub user_id: i32 // @todo User must be move later to actix session and obtained from auth
 }
