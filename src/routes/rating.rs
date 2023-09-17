@@ -35,7 +35,7 @@ web::Data<PgPool>) -> HttpResponse {
     );
     // Get product by id
     // Insert rating
-
+    let category =  Into::<String>::into(form.category.clone());
     match sqlx::query!(
         r#"
         INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,
@@ -45,7 +45,7 @@ web::Data<PgPool>) -> HttpResponse {
         "#,
         user_id,
         form.obj_id,
-        form.category,
+        category.as_str(),
         form.comment,
         false,
         form.rate
@@ -65,7 +65,7 @@ web::Data<PgPool>) -> HttpResponse {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
             HttpResponse::InternalServerError().finish()
         }
-    }
+    };
     println!("{:?}", form);
     HttpResponse::Ok().finish()
 }
