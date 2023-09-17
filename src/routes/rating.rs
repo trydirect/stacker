@@ -35,37 +35,37 @@ web::Data<PgPool>) -> HttpResponse {
     );
     // Get product by id
     // Insert rating
-
-    // match sqlx::query!(
-    //     r#"
-    //     INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,
-    //     created_at,
-    //     updated_at)
-    //     VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
-    //     "#,
-    //     user_id,
-    //     form.obj_id,
-    //     form.category,
-    //     form.comment,
-    //     false,
-    //     form.rate
-    // )
-    // .execute(pool.get_ref())
-    // .instrument(query_span)
-    // .await
-    // {
-    //     Ok(_) => {
-    //         tracing::info!(
-    //             "req_id: {} New subscriber details have been saved to database",
-    //             request_id
-    //         );
-    //         HttpResponse::Ok().finish()
-    //     }
-    //     Err(e) => {
-    //         tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-    //         HttpResponse::InternalServerError().finish()
-    //     }
-    // }
+    let category =  Into::<String>::into(form.category.clone());
+    match sqlx::query!(
+        r#"
+        INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,
+        created_at,
+        updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
+        "#,
+        user_id,
+        form.obj_id,
+        category.as_str(),
+        form.comment,
+        false,
+        form.rate
+    )
+    .execute(pool.get_ref())
+    .instrument(query_span)
+    .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                "req_id: {} New subscriber details have been saved to database",
+                request_id
+            );
+            HttpResponse::Ok().finish()
+        }
+        Err(e) => {
+            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
+            HttpResponse::InternalServerError().finish()
+        }
+    };
     println!("{:?}", form);
     HttpResponse::Ok().finish()
 }

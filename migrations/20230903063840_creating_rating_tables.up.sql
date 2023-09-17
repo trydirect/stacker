@@ -9,7 +9,7 @@ CREATE TABLE product (
 );
 
 CREATE TABLE rating (
-    id integer NOT NULL, PRIMARY KEY(id),
+    id serial PRIMARY KEY(id),
     user_id uuid NOT NULL,
     product_id integer NOT NULL,
     category VARCHAR(255) NOT NULL,
