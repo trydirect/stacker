@@ -1,23 +1,36 @@
-use actix_web::{web::{Data, Bytes, Json}, HttpResponse, HttpRequest, FromRequest};
+use std::io::Read;
+use actix_web::{web::{Data, Bytes, Json}, HttpResponse, HttpRequest, Responder, Result};
+use actix_web::error::{Error, JsonPayloadError, PayloadError};
 use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
 use chrono::Utc;
 use crate::models::stack::FormData;
 use crate::startup::AppState;
+use std::str;
 
 
-pub async fn add(req: HttpRequest, app_state: Data<AppState>, pool:
-Data<PgPool>, body: Bytes) -> HttpResponse {
-    let content_type = req.headers().get("content-type");
-    println!("=================== Request Content-Type: {:?}", content_type);
-    println!("request: {:?}", body);
-    // println!("app: {:?}", body);
-    tracing::info!("we are here");
-    match Json::<FormData>::extract(&req).await {
-        Ok(form) => println!("Hello from {:?}!", form),
-        Err(err) => println!("error={:?}", err),
-    };
+// pub async fn add(req: HttpRequest, app_state: Data<AppState>, pool:
+pub async fn add(body: Bytes) -> Result<impl Responder>  {
+    // None::<i32>.expect("my error");
+    // return Err(JsonPayloadError::Payload(PayloadError::Overflow).into());
+    // let content_type = req.headers().get("content-type");
+    // println!("=================== Request Content-Type: {:?}", content_type);
+
+    let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
+    let body_str = str::from_utf8(&body_bytes).unwrap();
+    // method 1
+    // let app_state: AppState = serde_json::from_str(body_str).unwrap();
+    // method 2
+    let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
+    println!("request: {:?}", app_state);
+    // // println!("app: {:?}", body);
+    // println!("user_id: {:?}", data.user_id);
+    // tracing::info!("we are here");
+    // match Json::<FormData>::extract(&req).await {
+    //     Ok(form) => println!("Hello from {:?}!", form),
+    //     Err(err) => println!("error={:?}", err),
+    // };
 
     // let user_id = app_state.user_id;
     // let request_id = Uuid::new_v4();
@@ -70,5 +83,7 @@ Data<PgPool>, body: Bytes) -> HttpResponse {
     // //     }
     // // }
 
-    HttpResponse::Ok().finish()
+    // HttpResponse::Ok().finish()
+    Ok(Json(app_state))
+    // Ok(HttpResponse::Ok().finish())
 }
