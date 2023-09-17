@@ -1,20 +1,23 @@
-# stacker
+# Stacker
 
 
-Stacker - is a web application that helps users to create custom IT solutions based on open 
-source apps and user's custom applications. Users can build their own stack of applications, and 
+Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
+source apps and user's custom applications docker containers. Users can build their own stack of applications, and 
 deploy the final result to their favorite clouds using TryDirect API.
 
-Stacker includes:
-1. Security module. User Authorization
-2. Application Management
-3. Cloud Provider Key Management 
-4. docker-compose generator
-5. TryDirect API Client
-6. Rating module
+Application will consist of:
+1. Web UI (Application Stack builder)
+2. Back-end RESTful API, includes:
+   a. Security module. User Authorization
+   b. Application Management
+   c. Cloud Provider Key Management 
+   d. docker-compose generator
+   e. TryDirect API Client
+   f. Rating module
 
 
 Run db migration
+
 ```
 sqlx migrate run
 
