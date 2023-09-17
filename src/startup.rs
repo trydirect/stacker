@@ -1,16 +1,18 @@
 use actix_web::dev::Server;
 use actix_web::middleware::Logger;
 use actix_web::{
-    http::header::HeaderName,
+    // http::header::HeaderName,
     web::{self, Form},
     App, HttpServer,
 };
 use sqlx::PgPool;
 use std::net::TcpListener;
+use serde_derive::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AppState {
-   pub user_id: Uuid // @todo User must be move lates to actix session and obtained from auth
+    pub user_id: i32 // @todo User must be move later to actix session and obtained from auth
 }
 
 
@@ -29,9 +31,28 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                     .route(web::get().to(crate::routes::rating))
                     .route(web::post().to(crate::routes::rating)),
             )
+            // .service(
+            //     web::resource("/stack/{id}")
+            //         .route(web::get()
+            //             .to(crate::routes::stack::get))
+            //         .route(web::post()
+            //             .to(crate::routes::stack::update))
+            //         .route(web::post()
+            //             .to(crate::routes::stack::add)),
+            // )
+            .service(
+                web::resource("/stack")
+                    .route(web::post()
+                        .to(crate::routes::stack::add::add)),
+            )
+            .service(
+                web::resource("/stack/deploy")
+                    .route(web::post()
+                        .to(crate::routes::stack::deploy)),
+            )
             .app_data(db_pool.clone())
             .app_data(web::Data::new(AppState {
-                user_id: Uuid::new_v4(),
+                user_id: 1,
             }))
     })
         .listen(listener)?
