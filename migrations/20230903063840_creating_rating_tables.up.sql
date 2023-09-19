@@ -10,7 +10,7 @@ CREATE TABLE product (
 
 CREATE TABLE rating (
     id serial,
-    user_id uuid NOT NULL,
+    user_id integer NOT NULL,
     product_id integer NOT NULL,
     category VARCHAR(255) NOT NULL,
     comment TEXT DEFAULT NULL,
