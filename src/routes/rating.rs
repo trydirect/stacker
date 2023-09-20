@@ -1,12 +1,12 @@
+use crate::models::rating::RateCategory;
+use crate::startup::AppState;
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
-use crate::models::rating::RateCategory;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use tracing::instrument;
-use uuid::Uuid;
-use crate::startup::AppState;
 use tracing::Instrument;
+use uuid::Uuid;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -15,27 +15,29 @@ use tracing::Instrument;
 
 #[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct RatingForm {
-    pub obj_id: i32,                   // product external id
-    pub category: RateCategory,        // rating of product | rating of service etc
+    pub obj_id: i32,            // product external id
+    pub category: RateCategory, // rating of product | rating of service etc
     #[validate(max_length = 1000)]
-    pub comment: Option<String>,       // always linked to a product
+    pub comment: Option<String>, // always linked to a product
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
-    pub rate: i32,                     //
+    pub rate: i32, //
 }
 
-pub async fn rating(app_state: web::Data<AppState>, form: web::Json<RatingForm>, pool:
-web::Data<PgPool>) -> HttpResponse {
+pub async fn rating(
+    app_state: web::Data<AppState>,
+    form: web::Json<RatingForm>,
+    pool: web::Data<PgPool>,
+) -> HttpResponse {
+    //TODO. check if there already exists a rating for this product committed by this user
+    //TODO. check if this obj_id exists
     let request_id = Uuid::new_v4();
     let user_id = app_state.user_id; // uuid Let's assume we have a user id already taken from auth
 
-
-    let query_span = tracing::info_span!(
-        "Saving new rating details in the database"
-    );
+    let query_span = tracing::info_span!("Saving new rating details in the database");
     // Get product by id
     // Insert rating
-    let category =  Into::<String>::into(form.category.clone());
+    //let category = Into::<String>::into(form.category.clone());
     match sqlx::query!(
         r#"
         INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,
@@ -45,7 +47,7 @@ web::Data<PgPool>) -> HttpResponse {
         "#,
         user_id,
         form.obj_id,
-        category.as_str(),
+        form.category as RateCategory,
         form.comment,
         false,
         form.rate
@@ -65,7 +67,5 @@ web::Data<PgPool>) -> HttpResponse {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
             HttpResponse::InternalServerError().finish()
         }
-    };
-    println!("{:?}", form);
-    HttpResponse::Ok().finish()
+    }
 }
