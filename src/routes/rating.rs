@@ -1,3 +1,4 @@
+use crate::models::rating::Product;
 use crate::models::rating::RateCategory;
 use crate::startup::AppState;
 use actix_web::{web, HttpResponse};
@@ -30,10 +31,30 @@ pub async fn rating(
     pool: web::Data<PgPool>,
 ) -> HttpResponse {
     //TODO. check if there already exists a rating for this product committed by this user
-    //TODO. check if this obj_id exists
     let request_id = Uuid::new_v4();
-    let user_id = app_state.user_id; // uuid Let's assume we have a user id already taken from auth
+    match sqlx::query_as!(
+        Product,
+        r"SELECT * FROM product WHERE obj_id = $1",
+        form.obj_id
+    )
+    .fetch_one(pool.get_ref())
+    .await
+    {
+        Ok(product) => {
+            tracing::info!("req_id: {} Found product: {:?}", request_id, product.obj_id);
+        }
+        Err(e) => {
+            tracing::error!(
+                "req_id: {} Failed to fetch product: {:?}, error: {:?}",
+                request_id,
+                form.obj_id,
+                e
+            );
+            return HttpResponse::InternalServerError().finish();
+        }
+    };
 
+    let user_id = app_state.user_id; // uuid Let's assume we have a user id already taken from auth
     let query_span = tracing::info_span!("Saving new rating details in the database");
     // Get product by id
     // Insert rating

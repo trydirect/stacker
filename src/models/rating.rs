@@ -11,9 +11,9 @@ pub struct Product {
     // product type stack & app,
     // id is generated based on the product type and external obj_id
     pub id: i32,          //primary key, for better data management
-    pub obj_id: u32,      // external product ID db, no autoincrement, example: 100
+    pub obj_id: i32,      // external product ID db, no autoincrement, example: 100
     pub obj_type: String, // stack | app, unique index
-    pub rating: Rating,   // 0-10
+    //pub rating: Rating,   // 0-10 TODO sqlx + select + foreign keys
     // pub rules: Rules,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
