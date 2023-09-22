@@ -1,9 +1,7 @@
-use crate::models::rating::Product;
-use crate::models::rating::RateCategory;
+use crate::forms;
+use crate::models;
 use crate::startup::AppState;
 use actix_web::{web, HttpResponse};
-use serde::{Deserialize, Serialize};
-use serde_valid::Validate;
 use sqlx::PgPool;
 use tracing::instrument;
 use tracing::Instrument;
@@ -14,26 +12,15 @@ use uuid::Uuid;
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-#[derive(Serialize, Deserialize, Debug, Validate)]
-pub struct RatingForm {
-    pub obj_id: i32,            // product external id
-    pub category: RateCategory, // rating of product | rating of service etc
-    #[validate(max_length = 1000)]
-    pub comment: Option<String>, // always linked to a product
-    #[validate(minimum = 0)]
-    #[validate(maximum = 10)]
-    pub rate: i32, //
-}
-
 pub async fn rating(
     app_state: web::Data<AppState>,
-    form: web::Json<RatingForm>,
+    form: web::Json<forms::Rating>,
     pool: web::Data<PgPool>,
 ) -> HttpResponse {
     //TODO. check if there already exists a rating for this product committed by this user
     let request_id = Uuid::new_v4();
     match sqlx::query_as!(
-        Product,
+        models::Product,
         r"SELECT * FROM product WHERE obj_id = $1",
         form.obj_id
     )
@@ -68,7 +55,7 @@ pub async fn rating(
         "#,
         user_id,
         form.obj_id,
-        form.category as RateCategory,
+        form.category as models::RateCategory,
         form.comment,
         false,
         form.rate
