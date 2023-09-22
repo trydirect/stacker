@@ -13,8 +13,6 @@ pub struct Product {
     pub id: i32,          //primary key, for better data management
     pub obj_id: i32,      // external product ID db, no autoincrement, example: 100
     pub obj_type: String, // stack | app, unique index
-    //pub rating: Rating,   // 0-10 TODO sqlx + select + foreign keys
-    // pub rules: Rules,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -22,6 +20,7 @@ pub struct Product {
 pub struct Rating {
     pub id: i32,
     pub user_id: Uuid,    // external user_id, 100, taken using token (middleware?)
+    pub product_id: i32,  //primary key, for better data management
     pub category: String, // rating of product | rating of service etc
     pub comment: String,  // always linked to a product
     pub hidden: bool,     // rating can be hidden for non-adequate user behaviour
