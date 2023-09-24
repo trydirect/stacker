@@ -65,6 +65,7 @@ pub async fn rating(
     .await
     {
         Ok(_) => {
+            //TODO return json containing the id of the new rating
             tracing::info!(
                 "req_id: {} New subscriber details have been saved to database",
                 request_id
