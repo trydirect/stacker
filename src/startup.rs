@@ -7,8 +7,9 @@ use actix_web::{
 };
 use sqlx::PgPool;
 use std::net::TcpListener;
-use serde_derive::{Deserialize, Serialize};
-use uuid::Uuid;
+use serde::{Deserialize, Serialize};
+// use serde_derive::{Deserialize, Serialize};
+// use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AppState {

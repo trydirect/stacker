@@ -5,9 +5,10 @@ use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
 use chrono::Utc;
-use crate::models::stack::FormData;
+use crate::models::stack::{FormData};
 use crate::startup::AppState;
 use std::str;
+use actix_web::web::Form;
 
 
 // pub async fn add(req: HttpRequest, app_state: Data<AppState>, pool:
@@ -22,9 +23,11 @@ pub async fn add(body: Bytes) -> Result<impl Responder>  {
     // method 1
     // let app_state: AppState = serde_json::from_str(body_str).unwrap();
     // method 2
-    let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
-    println!("request: {:?}", app_state);
-    // // println!("app: {:?}", body);
+    // let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
+    // println!("request: {:?}", app_state);
+
+    let stack = serde_json::from_str::<FormData>(body_str).unwrap();
+    println!("app: {:?}", stack);
     // println!("user_id: {:?}", data.user_id);
     // tracing::info!("we are here");
     // match Json::<FormData>::extract(&req).await {
@@ -84,6 +87,6 @@ pub async fn add(body: Bytes) -> Result<impl Responder>  {
     // // }
 
     // HttpResponse::Ok().finish()
-    Ok(Json(app_state))
+    Ok(Json(stack))
     // Ok(HttpResponse::Ok().finish())
 }

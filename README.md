@@ -5,16 +5,20 @@ Stacker - is an application that helps users to create custom IT solutions based
 source apps and user's custom applications docker containers. Users can build their own stack of applications, and 
 deploy the final result to their favorite clouds using TryDirect API.
 
-Application will consist of:
-1. Web UI (Application Stack builder)
-2. Back-end RESTful API, includes:
-   a. Security module. User Authorization
-   b. Application Management
-   c. Cloud Provider Key Management 
-   d. docker-compose generator
-   e. TryDirect API Client
-   f. Rating module
-
+Application development will include:
+- Web UI (Application Stack builder)
+- Command line interface
+- Back-end RESTful API, includes:
+  - [ ] Security module. 
+    - [ ] User Authorization
+  - [ ] Application Management
+    - [ ] Application Key Management
+  - [ ] Cloud Provider Key Management 
+  - [ ] docker-compose.yml generator
+  - [ ] TryDirect API Client
+  - [ ] Rating module
+   
+## How to start 
 
 #### Run db migration
 
@@ -31,6 +35,7 @@ sqlx migrate revert
 ```
 
 
+## CURL examples
 #### Rate Product 
 
 ```
