@@ -1,3 +1,5 @@
 pub mod rating;
-pub mod user;
 pub mod stack;
+pub mod user;
+
+pub use rating::*;

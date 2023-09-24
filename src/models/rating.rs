@@ -1,6 +1,6 @@
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub struct Product {
     // Product - is an external object that we want to store in the database,
@@ -10,40 +10,37 @@ pub struct Product {
     // rating - is a rating of the product
     // product type stack & app,
     // id is generated based on the product type and external obj_id
-    pub id: i32,                   //primary key, for better data management
-    pub obj_id: u32,               // external product ID db, no autoincrement, example: 100
-    pub obj_type: String,          // stack | app, unique index
-    pub rating: Rating,               // 0-10
-    // pub rules: Rules,
+    pub id: i32,          //primary key, for better data management
+    pub obj_id: i32,      // external product ID db, no autoincrement, example: 100
+    pub obj_type: String, // stack | app, unique index
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 pub struct Rating {
     pub id: i32,
-    pub user_id: Uuid,             // external user_id, 100, taken using token (middleware?)
-    pub category: String,          // rating of product | rating of service etc
-    pub comment: String,           // always linked to a product
-    pub hidden: bool,              // rating can be hidden for non-adequate user behaviour
+    pub user_id: Uuid,    // external user_id, 100, taken using token (middleware?)
+    pub product_id: i32,  //primary key, for better data management
+    pub category: String, // rating of product | rating of service etc
+    pub comment: String,  // always linked to a product
+    pub hidden: bool,     // rating can be hidden for non-adequate user behaviour
     pub rate: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-
-#[derive(sqlx::Type)]
-#[sqlx(rename_all = "lowercase", type_name = "category")]
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(sqlx::Type, Serialize, Deserialize, Debug, Clone, Copy)]
+#[sqlx(rename_all = "lowercase", type_name = "varchar")]
 pub enum RateCategory {
-    Application,      // app, feature, extension
-    Cloud,            // is user satisfied working with this cloud
-    Stack,            // app stack
+    Application, // app, feature, extension
+    Cloud,       // is user satisfied working with this cloud
+    Stack,       // app stack
     DeploymentSpeed,
     Documentation,
     Design,
     TechSupport,
     Price,
-    MemoryUsage
+    MemoryUsage,
 }
 
 impl Into<String> for RateCategory {
@@ -57,4 +54,3 @@ pub struct Rules {
     // example: allow to add only a single comment
     comments_per_user: i32, // default = 1
 }
-
