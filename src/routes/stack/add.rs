@@ -1,14 +1,14 @@
-use std::io::Read;
+// use std::io::Read;
 use actix_web::{web::{Data, Bytes, Json}, HttpResponse, HttpRequest, Responder, Result};
-use actix_web::error::{Error, JsonPayloadError, PayloadError};
-use sqlx::PgPool;
-use tracing::Instrument;
-use uuid::Uuid;
-use chrono::Utc;
-use crate::models::stack::{FormData};
-use crate::startup::AppState;
+// use actix_web::error::{Error, JsonPayloadError, PayloadError};
+// use sqlx::PgPool;
+// use tracing::Instrument;
+// use uuid::Uuid;
+// use chrono::Utc;
+use crate::forms::stack::StackForm;
+// use crate::startup::AppState;
 use std::str;
-use actix_web::web::Form;
+// use actix_web::web::Form;
 
 
 // pub async fn add(req: HttpRequest, app_state: Data<AppState>, pool:
@@ -26,11 +26,11 @@ pub async fn add(body: Bytes) -> Result<impl Responder>  {
     // let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
     // println!("request: {:?}", app_state);
 
-    let stack = serde_json::from_str::<FormData>(body_str).unwrap();
+    let stack = serde_json::from_str::<StackForm>(body_str).unwrap();
     println!("app: {:?}", stack);
     // println!("user_id: {:?}", data.user_id);
     // tracing::info!("we are here");
-    // match Json::<FormData>::extract(&req).await {
+    // match Json::<StackForm>::extract(&req).await {
     //     Ok(form) => println!("Hello from {:?}!", form),
     //     Err(err) => println!("error={:?}", err),
     // };
