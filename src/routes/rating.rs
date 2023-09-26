@@ -2,24 +2,17 @@ use crate::forms;
 use crate::models;
 use crate::startup::AppState;
 use actix_web::{web, HttpResponse, Responder, Result};
-use serde_derive::Serialize;
 use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
 use crate::models::RateCategory;
+use crate::utils::json::JsonResponse;
 
 // workflow
 // add, update, list, get(user_id), ACL,
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-#[derive(Serialize)]
-struct JsonResponse {
-    status: String,
-    message: String,
-    code: u32,
-    id: Option<i32>
-}
 
 pub async fn rating(
     app_state: web::Data<AppState>,
