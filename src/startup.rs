@@ -1,22 +1,19 @@
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
 use actix_web::middleware::Logger;
+use actix_web::HttpMessage;
 use actix_web::{
     // http::header::HeaderName,
-    web::{self, Form},
+    web::{self},
     App,
     Error,
     HttpServer,
 };
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::net::TcpListener;
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AppState {
-    pub user_id: i32, // @todo User must be move later to actix session and obtained from auth
-}
+use crate::models::user::User;
 
 async fn bearer_guard(
     req: ServiceRequest,
@@ -27,6 +24,13 @@ async fn bearer_guard(
     //todo get user from auth server
     //todo save the server in the request state
     //todo get the user in the rating route
+    let user = User { id: 1 };
+    tracing::info!("authentication middleware. {user:?}");
+    let existent_user = req.extensions_mut().insert(user);
+    if existent_user.is_some() {
+        tracing::error!("authentication middleware. already logged {existent_user:?}");
+        //return Err(("".into(), req));
+    }
     Ok(req)
 }
 
@@ -59,7 +63,6 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                 web::resource("/stack/deploy").route(web::post().to(crate::routes::stack::deploy)),
             )
             .app_data(db_pool.clone())
-            .app_data(web::Data::new(AppState { user_id: 1 }))
     })
     .listen(listener)?
     .run();

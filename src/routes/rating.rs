@@ -1,12 +1,12 @@
 use crate::forms;
 use crate::models;
-use crate::startup::AppState;
+use crate::models::user::User;
+use crate::models::RateCategory;
 use actix_web::{web, HttpResponse, Responder, Result};
 use serde_derive::Serialize;
 use sqlx::PgPool;
 use tracing::Instrument;
 use uuid::Uuid;
-use crate::models::RateCategory;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -18,11 +18,11 @@ struct JsonResponse {
     status: String,
     message: String,
     code: u32,
-    id: Option<i32>
+    id: Option<i32>,
 }
 
 pub async fn rating(
-    app_state: web::Data<AppState>,
+    user: web::ReqData<User>,
     form: web::Json<forms::Rating>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -50,40 +50,44 @@ pub async fn rating(
             );
             // return HttpResponse::InternalServerError().finish();
             return Ok(web::Json(JsonResponse {
-                status : "Error".to_string(),
+                status: "Error".to_string(),
                 code: 404,
                 message: format!("Object not found {}", form.obj_id),
-                id: None
+                id: None,
             }));
         }
     };
 
-    let user_id = app_state.user_id; // uuid Let's assume user_id already taken from auth
-
     let query_span = tracing::info_span!("Search for existing vote.");
     match sqlx::query!(
         r"SELECT id FROM rating where user_id=$1 AND product_id=$2 AND category=$3 LIMIT 1",
-        user_id,
+        user.id,
         form.obj_id,
         form.category as RateCategory
     )
-        .fetch_one(pool.get_ref())
-        .instrument(query_span)
-        .await
+    .fetch_one(pool.get_ref())
+    .instrument(query_span)
+    .await
     {
-        Ok(record) =>  {
-            tracing::info!("req_id: {} rating exists: {:?}, user: {}, product: {}, category: {:?}",
-                request_id, record.id, user_id, form.obj_id, form.category);
+        Ok(record) => {
+            tracing::info!(
+                "req_id: {} rating exists: {:?}, user: {}, product: {}, category: {:?}",
+                request_id,
+                record.id,
+                user.id,
+                form.obj_id,
+                form.category
+            );
 
-            return Ok(web::Json(JsonResponse{
+            return Ok(web::Json(JsonResponse {
                 status: "Error".to_string(),
                 code: 409,
                 message: format!("Already Rated"),
-                id: Some(record.id)
+                id: Some(record.id),
             }));
         }
         Err(err) => {
-          // @todo, match the sqlx response
+            // @todo, match the sqlx response
         }
     }
 
@@ -98,7 +102,7 @@ pub async fn rating(
         VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
         RETURNING id
         "#,
-        user_id,
+        user.id,
         form.obj_id,
         form.category as models::RateCategory,
         form.comment,
@@ -111,7 +115,6 @@ pub async fn rating(
     {
         Ok(result) => {
             println!("Query returned {:?}", result);
-            //TODO return json containing the id of the new rating
             tracing::info!(
                 "req_id: {} New rating {} have been saved to database",
                 request_id,
@@ -119,20 +122,20 @@ pub async fn rating(
             );
 
             Ok(web::Json(JsonResponse {
-                status : "ok".to_string(),
+                status: "ok".to_string(),
                 code: 200,
                 message: "Saved".to_string(),
-                id: Some(result.id)
+                id: Some(result.id),
             }))
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-           Ok(web::Json(JsonResponse{
-               status: "error".to_string(),
-               code: 500,
-               message: "Failed to insert".to_string(),
-               id: None
-           }))
+            Ok(web::Json(JsonResponse {
+                status: "error".to_string(),
+                code: 500,
+                message: "Failed to insert".to_string(),
+                id: None,
+            }))
         }
     }
 }
