@@ -10,6 +10,7 @@ use actix_web::{
     HttpServer,
 };
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
 use std::net::TcpListener;
 
@@ -22,9 +23,31 @@ async fn bearer_guard(
     eprintln!("{credentials:?}");
     //todo check that credentials.token is a real. get in sync with auth server
     //todo get user from auth server
-    //todo save the server in the request state
-    //todo get the user in the rating route
-    let user = User { id: 1 };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://65190108818c4e98ac6000e4.mockapi.io/user/1") //todo add the right url
+        .bearer_auth(credentials.token())
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+        .unwrap() //todo process the response rightly. At moment it's some of something
+        ;
+    eprintln!("{resp:?}");
+
+    let user: User = match resp.status() {
+        reqwest::StatusCode::OK => match resp.json().await {
+            Ok(user) => user,
+            Err(err) => panic!("can't parse the user from json {err:?}"), //todo
+        },
+        other => {
+            //todo process the other status code accordingly
+            panic!("unexpected status code {other}");
+        }
+    };
+
+    //let user = User { id: 1 };
     tracing::info!("authentication middleware. {user:?}");
     let existent_user = req.extensions_mut().insert(user);
     if existent_user.is_some() {
