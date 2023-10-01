@@ -1,8 +1,8 @@
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 use serde_json::Value;
+use uuid::Uuid;
 
 pub struct Stack {
     pub id: Uuid,       // id - is a unique identifier for the app stack
@@ -13,7 +13,6 @@ pub struct Stack {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,8 +44,7 @@ pub struct FormData {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DomainList {
-}
+pub struct DomainList {}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,8 +177,7 @@ pub struct IconLight {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IconDark {
-}
+pub struct IconDark {}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,4 +253,3 @@ pub struct Service {
     pub shared_ports: Vec<String>,
     pub main: bool,
 }
-
