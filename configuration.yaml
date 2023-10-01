@@ -4,4 +4,4 @@ database:
   port: 5432
   username: postgres
   password: "postgres"
-  database_name: newsletter
+  database_name: stacker

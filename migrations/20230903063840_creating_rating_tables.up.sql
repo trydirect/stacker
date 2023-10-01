@@ -9,8 +9,8 @@ CREATE TABLE product (
 );
 
 CREATE TABLE rating (
-    id integer NOT NULL, PRIMARY KEY(id),
-    user_id uuid NOT NULL,
+    id serial,
+    user_id integer NOT NULL,
     product_id integer NOT NULL,
     category VARCHAR(255) NOT NULL,
     comment TEXT DEFAULT NULL,
@@ -18,9 +18,8 @@ CREATE TABLE rating (
     rate INTEGER,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CONSTRAINT fk_product
-          FOREIGN KEY(product_id)
-          REFERENCES product(id)
+    CONSTRAINT fk_product FOREIGN KEY(product_id) REFERENCES product(id),
+    CONSTRAINT rating_pk PRIMARY KEY (id)
 );
 
 CREATE INDEX idx_category ON rating(category);
