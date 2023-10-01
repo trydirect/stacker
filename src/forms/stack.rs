@@ -74,7 +74,7 @@ pub struct Custom {
 }
 
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct Web {
     pub name: String,
@@ -94,14 +94,21 @@ pub struct Web {
     pub dockerhub_name: String,
     pub url_app: Option<String>,
     pub url_git: Option<String>,
+    #[validate(min_length=1)]
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+G$")]
     #[serde(rename = "disk_size")]
     pub disk_size: String,
     #[serde(rename = "ram_size")]
+    #[validate(min_length=1)]
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+G$")]
     pub ram_size: String,
-    pub cpu: i64,
+    #[validate(minimum=0.1)]
+    pub cpu: f64,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct Feature {
     #[serde(rename = "_etag")]
@@ -143,9 +150,12 @@ pub struct Feature {
     pub ansible_var: Option<String>,
     #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
+    #[validate(min_length=1)]
     pub cpu: String,
+    #[validate(min_length=1)]
     #[serde(rename = "ram_size")]
     pub ram_size: String,
+    #[validate(min_length=1)]
     #[serde(rename = "disk_size")]
     pub disk_size: String,
     #[serde(rename = "dockerhub_image")]
@@ -203,7 +213,7 @@ pub struct Version {
     pub tag: String,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct Service {
     #[serde(rename = "_etag")]
@@ -245,10 +255,13 @@ pub struct Service {
     pub ansible_var: Option<String>,
     #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
+    #[validate(min_length=1)]
     pub cpu: String,
     #[serde(rename = "ram_size")]
+    #[validate(min_length=1)]
     pub ram_size: String,
     #[serde(rename = "disk_size")]
+    #[validate(min_length=1)]
     pub disk_size: String,
     #[serde(rename = "dockerhub_image")]
     pub dockerhub_image: Option<String>,

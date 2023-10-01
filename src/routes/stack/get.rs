@@ -30,9 +30,3 @@ pub async fn get(
         }
     }
 }
-
-
-pub async fn validate_stack () -> HttpResponse {
-    unimplemented!();
-}
-

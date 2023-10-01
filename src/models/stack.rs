@@ -11,7 +11,7 @@ pub struct Stack {
     pub user_id: i32,  // external unique identifier for the user
     pub name: String,
     // pub body: sqlx::types::Json<String>,
-    pub body: Value,
+    pub body: Value, //json type
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
