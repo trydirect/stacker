@@ -13,17 +13,15 @@ use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthent
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
 use std::net::TcpListener;
+use tracing_actix_web::TracingLogger;
 
 use crate::models::user::User;
 
+#[tracing::instrument(name = "Bearer guard.")]
 async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
-    eprintln!("{credentials:?}");
-    //todo check that credentials.token is a real. get in sync with auth server
-    //todo get user from auth server
-
     let client = reqwest::Client::new();
     let resp = client
         .get("https://65190108818c4e98ac6000e4.mockapi.io/user/1") //todo add the right url
@@ -34,7 +32,6 @@ async fn bearer_guard(
         .await
         .unwrap() //todo process the response rightly. At moment it's some of something
         ;
-    eprintln!("{resp:?}");
 
     let user: User = match resp.status() {
         reqwest::StatusCode::OK => match resp.json().await {
@@ -48,10 +45,10 @@ async fn bearer_guard(
     };
 
     //let user = User { id: 1 };
-    tracing::info!("authentication middleware. {user:?}");
+    tracing::info!("unpacked user {user:?}");
     let existent_user = req.extensions_mut().insert(user);
     if existent_user.is_some() {
-        tracing::error!("authentication middleware. already logged {existent_user:?}");
+        tracing::error!("already logged {existent_user:?}");
         //return Err(("".into(), req));
     }
     Ok(req)
@@ -61,7 +58,7 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
     let db_pool = web::Data::new(db_pool);
     let server = HttpServer::new(move || {
         App::new()
-            .wrap(Logger::default())
+            .wrap(TracingLogger::default())
             .wrap(HttpAuthentication::bearer(bearer_guard))
             .wrap(Cors::permissive())
             .service(
