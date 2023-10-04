@@ -1,7 +1,6 @@
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
-use actix_web::middleware::Logger;
-use actix_web::HttpMessage;
+use actix_web::error::ErrorUnauthorized;
 use actix_web::{
     // http::header::HeaderName,
     web::{self},
@@ -9,6 +8,7 @@ use actix_web::{
     Error,
     HttpServer,
 };
+use actix_web::{HttpMessage, ResponseError};
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
@@ -24,14 +24,25 @@ async fn bearer_guard(
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let client = reqwest::Client::new();
     let resp = client
-        .get("https://65190108818c4e98ac6000e4.mockapi.io/user/1") //todo add the right url
+        .get("https://a65190108818c4e98ac6000e4.mockapi.io/user/1") //todo add the right url
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .send()
-        .await
-        .unwrap() //todo process the response rightly. At moment it's some of something
-        ;
+        .await;
+
+    let resp = match resp {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::error!("{:?}", err);
+
+            return Err((ErrorUnauthorized(err), req));
+        }
+    };
+    return Err((
+        ErrorUnauthorized(std::io::Error::new(std::io::ErrorKind::Other, "oh no!")),
+        req,
+    ));
 
     let user: User = match resp.status() {
         reqwest::StatusCode::OK => match resp.json().await {
