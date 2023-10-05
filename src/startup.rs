@@ -35,34 +35,31 @@ async fn bearer_guard(
         Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
             tracing::error!("Authentication service returned no success {:?}", resp);
-
-            return Err((ErrorUnauthorized("Bad authentication response"), req));
+            return Err((ErrorUnauthorized(""), req));
         }
         Err(err) => {
             tracing::error!("error from reqwest {:?}", err);
-
             return Err((ErrorInternalServerError(""), req));
         }
     };
 
-    let user: User = match resp.status() {
-        reqwest::StatusCode::OK => match resp.json().await {
-            Ok(user) => user,
-            Err(err) => panic!("can't parse the user from json {err:?}"), //todo
-        },
-        other => {
-            //todo process the other status code accordingly
-            panic!("unexpected status code {other}");
+    let user: User = match resp.json().await {
+        Ok(user) => {
+            tracing::info!("unpacked user {user:?}");
+            user
+        }
+        Err(err) => {
+            tracing::error!("can't parse the response body {:?}", err);
+            return Err((ErrorUnauthorized(""), req));
         }
     };
 
-    //let user = User { id: 1 };
-    tracing::info!("unpacked user {user:?}");
     let existent_user = req.extensions_mut().insert(user);
     if existent_user.is_some() {
         tracing::error!("already logged {existent_user:?}");
-        //return Err(("".into(), req));
+        return Err((ErrorInternalServerError(""), req));
     }
+
     Ok(req)
 }
 
