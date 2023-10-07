@@ -19,6 +19,6 @@ async fn main() -> std::io::Result<()> {
         configuration.application_port
     ));
 
-    run(listener, connection_pool)?.await
+    run(configuration, listener, connection_pool)?.await
 }
 

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
 use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
@@ -14,6 +15,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;
+use crate::configuration::Settings;
 
 use crate::models::user::User;
 
@@ -22,9 +24,11 @@ async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
+    let settings = match req.app_data::<Arc<Settings>>().unwrap();
+
     let client = reqwest::Client::new();
     let resp = client
-        .get("https://65190108818c4e98ac6000e4.mockapi.io/user/1") //todo add the right url
+        .get(&settings.auth_url) 
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
@@ -63,7 +67,9 @@ async fn bearer_guard(
     Ok(req)
 }
 
-pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> {
+pub fn run(settings: Settings, listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> {
+    let settings = Arc::new(settings);
+
     let db_pool = web::Data::new(db_pool);
     let server = HttpServer::new(move || {
         App::new()
@@ -92,6 +98,7 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                 web::resource("/stack/deploy").route(web::post().to(crate::routes::stack::deploy)),
             )
             .app_data(db_pool.clone())
+            .app_data(settings.clone())
     })
     .listen(listener)?
     .run();
