@@ -9,16 +9,7 @@ async fn main() -> std::io::Result<()> {
     init_subscriber(subscriber);
 
     let configuration = get_configuration().expect("Failed to read configuration.");
-    let connection_pool = PgPool::connect(&configuration.database.connection_string())
-        .await
-        .expect("Failed to connect to database.");
-    let address = format!("127.0.0.1:{}", configuration.application_port);
-    tracing::info!("Start server at {:?}", &address);
-    let listener = std::net::TcpListener::bind(address).expect(&format!(
-        "failed to bind to {}",
-        configuration.application_port
-    ));
 
-    run(configuration, listener, connection_pool)?.await
+    run(configuration).await?.await
 }
 

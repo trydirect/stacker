@@ -24,7 +24,7 @@ async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
-    let settings = match req.app_data::<Arc<Settings>>().unwrap();
+    let settings = req.app_data::<Arc<Settings>>().unwrap();
 
     let client = reqwest::Client::new();
     let resp = client
@@ -67,10 +67,20 @@ async fn bearer_guard(
     Ok(req)
 }
 
-pub fn run(settings: Settings, listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> {
+pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
     let settings = Arc::new(settings);
-
+    let db_pool = PgPool::connect(&settings.database.connection_string())
+        .await
+        .expect("Failed to connect to database.");
     let db_pool = web::Data::new(db_pool);
+
+    let address = format!("127.0.0.1:{}", settings.application_port);
+    tracing::info!("Start server at {:?}", &address);
+    let listener = std::net::TcpListener::bind(address).expect(&format!(
+        "failed to bind to {}",
+        settings.application_port
+    ));
+
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
