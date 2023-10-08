@@ -2,13 +2,14 @@
 name = "stacker"
 version = "0.1.0"
 edition = "2021"
+default-run="server"
 
 [lib]
 path="src/lib.rs"
 
 [[bin]]
 path = "src/main.rs"
-name = "stacker"
+name = "server"
 
 [[bin]]
 path = "src/yaml2env.rs"

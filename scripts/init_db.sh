@@ -12,10 +12,8 @@ if ! [ -x "$(command -v sqlx)" ]; then
   exit 1
 fi
 
-DB_USER=${POSTGRES_USER:=postgres}
-DB_PASSWORD=${POSTGRES_PASSWORD:=postgres}
-DB_NAME=${POSTGRES_DB:=stacker}
-DB_PORT=${POSTGRES_PORT:=5432}
+cargo r --bin yaml2env
+source .env
 
 docker run \
   -e POSTGRES_USER=${DB_USER} \
