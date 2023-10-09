@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::configuration::Settings;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
 use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
@@ -14,8 +14,8 @@ use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthent
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
 use std::net::TcpListener;
+use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
-use crate::configuration::Settings;
 
 use crate::models::user::User;
 
@@ -28,7 +28,7 @@ async fn bearer_guard(
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&settings.auth_url) 
+        .get(&settings.auth_url)
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
@@ -76,10 +76,8 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
 
     let address = format!("127.0.0.1:{}", settings.application_port);
     tracing::info!("Start server at {:?}", &address);
-    let listener = std::net::TcpListener::bind(address).expect(&format!(
-        "failed to bind to {}",
-        settings.application_port
-    ));
+    let listener = std::net::TcpListener::bind(address)
+        .expect(&format!("failed to bind to {}", settings.application_port));
 
     let server = HttpServer::new(move || {
         App::new()
