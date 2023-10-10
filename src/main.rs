@@ -1,4 +1,3 @@
-use sqlx::PgPool;
 use stacker::configuration::get_configuration;
 use stacker::startup::run;
 use stacker::telemetry::{get_subscriber, init_subscriber};
@@ -12,4 +11,3 @@ async fn main() -> std::io::Result<()> {
 
     run(configuration).await?.await
 }
-

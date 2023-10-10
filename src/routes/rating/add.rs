@@ -2,6 +2,7 @@ use crate::forms;
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
+use actix_web::post;
 use actix_web::{web, Responder, Result};
 use serde_derive::Serialize;
 use sqlx::PgPool;
@@ -21,7 +22,8 @@ struct JsonResponse {
 }
 
 #[tracing::instrument(name = "Add rating.")]
-pub async fn rating(
+#[post("/")]
+pub async fn add_handler(
     user: web::ReqData<User>,
     form: web::Json<forms::Rating>,
     pool: web::Data<PgPool>,

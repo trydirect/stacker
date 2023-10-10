@@ -88,9 +88,9 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
                 web::resource("/health_check").route(web::get().to(crate::routes::health_check)),
             )
             .service(
-                web::resource("/rating")
-                    .route(web::get().to(crate::routes::rating))
-                    .route(web::post().to(crate::routes::rating)),
+                web::scope("/rating")
+                    .service(crate::routes::add_handler)
+                    .service(crate::routes::get_handler),
             )
             // .service(
             //     web::resource("/stack/{id}")
