@@ -22,7 +22,7 @@ struct JsonResponse {
 }
 
 #[tracing::instrument(name = "Add rating.")]
-#[post("/")]
+#[post("")]
 pub async fn add_handler(
     user: web::ReqData<User>,
     form: web::Json<forms::Rating>,
