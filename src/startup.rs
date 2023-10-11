@@ -2,6 +2,7 @@ use crate::configuration::Settings;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
 use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
+use actix_web::HttpMessage;
 use actix_web::{
     // http::header::HeaderName,
     web::{self},
@@ -9,11 +10,9 @@ use actix_web::{
     Error,
     HttpServer,
 };
-use actix_web::{HttpMessage, ResponseError};
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
-use std::net::TcpListener;
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 
