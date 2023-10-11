@@ -82,11 +82,11 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .wrap(HttpAuthentication::bearer(bearer_guard))
-            .wrap(Cors::permissive())
             .service(web::scope("/health_check").service(crate::routes::health_check))
             .service(
                 web::scope("/rating")
+                    .wrap(HttpAuthentication::bearer(bearer_guard))
+                    .wrap(Cors::permissive())
                     .service(crate::routes::add_handler)
                     .service(crate::routes::get_handler),
             )
