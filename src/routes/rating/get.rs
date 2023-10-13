@@ -36,15 +36,7 @@ pub async fn get_handler(
     .await
     {
         Ok(rating) => {
-            /*
-            tracing::info!(
-                "rating exists: {:?}, user: {}, product: {}, category: {:?}",
-                record.id,
-                user.id,
-                form.obj_id,
-                form.category
-            );
-            */
+            tracing::info!("rating found: {:?}", rating.id,);
             return Ok(web::Json(JsonResponse {
                 status: "Success".to_string(),
                 code: 200,
