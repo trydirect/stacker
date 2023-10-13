@@ -15,7 +15,7 @@ struct JsonResponse {
     status: String,
     message: String,
     code: u32,
-    //id: Option<i32>,
+    rating: Option<models::Rating>,
 }
 
 #[tracing::instrument(name = "Get rating.")]
@@ -45,12 +45,11 @@ pub async fn get_handler(
                 form.category
             );
             */
-            let rating_json = serde_json::ser::to_string(&rating).unwrap();
             return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 409,
-                message: rating_json,
-                //id: Some(record.id),
+                status: "Success".to_string(),
+                code: 200,
+                message: "".to_string(),
+                rating: Some(rating),
             }));
         }
         Err(sqlx::Error::RowNotFound) => {
@@ -58,6 +57,7 @@ pub async fn get_handler(
                 status: "Error".to_string(),
                 code: 404,
                 message: format!("Not Found"),
+                rating: None,
             }));
         }
         Err(e) => {
@@ -66,6 +66,7 @@ pub async fn get_handler(
                 status: "Error".to_string(),
                 code: 500,
                 message: format!("Internal Server Error"),
+                rating: None,
             }));
         }
     }
