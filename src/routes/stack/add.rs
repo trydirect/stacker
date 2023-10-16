@@ -1,4 +1,4 @@
-use actix_web::{web::{Data, Bytes, Json}, Responder, Result};
+use actix_web::{web::{Data, Bytes, Json}, Responder, Result, web};
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -6,12 +6,12 @@ use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
 use crate::forms::stack::StackForm;
-use crate::startup::AppState;
 use crate::models::Stack;
+use crate::models::user::User;
 use crate::utils::json::JsonResponse;
 
 
-pub async fn add(body: Bytes, app_state: Data<AppState>, pool: Data<PgPool>) -> Result<impl Responder>  {
+pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> Result<impl Responder>  {
 
     // None::<i32>.expect("my error");
     // return Err(JsonPayloadError::Payload(PayloadError::Overflow).into());
@@ -38,7 +38,7 @@ pub async fn add(body: Bytes, app_state: Data<AppState>, pool: Data<PgPool>) -> 
     };
     // println!("app: {:?}", form);
 
-    let user_id = app_state.user_id;
+    let user_id = user.user_id;
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,

@@ -1,9 +1,12 @@
 use crate::forms;
+use crate::models;
 use crate::models::user::User;
+use crate::models::RateCategory;
+use actix_web::post;
 use actix_web::{web, Responder, Result};
+use serde_derive::Serialize;
 use sqlx::PgPool;
 use tracing::Instrument;
-use uuid::Uuid;
 use crate::utils::json::JsonResponse;
 
 // workflow
@@ -11,13 +14,13 @@ use crate::utils::json::JsonResponse;
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-pub async fn rating(
+#[tracing::instrument(name = "Add rating.")]
+#[post("")]
+pub async fn add_handler(
     user: web::ReqData<User>,
     form: web::Json<forms::Rating>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    //TODO. check if there already exists a rating for this product committed by this user
-    let request_id = Uuid::new_v4();
     let query_span = tracing::info_span!("Check product existence by id.");
     match sqlx::query_as!(
         models::Product,
@@ -29,16 +32,10 @@ pub async fn rating(
     .await
     {
         Ok(product) => {
-            tracing::info!("req_id: {} Found product: {:?}", request_id, product.obj_id);
+            tracing::info!("Found product: {:?}", product.obj_id);
         }
         Err(e) => {
-            tracing::error!(
-                "req_id: {} Failed to fetch product: {:?}, error: {:?}",
-                request_id,
-                form.obj_id,
-                e
-            );
-            // return HttpResponse::InternalServerError().finish();
+            tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
             return Ok(web::Json(JsonResponse {
                 status: "Error".to_string(),
                 code: 404,
@@ -61,8 +58,7 @@ pub async fn rating(
     {
         Ok(record) => {
             tracing::info!(
-                "req_id: {} rating exists: {:?}, user: {}, product: {}, category: {:?}",
-                request_id,
+                "rating exists: {:?}, user: {}, product: {}, category: {:?}",
                 record.id,
                 user.id,
                 form.obj_id,
@@ -76,13 +72,19 @@ pub async fn rating(
                 id: Some(record.id),
             }));
         }
-        Err(err) => {
-            // @todo, match the sqlx response
+        Err(sqlx::Error::RowNotFound) => {}
+        Err(e) => {
+            tracing::error!("Failed to fetch rating, error: {:?}", e);
+            return Ok(web::Json(JsonResponse {
+                status: "Error".to_string(),
+                code: 500,
+                message: format!("Internal Server Error"),
+                id: None,
+            }));
         }
     }
 
     let query_span = tracing::info_span!("Saving new rating details into the database");
-    // Get product by id
     // Insert rating
     match sqlx::query!(
         r#"
@@ -104,12 +106,7 @@ pub async fn rating(
     .await
     {
         Ok(result) => {
-            println!("Query returned {:?}", result);
-            tracing::info!(
-                "req_id: {} New rating {} have been saved to database",
-                request_id,
-                result.id
-            );
+            tracing::info!("New rating {} have been saved to database", result.id);
 
             Ok(web::Json(JsonResponse {
                 status: "ok".to_string(),
@@ -119,7 +116,7 @@ pub async fn rating(
             }))
         }
         Err(e) => {
-            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
+            tracing::error!("Failed to execute query: {:?}", e);
             Ok(web::Json(JsonResponse {
                 status: "error".to_string(),
                 code: 500,
