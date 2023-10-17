@@ -1,6 +1,7 @@
+use crate::configuration::Settings;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
-use actix_web::middleware::Logger;
+use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
 use actix_web::HttpMessage;
 use actix_web::{
     // http::header::HeaderName,
@@ -12,65 +13,81 @@ use actix_web::{
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
-use std::net::TcpListener;
+use std::sync::Arc;
+use tracing_actix_web::TracingLogger;
 
 use crate::models::user::User;
 
+#[tracing::instrument(name = "Bearer guard.")]
 async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
-    eprintln!("{credentials:?}");
-    //todo check that credentials.token is a real. get in sync with auth server
-    //todo get user from auth server
+    let settings = req.app_data::<Arc<Settings>>().unwrap();
 
     let client = reqwest::Client::new();
     let resp = client
-        .get("https://65190108818c4e98ac6000e4.mockapi.io/user/1") //todo add the right url
+        .get(&settings.auth_url)
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .send()
-        .await
-        .unwrap() //todo process the response rightly. At moment it's some of something
-        ;
-    eprintln!("{resp:?}");
+        .await;
 
-    let user: User = match resp.status() {
-        reqwest::StatusCode::OK => match resp.json().await {
-            Ok(user) => user,
-            Err(err) => panic!("can't parse the user from json {err:?}"), //todo
-        },
-        other => {
-            //todo process the other status code accordingly
-            panic!("unexpected status code {other}");
+    let resp = match resp {
+        Ok(resp) if resp.status().is_success() => resp,
+        Ok(resp) => {
+            tracing::error!("Authentication service returned no success {:?}", resp);
+            return Err((ErrorUnauthorized(""), req));
+        }
+        Err(err) => {
+            tracing::error!("error from reqwest {:?}", err);
+            return Err((ErrorInternalServerError(""), req));
         }
     };
 
-    //let user = User { id: 1 };
-    tracing::info!("authentication middleware. {user:?}");
+    let user: User = match resp.json().await {
+        Ok(user) => {
+            tracing::info!("unpacked user {user:?}");
+            user
+        }
+        Err(err) => {
+            tracing::error!("can't parse the response body {:?}", err);
+            return Err((ErrorUnauthorized(""), req));
+        }
+    };
+
     let existent_user = req.extensions_mut().insert(user);
     if existent_user.is_some() {
-        tracing::error!("authentication middleware. already logged {existent_user:?}");
-        //return Err(("".into(), req));
+        tracing::error!("already logged {existent_user:?}");
+        return Err((ErrorInternalServerError(""), req));
     }
+
     Ok(req)
 }
 
-pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> {
+pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
+    let settings = Arc::new(settings);
+    let db_pool = PgPool::connect(&settings.database.connection_string())
+        .await
+        .expect("Failed to connect to database.");
     let db_pool = web::Data::new(db_pool);
+
+    let address = format!("127.0.0.1:{}", settings.application_port);
+    tracing::info!("Start server at {:?}", &address);
+    let listener = std::net::TcpListener::bind(address)
+        .expect(&format!("failed to bind to {}", settings.application_port));
+
     let server = HttpServer::new(move || {
         App::new()
-            .wrap(Logger::default())
-            .wrap(HttpAuthentication::bearer(bearer_guard))
-            .wrap(Cors::permissive())
+            .wrap(TracingLogger::default())
+            .service(web::scope("/health_check").service(crate::routes::health_check))
             .service(
-                web::resource("/health_check").route(web::get().to(crate::routes::health_check)),
-            )
-            .service(
-                web::resource("/rating")
-                    .route(web::get().to(crate::routes::rating))
-                    .route(web::post().to(crate::routes::rating)),
+                web::scope("/rating")
+                    .wrap(HttpAuthentication::bearer(bearer_guard))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::add_handler)
+                    .service(crate::routes::get_handler),
             )
             // .service(
             //     web::resource("/stack/{id}")
@@ -86,6 +103,7 @@ pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Er
                 web::resource("/stack/deploy").route(web::post().to(crate::routes::stack::deploy)),
             )
             .app_data(db_pool.clone())
+            .app_data(settings.clone())
     })
     .listen(listener)?
     .run();
