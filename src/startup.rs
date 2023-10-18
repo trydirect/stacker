@@ -98,9 +98,11 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
             //         .route(web::post()
             //             .to(crate::routes::stack::add)),
             // )
-            .service(web::resource("/stack").route(web::post().to(crate::routes::stack::add::add)))
+            .service(web::resource("/stack")
+                .route(web::post().to(crate::routes::stack::add::add)))
             .service(
-                web::resource("/stack/deploy").route(web::post().to(crate::routes::stack::deploy)),
+                web::resource("/stack/deploy")
+                    .route(web::post().to(crate::routes::stack::deploy)),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())

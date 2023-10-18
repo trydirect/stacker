@@ -96,13 +96,13 @@ pub struct Web {
     pub url_git: Option<String>,
     #[validate(min_length=1)]
     #[validate(max_length=10)]
-    #[validate(pattern = r"^\d+G$")]
+    //#[validate(pattern = r"^\d+G$")]
     #[serde(rename = "disk_size")]
     pub disk_size: String,
     #[serde(rename = "ram_size")]
     #[validate(min_length=1)]
     #[validate(max_length=10)]
-    #[validate(pattern = r"^\d+G$")]
+    //#[validate(pattern = r"^\d+G$")]
     pub ram_size: String,
     #[validate(minimum=0.1)]
     pub cpu: f64,

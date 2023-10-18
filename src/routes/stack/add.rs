@@ -38,7 +38,7 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
     };
     // println!("app: {:?}", form);
 
-    let user_id = user.user_id;
+    let user_id = user.id;
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
@@ -60,6 +60,7 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
         "Saving new stack details into the database"
     );
 
+    let custom_stack_code = form.custom.custom_stack_code.clone();
     let body = match serde_json::to_value::<StackForm>(form) {
         Ok(body) => {
            body
@@ -70,7 +71,7 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
                 request_id,
                 err
             );
-            serde_json::to_value::<StackForm>(StackForm::default())
+            serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
         }
     };
 
@@ -79,7 +80,7 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
         stack_id: Uuid::new_v4(),  // public uuid of the stack
         // user_id: Uuid::from_u128(user_id as u128),
         user_id: user_id,          //
-        name: form.custom.custom_stack_code.clone(),
+        name: custom_stack_code,
         body: body,
         // body: body_str.to_string(),
         created_at: Utc::now(),
