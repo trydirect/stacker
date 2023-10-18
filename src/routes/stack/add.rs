@@ -1,18 +1,24 @@
-use actix_web::{web::{Data, Bytes, Json}, Responder, Result, web};
+use actix_web::{
+    web,
+    web::{Bytes, Data, Json},
+    Responder, Result,
+};
 
+use crate::forms::stack::StackForm;
+use crate::models::user::User;
+use crate::models::Stack;
+use crate::utils::json::JsonResponse;
 use chrono::Utc;
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
-use crate::forms::stack::StackForm;
-use crate::models::Stack;
-use crate::models::user::User;
-use crate::utils::json::JsonResponse;
 
-
-pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> Result<impl Responder>  {
-
+pub async fn add(
+    body: Bytes,
+    user: web::ReqData<User>,
+    pool: Data<PgPool>,
+) -> Result<impl Responder> {
     // None::<i32>.expect("my error");
     // return Err(JsonPayloadError::Payload(PayloadError::Overflow).into());
     // let content_type = req.headers().get("content-type");
@@ -32,13 +38,13 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
                 status: "Error".to_string(),
                 code: 400,
                 message: err.to_string(),
-                id: None
+                id: None,
             }));
         }
     };
     // println!("app: {:?}", form);
 
-    let user_id = user.user_id;
+    let user_id = user.id;
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
@@ -56,34 +62,26 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
         form.region
     );
 
-    let query_span = tracing::info_span!(
-        "Saving new stack details into the database"
-    );
+    let query_span = tracing::info_span!("Saving new stack details into the database");
 
     let body = match serde_json::to_value::<StackForm>(form) {
-        Ok(body) => {
-           body
-        }
+        Ok(body) => body,
         Err(err) => {
-            tracing::error!(
-                "request_id {} unwrap body {:?}",
-                request_id,
-                err
-            );
+            tracing::error!("request_id {} unwrap body {:?}", request_id, err);
             serde_json::to_value::<StackForm>(StackForm::default())
         }
     };
 
     let stack = Stack {
-        id: 0_i32,                 // internal stack id
-        stack_id: Uuid::new_v4(),  // public uuid of the stack
+        id: 0_i32,                // internal stack id
+        stack_id: Uuid::new_v4(), // public uuid of the stack
         // user_id: Uuid::from_u128(user_id as u128),
-        user_id: user_id,          //
+        user_id: user_id, //
         name: form.custom.custom_stack_code.clone(),
         body: body,
         // body: body_str.to_string(),
         created_at: Utc::now(),
-        updated_at: Utc::now()
+        updated_at: Utc::now(),
     };
 
     println!("stack object {:?}", stack);
@@ -102,9 +100,9 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
         stack.created_at,
         stack.updated_at
     )
-        .fetch_one(pool.get_ref())
-        .instrument(query_span)
-        .await
+    .fetch_one(pool.get_ref())
+    .instrument(query_span)
+    .await
     {
         Ok(record) => {
             tracing::info!(
@@ -115,7 +113,7 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
                 status: "OK".to_string(),
                 code: 200,
                 message: format!("Object saved"),
-                id: Some(record.id)
+                id: Some(record.id),
             }))
         }
         Err(e) => {
@@ -124,9 +122,8 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
                 status: "Error".to_string(),
                 code: 400,
                 message: e.to_string(),
-                id: None
+                id: None,
             }))
         }
-    }
-
+    };
 }
