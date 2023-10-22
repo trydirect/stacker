@@ -1,3 +1,4 @@
+use reqwest::Url;
 use crate::configuration::Settings;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
@@ -25,21 +26,34 @@ async fn bearer_guard(
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<Arc<Settings>>().unwrap();
 
+    let url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
+    // let data_url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
+    tracing::debug!("URL ::::  {:?}", url);
+
+
     let client = reqwest::Client::new();
     let resp = client
-        .get(&settings.auth_url)
+        // .get(&settings.auth_url)
+        .get(url)
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .send()
         .await;
 
+
+    // tracing::debug!("{:?}", resp.unwrap().text().await.unwrap());
+
     let resp = match resp {
-        Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
-            tracing::error!("Authentication service returned no success {:?}", resp);
-            return Err((ErrorUnauthorized(""), req));
+            //if resp.status().is_success()
+            tracing::debug!("{:?}", resp);
+            resp
         }
+        // Ok(resp) => {
+        //     tracing::error!("Authentication service returned no success {:?}", resp);
+        //     return Err((ErrorUnauthorized(""), req));
+        // }
         Err(err) => {
             tracing::error!("error from reqwest {:?}", err);
             return Err((ErrorInternalServerError(""), req));
@@ -86,8 +100,8 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
                 web::scope("/rating")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::add_handler)
-                    .service(crate::routes::get_handler),
+                    .service(crate::routes::rating::add_handler)
+                    .service(crate::routes::rating::get_handler),
             )
             // .service(
             //     web::resource("/stack/{id}")
@@ -98,11 +112,12 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
             //         .route(web::post()
             //             .to(crate::routes::stack::add)),
             // )
-            .service(web::resource("/stack")
-                .route(web::post().to(crate::routes::stack::add::add)))
             .service(
-                web::resource("/stack/deploy")
-                    .route(web::post().to(crate::routes::stack::deploy)),
+                web::scope("/stack")
+                    .wrap(HttpAuthentication::bearer(bearer_guard))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::stack::add::add)
+                    //.service(crate::routes::stack::deploy),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())
