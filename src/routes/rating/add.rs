@@ -4,7 +4,6 @@ use crate::models::user::User;
 use crate::models::RateCategory;
 use actix_web::post;
 use actix_web::{web, Responder, Result};
-use serde_derive::Serialize;
 use sqlx::PgPool;
 use tracing::Instrument;
 use crate::utils::json::JsonResponse;

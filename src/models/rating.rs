@@ -19,7 +19,7 @@ pub struct Product {
 #[derive(Debug, Serialize)]
 pub struct Rating {
     pub id: i32,
-    pub user_id: i32,     // external user_id, 100, taken using token (middleware?)
+    pub user_id: String,     // external user_id, 100, taken using token (middleware?)
     pub product_id: i32,  //primary key, for better data management
     pub category: String, // rating of product | rating of service etc
     pub comment: Option<String>, // always linked to a product
