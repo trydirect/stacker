@@ -16,6 +16,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
+use crate::forms::user::UserForm;
 
 use crate::models::user::User;
 
@@ -60,7 +61,7 @@ async fn bearer_guard(
         }
     };
 
-    let user: User = match resp.json().await {
+    let user_form: UserForm = match resp.json().await {
         Ok(user) => {
             tracing::info!("unpacked user {user:?}");
             user
@@ -71,6 +72,14 @@ async fn bearer_guard(
         }
     };
 
+    let user:User = match user_form.try_into() // try to convert UserForm into User model
+    {
+        Ok(user)  => { user }
+        Err(err) => {
+            tracing::error!("Could not create User from form data: {:?}", err);
+            return Err((ErrorUnauthorized(""), req));
+        }
+    };
     let existent_user = req.extensions_mut().insert(user);
     if existent_user.is_some() {
         tracing::error!("already logged {existent_user:?}");

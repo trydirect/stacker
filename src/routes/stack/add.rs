@@ -1,6 +1,7 @@
 use actix_web::{web::{Data, Bytes, Json}, Responder, Result, web};
 
 use crate::forms::stack::StackForm;
+use crate::forms::user::UserForm;
 use crate::models::user::User;
 use crate::models::Stack;
 use crate::utils::json::JsonResponse;
@@ -41,7 +42,7 @@ pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> R
     };
     // println!("app: {:?}", form);
 
-    let user_id = user.id;
+    let user_id = user.id.clone();
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
