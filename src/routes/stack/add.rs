@@ -5,15 +5,20 @@ use actix_web::{
 };
 
 use crate::forms::stack::StackForm;
+use crate::forms::user::UserForm;
 use crate::models::user::User;
 use crate::models::Stack;
 use crate::utils::json::JsonResponse;
+use actix_web::post;
 use chrono::Utc;
+use serde_json::Value;
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
 
+#[tracing::instrument(name = "Add stack.")]
+#[post("")]
 pub async fn add(
     body: Bytes,
     user: web::ReqData<User>,
@@ -44,7 +49,7 @@ pub async fn add(
     };
     // println!("app: {:?}", form);
 
-    let user_id = user.id;
+    let user_id = user.id.clone();
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
@@ -64,11 +69,12 @@ pub async fn add(
 
     let query_span = tracing::info_span!("Saving new stack details into the database");
 
-    let body = match serde_json::to_value::<StackForm>(form) {
+    let stack_name = form.custom.custom_stack_code.clone();
+    let body: Value = match serde_json::to_value::<StackForm>(form) {
         Ok(body) => body,
         Err(err) => {
             tracing::error!("request_id {} unwrap body {:?}", request_id, err);
-            serde_json::to_value::<StackForm>(StackForm::default())
+            serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
         }
     };
 
@@ -77,7 +83,7 @@ pub async fn add(
         stack_id: Uuid::new_v4(), // public uuid of the stack
         // user_id: Uuid::from_u128(user_id as u128),
         user_id: user_id, //
-        name: form.custom.custom_stack_code.clone(),
+        name: stack_name,
         body: body,
         // body: body_str.to_string(),
         created_at: Utc::now(),

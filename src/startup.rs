@@ -1,3 +1,4 @@
+use reqwest::Url;
 use crate::configuration::Settings;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
@@ -15,6 +16,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
+use crate::forms::user::UserForm;
 
 use crate::models::user::User;
 
@@ -25,28 +27,41 @@ async fn bearer_guard(
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<Arc<Settings>>().unwrap();
 
+    let url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
+    // let data_url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
+    tracing::debug!("URL ::::  {:?}", url);
+
+
     let client = reqwest::Client::new();
     let resp = client
-        .get(&settings.auth_url)
+        // .get(&settings.auth_url)
+        .get(url)
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .send()
         .await;
 
+
+    // tracing::debug!("{:?}", resp.unwrap().text().await.unwrap());
+
     let resp = match resp {
-        Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
-            tracing::error!("Authentication service returned no success {:?}", resp);
-            return Err((ErrorUnauthorized(""), req));
+            //if resp.status().is_success()
+            tracing::debug!("{:?}", resp);
+            resp
         }
+        // Ok(resp) => {
+        //     tracing::error!("Authentication service returned no success {:?}", resp);
+        //     return Err((ErrorUnauthorized(""), req));
+        // }
         Err(err) => {
             tracing::error!("error from reqwest {:?}", err);
             return Err((ErrorInternalServerError(""), req));
         }
     };
 
-    let user: User = match resp.json().await {
+    let user_form: UserForm = match resp.json().await {
         Ok(user) => {
             tracing::info!("unpacked user {user:?}");
             user
@@ -57,6 +72,14 @@ async fn bearer_guard(
         }
     };
 
+    let user:User = match user_form.try_into() // try to convert UserForm into User model
+    {
+        Ok(user)  => { user }
+        Err(err) => {
+            tracing::error!("Could not create User from form data: {:?}", err);
+            return Err((ErrorUnauthorized(""), req));
+        }
+    };
     let existent_user = req.extensions_mut().insert(user);
     if existent_user.is_some() {
         tracing::error!("already logged {existent_user:?}");
@@ -106,9 +129,12 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
             //         .route(web::post()
             //             .to(crate::routes::stack::add)),
             // )
-            .service(web::resource("/stack").route(web::post().to(crate::routes::stack::add::add)))
             .service(
-                web::resource("/stack/deploy").route(web::post().to(crate::routes::stack::deploy)),
+                web::scope("/stack")
+                    .wrap(HttpAuthentication::bearer(bearer_guard))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::stack::add::add)
+                    //.service(crate::routes::stack::deploy),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())

@@ -1,6 +1,14 @@
 use serde::Deserialize;
 
-#[derive(Debug, Copy, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct User {
-    pub id: i32,
+    pub id: String,
+}
+
+impl Clone for User {
+    fn clone(&self) -> Self {
+        User {
+            id: self.id.clone()
+        }
+    }
 }

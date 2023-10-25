@@ -1,5 +1,5 @@
 pub mod health_checks;
-pub mod rating;
+pub(crate) mod rating;
 
 pub use health_checks::*;
 pub(crate) mod stack;
