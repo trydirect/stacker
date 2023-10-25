@@ -1,5 +1,5 @@
-use reqwest::Url;
 use crate::configuration::Settings;
+use crate::forms::user::UserForm;
 use actix_cors::Cors;
 use actix_web::dev::{Server, ServiceRequest};
 use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
@@ -13,10 +13,10 @@ use actix_web::{
 };
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::Url;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
-use crate::forms::user::UserForm;
 
 use crate::models::user::User;
 
@@ -31,7 +31,6 @@ async fn bearer_guard(
     // let data_url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
     tracing::debug!("URL ::::  {:?}", url);
 
-
     let client = reqwest::Client::new();
     let resp = client
         // .get(&settings.auth_url)
@@ -41,7 +40,6 @@ async fn bearer_guard(
         .header(ACCEPT, "application/json")
         .send()
         .await;
-
 
     // tracing::debug!("{:?}", resp.unwrap().text().await.unwrap());
 
@@ -72,7 +70,7 @@ async fn bearer_guard(
         }
     };
 
-    let user:User = match user_form.try_into() // try to convert UserForm into User model
+    let user: User = match user_form.try_into() // try to convert UserForm into User model
     {
         Ok(user)  => { user }
         Err(err) => {
@@ -105,14 +103,14 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
         App::new()
             .wrap(TracingLogger::default())
             .service(web::scope("/health_check").service(crate::routes::health_check))
-            /*
             .service(
                 web::scope("/client")
-                    .wrap(HttpAuthentication::bearer(bearer_guard))
-                    .wrap(Cors::permissive())
-                    .service(crate::routes::add_handler),
+                    /*
+                        .wrap(HttpAuthentication::bearer(bearer_guard))
+                        .wrap(Cors::permissive())
+                    */
+                    .service(crate::routes::client::add_handler),
             )
-            */
             .service(
                 web::scope("/rating")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
@@ -133,8 +131,7 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
                 web::scope("/stack")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::stack::add::add)
-                    //.service(crate::routes::stack::deploy),
+                    .service(crate::routes::stack::add::add), //.service(crate::routes::stack::deploy),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())

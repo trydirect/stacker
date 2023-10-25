@@ -1,3 +1,4 @@
+pub(crate) mod client;
 pub mod health_checks;
 pub(crate) mod rating;
 
