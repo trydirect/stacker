@@ -26,33 +26,21 @@ async fn bearer_guard(
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<Arc<Settings>>().unwrap();
-
-    let url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
-    // let data_url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
-    tracing::debug!("URL ::::  {:?}", url);
-
     let client = reqwest::Client::new();
     let resp = client
-        // .get(&settings.auth_url)
-        .get(url)
+        .get(&settings.auth_url)
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")
         .send()
         .await;
 
-    // tracing::debug!("{:?}", resp.unwrap().text().await.unwrap());
-
     let resp = match resp {
+        Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
-            //if resp.status().is_success()
-            tracing::debug!("{:?}", resp);
-            resp
+            tracing::error!("Authentication service returned no success {:?}", resp);
+            return Err((ErrorUnauthorized(""), req));
         }
-        // Ok(resp) => {
-        //     tracing::error!("Authentication service returned no success {:?}", resp);
-        //     return Err((ErrorUnauthorized(""), req));
-        // }
         Err(err) => {
             tracing::error!("error from reqwest {:?}", err);
             return Err((ErrorInternalServerError(""), req));
@@ -106,6 +94,7 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
             .service(
                 web::scope("/client")
                     /*
+                     * todo
                         .wrap(HttpAuthentication::bearer(bearer_guard))
                         .wrap(Cors::permissive())
                     */

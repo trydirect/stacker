@@ -1,6 +1,5 @@
 use crate::models;
-use actix_web::get;
-use actix_web::{web, Responder, Result};
+use actix_web::{get, web, Responder, Result};
 use serde_derive::Serialize;
 use sqlx::PgPool;
 use tracing::Instrument;
