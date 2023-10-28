@@ -38,8 +38,6 @@ pub async fn add_handler(
     client.id = 1;
     client.user_id = user.id.clone();
     client.secret = generate_secret(255);
-    //todo 3. update entity with the database's generated id
-    //todo 4. it throws 500 when the AS is not reachable. it should just return 401
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(

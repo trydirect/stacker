@@ -97,6 +97,7 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
                     .wrap(Cors::permissive())
                     .service(crate::routes::client::add_handler),
             )
+            .service(web::scope("/test").service(crate::routes::test::deploy::handler))
             .service(
                 web::scope("/rating")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
