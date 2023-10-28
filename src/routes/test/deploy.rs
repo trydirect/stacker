@@ -6,10 +6,11 @@ struct DeployResponse {
     status: String,
 }
 
+//todo inject client through enpoint's inputs
 #[tracing::instrument(name = "Add rating.")]
 #[post("/deploy")]
 pub async fn handler() -> Result<impl Responder> {
-    Ok(DeployResponse {
+    Ok(web::Json(DeployResponse {
         status: "success".to_string(),
-    })
+    }))
 }
