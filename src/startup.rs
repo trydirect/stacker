@@ -93,11 +93,8 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
             .service(web::scope("/health_check").service(crate::routes::health_check))
             .service(
                 web::scope("/client")
-                    /*
-                     * todo
-                        .wrap(HttpAuthentication::bearer(bearer_guard))
-                        .wrap(Cors::permissive())
-                    */
+                    .wrap(HttpAuthentication::bearer(bearer_guard))
+                    .wrap(Cors::permissive())
                     .service(crate::routes::client::add_handler),
             )
             .service(
