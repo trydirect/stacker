@@ -1,6 +1,7 @@
 use crate::models::user::User;
 use crate::models::Client;
 use actix_web::{post, web, Responder, Result};
+use rand::Rng;
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -9,6 +10,19 @@ struct ClientAddResponse {
     status: String,
     code: u32,
     client: Client,
+}
+
+fn generate_secret(len: usize) -> String {
+    const CHARSET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789)(*&^%$#@!~";
+    let mut rng = rand::thread_rng();
+
+    (0..len)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
 }
 
 #[tracing::instrument(name = "Add client.")]
@@ -21,8 +35,7 @@ pub async fn add_handler(
     let mut client = Client::default();
     client.id = 1;
     client.user_id = user.id.clone();
-    client.secret = "secret".to_string();
-    //todo 1. genereate random secret. 255symbols
+    client.secret = generate_secret(255);
     //todo 2. save it to database
     //todo 3. update entity with the database's generated id
     //todo 4. it throws 500 when the AS is not reachable. it should just return 401
