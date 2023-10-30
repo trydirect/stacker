@@ -5,6 +5,7 @@ pub struct Settings {
     pub database: DatabaseSettings,
     pub application_port: u16,
     pub auth_url: String,
+    pub max_clients_number: i64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -15,7 +16,6 @@ pub struct DatabaseSettings {
     pub port: u16,
     pub database_name: String,
 }
-
 
 impl DatabaseSettings {
     // Connection string: postgresql://<username>:<password>@<host>:<port>/<database_name>
