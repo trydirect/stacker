@@ -13,13 +13,13 @@ services:
     restart: always
     volumes:
       - ./stacker/files:/app/files
-      - ./docker/dev/configuration.yaml:/app/configuration.yaml
+      - ./configuration.yaml:/app/configuration.yaml
       - ./migrations:/app/migrations
-      - ./docker/dev/.env:/app/.env
+      - ./.env:/app/.env
     ports:
       - "8000:8000"
     env_file:
-      - ./docker/dev/.env
+      - ./.env
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
@@ -40,7 +40,7 @@ services:
     ports:
       - 5432
     env_file:
-      - ./docker/.env
+      - ./.env
     volumes:
       - stackerdb:/var/lib/postgresql/data
-      - ./docker/dev/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
