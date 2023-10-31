@@ -14,7 +14,8 @@ use actix_web::{
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use reqwest::Url;
-use sqlx::PgPool;
+use sqlx::{Pool, Postgres};
+use std::net::TcpListener;
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 
@@ -75,17 +76,13 @@ async fn bearer_guard(
     Ok(req)
 }
 
-pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
+pub async fn run(
+    listener: TcpListener,
+    db_pool: Pool<Postgres>,
+    settings: Settings,
+) -> Result<Server, std::io::Error> {
     let settings = web::Data::new(Arc::new(settings));
-    let db_pool = PgPool::connect(&settings.database.connection_string())
-        .await
-        .expect("Failed to connect to database.");
     let db_pool = web::Data::new(db_pool);
-
-    let address = format!("127.0.0.1:{}", settings.application_port);
-    tracing::info!("Start server at {:?}", &address);
-    let listener = std::net::TcpListener::bind(address)
-        .expect(&format!("failed to bind to {}", settings.application_port));
 
     let server = HttpServer::new(move || {
         App::new()
