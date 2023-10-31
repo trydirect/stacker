@@ -3,7 +3,8 @@ use serde;
 #[derive(Debug, serde::Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
-    pub application_port: u16,
+    pub app_port: u16,
+    pub app_host: u16,
     pub auth_url: String,
 }
 

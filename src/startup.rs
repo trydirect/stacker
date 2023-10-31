@@ -96,10 +96,10 @@ pub async fn run(settings: Settings) -> Result<Server, std::io::Error> {
         .expect("Failed to connect to database.");
     let db_pool = web::Data::new(db_pool);
 
-    let address = format!("127.0.0.1:{}", settings.application_port);
+    let address = format!("{}:{}", settings.app_host, settings.app_port);
     tracing::info!("Start server at {:?}", &address);
     let listener = std::net::TcpListener::bind(address)
-        .expect(&format!("failed to bind to {}", settings.application_port));
+        .expect(&format!("failed to bind to {}", settings.app_port));
 
     let server = HttpServer::new(move || {
         App::new()

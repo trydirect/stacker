@@ -7,25 +7,28 @@ RUN apt-get update; \
 
 WORKDIR /app
 
+RUN cargo install sqlx-cli
 # copy manifests
 COPY ./Cargo.toml .
+COPY ./Cargo.lock .
 COPY ./rustfmt.toml .
 COPY ./Makefile .
 COPY .env .
+COPY ./migrations ./migrations
 
-RUN cargo install sqlx-cli
 # build this project to cache dependencies
-#ENV DATABASE_URL=postgres://postgres:postgres@172.0.0.1:5432/stacker
-RUN sqlx database create && sqlx migrate run
+#RUN sqlx database create && sqlx migrate run
 
 RUN cargo build --release; \
     rm src/*.rs
 
+# add .env and secret.key for Docker env
+#RUN touch .env;
 # copy project source and necessary files
 COPY ./src ./src
 
-# add .env and secret.key for Docker env
-#RUN touch .env;
+#RUN sqlx migrate run
+#RUN cargo sqlx prepare -- --bin stacker
 
 # rebuild app with project source
 RUN rm -rf ./target/release/deps/stacker*; \

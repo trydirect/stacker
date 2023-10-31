@@ -7,18 +7,21 @@ volumes:
 services:
 
   stacker:
-    image: trydirect/stacker:0.0.1
-    build: .
+    image: trydirect/stacker:0.0.3
+    build: ./docker
     container_name: stacker
     restart: always
     volumes:
       - ./stacker/files:/app/files
+      - ./docker/configuration.yaml:/app/configuration.yaml
+      - ./migrations:/app/migrations
+      - ./docker/.env:/app/.env
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ./docker/.env
     environment:
-      - RUST_LOG="trace"
+      - RUST_LOG=debug
     depends_on:
       stackerdb:
         condition: service_healthy
@@ -34,9 +37,9 @@ services:
     image: postgres:16.0
     restart: always
     ports:
-      - 127.0.0.1:5432:5432
+      - 5432
     env_file:
-      - .env
+      - ./docker/.env
     volumes:
       - stackerdb:/var/lib/postgresql/data
       - ./docker/postgresql.conf:/etc/postgresql/postgresql.conf

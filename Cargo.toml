@@ -42,5 +42,6 @@ features = [
     "uuid",
     "tls",
     "chrono",
-    "json"
+    "json",
+    "offline"
 ]
