@@ -8,10 +8,8 @@ RUN apt-get update; \
 
 RUN cargo install sqlx-cli
 
-RUN ls -la /usr/local/cargo/bin/sqlx
 WORKDIR /app
 # copy manifests
-RUN ls -la /usr/local/cargo/bin/
 COPY ../Cargo.toml .
 COPY ../Cargo.lock .
 COPY ../rustfmt.toml .
@@ -57,7 +55,7 @@ COPY --from=builder /app/.env .
 COPY --from=builder /app/configuration.yaml .
 COPY --from=builder /usr/local/cargo/bin/sqlx sqlx
 
-EXPOSE 8080
+EXPOSE 8000
 
 # run the binary
 ENTRYPOINT ["/app/stacker"]

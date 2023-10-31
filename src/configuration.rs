@@ -4,7 +4,7 @@ use serde;
 pub struct Settings {
     pub database: DatabaseSettings,
     pub app_port: u16,
-    pub app_host: u16,
+    pub app_host: String,
     pub auth_url: String,
 }
 

@@ -27,15 +27,14 @@ async fn bearer_guard(
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<Arc<Settings>>().unwrap();
 
-    let url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
-    // let data_url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
-    tracing::debug!("URL ::::  {:?}", url);
+    // let url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
+    // // let data_url = Url::parse("https://dev.try.direct/server/user/oauth_server/api/me").unwrap();
+    // tracing::debug!("URL ::::  {:?}", url);
 
 
     let client = reqwest::Client::new();
     let resp = client
-        // .get(&settings.auth_url)
-        .get(url)
+        .get(&settings.auth_url)
         .bearer_auth(credentials.token())
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json")

@@ -8,7 +8,7 @@ services:
 
   stacker:
     image: trydirect/stacker:0.0.3
-    build: ./docker
+    build: .
     container_name: stacker
     restart: always
     volumes:
@@ -22,6 +22,7 @@ services:
       - ./docker/.env
     environment:
       - RUST_LOG=debug
+      - RUST_BACKTRACE=1
     depends_on:
       stackerdb:
         condition: service_healthy
@@ -37,7 +38,7 @@ services:
     image: postgres:16.0
     restart: always
     ports:
-      - 5432
+      - 5432:5432
     env_file:
       - ./docker/.env
     volumes:
