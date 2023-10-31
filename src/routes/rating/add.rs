@@ -1,8 +1,8 @@
 use crate::forms;
+use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
-use crate::utils::json::JsonResponse;
 use actix_web::post;
 use actix_web::{web, Responder, Result};
 use sqlx::PgPool;
