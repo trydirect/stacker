@@ -36,46 +36,44 @@ async fn bearer_guard(
         .send()
         .await;
 
+    let resp = match resp {
+        Ok(resp) if resp.status().is_success() => resp,
+        Ok(resp) => {
+            tracing::error!("Authentication service returned no success {:?}", resp);
+            // tracing::debug!("{:?}", resp.text().await.unwrap());
+            return Err((ErrorUnauthorized("401 Unauthorized"), req));
+        }
+        Err(err) => {
+            tracing::error!("error from reqwest {:?}", err);
+            return Err((ErrorInternalServerError(err.to_string()), req));
+        }
+    };
 
-    tracing::debug!("{:?}", resp.unwrap().text().await.unwrap());
+    let user_form: UserForm = match resp.json().await {
+        Ok(user) => {
+            tracing::info!("unpacked user {user:?}");
+            user
+        }
+        Err(err) => {
+            tracing::error!("can't parse the response body {:?}", err);
+            return Err((ErrorUnauthorized(""), req));
+        }
+    };
 
-    // let resp = match resp {
-    //     Ok(resp) if resp.status().is_success() => resp,
-    //     Ok(resp) => {
-    //         tracing::error!("Authentication service returned no success {:?}", resp);
-    //         return Err((ErrorUnauthorized(""), req));
-    //     }
-    //     Err(err) => {
-    //         tracing::error!("error from reqwest {:?}", err);
-    //         return Err((ErrorInternalServerError(""), req));
-    //     }
-    // };
-    //
-    // let user_form: UserForm = match resp.json().await {
-    //     Ok(user) => {
-    //         tracing::info!("unpacked user {user:?}");
-    //         user
-    //     }
-    //     Err(err) => {
-    //         tracing::error!("can't parse the response body {:?}", err);
-    //         return Err((ErrorUnauthorized(""), req));
-    //     }
-    // };
-    //
-    // let user: User = match user_form.try_into() // try to convert UserForm into User model
-    // {
-    //     Ok(user)  => { user }
-    //     Err(err) => {
-    //         tracing::error!("Could not create User from form data: {:?}", err);
-    //         return Err((ErrorUnauthorized(""), req));
-    //     }
-    // };
-    // let existent_user = req.extensions_mut().insert(user);
-    // if existent_user.is_some() {
-    //     tracing::error!("already logged {existent_user:?}");
-    //     return Err((ErrorInternalServerError(""), req));
-    // }
-    //
+    let user: User = match user_form.try_into() // try to convert UserForm into User model
+    {
+        Ok(user)  => { user }
+        Err(err) => {
+            tracing::error!("Could not create User from form data: {:?}", err);
+            return Err((ErrorUnauthorized("Unauthorized"), req));
+        }
+    };
+    let existent_user = req.extensions_mut().insert(user);
+    if existent_user.is_some() {
+        tracing::error!("already logged {existent_user:?}");
+        return Err((ErrorInternalServerError(""), req));
+    }
+
     Ok(req)
 }
 
@@ -96,12 +94,12 @@ pub async fn run(
         App::new()
             .wrap(TracingLogger::default())
             .service(web::scope("/health_check").service(crate::routes::health_check))
-            .service(
-                web::scope("/client")
-                    .wrap(HttpAuthentication::bearer(bearer_guard))
-                    .wrap(Cors::permissive())
-                    .service(crate::routes::client::add_handler),
-            )
+            // .service(
+            //     web::scope("/client")
+            //         .wrap(HttpAuthentication::bearer(bearer_guard))
+            //         .wrap(Cors::permissive())
+            //         .service(crate::routes::client::add_handler),
+            // )
             .service(
                 //todo 1. add client_guard. it should fetch client_id and hash from headers. based on db's
                 //client secret and input body valiates the input. the client is to be handed over

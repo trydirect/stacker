@@ -17,7 +17,7 @@ services:
     container_name: stacker
     restart: always
     volumes:
-      - ./stacker/files:/app/files
+      - ./files:/app/files
       - ./docker/local/configuration.yaml:/app/configuration.yaml
       - ./migrations:/app/migrations
       - ./docker/local/.env:/app/.env
