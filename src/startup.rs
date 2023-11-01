@@ -39,53 +39,12 @@ async fn bearer_guard(
 
     tracing::debug!("{:?}", resp.unwrap().text().await.unwrap());
 
-    let resp = match resp {
-        Ok(resp) if resp.status().is_success() => resp,
-        Ok(resp) => {
-            tracing::error!("Authentication service returned no success {:?}", resp);
-            return Err((ErrorUnauthorized(""), req));
-        }
-        Err(err) => {
-            tracing::error!("error from reqwest {:?}", err);
-            return Err((ErrorInternalServerError(""), req));
-        }
-    };
-
-    let user_form: UserForm = match resp.json().await {
-        Ok(user) => {
-            tracing::info!("unpacked user {user:?}");
-            user
-        }
-        Err(err) => {
-            tracing::error!("can't parse the response body {:?}", err);
-            return Err((ErrorUnauthorized(""), req));
-        }
-    };
-
-    let user: User = match user_form.try_into() // try to convert UserForm into User model
-    {
-        Ok(user)  => { user }
-        Err(err) => {
-            tracing::error!("Could not create User from form data: {:?}", err);
-            return Err((ErrorUnauthorized(""), req));
-        }
-    };
-    let existent_user = req.extensions_mut().insert(user);
-    if existent_user.is_some() {
-        tracing::error!("already logged {existent_user:?}");
-        return Err((ErrorInternalServerError(""), req));
-    }
-
     // let resp = match resp {
+    //     Ok(resp) if resp.status().is_success() => resp,
     //     Ok(resp) => {
-    //         //if resp.status().is_success()
-    //         tracing::debug!("{:?}", resp);
-    //         resp
+    //         tracing::error!("Authentication service returned no success {:?}", resp);
+    //         return Err((ErrorUnauthorized(""), req));
     //     }
-    //     // Ok(resp) => {
-    //     //     tracing::error!("Authentication service returned no success {:?}", resp);
-    //     //     return Err((ErrorUnauthorized(""), req));
-    //     // }
     //     Err(err) => {
     //         tracing::error!("error from reqwest {:?}", err);
     //         return Err((ErrorInternalServerError(""), req));
@@ -103,7 +62,7 @@ async fn bearer_guard(
     //     }
     // };
     //
-    // let user:User = match user_form.try_into() // try to convert UserForm into User model
+    // let user: User = match user_form.try_into() // try to convert UserForm into User model
     // {
     //     Ok(user)  => { user }
     //     Err(err) => {

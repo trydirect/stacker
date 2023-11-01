@@ -2,7 +2,7 @@ app_host: 0.0.0.0
 app_port: 8000
 auth_url: https://dev.try.direct/server/user/oauth_server/api/me
 database:
-  host: stackerdb
+  host: 192.168.48.2
   port: 5432
   username: postgres
   password: postgres

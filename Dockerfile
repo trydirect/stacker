@@ -14,8 +14,8 @@ COPY ../Cargo.toml .
 COPY ../Cargo.lock .
 COPY ../rustfmt.toml .
 COPY ../Makefile .
-COPY ../.env .
-COPY ../configuration.yaml .
+COPY ../docker/local/.env .
+COPY ../docker/local/configuration.yaml .
 
 # build this project to cache dependencies
 #RUN sqlx database create && sqlx migrate run

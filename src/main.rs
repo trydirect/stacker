@@ -16,10 +16,10 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to database.");
 
-    let address = format!("127.0.0.1:{}", settings.application_port);
+    let address = format!("{}:{}", settings.app_host, settings.app_port);
     tracing::info!("Start server at {:?}", &address);
     let listener = TcpListener::bind(address)
-        .expect(&format!("failed to bind to {}", settings.application_port));
+        .expect(&format!("failed to bind to {}", settings.app_port));
 
     run(listener, db_pool, settings).await?.await
 }
