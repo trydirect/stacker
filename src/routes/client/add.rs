@@ -69,7 +69,28 @@ pub async fn add_handler(
     let mut client = Client::default();
     client.id = 1;
     client.user_id = user.id.clone();
-    client.secret = client::generate_secret(255);
+    client.secret = loop {
+        let secret = client::generate_secret(255);
+        match client::is_secret_unique(pool.get_ref(), &secret).await {
+            Ok(is_unique) if is_unique => {
+                break secret;
+            }
+            Ok(_) => {
+                tracing::info!("Generate secret once more.");
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("Failed to execute query: {:?}", e);
+
+                return Ok(web::Json(ClientAddResponse {
+                    status: "error".to_string(),
+                    code: 500,
+                    message: "Failed to insert".to_string(),
+                    client: None,
+                }));
+            }
+        }
+    };
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(
