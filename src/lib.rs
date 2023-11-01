@@ -7,4 +7,3 @@ pub mod routes;
 pub mod services;
 pub mod startup;
 pub mod telemetry;
-pub mod utils;

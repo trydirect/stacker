@@ -1,22 +1,29 @@
-use actix_web::{web::{Data, Bytes, Json}, Responder, Result, web};
+use actix_web::{
+    web,
+    web::{Bytes, Data, Json},
+    Responder, Result,
+};
 
 use crate::forms::stack::StackForm;
 use crate::forms::user::UserForm;
+use crate::helpers::JsonResponse;
 use crate::models::user::User;
 use crate::models::Stack;
-use crate::utils::json::JsonResponse;
+use actix_web::post;
 use chrono::Utc;
+use serde_json::Value;
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
-use serde_json::Value;
-use actix_web::post;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
-pub async fn add(body: Bytes, user: web::ReqData<User>, pool: Data<PgPool>) -> Result<impl Responder>  {
-
+pub async fn add(
+    body: Bytes,
+    user: web::ReqData<User>,
+    pool: Data<PgPool>,
+) -> Result<impl Responder> {
     // None::<i32>.expect("my error");
     // return Err(JsonPayloadError::Payload(PayloadError::Overflow).into());
     // let content_type = req.headers().get("content-type");

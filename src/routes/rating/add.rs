@@ -1,4 +1,5 @@
 use crate::forms;
+use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
@@ -6,7 +7,6 @@ use actix_web::post;
 use actix_web::{web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
-use crate::utils::json::JsonResponse;
 
 // workflow
 // add, update, list, get(user_id), ACL,
