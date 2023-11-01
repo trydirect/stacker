@@ -5,5 +5,6 @@ CREATE TABLE public.client (
   secret varchar(255) NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  CONSTRAINT client_pkey PRIMARY KEY (id)
+  CONSTRAINT client_pkey PRIMARY KEY (id),
+	CONSTRAINT client_secret_unique UNIQUE (secret)
 );

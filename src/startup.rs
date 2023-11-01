@@ -26,7 +26,7 @@ async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
-    let settings = req.app_data::<Arc<Settings>>().unwrap();
+    let settings = req.app_data::<web::Data<Arc<Settings>>>().unwrap();
     let client = reqwest::Client::new();
     let resp = client
         .get(&settings.auth_url)
@@ -76,8 +76,12 @@ async fn bearer_guard(
     Ok(req)
 }
 
-pub async fn run(listener: TcpListener, db_pool: Pool<Postgres>, settings: Settings) -> Result<Server, std::io::Error> {
-    let settings = Arc::new(settings);
+pub async fn run(
+    listener: TcpListener,
+    db_pool: Pool<Postgres>,
+    settings: Settings,
+) -> Result<Server, std::io::Error> {
+    let settings = web::Data::new(Arc::new(settings));
     let db_pool = web::Data::new(db_pool);
 
     let server = HttpServer::new(move || {
