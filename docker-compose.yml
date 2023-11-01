@@ -4,6 +4,11 @@ volumes:
   stackerdb:
     driver: local
 
+networks:
+  backend:
+    name: stacker-backend
+    external: true
+
 services:
 
   stacker:
@@ -13,19 +18,21 @@ services:
     restart: always
     volumes:
       - ./stacker/files:/app/files
-      - ./docker/configuration.yaml:/app/configuration.yaml
+      - ./docker/local/configuration.yaml:/app/configuration.yaml
       - ./migrations:/app/migrations
-      - ./docker/.env:/app/.env
+      - ./docker/local/.env:/app/.env
     ports:
       - "8000:8000"
     env_file:
-      - ./docker/.env
+      - ./docker/local/.env
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
     depends_on:
       stackerdb:
         condition: service_healthy
+    networks:
+      - backend
 
 
   stackerdb:
@@ -40,7 +47,9 @@ services:
     ports:
       - 5432:5432
     env_file:
-      - ./docker/.env
+      - ./docker/local/.env
     volumes:
       - stackerdb:/var/lib/postgresql/data
-      - ./docker/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/local/postgresql.conf:/etc/postgresql/postgresql.conf
+    networks:
+      - backend
