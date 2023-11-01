@@ -15,6 +15,7 @@ struct JsonResponse {
     message: String,
     code: u32,
     rating: Option<models::Rating>,
+    objects: Option<Vec<models::Rating>>,
 }
 
 #[tracing::instrument(name = "Get rating.")]
@@ -41,6 +42,7 @@ pub async fn get_handler(
                 code: 200,
                 message: "".to_string(),
                 rating: Some(rating),
+                objects: None
             }));
         }
         Err(sqlx::Error::RowNotFound) => {
@@ -49,6 +51,7 @@ pub async fn get_handler(
                 code: 404,
                 message: format!("Not Found"),
                 rating: None,
+                objects: None
             }));
         }
         Err(e) => {
@@ -58,6 +61,56 @@ pub async fn get_handler(
                 code: 500,
                 message: format!("Internal Server Error"),
                 rating: None,
+                objects: None
+            }));
+        }
+    }
+}
+
+#[tracing::instrument(name = "Get all ratings.")]
+#[get("")]
+pub async fn default(
+    path: web::Path<()>,
+    pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+
+    let query_span = tracing::info_span!("Get all rates.");
+    // let category = path.0;
+    match sqlx::query_as!(
+        models::Rating,
+        r"SELECT * FROM rating"
+    )
+        .fetch_all(pool.get_ref())
+        .instrument(query_span)
+        .await
+    {
+        Ok(rating) => {
+            tracing::info!("Ratings found: {:?}", rating.len());
+            return Ok(web::Json(JsonResponse {
+                status: "Success".to_string(),
+                code: 200,
+                message: "".to_string(),
+                rating: None,
+                objects: Some(rating),
+            }));
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            return Ok(web::Json(JsonResponse {
+                status: "Error".to_string(),
+                code: 404,
+                message: format!("Not Found"),
+                rating: None,
+                objects: None
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch rating, error: {:?}", e);
+            return Ok(web::Json(JsonResponse {
+                status: "Error".to_string(),
+                code: 500,
+                message: format!("Internal Server Error"),
+                rating: None,
+                objects: None
             }));
         }
     }

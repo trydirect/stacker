@@ -113,7 +113,8 @@ pub async fn run(
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
                     .service(crate::routes::rating::add_handler)
-                    .service(crate::routes::rating::get_handler),
+                    .service(crate::routes::rating::get_handler)
+                    .service(crate::routes::rating::default),
             )
             // .service(
             //     web::resource("/stack/{id}")

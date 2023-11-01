@@ -6,7 +6,8 @@ volumes:
 
 networks:
   backend:
-    name: stacker-backend
+    driver: bridge
+    name: backend
     external: true
 
 services:
