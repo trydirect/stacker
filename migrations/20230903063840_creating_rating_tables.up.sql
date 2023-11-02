@@ -11,17 +11,17 @@ CREATE TABLE product (
 CREATE TABLE rating (
     id serial,
     user_id VARCHAR(50) NOT NULL,
-    product_id integer NOT NULL,
+    obj_id integer NOT NULL,
     category VARCHAR(255) NOT NULL,
     comment TEXT DEFAULT NULL,
     hidden BOOLEAN DEFAULT FALSE,
     rate INTEGER,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CONSTRAINT fk_product FOREIGN KEY(product_id) REFERENCES product(id),
+    CONSTRAINT fk_product FOREIGN KEY(obj_id) REFERENCES product(id),
     CONSTRAINT rating_pk PRIMARY KEY (id)
 );
 
 CREATE INDEX idx_category ON rating(category);
 CREATE INDEX idx_user_id ON rating(user_id);
-CREATE INDEX idx_product_id_rating_id ON rating(product_id, rate);
+CREATE INDEX idx_obj_id_rating_id ON rating(obj_id, rate);
