@@ -5,7 +5,6 @@ use actix_web::dev::{Server, ServiceRequest};
 use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
 use actix_web::HttpMessage;
 use actix_web::{
-    // http::header::HeaderName,
     web::{self},
     App,
     Error,
@@ -13,7 +12,6 @@ use actix_web::{
 };
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use reqwest::Url;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use std::net::TcpListener;
@@ -129,7 +127,8 @@ pub async fn run(
                 web::scope("/stack")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::stack::add::add), //.service(crate::routes::stack::deploy),
+                    .service(crate::routes::stack::add::add)
+                    .service(crate::routes::stack::get::get)
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())

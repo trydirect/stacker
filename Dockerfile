@@ -31,7 +31,6 @@ COPY ../src ./src
 #RUN sqlx migrate run
 #RUN cargo sqlx prepare -- --bin stacker
 
-
 # rebuild app with project source
 RUN rm -rf ./target/release/deps/stacker*; \
     cargo build --release
