@@ -73,7 +73,7 @@ pub async fn add_handler(
         let secret = client::generate_secret(255);
         match client::is_secret_unique(pool.get_ref(), &secret).await {
             Ok(is_unique) if is_unique => {
-                break secret;
+                break Some(secret);
             }
             Ok(_) => {
                 tracing::info!("Generate secret once more.");
@@ -128,3 +128,4 @@ pub async fn add_handler(
         }
     }
 }
+//todo error responses

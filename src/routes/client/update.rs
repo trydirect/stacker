@@ -2,7 +2,10 @@ use crate::configuration::Settings;
 use crate::helpers::client;
 use crate::models::user::User;
 use crate::models::Client;
-use actix_web::{error::ErrorNotFound, put, web, HttpResponse, Responder, Result};
+use actix_web::{
+    error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound},
+    put, web, Responder, Result,
+};
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -25,11 +28,8 @@ pub async fn update_handler(
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
     let client_id = path.0;
-    //todo 1. find the client
-    //todo 2. if client is disabled. I mean the client_secret is null no action is to be performed
-    //todo 3. if client is active. update the secret and the updated_at fields
     let query_span = tracing::info_span!("Fetching the client by ID");
-    let client: Client = match sqlx::query_as!(
+    let mut client: Client = match sqlx::query_as!(
         Client,
         r#"
         SELECT
@@ -43,67 +43,52 @@ pub async fn update_handler(
     .instrument(query_span)
     .await
     {
-        Ok(client) => Ok(client), //todo continue only if not null secret
+        Ok(client) if client.secret.is_some() => Ok(client),
+        Ok(client) => Err(ErrorForbidden("client is not active")),
+        Err(sqlx::Error::RowNotFound) => Err(ErrorNotFound("the client is not found")),
         Err(e) => {
-            tracing::error!("Failed to execute query: {:?}", e);
+            tracing::error!("Failed to execute fetch query: {:?}", e);
 
-            /*
-            return Ok(web::Json(ClientUpdateResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
-            */
-            Err(ErrorNotFound("the client is not found")) //todo add a correct message
+            Err(ErrorInternalServerError(""))
         }
     }?;
 
-    /*
-    let mut client = Client::default();
-    client.id = 1;
-    client.user_id = user.id.clone();
     client.secret = loop {
         let secret = client::generate_secret(255);
         match client::is_secret_unique(pool.get_ref(), &secret).await {
             Ok(is_unique) if is_unique => {
-                break secret;
+                break Some(secret);
             }
             Ok(_) => {
                 tracing::info!("Generate secret once more.");
                 continue;
             }
             Err(e) => {
-                tracing::error!("Failed to execute query: {:?}", e);
+                tracing::error!("Failed to check the uniqueness of the secret: {:?}", e);
 
-                return Ok(web::Json(ClientAddResponse {
-                    status: "error".to_string(),
-                    code: 500,
-                    message: "Failed to insert".to_string(),
-                    client: None,
-                }));
+                return Err(ErrorInternalServerError(""));
             }
         }
     };
 
-    let query_span = tracing::info_span!("Saving new client into the database");
+    let query_span = tracing::info_span!("Updating client into the database");
     match sqlx::query!(
         r#"
-        INSERT INTO client (user_id, secret, created_at, updated_at)
-        VALUES ($1, $2, NOW() at time zone 'utc', NOW() at time zone 'utc')
-        RETURNING id
+        UPDATE client SET 
+            secret=$1,
+            updated_at=NOW() at time zone 'utc'
+        WHERE id = $2
         "#,
-        client.user_id.clone(),
         client.secret,
+        client.id
     )
-    .fetch_one(pool.get_ref())
+    .execute(pool.get_ref())
     .instrument(query_span)
     .await
     {
-        Ok(result) => {
-            tracing::info!("New client {} have been saved to database", result.id);
-            client.id = result.id;
-            Ok(web::Json(ClientAddResponse {
+        Ok(_) => {
+            tracing::info!("Client {} have been saved to database", client.id);
+            Ok(web::Json(ClientUpdateResponse {
                 status: "success".to_string(),
                 message: "".to_string(),
                 code: 200,
@@ -112,21 +97,9 @@ pub async fn update_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            return Err(ErrorInternalServerError(""));
         }
     }
-    */
-
-    return Ok(web::Json(ClientUpdateResponse {
-        status: format!("client_id={}", path.0),
-        code: 200,
-        message: "Failed to update".to_string(),
-        client: Some(client),
-    }));
 }
+
+//todo secret is logged. it should be wrapped in a password
