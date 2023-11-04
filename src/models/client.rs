@@ -6,3 +6,4 @@ pub struct Client {
     pub user_id: String,
     pub secret: String,
 }
+//todo add created_at AND updated_at fields
