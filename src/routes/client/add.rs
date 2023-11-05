@@ -2,7 +2,7 @@ use crate::configuration::Settings;
 use crate::helpers::client;
 use crate::models::user::User;
 use crate::models::Client;
-use actix_web::{post, web, Responder, Result};
+use actix_web::{error::ErrorInternalServerError, post, web, Responder, Result};
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -56,20 +56,17 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            return Err(ErrorInternalServerError(""));
         }
     };
 
     let mut client = Client::default();
     client.id = 1;
     client.user_id = user.id.clone();
-    client.secret = client::generate_secret(255);
+    client.secret = client::generate_secret(pool.get_ref(), 255)
+        .await
+        .map(|s| Some(s))
+        .map_err(|s| ErrorInternalServerError(s))?;
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(
@@ -97,13 +94,7 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            return Err(ErrorInternalServerError(""));
         }
     }
 }

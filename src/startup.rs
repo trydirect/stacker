@@ -92,7 +92,8 @@ pub async fn run(
                 web::scope("/client")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::client::add_handler),
+                    .service(crate::routes::client::add_handler)
+                    .service(crate::routes::client::update_handler),
             )
             .service(
                 //todo 1. add client_guard. it should fetch client_id and hash from headers. based on db's

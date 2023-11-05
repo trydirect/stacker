@@ -4,5 +4,5 @@ use serde::Serialize;
 pub struct Client {
     pub id: i32,
     pub user_id: String,
-    pub secret: String,
+    pub secret: Option<String>,
 }
