@@ -88,5 +88,3 @@ pub async fn update_handler(
         }
     }
 }
-
-//todo secret is logged. it should be wrapped in a password. secrecy crate
