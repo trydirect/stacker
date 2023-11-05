@@ -44,7 +44,7 @@ pub async fn update_handler(
     .await
     {
         Ok(client) if client.secret.is_some() => Ok(client),
-        Ok(client) => Err(ErrorForbidden("client is not active")),
+        Ok(_client) => Err(ErrorForbidden("client is not active")),
         Err(sqlx::Error::RowNotFound) => Err(ErrorNotFound("the client is not found")),
         Err(e) => {
             tracing::error!("Failed to execute fetch query: {:?}", e);

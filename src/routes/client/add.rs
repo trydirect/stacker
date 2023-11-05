@@ -56,13 +56,7 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            return Err(ErrorInternalServerError(""));
         }
     };
 
@@ -100,14 +94,7 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            return Err(ErrorInternalServerError(""));
         }
     }
 }
-//todo error responses
