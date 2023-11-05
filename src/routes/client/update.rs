@@ -53,23 +53,10 @@ pub async fn update_handler(
         }
     }?;
 
-    client.secret = loop {
-        let secret = client::generate_secret(255);
-        match client::is_secret_unique(pool.get_ref(), &secret).await {
-            Ok(is_unique) if is_unique => {
-                break Some(secret);
-            }
-            Ok(_) => {
-                tracing::info!("Generate secret once more.");
-                continue;
-            }
-            Err(e) => {
-                tracing::error!("Failed to check the uniqueness of the secret: {:?}", e);
-
-                return Err(ErrorInternalServerError(""));
-            }
-        }
-    };
+    client.secret = client::generate_secret(pool.get_ref(), 255)
+        .await
+        .map(|s| Some(s))
+        .map_err(|s| ErrorInternalServerError(s))?;
 
     let query_span = tracing::info_span!("Updating client into the database");
     match sqlx::query!(
@@ -102,4 +89,4 @@ pub async fn update_handler(
     }
 }
 
-//todo secret is logged. it should be wrapped in a password
+//todo secret is logged. it should be wrapped in a password. secrecy crate

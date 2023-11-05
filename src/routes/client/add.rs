@@ -2,7 +2,7 @@ use crate::configuration::Settings;
 use crate::helpers::client;
 use crate::models::user::User;
 use crate::models::Client;
-use actix_web::{post, web, Responder, Result};
+use actix_web::{error::ErrorInternalServerError, post, web, Responder, Result};
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -69,28 +69,10 @@ pub async fn add_handler(
     let mut client = Client::default();
     client.id = 1;
     client.user_id = user.id.clone();
-    client.secret = loop {
-        let secret = client::generate_secret(255);
-        match client::is_secret_unique(pool.get_ref(), &secret).await {
-            Ok(is_unique) if is_unique => {
-                break Some(secret);
-            }
-            Ok(_) => {
-                tracing::info!("Generate secret once more.");
-                continue;
-            }
-            Err(e) => {
-                tracing::error!("Failed to execute query: {:?}", e);
-
-                return Ok(web::Json(ClientAddResponse {
-                    status: "error".to_string(),
-                    code: 500,
-                    message: "Failed to insert".to_string(),
-                    client: None,
-                }));
-            }
-        }
-    };
+    client.secret = client::generate_secret(pool.get_ref(), 255)
+        .await
+        .map(|s| Some(s))
+        .map_err(|s| ErrorInternalServerError(s))?;
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(
