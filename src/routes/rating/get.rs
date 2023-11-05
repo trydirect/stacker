@@ -69,7 +69,7 @@ pub async fn get_handler(
 
 #[tracing::instrument(name = "Get all ratings.")]
 #[get("")]
-pub async fn default(
+pub async fn list_handler(
     path: web::Path<()>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {

@@ -24,7 +24,7 @@ pub async fn get(
 
     let (id,) = path.into_inner();
 
-    tracing::info!("User {:?} is getting stack by id {:?}", user, id);
+    tracing::info!("User {:?} gets stack by id {:?}", user.id, id);
     match sqlx::query_as!(
         models::Stack,
         r#"
