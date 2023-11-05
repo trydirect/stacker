@@ -46,7 +46,7 @@ pub async fn add_handler(
 
     let query_span = tracing::info_span!("Search for existing vote.");
     match sqlx::query!(
-        r"SELECT id FROM rating where user_id=$1 AND product_id=$2 AND category=$3 LIMIT 1",
+        r"SELECT id FROM rating where user_id=$1 AND obj_id=$2 AND category=$3 LIMIT 1",
         user.id,
         form.obj_id,
         form.category as RateCategory
@@ -87,7 +87,7 @@ pub async fn add_handler(
     // Insert rating
     match sqlx::query!(
         r#"
-        INSERT INTO rating (user_id, product_id, category, comment, hidden,rate,
+        INSERT INTO rating (user_id, obj_id, category, comment, hidden,rate,
         created_at,
         updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')

@@ -442,6 +442,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "time 0.1.45",
  "wasm-bindgen",
  "windows-targets",
@@ -631,6 +632,9 @@ name = "either"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a26ae43d7bcc3b814de94796a5e736d4029efb0ee900c12e2d54c993ad1a1e07"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "encoding_rs"
@@ -2092,9 +2096,11 @@ dependencies = [
  "dotenvy",
  "either",
  "heck",
+ "hex",
  "once_cell",
  "proc-macro2",
  "quote",
+ "serde",
  "serde_json",
  "sha2",
  "sqlx-core",
@@ -2569,6 +2575,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88ad59a7560b41a70d191093a945f0b87bc1deeda46fb237479708a1d6b6cdfc"
 dependencies = [
  "getrandom",
+ "serde",
 ]
 
 [[package]]

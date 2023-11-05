@@ -5,15 +5,11 @@ use actix_web::dev::{Server, ServiceRequest};
 use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
 use actix_web::HttpMessage;
 use actix_web::{
-    // http::header::HeaderName,
     web::{self},
-    App,
-    Error,
-    HttpServer,
+    App, Error, HttpServer,
 };
 use actix_web_httpauth::{extractors::bearer::BearerAuth, middleware::HttpAuthentication};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use reqwest::Url;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -40,11 +36,12 @@ async fn bearer_guard(
         Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
             tracing::error!("Authentication service returned no success {:?}", resp);
-            return Err((ErrorUnauthorized(""), req));
+            // tracing::debug!("{:?}", resp.text().await.unwrap());
+            return Err((ErrorUnauthorized("401 Unauthorized"), req));
         }
         Err(err) => {
             tracing::error!("error from reqwest {:?}", err);
-            return Err((ErrorInternalServerError(""), req));
+            return Err((ErrorInternalServerError(err.to_string()), req));
         }
     };
 
@@ -64,7 +61,7 @@ async fn bearer_guard(
         Ok(user)  => { user }
         Err(err) => {
             tracing::error!("Could not create User from form data: {:?}", err);
-            return Err((ErrorUnauthorized(""), req));
+            return Err((ErrorUnauthorized("Unauthorized"), req));
         }
     };
     let existent_user = req.extensions_mut().insert(user);
@@ -83,6 +80,11 @@ pub async fn run(
 ) -> Result<Server, std::io::Error> {
     let settings = web::Data::new(Arc::new(settings));
     let db_pool = web::Data::new(db_pool);
+
+    // let address = format!("{}:{}", settings.app_host, settings.app_port);
+    // tracing::info!("Start server at {:?}", &address);
+    // let listener = std::net::TcpListener::bind(address)
+    //     .expect(&format!("failed to bind to {}", settings.app_port));
 
     let server = HttpServer::new(move || {
         App::new()
@@ -108,7 +110,8 @@ pub async fn run(
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
                     .service(crate::routes::rating::add_handler)
-                    .service(crate::routes::rating::get_handler),
+                    .service(crate::routes::rating::get_handler)
+                    .service(crate::routes::rating::default),
             )
             // .service(
             //     web::resource("/stack/{id}")
@@ -123,7 +126,8 @@ pub async fn run(
                 web::scope("/stack")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::stack::add::add), //.service(crate::routes::stack::deploy),
+                    .service(crate::routes::stack::add::add)
+                    .service(crate::routes::stack::get::get),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())
