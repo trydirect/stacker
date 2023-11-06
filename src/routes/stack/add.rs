@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use actix_web::{
     web,
     web::{Bytes, Data, Json},
@@ -17,6 +16,8 @@ use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
 
+
+
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
 pub async fn add(
@@ -24,10 +25,6 @@ pub async fn add(
     user: web::ReqData<User>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
-    // None::<i32>.expect("my error");
-    // return Err(JsonPayloadError::Payload(PayloadError::Overflow).into());
-    // let content_type = req.headers().get("content-type");
-    // println!("Request Content-Type: {:?}", content_type);
 
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
@@ -35,19 +32,12 @@ pub async fn add(
     // method 2 let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
         Ok(f) => {
-            println!("fine");
             f
         }
         Err(err) => {
-            return Ok(Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 400,
-                message: err.to_string(),
-                id: None,
-            }));
+            return Ok(Json(JsonResponse::<Stack>::not_valid("")));
         }
     };
-    // println!("app: {:?}", form);
 
     let user_id = user.id.clone();
     let request_id = Uuid::new_v4();
@@ -81,16 +71,14 @@ pub async fn add(
     let stack = Stack {
         id: 0_i32,                // internal stack id
         stack_id: Uuid::new_v4(), // public uuid of the stack
-        // user_id: Uuid::from_u128(user_id as u128),
-        user_id: user_id, //
+        user_id: user_id,         //
         name: stack_name,
         body: body,
-        // body: body_str.to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
 
-    println!("stack object {:?}", stack);
+    tracing::debug!("stack object {:?}", stack);
     return match sqlx::query!(
         r#"
         INSERT INTO user_stack (id, stack_id, user_id, name, body, created_at, updated_at)
@@ -101,7 +89,6 @@ pub async fn add(
         stack.stack_id,
         stack.user_id,
         stack.name,
-        // sqlx::types::Json(stack.body),
         stack.body,
         stack.created_at,
         stack.updated_at
@@ -115,21 +102,11 @@ pub async fn add(
                 "req_id: {} New stack details have been saved to database",
                 request_id
             );
-            Ok(Json(JsonResponse {
-                status: "OK".to_string(),
-                code: 200,
-                message: format!("Object saved"),
-                id: Some(record.id),
-            }))
+            Ok(Json(JsonResponse::<Stack>::ok(record.id, "Object saved")))
         }
-        Err(e) => {
-            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            Ok(Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 400,
-                message: e.to_string(),
-                id: None,
-            }))
+        Err(err) => {
+            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, err);
+            Ok(Json(JsonResponse::<Stack>::not_valid("Failed to insert")))
         }
     };
 }

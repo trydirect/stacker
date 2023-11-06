@@ -1,20 +1,12 @@
 use crate::configuration::Settings;
-use crate::helpers::client;
+use crate::helpers::{client, JsonResponse};
 use crate::models::user::User;
 use crate::models::Client;
 use actix_web::{post, web, Responder, Result};
-use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
 
-#[derive(Serialize)]
-struct ClientAddResponse {
-    status: String,
-    message: String,
-    code: u32,
-    client: Option<Client>,
-}
 
 #[tracing::instrument(name = "Add client.")]
 #[post("")]
@@ -24,6 +16,7 @@ pub async fn add_handler(
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let query_span = tracing::info_span!("Counting the user's clients");
+
     match sqlx::query!(
         r#"
         SELECT
@@ -46,23 +39,14 @@ pub async fn add_handler(
                     client_count
                 );
 
-                return Ok(web::Json(ClientAddResponse {
-                    status: "error".to_string(),
-                    code: 400,
-                    message: "Too many clients already created".to_string(),
-                    client: None,
-                }));
+                return Ok(web::Json(JsonResponse::not_valid(
+                    "Too many clients already created"))
+                );
             }
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            return Ok(web::Json(JsonResponse::internal_error("Failed to insert")));
         }
     };
 
@@ -88,22 +72,18 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New client {} have been saved to database", result.id);
             client.id = result.id;
-            Ok(web::Json(ClientAddResponse {
-                status: "success".to_string(),
-                message: "".to_string(),
-                code: 200,
-                client: Some(client),
-            }))
+            Ok(web::Json(JsonResponse::new(
+                "success".to_string(),
+                "".to_string(),
+                200,
+                Some(client.id),
+                Some(client),
+                None
+            )))
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-
-            return Ok(web::Json(ClientAddResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                client: None,
-            }));
+            Ok(web::Json(JsonResponse::internal_error("Failed to insert")))
         }
     }
 }
