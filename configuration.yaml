@@ -1,7 +1,7 @@
-#auth_url: http://127.0.0.1:8080/me
+auth_url: http://127.0.0.1:8080/me
 app_host: 127.0.0.1
 app_port: 8000
-auth_url: https://dev.try.direct/server/user/oauth_server/api/me
+  #auth_url: https://dev.try.direct/server/user/oauth_server/api/me
 max_clients_number: 2
 database:
   host: 127.0.0.1
