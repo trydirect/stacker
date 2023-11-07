@@ -15,8 +15,7 @@ use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
-
-
+use crate::helpers::stack::builder::DcBuilder;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
@@ -109,4 +108,53 @@ pub async fn add(
             Ok(Json(JsonResponse::<Stack>::not_valid("Failed to insert")))
         }
     };
+}
+
+#[tracing::instrument(name = "Generate docker-compose.")]
+#[post("/{id}")]
+pub async fn gen(
+    user: web::ReqData<User>,
+    path: web::Path<(i32,)>,
+    pool: Data<PgPool>,
+) -> Result<impl Responder> {
+    let id = path.0;
+    tracing::debug!("Received id: {}", id);
+
+    let stack = match sqlx::query_as!(
+        Stack,
+        r#"
+        SELECT * FROM user_stack WHERE id=$1 AND user_id=$2 LIMIT 1
+        "#,
+        id, user.id
+    )
+            .fetch_one(pool.get_ref())
+            .await
+        {
+            Ok(stack) => {
+                tracing::info!("stack found: {:?}", stack.id,);
+                Some(stack)
+            }
+            Err(sqlx::Error::RowNotFound) => {
+                tracing::error!("Row not found 404");
+                None
+            }
+            Err(e) => {
+                tracing::error!("Failed to fetch stack, error: {:?}", e);
+                None
+            }
+        };
+
+
+    match stack {
+        Some(stack) => {
+            let mut dc = DcBuilder::new();
+            let fc = dc.build(stack);
+            tracing::debug!("Docker compose file content {:?}", fc.unwrap());
+        }
+        None => {
+
+        }
+    }
+
+    Ok(Json(JsonResponse::<Stack>::ok(1, "OK")))
 }

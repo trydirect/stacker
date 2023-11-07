@@ -128,6 +128,7 @@ pub async fn run(
                     .wrap(HttpAuthentication::bearer(bearer_guard))
                     .wrap(Cors::permissive())
                     .service(crate::routes::stack::add::add)
+                    .service(crate::routes::stack::add::gen)
                     .service(crate::routes::stack::get::get)
             )
             .app_data(db_pool.clone())
