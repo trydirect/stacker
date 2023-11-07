@@ -16,6 +16,7 @@ use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
 use crate::helpers::stack::builder::DcBuilder;
+use crate::helpers::stack::dctypes::Compose;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
@@ -147,14 +148,22 @@ pub async fn gen(
 
     match stack {
         Some(stack) => {
-            let mut dc = DcBuilder::new();
-            let fc = dc.build(stack);
-            tracing::debug!("Docker compose file content {:?}", fc.unwrap());
+            let id = stack.id.clone();
+            let mut dc = DcBuilder::new(stack);
+            let fc = dc.build();
+            // tracing::debug!("Docker compose file content {:?}", fc.unwrap());
+            return Ok(Json(JsonResponse::new(
+                "OK".to_owned(),
+                "Success".to_owned(),
+                200,
+                Some(id),
+                Some(fc.unwrap()),
+                None
+            )));
+
         }
         None => {
-
+            return Ok(Json(JsonResponse::internal_error("Could not generate compose file")));
         }
     }
-
-    Ok(Json(JsonResponse::<Stack>::ok(1, "OK")))
 }

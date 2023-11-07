@@ -1,7 +1,18 @@
-use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services, SingleService};
+use crate::helpers::stack::dctypes::{
+    Compose,
+    Port,
+    Ports,
+    PublishedPort,
+    Service,
+    Services
+};
 use serde_yaml;
 use crate::forms;
-use crate::forms::{StackForm, Web, Feature};
+use crate::forms::{
+    StackForm,
+    Web,
+    Feature
+};
 use crate::models::stack::Stack;
 
 #[derive(Clone, Debug)]
@@ -60,44 +71,17 @@ fn convert_shared_ports(ports: Vec<String>) -> Result<Vec<Port>, String> {
 
 impl DcBuilder {
 
-    pub fn new() -> Self {
+    pub fn new(stack: Stack) -> Self {
         DcBuilder {
             config: Config::default(),
-            stack: Stack {
-                id: 0,
-                stack_id: Default::default(),
-                user_id: "".to_string(),
-                name: "".to_string(),
-                body: Default::default(),
-                created_at: Default::default(),
-                updated_at: Default::default(),
-            },
+            stack: stack,
         }
     }
 
-    // pub fn add_ports(&self, ports: &Vec<String>) -> Vec<Port> {
-    //     // @todo re-factor using TryInto or TryFrom
-    //
-    //     let mut _ports:Vec<Port> = vec![];
-    //     for p in ports {
-    //         let port = p.parse::<u16>().unwrap();
-    //         _ports.push(
-    //             Port {
-    //                 target: port,
-    //                 host_ip: None,
-    //                 published: Some(PublishedPort::Single(port)),
-    //                 protocol: None,
-    //                 mode: None,
-    //             }
-    //         );
-    //     }
-    //     _ports
-    // }
+    pub fn build(&self) -> Option<String> {
 
-    pub fn build(&self, stack:Stack) -> Option<Compose> {
-
-        tracing::debug!("Start build docker compose from {:?}", stack.body);
-        let _stack = serde_json::from_value::<StackForm>(stack.body);
+        tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
+        let _stack = serde_json::from_value::<StackForm>(self.stack.body.clone());
         let mut services = indexmap::IndexMap::new();
         match _stack  {
             Ok(apps) => {
@@ -115,7 +99,6 @@ impl DcBuilder {
 
                     if let Some(ports) = &app.shared_ports {
                         if !ports.is_empty() {
-                            // service.ports = Ports::Long(self.add_ports(ports));
                             service.ports = Ports::Long(app.try_into().unwrap())
                         }
                     }
@@ -142,7 +125,6 @@ impl DcBuilder {
 
                             if let Some(ports) = &app.shared_ports {
                                 if !ports.is_empty() {
-                                    // service.ports = Ports::Long(self.add_ports(ports));
                                     service.ports = Ports::Long(app.try_into().unwrap())
                                 }
                             }
@@ -167,7 +149,6 @@ impl DcBuilder {
 
                             if let Some(ports) = &app.shared_ports {
                                 if !ports.is_empty() {
-                                    // service.ports = Ports::Long(self.add_ports(ports));
                                     service.ports = Ports::Long(app.try_into().unwrap())
                                 }
                             }
@@ -193,15 +174,17 @@ impl DcBuilder {
             ..Default::default()
         };
 
-        let target_file = std::path::Path::new("./files/docker-compose.yml");
+        let fname= format!("./files/{}.yml", self.stack.stack_id);
+        tracing::debug!("Save docker compose to file {:?}", fname);
+        let target_file = std::path::Path::new(fname.as_str());
         // serialize to string
         let serialized = match serde_yaml::to_string(&compose_content) {
             Ok(s) => s,
             Err(e) => panic!("Failed to serialize docker-compose file: {}", e),
         };
         // serialize to file
-        std::fs::write(target_file, serialized).unwrap();
+        std::fs::write(target_file, serialized.clone()).unwrap();
 
-        Some(compose_content)
+        Some(serialized)
     }
 }
