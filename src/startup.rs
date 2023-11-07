@@ -36,6 +36,7 @@ pub async fn run(
                     .wrap(Cors::permissive())
                     .service(crate::routes::client::add_handler)
                     .service(crate::routes::client::update_handler)
+                    .service(crate::routes::client::enable_handler)
                     .service(crate::routes::client::disable_handler),
             )
             .service(
