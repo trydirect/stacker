@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::models::user::User;
 
-#[tracing::instrument(name = "Bearer guard.")]
+#[tracing::instrument(name = "Trydirect bearer guard.")]
 pub async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,

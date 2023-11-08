@@ -40,12 +40,12 @@ pub async fn run(
                     .service(crate::routes::client::disable_handler),
             )
             .service(
-                //todo 1. add client_guard. it should fetch client_id and hash from headers. based on db's
-                //client secret and input body valiates the input. the client is to be handed over
-                //to the http endpoint
-                //todo 2. the generation secret and the client bearer to be separated in a separate
-                //utils module
-                web::scope("/test").service(crate::routes::test::deploy::handler),
+                web::scope("/test")
+                    .wrap(HttpAuthentication::bearer(
+                        crate::middleware::client::bearer_guard,
+                    ))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::test::deploy::handler),
             )
             .service(
                 web::scope("/rating")
