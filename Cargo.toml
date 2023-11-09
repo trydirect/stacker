@@ -33,6 +33,7 @@ actix-cors = "0.6.4"
 tracing-actix-web = "0.7.7"
 regex = "1.10.2"
 rand = "0.8.5"
+futures-util = "0.3.29"
 
 [dependencies.sqlx]
 version = "0.6.3"

@@ -41,9 +41,7 @@ pub async fn run(
             )
             .service(
                 web::scope("/test")
-                    .wrap(HttpAuthentication::bearer(
-                        crate::middleware::client::bearer_guard,
-                    ))
+                    .wrap(crate::middleware::client::Guard::new())
                     .wrap(Cors::permissive())
                     .service(crate::routes::test::deploy::handler),
             )
