@@ -57,6 +57,13 @@ where
             }
         };
 
+        let hash = match req.headers().get(HeaderName::from_static("stacker-hash")) {
+            Some(hash) => hash,
+            None => {
+                return Box::pin(async { Err(ErrorBadRequest("missing header stacker-hash")) });
+            }
+        };
+
         //todo retrieve db
         //todo check the client
 
