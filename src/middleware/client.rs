@@ -1,10 +1,15 @@
+use crate::models::Client;
 use std::future::{ready, Ready};
+use tracing::Instrument;
 
-use actix_web::dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform};
-use actix_web::error::ErrorBadRequest;
-use actix_web::http::header::HeaderName;
-use actix_web::Error;
+use actix_web::{
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
+    error::ErrorBadRequest,
+    http::header::HeaderName,
+    web, Error,
+};
 use futures_util::future::LocalBoxFuture;
+use sqlx::{Pool, Postgres};
 
 pub struct Guard {}
 
@@ -56,6 +61,18 @@ where
                 return Box::pin(async { Err(ErrorBadRequest("missing header stacker-id")) });
             }
         };
+        let client_id: &str = match client_id.to_str() {
+            Ok(v) => v,
+            Err(_) => {
+                return Box::pin(async { Err(ErrorBadRequest("header stacker-id is not valid")) });
+            }
+        };
+        let client_id: i32 = match client_id.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                return Box::pin(async { Err(ErrorBadRequest("header stacker-id is not valid")) });
+            }
+        };
 
         let hash = match req.headers().get(HeaderName::from_static("stacker-hash")) {
             Some(hash) => hash,
@@ -63,6 +80,48 @@ where
                 return Box::pin(async { Err(ErrorBadRequest("missing header stacker-hash")) });
             }
         };
+        let hash: &str = match hash.to_str() {
+            Ok(v) => v,
+            Err(_) => {
+                return Box::pin(async {
+                    Err(ErrorBadRequest("header stacker-hash is not valid"))
+                });
+            }
+        };
+
+        /*
+        let query_span = tracing::info_span!("Fetching the client by ID");
+        let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
+        //let mut client: Client = match sqlx::query_as!(
+        match sqlx::query_as!(
+            Client,
+            r#"
+        SELECT
+           id, user_id, secret
+        FROM client c
+        WHERE c.id = $1
+        "#,
+            client_id,
+        )
+        .fetch_one(db_pool.get_ref())
+        .instrument(query_span)
+        {
+            _ => {}
+        };
+        */
+        /*
+        .await
+        {
+            Ok(client) if client.secret.is_some() => Ok(client),
+            Ok(_client) => Err(ErrorForbidden("client is not active")),
+            Err(sqlx::Error::RowNotFound) => Err(ErrorNotFound("the client is not found")),
+            Err(e) => {
+                tracing::error!("Failed to execute fetch query: {:?}", e);
+
+                Err(ErrorInternalServerError(""))
+            }
+        }?;
+        */
 
         //todo retrieve db
         //todo check the client
