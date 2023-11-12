@@ -11,8 +11,8 @@ database:
   database_name: stacker
 
 amqp:
-  host: ***REMOVED***
+  host: 127.0.0.1
   port: 5672
   username: guest
-  password: ***REMOVED***
+  password:
 
