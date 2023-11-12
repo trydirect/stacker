@@ -14,3 +14,13 @@ pub struct Stack {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+impl Default for Stack {
+    fn default() -> Self {
+        Stack {
+            user_id: "".to_string(),
+            name: "".to_string(),
+                ..Default::default()
+        }
+    }
+}

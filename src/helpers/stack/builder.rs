@@ -30,7 +30,7 @@ impl Default for Config {
 #[derive(Clone, Debug)]
 pub struct DcBuilder {
     config: Config,
-    stack: Stack
+    pub(crate) stack: Stack
 }
 
 impl TryInto<Vec<Port>> for Web {
@@ -88,10 +88,10 @@ impl DcBuilder {
                 println!("stack item {:?}", apps.custom.web);
 
                 for app in apps.custom.web {
-                    // println!("app name {:?}", app.name);
                     let tag = "latest";
                     let img= format!("{}/{}:{}",app.dockerhub_user, app.dockerhub_name, tag);
                     let code = app.code.clone().to_owned();
+
                     let mut service = Service {
                         image: Some(img.to_string()),
                         ..Default::default()
