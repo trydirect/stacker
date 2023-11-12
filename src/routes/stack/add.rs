@@ -17,7 +17,6 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 
-
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
 pub async fn add(
@@ -28,14 +27,12 @@ pub async fn add(
 
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
-    // method 1 let app_state: AppState = serde_json::from_str(body_str).unwrap();
-    // method 2 let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
         Ok(f) => {
             f
         }
-        Err(err) => {
-            return Ok(Json(JsonResponse::<Stack>::not_valid("")));
+        Err(_err) => {
+            return Ok(Json(JsonResponse::<Stack>::not_valid("Invalid data")));
         }
     };
 
@@ -110,3 +107,4 @@ pub async fn add(
         }
     };
 }
+
