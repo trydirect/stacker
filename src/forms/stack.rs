@@ -3,8 +3,42 @@ use serde_json::Value;
 use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct StackForm {
+    #[serde(rename= "commonDomain")]
+    pub common_domain: String,
+    pub domain_list: Option<DomainList>,
+    pub region: String,
+    pub zone: Option<String>,
+    pub server: String,
+    pub os: String,
+    pub ssl: String,
+    pub vars: Option<Vec<Var>>,
+    #[serde(rename = "integrated_features")]
+    pub integrated_features: Option<Vec<Value>>,
+    #[serde(rename = "extended_features")]
+    pub extended_features: Option<Vec<Value>>,
+    pub subscriptions: Option<Vec<String>>,
+    #[serde(rename = "save_token")]
+    pub save_token: bool,
+    #[serde(rename = "cloud_token")]
+    pub cloud_token: String,
+    pub provider: String,
+    #[serde(rename = "stack_code")]
+    pub stack_code: String,
+    #[serde(rename = "selected_plan")]
+    pub selected_plan: String,
+    pub custom: Custom,
+}
+
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct StackPayload {
+    pub(crate) user_token: Option<String>,
+    pub(crate) user_email: Option<String>,
+    pub(crate) installation_id: Option<u32>,
+    #[serde(rename= "commonDomain")]
     pub common_domain: String,
     pub domain_list: Option<DomainList>,
     pub region: String,

@@ -9,3 +9,10 @@ database:
   username: postgres
   password: postgres
   database_name: stacker
+
+amqp:
+  host: 51.15.74.139
+  port: 5672
+  username: guest
+  password: wua4Eeyi
+
