@@ -1,8 +1,8 @@
-use actix_web::{HttpRequest, HttpResponse, Responder};
+use actix_web::{Responder, Result};
 use serde_derive::Serialize;
-use crate::models;
+use actix_web::web;
 
-#[derive(Serialize, Default)]
+#[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
     pub(crate) status: String,
     pub(crate) message: String,
@@ -23,7 +23,67 @@ pub(crate) struct JsonResponse<T> {
 //     pub(crate) list: Option<Vec<T>>
 // }
 
-impl<T> JsonResponse<T> {
+#[derive(Serialize, Default)]
+pub struct JsonResponseBuilder<T>
+    where T: serde::Serialize + Default
+{
+    status: String,
+    message: String,
+    code: u32,
+    id: Option<i32>,
+    item: Option<T>,
+    list: Option<Vec<T>>
+}
+
+impl<T> JsonResponseBuilder<T>
+where T: serde::Serialize + Default
+{
+   fn new() -> Self {
+       Self::default()
+   }
+
+    fn set_item(mut self, item:T) -> Self {
+        self.item = Some(item);
+        self
+    }
+
+
+    fn set_list(mut self, list:Vec<T>) -> Self {
+        self.list = Some(list);
+        self
+    }
+
+    pub(crate) fn ok(self) -> Result<impl Responder>  {
+
+        Ok(web::Json(
+            JsonResponse {
+                status: self.status,
+                message: self.message,
+                code: self.code,
+                id: self.id,
+                item: self.item,
+                list: self.list,
+            }
+        ))
+    }
+}
+
+impl<T> From<T> for JsonResponseBuilder<T>
+    where T: serde::Serialize + Default {
+    fn from(value: T) -> Self {
+        JsonResponseBuilder::default().set_item(value)
+    }
+}
+
+impl<T> From<Vec<T>> for JsonResponseBuilder<T>
+where T: serde::Serialize + Default {
+    fn from(value: Vec<T>) -> Self {
+        JsonResponseBuilder::default().set_list(value)
+    }
+}
+
+impl<T> JsonResponse<T>
+{
     pub(crate) fn new(status: String,
                       message: String,
                       code: u32,
@@ -55,8 +115,7 @@ impl<T> JsonResponse<T> {
             message: msg,
             code: 200,
             id: Some(id),
-            item: None,
-            list: None
+            ..Default::default()
         }
     }
 
@@ -65,9 +124,7 @@ impl<T> JsonResponse<T> {
             status: "Error".to_string(),
             code: 404,
             message: format!("Object not found"),
-            id: None,
-            item: None,
-            list: None
+            ..Default::default()
         }
     }
 
@@ -83,9 +140,7 @@ impl<T> JsonResponse<T> {
             status: "Error".to_string(),
             code: 500,
             message: msg,
-            id: None,
-            item: None,
-            list: None
+            ..Default::default()
         }
     }
 
@@ -101,9 +156,19 @@ impl<T> JsonResponse<T> {
             status: "Error".to_string(),
             code: 400,
             message: msg,
-            id: None,
-            item: None,
-            list: None
+            ..Default::default()
+        }
+    }
+}
+
+impl<T> Default for JsonResponse<T> {
+
+    fn default() -> Self {
+        JsonResponse {
+
+            status: "200".to_string(),
+            message: "OK".to_string(),
+            ..Default::default()
         }
     }
 }
