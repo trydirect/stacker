@@ -112,7 +112,7 @@ pub async fn run(
                     .wrap(Cors::permissive())
                     .service(crate::routes::rating::add_handler)
                     .service(crate::routes::rating::get_handler)
-                    .service(crate::routes::rating::default),
+                    .service(crate::routes::rating::list_handler),
             )
             // .service(
             //     web::resource("/stack/{id}")

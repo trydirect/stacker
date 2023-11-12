@@ -1,30 +1,22 @@
 use actix_web::{web, get, Responder, Result};
-use serde_derive::Serialize;
 use sqlx::PgPool;
+use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 
-#[derive(Serialize)]
-struct JsonResponse {
-    status: String,
-    message: String,
-    code: u32,
-    id: Option<i32>,
-    object: Option<models::Stack>,
-    objects: Option<Vec<models::Stack>>,
-}
 
-#[tracing::instrument(name = "Get stack.")]
+#[tracing::instrument(name = "Get logged user stack.")]
 #[get("/{id}")]
 pub async fn get(
     user: web::ReqData<User>,
     path: web::Path<(i32,)>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    /// Get stack apps of logged user only
 
     let (id,) = path.into_inner();
 
-    tracing::info!("User {:?} is getting stack by id {:?}", user, id);
+    tracing::info!("User {:?} gets stack by id {:?}", user.id, id);
     match sqlx::query_as!(
         models::Stack,
         r#"
@@ -37,36 +29,20 @@ pub async fn get(
     {
         Ok(stack) => {
             tracing::info!("stack found: {:?}", stack.id,);
-            let response = JsonResponse {
-                status: "Success".to_string(),
-                code: 200,
-                message: "".to_string(),
-                id: Some(stack.id),
-                object: Some(stack),
-                objects: None
-            };
-            return Ok(web::Json(response));
+            return Ok(web::Json(JsonResponse::<models::Stack>::new(
+                "Success".to_string(),
+                "".to_string(),
+                200,
+                Some(stack.id),
+                Some(stack),
+                None)));
         }
         Err(sqlx::Error::RowNotFound) => {
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 404,
-                message: format!("Not Found"),
-                id: None,
-                object: None,
-                objects: None
-            }));
+            return Ok(web::Json(JsonResponse::<models::Stack>::not_found()));
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 500,
-                message: format!("Internal Server Error"),
-                id: None,
-                object: None,
-                objects: None
-            }));
+            return Ok(web::Json(JsonResponse::<models::Stack>::internal_error("")));
         }
     }
 }

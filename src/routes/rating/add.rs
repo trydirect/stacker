@@ -13,6 +13,7 @@ use tracing::Instrument;
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
+
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
 pub async fn add_handler(
@@ -35,12 +36,7 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 404,
-                message: format!("Object not found {}", form.obj_id),
-                id: None,
-            }));
+            return Ok(web::Json(JsonResponse::<models::Rating>::not_found()));
         }
     };
 
@@ -64,22 +60,19 @@ pub async fn add_handler(
                 form.category
             );
 
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 409,
-                message: format!("Already Rated"),
-                id: Some(record.id),
-            }));
+            return Ok(web::Json(JsonResponse::<models::Rating>::new(
+                "Error".to_string(),
+                "Already rated".to_string(),
+                409,
+                Some(record.id),
+                None,
+                None
+            )));
         }
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 500,
-                message: format!("Internal Server Error"),
-                id: None,
-            }));
+            return Ok(web::Json(JsonResponse::<models::Rating>::internal_error("")));
         }
     }
 
@@ -106,22 +99,11 @@ pub async fn add_handler(
     {
         Ok(result) => {
             tracing::info!("New rating {} have been saved to database", result.id);
-
-            Ok(web::Json(JsonResponse {
-                status: "ok".to_string(),
-                code: 200,
-                message: "Saved".to_string(),
-                id: Some(result.id),
-            }))
+            return Ok(web::Json(JsonResponse::<models::Rating>::ok(result.id, "Saved")));
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            Ok(web::Json(JsonResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                id: None,
-            }))
+            return Ok(web::Json(JsonResponse::internal_error("Failed to insert")));
         }
     }
 }
