@@ -28,7 +28,7 @@ struct Payload {
 }
 
 
-#[tracing::instrument(name = "Deploy.")]
+#[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]
 pub async fn add(
     user: web::ReqData<User>,
@@ -42,9 +42,9 @@ pub async fn add(
     let stack = match sqlx::query_as!(
         Stack,
         r#"
-        SELECT * FROM user_stack WHERE id=$1 AND user_id=$2 LIMIT 1
+        SELECT * FROM user_stack WHERE id=$1 LIMIT 1
         "#,
-        id, user.id
+        id
     )
         .fetch_one(pool.get_ref())
         .await
@@ -75,7 +75,7 @@ pub async fn add(
 
             let conn = Connection::connect(&addr, ConnectionProperties::default())
                 .await
-                .unwrap();
+                .expect("Could not connect RabbitMQ");
 
             tracing::info!("RABBITMQ CONNECTED");
 
