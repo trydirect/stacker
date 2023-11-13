@@ -30,7 +30,6 @@ pub async fn bearer_guard(
         Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
             tracing::error!("Authentication service returned no success {:?}", resp);
-            // tracing::debug!("{:?}", resp.text().await.unwrap());
             return Err((ErrorUnauthorized("401 Unauthorized"), req));
         }
         Err(err) => {
@@ -50,9 +49,8 @@ pub async fn bearer_guard(
         }
     };
 
-    let user: User = match user_form.try_into() // try to convert UserForm into User model
-    {
-        Ok(user)  => { user }
+    let user: User = match user_form.try_into() {
+        Ok(user) => user,
         Err(err) => {
             tracing::error!("Could not create User from form data: {:?}", err);
             return Err((ErrorUnauthorized("Unauthorized"), req));

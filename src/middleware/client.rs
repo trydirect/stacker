@@ -1,5 +1,6 @@
 use crate::models::Client;
 use actix_web::error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound};
+use actix_web::HttpMessage;
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::lock::Mutex;
 use futures::task::{Context, Poll};
@@ -130,7 +131,14 @@ where
                 }
             };
 
-            //todo attach client to request
+            match req.extensions_mut().insert(Arc::new(client)) {
+                Some(_) => {
+                    tracing::error!("client middleware already called once");
+                    return Err(ErrorInternalServerError(""));
+                }
+                None => {}
+            }
+
             //todo compute hash of the request
             //todo compare the has of the request
 
