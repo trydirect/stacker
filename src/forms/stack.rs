@@ -6,8 +6,9 @@ use serde_valid::Validate;
 #[serde(rename_all = "snake_case")]
 pub struct StackForm {
     #[serde(rename= "commonDomain")]
-    pub common_domain: String,
+    pub common_domain: Option<String>,
     pub domain_list: Option<DomainList>,
+    pub stack_code: Option<String>,
     pub region: String,
     pub zone: Option<String>,
     pub server: String,
@@ -19,13 +20,13 @@ pub struct StackForm {
     #[serde(rename = "extended_features")]
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
+    pub form_app: Option<Vec<String>>,
+    pub disk_type: Option<String>,
     #[serde(rename = "save_token")]
     pub save_token: bool,
     #[serde(rename = "cloud_token")]
     pub cloud_token: String,
     pub provider: String,
-    #[serde(rename = "stack_code")]
-    pub stack_code: String,
     #[serde(rename = "selected_plan")]
     pub selected_plan: String,
     pub custom: Custom,
@@ -52,6 +53,8 @@ pub struct StackPayload {
     #[serde(rename = "extended_features")]
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
+    pub form_app: Option<Vec<String>>,
+    pub disk_type: Option<String>,
     #[serde(rename = "save_token")]
     pub save_token: bool,
     #[serde(rename = "cloud_token")]
@@ -87,12 +90,10 @@ pub struct Custom {
     pub service: Option<Vec<Service>>,
     #[serde(rename = "servers_count")]
     pub servers_count: i64,
-    #[serde(rename = "custom_stack_name")]
-    pub custom_stack_name: Option<String>,
     #[serde(rename = "custom_stack_code")]
     pub custom_stack_code: String,
-    #[serde(rename = "custom_stack_git_url")]
-    pub custom_stack_git_url: Option<String>,
+    #[serde(rename = "project_git_url")]
+    pub project_git_url: Option<String>,
     #[serde(rename = "custom_stack_category")]
     pub custom_stack_category: Option<Vec<String>>,
     #[serde(rename = "custom_stack_short_description")]
@@ -187,8 +188,7 @@ pub struct Feature {
     pub ansible_var: Option<String>,
     #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
-    #[validate(min_length=1)]
-    pub cpu: String,
+    pub cpu: f64,
     #[validate(min_length=1)]
     #[serde(rename = "ram_size")]
     pub ram_size: String,

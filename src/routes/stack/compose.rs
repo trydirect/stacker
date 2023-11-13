@@ -14,7 +14,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 use crate::helpers::stack::builder::DcBuilder;
 
-#[tracing::instrument(name = "Generate docker-compose.")]
+#[tracing::instrument(name = "User's generate docker-compose.")]
 #[post("/{id}")]
 pub async fn add(
     user: web::ReqData<User>,
@@ -70,7 +70,7 @@ pub async fn add(
     }
 }
 
-#[tracing::instrument(name = "Generate docker-compose.")]
+#[tracing::instrument(name = "Generate docker-compose. Admin")]
 #[post("/{id}/compose")]
 pub async fn admin(
     user: web::ReqData<User>,
