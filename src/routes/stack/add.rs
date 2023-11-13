@@ -32,7 +32,8 @@ pub async fn add(
             f
         }
         Err(_err) => {
-            return Ok(Json(JsonResponse::<Stack>::not_valid("Invalid data")));
+            let msg = format!("Invalid data. {:?}", _err);
+            return Ok(Json(JsonResponse::<Stack>::not_valid(msg.as_str())));
         }
     };
 
@@ -40,7 +41,7 @@ pub async fn add(
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
-        commonDomain=?&form.common_domain,
+        commonDomain=?&form.custom.project_name,
         region=?&form.region,
         domainList=?&form.domain_list
     );
@@ -50,7 +51,7 @@ pub async fn add(
     tracing::info!(
         "request_id {} Adding '{}' '{}' as a new stack",
         request_id,
-        form.common_domain,
+        form.custom.project_name,
         form.region
     );
 
