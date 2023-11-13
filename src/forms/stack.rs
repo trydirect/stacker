@@ -88,7 +88,7 @@ pub struct Custom {
     #[serde(rename = "servers_count")]
     pub servers_count: i64,
     #[serde(rename = "custom_stack_name")]
-    pub custom_stack_name: String,
+    pub custom_stack_name: Option<String>,
     #[serde(rename = "custom_stack_code")]
     pub custom_stack_code: String,
     #[serde(rename = "custom_stack_git_url")]
@@ -114,6 +114,7 @@ pub struct Web {
     pub name: String,
     pub code: String,
     pub domain: Option<String>,
+    #[serde(rename = "shared_ports")]
     pub shared_ports: Option<Vec<String>>,
     pub versions: Option<Vec<Version>>,
     pub custom: bool,
@@ -126,7 +127,9 @@ pub struct Web {
     pub dockerhub_user: String,
     #[serde(rename = "dockerhub_name")]
     pub dockerhub_name: String,
+    #[serde(rename = "url_app")]
     pub url_app: Option<String>,
+    #[serde(rename = "url_git")]
     pub url_git: Option<String>,
     #[validate(min_length=1)]
     #[validate(max_length=10)]
@@ -196,6 +199,7 @@ pub struct Feature {
     pub dockerhub_image: Option<String>,
     pub versions: Option<Vec<Version>>,
     pub domain: Option<String>,
+    #[serde(rename = "shared_ports")]
     pub shared_ports: Option<Vec<String>>,
     pub main: bool,
 }
@@ -301,6 +305,7 @@ pub struct Service {
     pub dockerhub_image: Option<String>,
     pub versions: Option<Vec<Version>>,
     pub domain: String,
+    #[serde(rename = "shared_ports")]
     pub shared_ports: Option<Vec<String>>,
     pub main: bool,
 }
