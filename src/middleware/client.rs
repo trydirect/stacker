@@ -1,10 +1,14 @@
 use crate::models::Client;
-use actix_web::error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound};
+use actix_web::dev::Payload;
+use actix_web::error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound, PayloadError};
+use actix_web::web::BytesMut;
 use actix_web::HttpMessage;
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::lock::Mutex;
 use futures::task::{Context, Poll};
+use futures::StreamExt;
 use std::future::{ready, Ready};
+use std::iter::Iterator;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -64,7 +68,7 @@ where
             .poll_ready(ctx)
     }
 
-    fn call(&self, req: ServiceRequest) -> Self::Future {
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
             let client_id = match req.headers().get(HeaderName::from_static("stacker-id")) {
@@ -141,6 +145,20 @@ where
 
             //todo compute hash of the request
             //todo compare the has of the request
+            //todo creates BytesMut with beforehand allocated memory
+            let body = req
+                .take_payload()
+                .fold(BytesMut::new(), |mut body, chunk| {
+                    let chunk = chunk.unwrap(); //todo process the potential error of unwrap
+                    body.extend_from_slice(&chunk); //todo
+
+                    ready(body)
+                })
+                .await;
+
+            let (_, mut payload) = actix_http::h1::Payload::create(true);
+            payload.unread_data(body.into());
+            req.set_payload(payload.into());
 
             let service = service.lock().await;
             service.call(req).await

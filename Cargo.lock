@@ -2172,6 +2172,7 @@ name = "stacker"
 version = "0.1.0"
 dependencies = [
  "actix-cors",
+ "actix-http",
  "actix-web",
  "actix-web-httpauth",
  "chrono",
@@ -2188,6 +2189,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-actix-web",
  "tracing-bunyan-formatter",
