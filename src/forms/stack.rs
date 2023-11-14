@@ -143,7 +143,7 @@ pub struct Web {
     #[validate(pattern = r"^\d+G$")]
     pub ram_size: String,
     #[validate(minimum=0.1)]
-    pub cpu: f64,
+    pub cpu: Option<f64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -188,13 +188,13 @@ pub struct Feature {
     pub ansible_var: Option<String>,
     #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
-    pub cpu: f64,
+    pub cpu: Option<f64>,
     #[validate(min_length=1)]
     #[serde(rename = "ram_size")]
-    pub ram_size: String,
+    pub ram_size: Option<String>,
     #[validate(min_length=1)]
     #[serde(rename = "disk_size")]
-    pub disk_size: String,
+    pub disk_size: Option<String>,
     #[serde(rename = "dockerhub_image")]
     pub dockerhub_image: Option<String>,
     pub versions: Option<Vec<Version>>,
@@ -293,8 +293,7 @@ pub struct Service {
     pub ansible_var: Option<String>,
     #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
-    #[validate(min_length=1)]
-    pub cpu: String,
+    pub cpu: Option<f64>,
     #[serde(rename = "ram_size")]
     #[validate(min_length=1)]
     pub ram_size: String,
