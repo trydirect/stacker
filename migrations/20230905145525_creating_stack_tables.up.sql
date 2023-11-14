@@ -8,6 +8,6 @@ CREATE TABLE user_stack (
     body JSON NOT NULL,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-        CONSTRAINT user_stack_pkey PRIMARY KEY (id),
+        CONSTRAINT user_stack_pkey PRIMARY KEY (id)
 )
 
