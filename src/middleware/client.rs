@@ -1,5 +1,4 @@
 use crate::models::Client;
-use actix_web::dev::Payload;
 use actix_web::error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound, PayloadError};
 use actix_web::web::BytesMut;
 use actix_web::HttpMessage;
@@ -7,8 +6,9 @@ use futures::future::{FutureExt, LocalBoxFuture};
 use futures::lock::Mutex;
 use futures::task::{Context, Poll};
 use futures::StreamExt;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::future::{ready, Ready};
-use std::iter::Iterator;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -97,8 +97,8 @@ where
                     return Err(ErrorBadRequest("missing header stacker-hash"));
                 }
             };
-            let hash: &str = match hash.to_str() {
-                Ok(v) => v,
+            let hash: String = match hash.to_str() {
+                Ok(v) => v.to_owned(),
                 Err(_) => {
                     return Err(ErrorBadRequest("header stacker-hash is not valid"));
                 }
@@ -135,14 +135,6 @@ where
                 }
             };
 
-            match req.extensions_mut().insert(Arc::new(client)) {
-                Some(_) => {
-                    tracing::error!("client middleware already called once");
-                    return Err(ErrorInternalServerError(""));
-                }
-                None => {}
-            }
-
             //todo compute hash of the request
             //todo compare the has of the request
             //todo creates BytesMut with beforehand allocated memory
@@ -156,9 +148,32 @@ where
                 })
                 .await;
 
+            let mut mac =
+                match Hmac::<Sha256>::new_from_slice(client.secret.as_ref().unwrap().as_bytes()) {
+                    Ok(mac) => mac,
+                    Err(err) => {
+                        tracing::error!("error generating hmac {err:?}");
+
+                        return Err(ErrorInternalServerError(""));
+                    }
+                };
+            mac.update(body.as_ref());
+            let computed_hash = format!("{:x}", mac.finalize().into_bytes());
+            if hash != computed_hash {
+                return Err(ErrorBadRequest("hash is wrong"));
+            }
+
             let (_, mut payload) = actix_http::h1::Payload::create(true);
             payload.unread_data(body.into());
             req.set_payload(payload.into());
+
+            match req.extensions_mut().insert(Arc::new(client)) {
+                Some(_) => {
+                    tracing::error!("client middleware already called once");
+                    return Err(ErrorInternalServerError(""));
+                }
+                None => {}
+            }
 
             let service = service.lock().await;
             service.call(req).await
