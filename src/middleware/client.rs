@@ -135,8 +135,6 @@ where
                 }
             };
 
-            //todo compute hash of the request
-            //todo compare the has of the request
             //todo creates BytesMut with beforehand allocated memory
             let body = req
                 .take_payload()
@@ -157,6 +155,7 @@ where
                         return Err(ErrorInternalServerError(""));
                     }
                 };
+
             mac.update(body.as_ref());
             let computed_hash = format!("{:x}", mac.finalize().into_bytes());
             if hash != computed_hash {
