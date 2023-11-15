@@ -20,13 +20,6 @@ use serde::Serialize;
 use crate::forms::{StackForm, StackPayload};
 
 
-#[derive(Serialize, Debug, Clone)]
-struct Payload {
-    user_token: String,
-    user_email: String,
-    installation_id: String,
-}
-
 
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]
@@ -84,7 +77,8 @@ pub async fn add(
                 dc.stack.body.clone()
             ).unwrap();
 
-            stack_data.installation_id = Some(1);
+            stack_data.id = id;
+            stack_data.installation_id = None;
             stack_data.user_token = Some(user.id.clone());
             stack_data.user_email= Some(user.email.clone());
 

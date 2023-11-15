@@ -36,6 +36,7 @@ pub struct StackForm {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "snake_case")]
 pub struct StackPayload {
+    pub(crate) id: i32,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
     pub(crate) installation_id: Option<u32>,
