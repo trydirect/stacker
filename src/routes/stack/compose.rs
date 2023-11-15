@@ -7,7 +7,7 @@ use actix_web::{
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
 use crate::models::Stack;
-use actix_web::post;
+use actix_web::{get, post};
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
@@ -71,7 +71,7 @@ pub async fn add(
 }
 
 #[tracing::instrument(name = "Generate docker-compose. Admin")]
-#[post("/{id}/compose")]
+#[get("/{id}/compose")]
 pub async fn admin(
     user: web::ReqData<User>,
     path: web::Path<(i32,)>,
