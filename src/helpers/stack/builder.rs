@@ -89,7 +89,13 @@ impl DcBuilder {
 
                 for app in apps.custom.web {
                     let tag = "latest";
-                    let img= format!("{}/{}:{}",app.dockerhub_user, app.dockerhub_name, tag);
+                    let dim = app.dockerhub_image.clone().unwrap_or("".to_string());
+                    let img= format!("{}/{}:{}",
+                                     app.dockerhub_user.clone()
+                                         .unwrap_or("trydirect".to_string()).clone(),
+                                     app.dockerhub_name.clone().unwrap_or(dim),
+                                     tag
+                    );
                     let code = app.code.clone().to_owned();
 
                     let mut service = Service {
