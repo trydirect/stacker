@@ -3,7 +3,6 @@ use serde_json::Value;
 use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "snake_case")]
 pub struct StackForm {
     #[serde(rename= "commonDomain")]
     pub common_domain: Option<String>,
@@ -15,19 +14,14 @@ pub struct StackForm {
     pub os: String,
     pub ssl: String,
     pub vars: Option<Vec<Var>>,
-    #[serde(rename = "integrated_features")]
     pub integrated_features: Option<Vec<Value>>,
-    #[serde(rename = "extended_features")]
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
     pub form_app: Option<Vec<String>>,
     pub disk_type: Option<String>,
-    #[serde(rename = "save_token")]
     pub save_token: bool,
-    #[serde(rename = "cloud_token")]
     pub cloud_token: String,
     pub provider: String,
-    #[serde(rename = "selected_plan")]
     pub selected_plan: String,
     pub custom: Custom,
 }
@@ -90,7 +84,7 @@ pub struct Custom {
     pub feature: Option<Vec<Feature>>,
     pub service: Option<Vec<Service>>,
     #[serde(rename = "servers_count")]
-    pub servers_count: i64,
+    pub servers_count: u32,
     #[serde(rename = "custom_stack_code")]
     pub custom_stack_code: String,
     #[serde(rename = "project_git_url")]
@@ -122,16 +116,19 @@ pub struct Web {
     #[serde(rename(serialize = "shared_ports"))]
     pub shared_ports: Option<Vec<String>>,
     pub versions: Option<Vec<Version>>,
-    pub custom: bool,
+    pub custom: Option<bool>,
     #[serde(rename = "type")]
     pub type_field: String,
     pub main: bool,
     #[serde(rename = "_id")]
-    pub id: String,
+    pub id: u32,
     #[serde(rename = "dockerhub_user")]
-    pub dockerhub_user: String,
+    pub dockerhub_user: Option<String>,
     #[serde(rename = "dockerhub_name")]
-    pub dockerhub_name: String,
+    pub dockerhub_name: Option<String>,
+    // when no docker repo specified by user
+    // use default TD image
+    pub dockerhub_image: Option<String>,
     #[serde(rename = "url_app")]
     pub url_app: Option<String>,
     #[serde(rename = "url_git")]
@@ -145,7 +142,7 @@ pub struct Web {
     #[validate(min_length=1)]
     #[validate(max_length=10)]
     #[validate(pattern = r"^\d+G$")]
-    pub ram_size: String,
+    pub ram_size: Option<String>,
     #[validate(minimum=0.1)]
     pub cpu: Option<f64>,
 }
@@ -194,7 +191,8 @@ pub struct Feature {
     pub repo_dir: Option<String>,
     pub cpu: Option<f64>,
     #[validate(min_length=1)]
-    #[serde(rename = "ram_size")]
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+G$")]
     pub ram_size: Option<String>,
     #[validate(min_length=1)]
     #[serde(rename = "disk_size")]
@@ -244,13 +242,13 @@ pub struct Version {
     #[serde(rename = "_etag")]
     pub etag: Option<String>,
     #[serde(rename = "_id")]
-    pub id: i64,
+    pub id: u32,
     #[serde(rename = "_created")]
     pub created: Option<String>,
     #[serde(rename = "_updated")]
     pub updated: Option<String>,
     #[serde(rename = "app_id")]
-    pub app_id: i64,
+    pub app_id: u32,
     pub name: String,
     pub version: String,
     #[serde(rename = "update_status")]
@@ -264,7 +262,7 @@ pub struct Service {
     #[serde(rename = "_etag")]
     pub etag: Option<String>,
     #[serde(rename = "_id")]
-    pub id: i64,
+    pub id: u32,
     #[serde(rename = "_created")]
     pub created: Option<String>,
     #[serde(rename = "_updated")]
@@ -301,12 +299,13 @@ pub struct Service {
     #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
     pub cpu: Option<f64>,
-    #[serde(rename = "ram_size")]
     #[validate(min_length=1)]
-    pub ram_size: String,
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+G$")]
+    pub ram_size: Option<String>,
     #[serde(rename = "disk_size")]
     #[validate(min_length=1)]
-    pub disk_size: String,
+    pub disk_size: Option<String>,
     #[serde(rename = "dockerhub_image")]
     pub dockerhub_image: Option<String>,
     pub versions: Option<Vec<Version>>,
