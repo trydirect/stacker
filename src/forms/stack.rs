@@ -36,7 +36,7 @@ pub struct StackForm {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "snake_case")]
 pub struct StackPayload {
-    pub(crate) id: i32,
+    pub(crate) id: Option<i32>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
     pub(crate) installation_id: Option<u32>,
@@ -116,7 +116,10 @@ pub struct Web {
     pub name: String,
     pub code: String,
     pub domain: Option<String>,
-    #[serde(rename = "shared_ports")]
+    //#[serde(rename = "shared_ports")]
+    // #[serde(rename= "sharedPorts")]
+    #[serde(rename(deserialize = "sharedPorts"))]
+    #[serde(rename(serialize = "shared_ports"))]
     pub shared_ports: Option<Vec<String>>,
     pub versions: Option<Vec<Version>>,
     pub custom: bool,
@@ -200,7 +203,10 @@ pub struct Feature {
     pub dockerhub_image: Option<String>,
     pub versions: Option<Vec<Version>>,
     pub domain: Option<String>,
-    #[serde(rename = "shared_ports")]
+    // #[serde(rename = "shared_ports")]
+    // #[serde(rename= "sharedPorts")]
+    #[serde(rename(deserialize = "sharedPorts"))]
+    #[serde(rename(serialize = "shared_ports"))]
     pub shared_ports: Option<Vec<String>>,
     pub main: bool,
 }
@@ -305,7 +311,10 @@ pub struct Service {
     pub dockerhub_image: Option<String>,
     pub versions: Option<Vec<Version>>,
     pub domain: String,
-    #[serde(rename = "shared_ports")]
+    // #[serde(rename = "shared_ports")]
+    // #[serde(rename= "sharedPorts")]
+    #[serde(rename(deserialize = "sharedPorts"))]
+    #[serde(rename(serialize = "shared_ports"))]
     pub shared_ports: Option<Vec<String>>,
     pub main: bool,
 }

@@ -77,10 +77,11 @@ pub async fn add(
                 dc.stack.body.clone()
             ).unwrap();
 
-            stack_data.id = id;
+            stack_data.id = Some(id);
             stack_data.installation_id = None;
             stack_data.user_token = Some(user.id.clone());
-            stack_data.user_email= Some(user.email.clone());
+            stack_data.user_email = Some(user.email.clone());
+            stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
 
             let payload = serde_json::to_string::<StackPayload>(&stack_data).unwrap();
             let _payload = payload.as_bytes();
