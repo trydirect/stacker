@@ -35,15 +35,8 @@ impl DatabaseSettings {
     }
 }
 
-pub fn get_configuration() -> Result<Settings, config::ConfigError> {
-    // Initialize our configuration reader
-    let mut settings = config::Config::default();
-
-    // Add configuration values from a file named `configuration`
-    // with the .yaml extension
-    settings.merge(config::File::with_name("configuration"))?; // .json, .toml, .yaml, .yml
-
-    // Try to convert the configuration values it read into
-    // our Settings type
-    settings.try_deserialize()
+pub fn get_configuration() -> Result<Settings, Box<dyn std::error::Error + 'static>> {
+    Ok(serde_yaml::from_reader(std::fs::File::open(
+        "configuration.yaml",
+    )?)?)
 }
