@@ -114,6 +114,7 @@ pub struct Web {
     // #[serde(rename= "sharedPorts")]
     #[serde(rename(deserialize = "sharedPorts"))]
     #[serde(rename(serialize = "shared_ports"))]
+    #[serde(alias = "shared_ports")]
     pub shared_ports: Option<Vec<String>>,
     pub versions: Option<Vec<Version>>,
     pub custom: Option<bool>,
@@ -205,6 +206,7 @@ pub struct Feature {
     // #[serde(rename= "sharedPorts")]
     #[serde(rename(deserialize = "sharedPorts"))]
     #[serde(rename(serialize = "shared_ports"))]
+    #[serde(alias = "shared_ports")]
     pub shared_ports: Option<Vec<String>>,
     pub main: bool,
 }
@@ -314,6 +316,7 @@ pub struct Service {
     // #[serde(rename= "sharedPorts")]
     #[serde(rename(deserialize = "sharedPorts"))]
     #[serde(rename(serialize = "shared_ports"))]
+    #[serde(alias = "shared_ports")]
     pub shared_ports: Option<Vec<String>>,
     pub main: bool,
 }
