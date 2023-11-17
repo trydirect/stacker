@@ -66,30 +66,18 @@ pub async fn add(
         }
     };
 
-    let stack = Stack {
-        id: 0_i32,                // internal stack id
-        stack_id: Uuid::new_v4(), // public uuid of the stack
-        user_id: user_id,         //
-        name: stack_name,
-        body: body,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
-
-    tracing::debug!("stack object {:?}", stack);
     return match sqlx::query!(
         r#"
-        INSERT INTO user_stack (id, stack_id, user_id, name, body, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO user_stack (stack_id, user_id, name, body, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id;
         "#,
-        0_i32,
-        stack.stack_id,
-        stack.user_id,
-        stack.name,
-        stack.body,
-        stack.created_at,
-        stack.updated_at
+        Uuid::new_v4(),
+        user_id,
+        stack_name,
+        body,
+        Utc::now(),
+        Utc::now(),
     )
     .fetch_one(pool.get_ref())
     .instrument(query_span)
