@@ -71,25 +71,10 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id = match req.headers().get(HeaderName::from_static("stacker-id")) {
-                Some(client_id) => client_id,
-                None => {
-                    return Err(ErrorBadRequest("missing header stacker-id"));
-                }
-            };
-
-            let client_id: &str = match client_id.to_str() {
-                Ok(v) => v,
-                Err(_) => {
-                    return Err(ErrorBadRequest("header stacker-id is not valid"));
-                }
-            };
-            let client_id: i32 = match client_id.parse() {
-                Ok(v) => v,
-                Err(_) => {
-                    return Err(ErrorBadRequest("header stacker-id is not valid"));
-                }
-            };
+            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| {
+                tracing::error!("stacker-id header. error {}", m);
+                ErrorBadRequest(format!("header stacker-id. {}", m))
+            })?;
 
             let hash = match req.headers().get(HeaderName::from_static("stacker-hash")) {
                 Some(hash) => hash,
@@ -179,4 +164,19 @@ where
         }
         .boxed_local()
     }
+}
+
+fn get_header(req: &ServiceRequest, header_name: &'static str) -> Result<i32, String> {
+    let header_value = req
+        .headers()
+        .get(HeaderName::from_static(header_name))
+        .ok_or(format!("header {header_name} not found"))?;
+
+    let header_value: &str = header_value
+        .to_str()
+        .map_err(|_| format!("header {header_name} can't be converted to string"))?; //map_err
+                                                                                     //
+    header_value
+        .parse()
+        .map_err(|_| format!("header {header_name} is not integer"))
 }
