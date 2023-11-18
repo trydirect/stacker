@@ -9,6 +9,7 @@ use futures::StreamExt;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::future::{ready, Ready};
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -71,23 +72,8 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| {
-                tracing::error!("stacker-id header. error {}", m);
-                ErrorBadRequest(format!("header stacker-id. {}", m))
-            })?;
-
-            let hash = match req.headers().get(HeaderName::from_static("stacker-hash")) {
-                Some(hash) => hash,
-                None => {
-                    return Err(ErrorBadRequest("missing header stacker-hash"));
-                }
-            };
-            let hash: String = match hash.to_str() {
-                Ok(v) => v.to_owned(),
-                Err(_) => {
-                    return Err(ErrorBadRequest("header stacker-hash is not valid"));
-                }
-            };
+            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| ErrorBadRequest(m))?;
+            let hash: String = get_header(&req, "stacker-hash").map_err(|m| ErrorBadRequest(m))?;
 
             let query_span = tracing::info_span!("Fetching the client by ID");
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
@@ -166,7 +152,10 @@ where
     }
 }
 
-fn get_header(req: &ServiceRequest, header_name: &'static str) -> Result<i32, String> {
+fn get_header<T>(req: &ServiceRequest, header_name: &'static str) -> Result<T, String>
+where
+    T: FromStr,
+{
     let header_value = req
         .headers()
         .get(HeaderName::from_static(header_name))
@@ -177,6 +166,6 @@ fn get_header(req: &ServiceRequest, header_name: &'static str) -> Result<i32, St
         .map_err(|_| format!("header {header_name} can't be converted to string"))?; //map_err
                                                                                      //
     header_value
-        .parse()
-        .map_err(|_| format!("header {header_name} is not integer"))
+        .parse::<T>()
+        .map_err(|_| format!("header {header_name} has wrong type"))
 }
