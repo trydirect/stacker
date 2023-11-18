@@ -1,4 +1,5 @@
 use crate::models::Client;
+use actix_http::header::CONTENT_LENGTH;
 use actix_web::error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound, PayloadError};
 use actix_web::web::BytesMut;
 use actix_web::HttpMessage;
@@ -106,15 +107,19 @@ where
                 }
             };
 
-            //todo creates BytesMut with beforehand allocated memory
+            let content_length: usize =
+                get_header(&req, CONTENT_LENGTH.as_str()).map_err(|m| ErrorBadRequest(m))?;
             let body = req
                 .take_payload()
-                .fold(BytesMut::new(), |mut body, chunk| {
-                    let chunk = chunk.unwrap(); //todo process the potential error of unwrap
-                    body.extend_from_slice(&chunk); //todo
+                .fold(
+                    BytesMut::with_capacity(content_length),
+                    |mut body, chunk| {
+                        let chunk = chunk.unwrap(); //todo process the potential error of unwrap
+                        body.extend_from_slice(&chunk); //todo
 
-                    ready(body)
-                })
+                        ready(body)
+                    },
+                )
                 .await;
 
             let mut mac =
