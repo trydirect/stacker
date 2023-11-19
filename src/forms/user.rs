@@ -131,7 +131,11 @@ impl TryInto<UserModel> for UserForm {
         //     |msg| { format!("{:?}", msg) }
         // )?;
         Ok(UserModel {
-            id: self.user.id
+            id: self.user.id,
+            first_name: self.user.first_name,
+            last_name: self.user.last_name,
+            email: self.user.email,
+            email_confirmed: self.user.email_confirmed,
         })
     }
 
