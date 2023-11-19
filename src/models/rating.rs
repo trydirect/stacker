@@ -16,7 +16,7 @@ pub struct Product {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct Rating {
     pub id: i32,
     pub user_id: String, // external user_id, 100, taken using token (middleware?)
@@ -28,6 +28,8 @@ pub struct Rating {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+
 
 #[derive(sqlx::Type, Serialize, Deserialize, Debug, Clone, Copy)]
 #[sqlx(rename_all = "lowercase", type_name = "varchar")]

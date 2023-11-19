@@ -1,5 +1,5 @@
 use crate::forms;
-use crate::helpers::JsonResponse;
+use crate::helpers::{JsonResponse, JsonResponseBuilder};
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
@@ -35,12 +35,8 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 404,
-                message: format!("Object not found {}", form.obj_id),
-                id: None,
-            }));
+            return JsonResponse::<models::Rating>::build()
+                .err(format!("Object not found {}", form.obj_id));
         }
     };
 
@@ -64,22 +60,14 @@ pub async fn add_handler(
                 form.category
             );
 
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 409,
-                message: format!("Already Rated"),
-                id: Some(record.id),
-            }));
+            return JsonResponse::<models::Rating>::build()
+                .set_id(record.id)
+                .ok(format!("Already Rated"));
         }
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 500,
-                message: format!("Internal Server Error"),
-                id: None,
-            }));
+            return JsonResponse::build().err(format!("Internal Server Error"));
         }
     }
 
@@ -107,21 +95,13 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New rating {} have been saved to database", result.id);
 
-            Ok(web::Json(JsonResponse {
-                status: "ok".to_string(),
-                code: 200,
-                message: "Saved".to_string(),
-                id: Some(result.id),
-            }))
+            return JsonResponse::build()
+                .set_id(result.id)
+                .ok("Saved".to_string());
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            Ok(web::Json(JsonResponse {
-                status: "error".to_string(),
-                code: 500,
-                message: "Failed to insert".to_string(),
-                id: None,
-            }))
+            return JsonResponse::build().err("Failed to insert".to_string());
         }
     }
 }

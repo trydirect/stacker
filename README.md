@@ -78,3 +78,10 @@ sqlx migrate revert
 ```
 curl -X POST -H "Content-Type: application/json" -d @custom-stack-payload-2.json http://127.0.0.1:8000/stack    
 ```
+
+
+#### Create API Client
+curl -X POST http://localhost:8000/client  --header 'Content-Type: application/json' -H "Authorization: Bearer $TD_BEARER"
+
+test client deploy
+http://localhost:8000/test/deploy
