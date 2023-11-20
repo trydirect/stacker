@@ -1,23 +1,11 @@
-use crate::configuration::Settings;
 use crate::helpers::client;
 use crate::models::user::User;
 use crate::models::Client;
-use actix_web::{
-    error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound},
-    put, web, Responder, Result,
-};
-use serde::Serialize;
+use crate::{configuration::Settings, helpers::JsonResponse};
+use actix_web::{error::ErrorBadRequest, put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
-
-#[derive(Serialize)]
-struct ClientUpdateResponse {
-    status: String,
-    message: String,
-    code: u32,
-    client: Option<Client>,
-}
 
 #[tracing::instrument(name = "Update client.")]
 #[put("/{id}")]
@@ -44,19 +32,20 @@ pub async fn update_handler(
     .await
     {
         Ok(client) if client.secret.is_some() => Ok(client),
-        Ok(_client) => Err(ErrorForbidden("client is not active")),
-        Err(sqlx::Error::RowNotFound) => Err(ErrorNotFound("the client is not found")),
+        Ok(_client) => Err("client is not active"),
+        Err(sqlx::Error::RowNotFound) => Err("the client is not found"),
         Err(e) => {
             tracing::error!("Failed to execute fetch query: {:?}", e);
 
-            Err(ErrorInternalServerError(""))
+            Err("")
         }
-    }?;
+    }
+    .map_err(|s| ErrorBadRequest(s))?; //todo
 
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
         .map(|s| Some(s))
-        .map_err(|s| ErrorInternalServerError(s))?;
+        .map_err(|s| ErrorBadRequest(s))?; //todo
 
     let query_span = tracing::info_span!("Updating client into the database");
     match sqlx::query!(
@@ -75,16 +64,11 @@ pub async fn update_handler(
     {
         Ok(_) => {
             tracing::info!("Client {} have been saved to database", client.id);
-            Ok(web::Json(ClientUpdateResponse {
-                status: "success".to_string(),
-                message: "".to_string(),
-                code: 200,
-                client: Some(client),
-            }))
+            JsonResponse::build().set_item(client).ok("success")
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return Err(ErrorInternalServerError(""));
+            JsonResponse::build().err_internal_server_error("")
         }
     }
 }
