@@ -1,9 +1,9 @@
 use crate::models;
 use actix_web::{get, web, Responder, Result};
+use serde_derive::Serialize;
 use sqlx::PgPool;
 use tracing::Instrument;
 use crate::helpers::JsonResponse;
-use crate::models::user::User;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -30,22 +30,15 @@ pub async fn get_handler(
     .await
     {
         Ok(rating) => {
-            tracing::info!("rating found: {:?}", rating.id,);
-            return Ok(web::Json(JsonResponse::new(
-                "Success".to_string(),
-                "Rating found".to_string(),
-                200,
-                Some(rating.id),
-                Some(rating),
-                None
-            )));
+            tracing::info!("rating found: {:?}", rating.id);
+            return JsonResponse::build().set_item(Some(rating)).ok("OK".to_string());
         }
         Err(sqlx::Error::RowNotFound) => {
-            return Ok(web::Json(JsonResponse::not_found()));
+            return JsonResponse::build().err("Not Found".to_string());
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Ok(web::Json(JsonResponse::internal_error("")));
+            return JsonResponse::build().err("Internal Server Error".to_string());
         }
     }
 }
@@ -70,21 +63,14 @@ pub async fn list_handler(
     {
         Ok(rating) => {
             tracing::info!("Ratings found: {:?}", rating.len());
-            return Ok(web::Json(JsonResponse::new(
-                "Success".to_string(),
-                "".to_string(),
-                200,
-                None,
-                None,
-                Some(rating),
-            )));
+            return JsonResponse::build().set_list(rating).ok("OK".to_owned());
         }
         Err(sqlx::Error::RowNotFound) => {
-            return Ok(web::Json(JsonResponse::not_found()));
+            return JsonResponse::build().not_found("Not Found".to_owned());
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Ok(web::Json(JsonResponse::internal_error("")));
+            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
         }
     }
 }

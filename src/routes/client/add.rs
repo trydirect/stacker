@@ -39,14 +39,12 @@ pub async fn add_handler(
                     client_count
                 );
 
-                return Ok(web::Json(JsonResponse::not_valid(
-                    "Too many clients already created"))
-                );
+                return JsonResponse::build().err("Too many clients created".to_owned());
             }
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return Ok(web::Json(JsonResponse::internal_error("Failed to insert")));
+            return JsonResponse::build().internal_error("Failed to insert".to_owned());
         }
     };
 
@@ -72,18 +70,16 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New client {} have been saved to database", result.id);
             client.id = result.id;
-            Ok(web::Json(JsonResponse::new(
-                "success".to_string(),
-                "".to_string(),
-                200,
-                Some(client.id),
-                Some(client),
-                None
-            )))
+
+            return JsonResponse::build()
+                .set_id(client.id)
+                .set_item(Some(client))
+                .ok("OK".to_owned());
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            Ok(web::Json(JsonResponse::internal_error("Failed to insert")))
+            let err = format!("Failed to insert. {}", e);
+            return JsonResponse::build().err(err);
         }
     }
 }

@@ -1,13 +1,12 @@
 use actix_web::{
     web,
-    web::{Bytes, Data, Json},
+    web::{Bytes, Data},
     Responder, Result,
 };
 
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
-use crate::models::Stack;
 use actix_web::post;
 use chrono::Utc;
 use serde_json::Value;
@@ -33,7 +32,7 @@ pub async fn add(
         }
         Err(_err) => {
             let msg = format!("Invalid data. {:?}", _err);
-            return Ok(Json(JsonResponse::<Stack>::not_valid(msg.as_str())));
+            return JsonResponse::<StackForm>::build().err("Invalid data".to_owned());
         }
     };
 
@@ -88,11 +87,11 @@ pub async fn add(
                 "req_id: {} New stack details have been saved to database",
                 request_id
             );
-            Ok(Json(JsonResponse::<Stack>::ok(record.id, "Object saved")))
+            return JsonResponse::build().set_id(record.id).ok("OK".to_owned());
         }
-        Err(err) => {
-            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, err);
-            Ok(Json(JsonResponse::<Stack>::not_valid("Failed to insert")))
+        Err(e) => {
+            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
+            return JsonResponse::build().err("Failed to fetch".to_owned());
         }
     };
 }
