@@ -1,20 +1,13 @@
 use crate::configuration::Settings;
 use crate::helpers::client;
+use crate::helpers::JsonResponse;
 use crate::models::user::User;
 use crate::models::Client;
-use actix_web::{error::ErrorInternalServerError, post, web, Responder, Result};
-use serde::Serialize;
+use actix_web::error::ErrorInternalServerError;
+use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
-
-#[derive(Serialize)]
-struct ClientAddResponse {
-    status: String,
-    message: String,
-    code: u32,
-    client: Option<Client>,
-}
 
 #[tracing::instrument(name = "Add client.")]
 #[post("")]
@@ -46,17 +39,12 @@ pub async fn add_handler(
                     client_count
                 );
 
-                return Ok(web::Json(ClientAddResponse {
-                    status: "error".to_string(),
-                    code: 400,
-                    message: "Too many clients already created".to_string(),
-                    client: None,
-                }));
+                return JsonResponse::build().err("Too many clients already created");
             }
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return Err(ErrorInternalServerError(""));
+            return JsonResponse::build().err_internal_server_error("");
         }
     };
 
@@ -66,7 +54,7 @@ pub async fn add_handler(
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
         .map(|s| Some(s))
-        .map_err(|s| ErrorInternalServerError(s))?;
+        .map_err(|s| ErrorInternalServerError(s))?; //todo move to helpers::JsonResponse
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(
@@ -85,16 +73,11 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New client {} have been saved to database", result.id);
             client.id = result.id;
-            Ok(web::Json(ClientAddResponse {
-                status: "success".to_string(),
-                message: "".to_string(),
-                code: 200,
-                client: Some(client),
-            }))
+            JsonResponse::build().set_item(client).ok("success")
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return Err(ErrorInternalServerError(""));
+            JsonResponse::build().err_internal_server_error("")
         }
     }
 }

@@ -1,4 +1,4 @@
-use actix_web::error::ErrorBadRequest;
+use actix_web::error::{ErrorBadRequest, ErrorInternalServerError};
 use actix_web::web::Json;
 use actix_web::Error;
 use actix_web::Result;
@@ -41,24 +41,34 @@ where
         self
     }
 
-    pub(crate) fn ok(self, msg: String) -> Result<Json<JsonResponse<T>>, Error> {
-        Ok(Json(JsonResponse {
+    fn to_json_response(self, msg: String) -> JsonResponse<T> {
+        JsonResponse {
             message: msg,
             id: self.id,
             item: self.item,
             list: self.list,
-        }))
+        }
     }
 
-    pub(crate) fn err(self, msg: String) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = JsonResponse {
-            message: msg,
-            id: self.id,
-            item: self.item,
-            list: self.list,
-        };
+    pub(crate) fn ok<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
+        Ok(Json(self.to_json_response(msg.into())))
+    }
+
+    pub(crate) fn err<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
+        let json_response = self.to_json_response(msg.into());
 
         Err(ErrorBadRequest(
+            serde_json::to_string(&json_response).unwrap(),
+        ))
+    }
+
+    pub(crate) fn err_internal_server_error<I: Into<String>>(
+        self,
+        msg: I,
+    ) -> Result<Json<JsonResponse<T>>, Error> {
+        let json_response = self.to_json_response(msg.into());
+
+        Err(ErrorInternalServerError(
             serde_json::to_string(&json_response).unwrap(),
         ))
     }
