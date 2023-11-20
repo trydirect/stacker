@@ -1,10 +1,8 @@
-use std::collections::HashMap;
 use actix_web::{
     web,
     web::{Bytes, Data, Json},
     Responder, Result,
 };
-
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
@@ -16,6 +14,7 @@ use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
+use crate::models;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
@@ -24,27 +23,17 @@ pub async fn add(
     user: web::ReqData<User>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
-    // None::<i32>.expect("my error");
-    // return Err(JsonPayloadError::Payload(PayloadError::Overflow).into());
-    // let content_type = req.headers().get("content-type");
-    // println!("Request Content-Type: {:?}", content_type);
 
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
-    // method 1 let app_state: AppState = serde_json::from_str(body_str).unwrap();
-    // method 2 let app_state = serde_json::from_str::<AppState>(body_str).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
         Ok(f) => {
             println!("fine");
             f
         }
         Err(err) => {
-            return Ok(Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 400,
-                message: err.to_string(),
-                id: None,
-            }));
+            let err = format!("Error: {}", err);
+            return JsonResponse::<StackForm>::build().err(err);
         }
     };
     // println!("app: {:?}", form);
@@ -115,21 +104,11 @@ pub async fn add(
                 "req_id: {} New stack details have been saved to database",
                 request_id
             );
-            Ok(Json(JsonResponse {
-                status: "OK".to_string(),
-                code: 200,
-                message: format!("Object saved"),
-                id: Some(record.id),
-            }))
+            return JsonResponse::build().set_id(record.id).ok("OK".to_string());
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            Ok(Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 400,
-                message: e.to_string(),
-                id: None,
-            }))
+            return JsonResponse::build().err("Internal Server Error".to_string());
         }
     };
 }

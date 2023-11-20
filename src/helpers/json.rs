@@ -32,7 +32,7 @@ impl<T> JsonResponseBuilder<T>
         Self::default()
     }
 
-    fn set_item(mut self, item:T) -> Self {
+    pub(crate) fn set_item(mut self, item:T) -> Self {
         self.item = Some(item);
         self
     }
