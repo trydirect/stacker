@@ -1,6 +1,66 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
+use std::fmt;
+
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Role {
+    pub role: Option<Vec<String>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Requirements {
+    #[validate(minimum=0.1)]
+    pub cpu: Option<f64>,
+    #[validate(min_length=1)]
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+G$")]
+    #[serde(rename = "disk_size")]
+    pub disk_size: Option<String>,
+    #[serde(rename = "ram_size")]
+    #[validate(min_length=1)]
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+G$")]
+    pub ram_size: Option<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Ports {
+    #[serde(rename(deserialize = "sharedPorts"))]
+    #[serde(rename(serialize = "shared_ports"))]
+    #[serde(alias = "shared_ports")]
+    pub shared_ports: Option<Vec<String>>,
+    pub ports: Option<Vec<String>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct DockerImage {
+    pub dockerhub_user: Option<String>,
+    pub dockerhub_name: Option<String>,
+    pub dockerhub_image: Option<String>,
+}
+
+impl fmt::Display for DockerImage
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let tag = "latest";
+
+        let dim = self.dockerhub_image.clone()
+            .unwrap_or("".to_string());
+        write!(f, "{}/{}:{}", self.dockerhub_user.clone()
+            .unwrap_or("trydirect".to_string()).clone(),
+                self.dockerhub_name.clone().unwrap_or(dim), tag
+        )
+    }
+}
+
+impl AsRef<DockerImage> for App {
+    fn as_ref(&self) -> &DockerImage {
+        &self.docker_image
+    }
+}
+
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct StackForm {
@@ -33,7 +93,6 @@ pub struct StackPayload {
     pub(crate) id: Option<i32>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
-    pub(crate) installation_id: Option<u32>,
     #[serde(rename= "commonDomain")]
     pub common_domain: String,
     pub domain_list: Option<DomainList>,
@@ -55,7 +114,6 @@ pub struct StackPayload {
     #[serde(rename = "cloud_token")]
     pub cloud_token: String,
     pub provider: String,
-    #[serde(rename = "stack_code")]
     pub stack_code: String,
     #[serde(rename = "selected_plan")]
     pub selected_plan: String,
@@ -103,54 +161,8 @@ pub struct Custom {
     pub project_description: Option<String>,
 }
 
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "camelCase")]
-pub struct Web {
-    pub name: String,
-    pub code: String,
-    pub domain: Option<String>,
-    //#[serde(rename = "shared_ports")]
-    // #[serde(rename= "sharedPorts")]
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub shared_ports: Option<Vec<String>>,
-    pub versions: Option<Vec<Version>>,
-    pub custom: Option<bool>,
-    #[serde(rename = "type")]
-    pub type_field: String,
-    pub main: bool,
-    #[serde(rename = "_id")]
-    pub id: u32,
-    #[serde(rename = "dockerhub_user")]
-    pub dockerhub_user: Option<String>,
-    #[serde(rename = "dockerhub_name")]
-    pub dockerhub_name: Option<String>,
-    // when no docker repo specified by user
-    // use default TD image
-    pub dockerhub_image: Option<String>,
-    #[serde(rename = "url_app")]
-    pub url_app: Option<String>,
-    #[serde(rename = "url_git")]
-    pub url_git: Option<String>,
-    #[validate(min_length=1)]
-    #[validate(max_length=10)]
-    #[validate(pattern = r"^\d+G$")]
-    #[serde(rename = "disk_size")]
-    pub disk_size: String,
-    #[serde(rename = "ram_size")]
-    #[validate(min_length=1)]
-    #[validate(max_length=10)]
-    #[validate(pattern = r"^\d+G$")]
-    pub ram_size: Option<String>,
-    #[validate(minimum=0.1)]
-    pub cpu: Option<f64>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "camelCase")]
-pub struct Feature {
+pub struct App {
     #[serde(rename = "_etag")]
     pub etag: Option<String>,
     #[serde(rename = "_id")]
@@ -161,62 +173,60 @@ pub struct Feature {
     pub updated: Option<String>,
     pub name: String,
     pub code: String,
-    pub role: Vec<String>,
     #[serde(rename = "type")]
     pub type_field: String,
+    #[serde(flatten)]
+    pub role: Role,
     pub default: Option<bool>,
-    pub popularity: Option<u32>,
-    pub descr: Option<String>,
+    #[serde(flatten)]
     pub ports: Option<Ports>,
+    pub versions: Option<Vec<Version>>,
+    #[serde(flatten)]
+    pub docker_image: DockerImage,
+    #[serde(flatten)]
+    pub requirements: Requirements,
+    pub popularity: Option<u32>,
     pub commercial: Option<bool>,
     pub subscription: Option<Value>,
     pub autodeploy: Option<bool>,
     pub suggested: Option<bool>,
     pub dependency: Option<Value>,
-    #[serde(rename = "avoid_render")]
     pub avoid_render: Option<bool>,
     pub price: Option<Price>,
     pub icon: Option<Icon>,
-    #[serde(rename = "category_id")]
+    pub domain: Option<String>,
+    pub main: bool,
     pub category_id: Option<u32>,
-    #[serde(rename = "parent_app_id")]
     pub parent_app_id: Option<u32>,
-    #[serde(rename = "full_description")]
+    pub descr: Option<String>,
     pub full_description: Option<String>,
     pub description: Option<String>,
-    #[serde(rename = "plan_type")]
     pub plan_type: Option<String>,
-    #[serde(rename = "ansible_var")]
     pub ansible_var: Option<String>,
-    #[serde(rename = "repo_dir")]
     pub repo_dir: Option<String>,
-    pub cpu: Option<f64>,
-    #[validate(min_length=1)]
-    #[validate(max_length=10)]
-    #[validate(pattern = r"^\d+G$")]
-    pub ram_size: Option<String>,
-    #[validate(min_length=1)]
-    #[serde(rename = "disk_size")]
-    pub disk_size: Option<String>,
-    #[serde(rename = "dockerhub_image")]
-    pub dockerhub_image: Option<String>,
-    pub versions: Option<Vec<Version>>,
-    pub domain: Option<String>,
-    // #[serde(rename = "shared_ports")]
-    // #[serde(rename= "sharedPorts")]
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub shared_ports: Option<Vec<String>>,
-    pub main: bool,
+    pub url_app: Option<String>,
+    pub url_git: Option<String>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Web {
+    #[serde(flatten)]
+    pub app: App,
+    pub custom: Option<bool>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Feature {
+    #[serde(flatten)]
+    pub app: App,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "camelCase")]
-pub struct Ports {
-    pub public: Vec<String>,
+pub struct Service {
+    #[serde(flatten)]
+    pub(crate) app: App,
 }
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -258,66 +268,4 @@ pub struct Version {
     pub tag: String,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "camelCase")]
-pub struct Service {
-    #[serde(rename = "_etag")]
-    pub etag: Option<String>,
-    #[serde(rename = "_id")]
-    pub id: u32,
-    #[serde(rename = "_created")]
-    pub created: Option<String>,
-    #[serde(rename = "_updated")]
-    pub updated: Option<String>,
-    pub name: String,
-    pub code: String,
-    pub role: Option<Vec<Value>>,
-    #[serde(rename = "type")]
-    pub type_field: String,
-    pub default: Option<Value>,
-    pub popularity: Option<u32>,
-    pub descr: Option<String>,
-    pub ports: Option<Ports>,
-    pub commercial: Option<bool>,
-    pub subscription: Option<Value>,
-    pub autodeploy: Option<bool>,
-    pub suggested: Option<bool>,
-    pub dependency: Option<Value>,
-    #[serde(rename = "avoid_render")]
-    pub avoid_render: Option<bool>,
-    pub price: Option<Price>,
-    pub icon: Option<Icon>,
-    #[serde(rename = "category_id")]
-    pub category_id: Option<u32>,
-    #[serde(rename = "parent_app_id")]
-    pub parent_app_id: Option<u32>,
-    #[serde(rename = "full_description")]
-    pub full_description: Option<String>,
-    pub description: Option<String>,
-    #[serde(rename = "plan_type")]
-    pub plan_type: Option<String>,
-    #[serde(rename = "ansible_var")]
-    pub ansible_var: Option<String>,
-    #[serde(rename = "repo_dir")]
-    pub repo_dir: Option<String>,
-    pub cpu: Option<f64>,
-    #[validate(min_length=1)]
-    #[validate(max_length=10)]
-    #[validate(pattern = r"^\d+G$")]
-    pub ram_size: Option<String>,
-    #[serde(rename = "disk_size")]
-    #[validate(min_length=1)]
-    pub disk_size: Option<String>,
-    #[serde(rename = "dockerhub_image")]
-    pub dockerhub_image: Option<String>,
-    pub versions: Option<Vec<Version>>,
-    pub domain: String,
-    // #[serde(rename = "shared_ports")]
-    // #[serde(rename= "sharedPorts")]
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub shared_ports: Option<Vec<String>>,
-    pub main: bool,
-}
 

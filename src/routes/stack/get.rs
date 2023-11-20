@@ -30,28 +30,15 @@ pub async fn item(
     .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id,);
-            // return Ok(web::Json(JsonResponse::<models::Stack>::new(
-            //     "Success".to_string(),
-            //     "".to_string(),
-            //     200,
-            //     Some(stack.id),
-            //     Some(stack),
-            //     None)));
-            let response_builder:JsonResponseBuilder<models::Stack> = From::from(stack);
-            // let response: JsonResponse<models::Stack> = From::<models::Stack>::from(stack).build();
-            return response_builder.ok();
+            tracing::info!("Stack found: {:?}", stack.id,);
+            return JsonResponse::build().set_item(Some(stack)).ok("OK".to_owned());
         }
         Err(sqlx::Error::RowNotFound) => {
-            // return Ok(web::Json(JsonResponse::<models::Stack>::not_found()));
-            let response_builder:JsonResponseBuilder<models::Stack> =JsonResponseBuilder::default();
-            return response_builder.ok();
+            JsonResponse::build().not_found("Record not found".to_owned())
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            // return Ok(web::Json(JsonResponse::<models::Stack>::internal_error("")));
-            let response_builder:JsonResponseBuilder<models::Stack> = JsonResponseBuilder::default();
-            return response_builder.ok();
+            return JsonResponse::build().internal_error("Could not fetch data".to_owned());
         }
     }
 }
@@ -86,18 +73,15 @@ pub async fn list(
         .await
     {
         Ok(list) => {
-            let response_builder:JsonResponseBuilder<models::Stack> = JsonResponseBuilder::new();
-            return response_builder.set_list(list).ok();
+            return JsonResponse::build().set_list(list).ok("OK".to_string());
         }
         Err(sqlx::Error::RowNotFound) => {
             tracing::error!("No stacks found for user: {:?}", &user.id);
-            let response_builder:JsonResponseBuilder<models::Stack> = JsonResponseBuilder::default();
-            return response_builder.ok();
+            return JsonResponse::build().not_found("No stacks found for user".to_string())
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            let response_builder:JsonResponseBuilder<models::Stack> = JsonResponseBuilder::default();
-            return response_builder.ok();
+            return JsonResponse::build().internal_error("Could not fetch".to_string());
         }
     }
 }

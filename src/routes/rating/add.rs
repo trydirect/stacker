@@ -36,7 +36,8 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
-            return Ok(web::Json(JsonResponse::<models::Rating>::not_found()));
+            return JsonResponse::<models::Rating>::build()
+                .err(format!("Object not found {}", form.obj_id));
         }
     };
 
@@ -59,20 +60,12 @@ pub async fn add_handler(
                 form.obj_id,
                 form.category
             );
-
-            return Ok(web::Json(JsonResponse::<models::Rating>::new(
-                "Error".to_string(),
-                "Already rated".to_string(),
-                409,
-                Some(record.id),
-                None,
-                None
-            )));
+            return JsonResponse::build().conflict("Already rated".to_owned());
         }
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Ok(web::Json(JsonResponse::<models::Rating>::internal_error("")));
+            return JsonResponse::build().err(format!("Internal Server Error"));
         }
     }
 
@@ -99,11 +92,14 @@ pub async fn add_handler(
     {
         Ok(result) => {
             tracing::info!("New rating {} have been saved to database", result.id);
-            return Ok(web::Json(JsonResponse::<models::Rating>::ok(result.id, "Saved")));
+
+            return JsonResponse::build()
+                .set_id(result.id)
+                .ok("Saved".to_owned());
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return Ok(web::Json(JsonResponse::internal_error("Failed to insert")));
+            return JsonResponse::build().internal_error("Failed to insert".to_owned());
         }
     }
 }

@@ -53,19 +53,15 @@ pub async fn add(
             let id = stack.id.clone();
             let mut dc = DcBuilder::new(stack);
             let fc = dc.build();
-            // tracing::debug!("Docker compose file content {:?}", fc.unwrap());
-            return Ok(Json(JsonResponse::new(
-                "OK".to_owned(),
-                "Success".to_owned(),
-                200,
-                Some(id),
-                Some(fc.unwrap()),
-                None
-            )));
+            tracing::debug!("Docker compose file content {:?}", fc);
 
+            return JsonResponse::build()
+                .set_id(id)
+                .set_item(fc.unwrap())
+                .ok("Success".to_owned());
         }
         None => {
-            return Ok(Json(JsonResponse::internal_error("Could not generate compose file")));
+            return JsonResponse::build().err("Could not generate compose file".to_owned());
         }
     }
 }
@@ -110,19 +106,14 @@ pub async fn admin(
             let id = stack.id.clone();
             let mut dc = DcBuilder::new(stack);
             let fc = dc.build();
-            // tracing::debug!("Docker compose file content {:?}", fc.unwrap());
-            return Ok(Json(JsonResponse::new(
-                "OK".to_owned(),
-                "Success".to_owned(),
-                200,
-                Some(id),
-                Some(fc.unwrap()),
-                None
-            )));
+            // tracing::debug!("Docker compose file content {:?}", fc);
+            return JsonResponse::build()
+                .set_id(id)
+                .set_item(fc.unwrap()).ok("Success".to_owned());
 
         }
         None => {
-            return Ok(Json(JsonResponse::internal_error("Could not generate compose file")));
+            return JsonResponse::build().err("Could not generate compose file".to_owned());
         }
     }
 }

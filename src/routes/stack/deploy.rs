@@ -2,23 +2,21 @@ use std::sync::Arc;
 use actix_web::{
     web,
     post,
-    web::{Data, Json},
+    web::Data,
     Responder, Result,
 };
 use crate::models::user::User;
 use crate::models::stack::Stack;
 use sqlx::PgPool;
 use lapin::{
-    options::*, publisher_confirm::Confirmation, types::FieldTable, BasicProperties, Connection,
+    options::*, publisher_confirm::Confirmation, BasicProperties, Connection,
     ConnectionProperties
 };
 use crate::configuration::Settings;
 use crate::helpers::JsonResponse;
 use crate::helpers::stack::builder::DcBuilder;
 use futures_lite::stream::StreamExt;
-use serde::Serialize;
-use crate::forms::{StackForm, StackPayload};
-
+use crate::forms::StackPayload;
 
 
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
@@ -78,7 +76,6 @@ pub async fn add(
             ).unwrap();
 
             stack_data.id = Some(id);
-            stack_data.installation_id = None;
             stack_data.user_token = Some(user.id.clone());
             stack_data.user_email = Some(user.email.clone());
             stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
@@ -99,18 +96,10 @@ pub async fn add(
 
             assert_eq!(confirm, Confirmation::NotRequested);
             tracing::debug!("Message sent to rabbitmq");
-
-            Ok(Json(JsonResponse::<Stack>::new(
-                "OK".to_owned(),
-                "Success".to_owned(),
-                200,
-                Some(id),
-                None,
-                None
-            )))
+            return JsonResponse::<Stack>::build().set_id(id).ok("Success".to_owned());
         }
         None => {
-            Ok(Json(JsonResponse::internal_error("Deployment failed")))
+            JsonResponse::build().internal_error("Deployment failed".to_owned())
         }
     }
 }

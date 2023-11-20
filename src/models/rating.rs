@@ -16,7 +16,7 @@ pub struct Product {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct Rating {
     pub id: i32,
     pub user_id: String,         // external user_id, 100, taken using token (middleware?)

@@ -7,18 +7,10 @@ use crate::helpers::stack::dctypes::{
     Services
 };
 use serde_yaml;
-use crate::forms;
-use crate::forms::{
-    StackForm,
-    Web,
-    Feature
-};
+use crate::forms::{StackForm, stack};
 use crate::models::stack::Stack;
-
 #[derive(Clone, Debug)]
-struct Config {
-
-}
+struct Config {}
 
 impl Default for Config {
     fn default() -> Self {
@@ -33,26 +25,13 @@ pub struct DcBuilder {
     pub(crate) stack: Stack
 }
 
-impl TryInto<Vec<Port>> for Web {
+impl TryInto<Vec<Port>> for stack::Ports {
     type Error = String;
     fn try_into(self) -> Result<Vec<Port>, Self::Error> {
         convert_shared_ports(self.shared_ports.clone().unwrap())
     }
 }
 
-impl TryInto<Vec<Port>> for &Feature {
-    type Error = String;
-    fn try_into(self) -> Result<Vec<Port>, Self::Error> {
-        convert_shared_ports(self.shared_ports.clone().unwrap())
-    }
-}
-
-impl TryInto<Vec<Port>> for &forms::stack::Service {
-    type Error = String;
-    fn try_into(self) -> Result<Vec<Port>, Self::Error> {
-        convert_shared_ports(self.shared_ports.clone().unwrap())
-    }
-}
 
 fn convert_shared_ports(ports: Vec<String>) -> Result<Vec<Port>, String> {
     let mut _ports: Vec<Port> = vec![];
@@ -78,6 +57,7 @@ impl DcBuilder {
         }
     }
 
+
     pub fn build(&self) -> Option<String> {
 
         tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
@@ -87,25 +67,16 @@ impl DcBuilder {
             Ok(apps) => {
                 println!("stack item {:?}", apps.custom.web);
 
-                for app in apps.custom.web {
-                    let tag = "latest";
-                    let dim = app.dockerhub_image.clone().unwrap_or("".to_string());
-                    let img= format!("{}/{}:{}",
-                                     app.dockerhub_user.clone()
-                                         .unwrap_or("trydirect".to_string()).clone(),
-                                     app.dockerhub_name.clone().unwrap_or(dim),
-                                     tag
-                    );
-                    let code = app.code.clone().to_owned();
-
+                for app_type in apps.custom.web {
+                    let code = app_type.app.code.clone().to_owned();
                     let mut service = Service {
-                        image: Some(img.to_string()),
+                        image: Some(app_type.app.docker_image.to_string()),
                         ..Default::default()
                     };
 
-                    if let Some(ports) = &app.shared_ports {
-                        if !ports.is_empty() {
-                            service.ports = Ports::Long(app.try_into().unwrap())
+                    if let Some(ports) = &app_type.app.ports {
+                        if !ports.shared_ports.clone()?.is_empty() {
+                            service.ports = Ports::Long(app_type.app.ports?.try_into().unwrap())
                         }
                     }
 
@@ -116,22 +87,20 @@ impl DcBuilder {
                     );
                 }
 
-                if let Some(srvs) = &apps.custom.service {
+                if let Some(srvs) = apps.custom.service {
 
                     if !srvs.is_empty() {
 
-                        for app in srvs {
-                            let code = app.code.to_owned();
-                            let tag = "latest";
-
+                        for app_type in srvs {
+                            let code = app_type.app.code.to_owned();
                             let mut service = Service {
-                                image: Some(app.dockerhub_image.as_ref().unwrap().to_owned()),
+                                image: Some(app_type.app.docker_image.to_string()),
                                 ..Default::default()
                             };
 
-                            if let Some(ports) = &app.shared_ports {
-                                if !ports.is_empty() {
-                                    service.ports = Ports::Long(app.try_into().unwrap())
+                            if let Some(ports) = &app_type.app.ports {
+                                if !ports.shared_ports.clone()?.is_empty() {
+                                    service.ports = Ports::Long(app_type.app.ports?.try_into().unwrap())
                                 }
                             }
                             service.restart = Some("always".to_owned());
@@ -142,20 +111,21 @@ impl DcBuilder {
                         }
                     }
                 }
-                if let Some(features) = &apps.custom.feature {
+                if let Some(features) = apps.custom.feature {
 
                     if !features.is_empty() {
 
-                        for app in features {
-                            let code = app.code.to_owned();
+                        for app_type in features {
+                            let code = app_type.app.code.to_owned();
                             let mut service = Service {
-                                image: Some(app.dockerhub_image.as_ref().unwrap().to_owned()),
+                                // image: Some(app.dockerhub_image.as_ref().unwrap().to_owned()),
+                                image: Some(app_type.app.docker_image.to_string()),
                                 ..Default::default()
                             };
 
-                            if let Some(ports) = &app.shared_ports {
-                                if !ports.is_empty() {
-                                    service.ports = Ports::Long(app.try_into().unwrap())
+                            if let Some(ports) = &app_type.app.ports {
+                                if !ports.shared_ports.clone()?.is_empty() {
+                                    service.ports = Ports::Long(app_type.app.ports?.try_into().unwrap())
                                 }
                             }
                             service.restart = Some("always".to_owned());
@@ -168,6 +138,7 @@ impl DcBuilder {
                 }
             }
             Err(e) => {
+                tracing::debug!("Unpack stack form {:?}", e);
                 ()
             }
         }
