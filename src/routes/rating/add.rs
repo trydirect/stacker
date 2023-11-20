@@ -1,5 +1,5 @@
 use crate::forms;
-use crate::helpers::{JsonResponse, JsonResponseBuilder};
+use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
@@ -60,7 +60,7 @@ pub async fn add_handler(
                 form.category
             );
 
-            return JsonResponse::<models::Rating>::build()
+            return JsonResponse::build()
                 .set_id(record.id)
                 .ok(format!("Already Rated"));
         }
