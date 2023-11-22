@@ -1,7 +1,6 @@
+use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::get;
-use actix_web::{web, Responder, Result};
-use serde_derive::Serialize;
+use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
 
@@ -9,14 +8,6 @@ use tracing::Instrument;
 // add, update, list, get(user_id), ACL,
 // ACL - access to func for a user
 // ACL - access to objects for a user
-
-#[derive(Serialize)]
-struct JsonResponse {
-    status: String,
-    message: String,
-    code: u32,
-    rating: Option<models::Rating>,
-}
 
 #[tracing::instrument(name = "Get rating.")]
 #[get("/{id}")]
@@ -36,30 +27,39 @@ pub async fn get_handler(
     .await
     {
         Ok(rating) => {
-            tracing::info!("rating found: {:?}", rating.id,);
-            return Ok(web::Json(JsonResponse {
-                status: "Success".to_string(),
-                code: 200,
-                message: "".to_string(),
-                rating: Some(rating),
-            }));
+            tracing::info!("rating found: {:?}", rating.id);
+            return JsonResponse::build().set_item(Some(rating)).ok("OK");
         }
         Err(sqlx::Error::RowNotFound) => {
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 404,
-                message: format!("Not Found"),
-                rating: None,
-            }));
+            return JsonResponse::build().err("Not Found");
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 500,
-                message: format!("Internal Server Error"),
-                rating: None,
-            }));
+            return JsonResponse::build().err("Internal Server Error");
+        }
+    }
+}
+
+#[tracing::instrument(name = "Get all ratings.")]
+#[get("")]
+pub async fn default(path: web::Path<()>, pool: web::Data<PgPool>) -> Result<impl Responder> {
+    let query_span = tracing::info_span!("Get all rates.");
+    // let category = path.0;
+    match sqlx::query_as!(models::Rating, r"SELECT * FROM rating")
+        .fetch_all(pool.get_ref())
+        .instrument(query_span)
+        .await
+    {
+        Ok(rating) => {
+            tracing::info!("Ratings found: {:?}", rating.len());
+            return JsonResponse::build().set_list(rating).ok("OK".to_string());
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            return JsonResponse::build().err("Not Found");
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch rating, error: {:?}", e);
+            return JsonResponse::build().err("Internal Server Error");
         }
     }
 }

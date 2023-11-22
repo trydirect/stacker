@@ -1,7 +1,8 @@
-mod health_checks;
-mod rating;
+pub(crate) mod client;
+pub mod health_checks;
+pub(crate) mod rating;
+pub(crate) mod test;
 
 pub use health_checks::*;
-pub use rating::*;
 pub(crate) mod stack;
 pub use stack::*;

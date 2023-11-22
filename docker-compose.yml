@@ -1,0 +1,56 @@
+version: "2.2"
+
+volumes:
+  stackerdb:
+    driver: local
+
+networks:
+  backend:
+    driver: bridge
+    name: backend
+    external: true
+
+services:
+
+  stacker:
+    image: trydirect/stacker:0.0.3
+    build: .
+    container_name: stacker
+    restart: always
+    volumes:
+      - ./files:/app/files
+      - ./docker/local/configuration.yaml:/app/configuration.yaml
+      - ./migrations:/app/migrations
+      - ./docker/local/.env:/app/.env
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./docker/local/.env
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+    depends_on:
+      stackerdb:
+        condition: service_healthy
+    networks:
+      - backend
+
+
+  stackerdb:
+    container_name: stackerdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    image: postgres:16.0
+    restart: always
+    ports:
+      - 5432:5432
+    env_file:
+      - ./docker/local/.env
+    volumes:
+      - stackerdb:/var/lib/postgresql/data
+      - ./docker/local/postgresql.conf:/etc/postgresql/postgresql.conf
+    networks:
+      - backend
