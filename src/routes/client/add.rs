@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
 
+
 #[tracing::instrument(name = "Add client.")]
 #[post("")]
 pub async fn add_handler(
@@ -17,6 +18,7 @@ pub async fn add_handler(
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let query_span = tracing::info_span!("Counting the user's clients");
+
     match sqlx::query!(
         r#"
         SELECT
@@ -39,12 +41,12 @@ pub async fn add_handler(
                     client_count
                 );
 
-                return JsonResponse::build().err("Too many clients already created");
+                return JsonResponse::build().err("Too many clients created".to_owned());
             }
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return JsonResponse::build().err_internal_server_error("");
+            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
         }
     };
 
@@ -73,11 +75,16 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New client {} have been saved to database", result.id);
             client.id = result.id;
-            JsonResponse::build().set_item(client).ok("success")
+
+            return JsonResponse::build()
+                .set_id(client.id)
+                .set_item(Some(client))
+                .ok("OK".to_owned());
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            JsonResponse::build().err_internal_server_error("")
+            let err = format!("Failed to insert. {}", e);
+            return JsonResponse::build().err(err);
         }
     }
 }

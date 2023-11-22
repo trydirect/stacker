@@ -16,45 +16,45 @@ pub struct User {
     #[serde(rename = "_id")]
     pub id: String,
     #[serde(rename = "first_name")]
-    pub first_name: String,
+    pub first_name: Option<String>,
     #[serde(rename = "last_name")]
-    pub last_name: String,
-    pub created: String,
-    pub updated: String,
+    pub last_name: Option<String>,
+    pub created: Option<String>,
+    pub updated: Option<String>,
     pub email: String,
     #[serde(rename = "email_confirmed")]
     pub email_confirmed: bool,
     pub social: bool,
-    pub website: String,
+    pub website: Option<String>,
     pub currency: Value,
-    pub phone: String,
+    pub phone: Option<String>,
     #[serde(rename = "password_change_required")]
     pub password_change_required: Value,
-    pub photo: String,
-    pub country: String,
+    pub photo: Option<String>,
+    pub country: Option<String>,
     #[serde(rename = "billing_first_name")]
     pub billing_first_name: Value,
     #[serde(rename = "billing_last_name")]
     pub billing_last_name: Value,
     #[serde(rename = "billing_postcode")]
-    pub billing_postcode: String,
+    pub billing_postcode: Option<String>,
     #[serde(rename = "billing_address_1")]
-    pub billing_address_1: String,
+    pub billing_address_1: Option<String>,
     #[serde(rename = "billing_address_2")]
-    pub billing_address_2: String,
+    pub billing_address_2: Option<String>,
     #[serde(rename = "billing_city")]
-    pub billing_city: String,
+    pub billing_city: Option<String>,
     #[serde(rename = "billing_country_code")]
-    pub billing_country_code: String,
+    pub billing_country_code: Option<String>,
     #[serde(rename = "billing_country_area")]
-    pub billing_country_area: String,
-    pub tokens: Vec<Token>,
-    pub subscriptions: Vec<Subscription>,
-    pub plan: Plan,
+    pub billing_country_area: Option<String>,
+    pub tokens: Option<Vec<Token>>,
+    pub subscriptions: Option<Vec<Subscription>>,
+    pub plan: Option<Plan>,
     #[serde(rename = "deployments_left")]
     pub deployments_left: Value,
     #[serde(rename = "suspension_hints")]
-    pub suspension_hints: SuspensionHints,
+    pub suspension_hints: Option<SuspensionHints>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,9 +72,9 @@ pub struct Subscription {
     #[serde(rename = "user_id")]
     pub user_id: i64,
     #[serde(rename = "date_created")]
-    pub date_created: String,
+    pub date_created: Option<String>,
     #[serde(rename = "date_updated")]
-    pub date_updated: String,
+    pub date_updated: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,21 +92,21 @@ pub struct Plan {
     pub billing_email: String,
     #[serde(rename = "date_of_purchase")]
     pub date_of_purchase: String,
-    pub currency: String,
-    pub price: String,
-    pub period: String,
+    pub currency: Option<String>,
+    pub price: Option<String>,
+    pub period: Option<String>,
     #[serde(rename = "date_start")]
     pub date_start: String,
     pub active: bool,
     #[serde(rename = "billing_id")]
-    pub billing_id: String,
+    pub billing_id: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportedStacks {
-    pub monthly: i64,
-    pub annually: i64,
+    pub monthly: Option<i64>,
+    pub annually: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,8 +132,8 @@ impl TryInto<UserModel> for UserForm {
         // )?;
         Ok(UserModel {
             id: self.user.id,
-            first_name: self.user.first_name,
-            last_name: self.user.last_name,
+            first_name: self.user.first_name.unwrap_or("Noname".to_string()),
+            last_name: self.user.last_name.unwrap_or("Noname".to_string()),
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
         })

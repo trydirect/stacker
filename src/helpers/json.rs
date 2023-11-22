@@ -1,15 +1,15 @@
-use actix_web::error::{ErrorBadRequest, ErrorInternalServerError};
+use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorNotFound, ErrorInternalServerError};
+use serde_derive::Serialize;
 use actix_web::web::Json;
 use actix_web::Error;
 use actix_web::Result;
-use serde_derive::Serialize;
 
 #[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
-    message: String,
-    id: Option<i32>,
-    item: Option<T>,
-    list: Option<Vec<T>>,
+    pub(crate) message: String,
+    pub(crate) id: Option<i32>,
+    pub(crate) item: Option<T>,
+    pub(crate) list: Option<Vec<T>>
 }
 
 #[derive(Serialize, Default)]
@@ -62,6 +62,45 @@ where
         ))
     }
 
+    pub(crate) fn not_found(self, msg: String) -> Result<Json<JsonResponse<T>>, Error>  {
+
+        let json_response = JsonResponse {
+            message: msg,
+            id: self.id,
+            item: self.item,
+            list: self.list
+        };
+
+        Err(ErrorNotFound(
+            serde_json::to_string(&json_response).unwrap()))
+    }
+
+    pub(crate) fn internal_error(self, msg: String) -> Result<Json<JsonResponse<T>>, Error>  {
+
+        let json_response = JsonResponse {
+            message: msg,
+            id: self.id,
+            item: self.item,
+            list: self.list
+        };
+
+        Err(ErrorInternalServerError(
+            serde_json::to_string(&json_response).unwrap()))
+    }
+
+    pub(crate) fn conflict(self, msg: String) -> Result<Json<JsonResponse<T>>, Error>  {
+
+        let json_response = JsonResponse {
+            message: msg,
+            id: self.id,
+            item: self.item,
+            list: self.list
+        };
+
+        Err(ErrorConflict(
+            serde_json::to_string(&json_response).unwrap()))
+    }
+
     pub(crate) fn err_internal_server_error<I: Into<String>>(
         self,
         msg: I,
@@ -81,4 +120,75 @@ where
     pub fn build() -> JsonResponseBuilder<T> {
         JsonResponseBuilder::default()
     }
+
+    pub(crate) fn new(message: String,
+                      id: Option<i32>,
+                      item:Option<T>,
+                      list: Option<Vec<T>>) -> Self {
+        tracing::debug!("Executed..");
+        JsonResponse {
+            message,
+            id,
+            item,
+            list,
+        }
+    }
+
+    // pub(crate) fn ok(id: i32, message: &str) -> JsonResponse<T> {
+    //
+    //     let msg = if !message.trim().is_empty() {
+    //         message.to_string()
+    //     }
+    //     else{
+    //         String::from("Success")
+    //     };
+    //
+    //     JsonResponse {
+    //         message: msg,
+    //         id: Some(id),
+    //         item: None,
+    //         list: None,
+    //     }
+    // }
+
+    // pub(crate) fn not_found() -> Self {
+    //     JsonResponse {
+    //         id: None,
+    //         item: None,
+    //         message: format!("Object not found"),
+    //         list: None,
+    //     }
+    // }
+    //
+    // pub(crate) fn internal_error(message: &str) -> Self {
+    //
+    //     let msg = if !message.trim().is_empty() {
+    //         message.to_string()
+    //     }
+    //     else{
+    //         String::from("Internal error")
+    //     };
+    //     JsonResponse {
+    //         id: None,
+    //         item: None,
+    //         message: msg,
+    //         list: None,
+    //     }
+    // }
+    //
+    // pub(crate) fn not_valid(message: &str) -> Self {
+    //
+    //     let msg = if !message.trim().is_empty() {
+    //         message.to_string()
+    //     }
+    //     else{
+    //         String::from("Validation error")
+    //     };
+    //     JsonResponse {
+    //         id: None,
+    //         item: None,
+    //         message: msg,
+    //         list: None,
+    //     }
+    // }
 }

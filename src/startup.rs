@@ -53,25 +53,20 @@ pub async fn run(
                     .wrap(Cors::permissive())
                     .service(crate::routes::rating::add_handler)
                     .service(crate::routes::rating::get_handler)
-                    .service(crate::routes::rating::default),
+                    .service(crate::routes::rating::list_handler),
             )
-            // .service(
-            //     web::resource("/stack/{id}")
-            //         .route(web::get()
-            //             .to(crate::routes::stack::get))
-            //         .route(web::post()
-            //             .to(crate::routes::stack::update))
-            //         .route(web::post()
-            //             .to(crate::routes::stack::add)),
-            // )
             .service(
                 web::scope("/stack")
                     .wrap(HttpAuthentication::bearer(
                         crate::middleware::trydirect::bearer_guard,
                     ))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::stack::add::add)
-                    .service(crate::routes::stack::get::get),
+                    .service(crate::routes::stack::deploy::add)
+                    .service(crate::routes::stack::compose::add)
+                    .service(crate::routes::stack::compose::admin)
+                    .service(crate::routes::stack::get::item)
+                    .service(crate::routes::stack::get::list)
+                    .service(crate::routes::stack::add::add),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())

@@ -1,12 +1,11 @@
 use actix_web::{
     web,
-    web::{Bytes, Data, Json},
+    web::{Bytes, Data},
     Responder, Result,
 };
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
-use crate::models::Stack;
 use actix_web::post;
 use chrono::Utc;
 use serde_json::Value;
@@ -15,6 +14,7 @@ use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
 use crate::models;
+
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
@@ -28,21 +28,19 @@ pub async fn add(
     let body_str = str::from_utf8(&body_bytes).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
         Ok(f) => {
-            println!("fine");
             f
         }
-        Err(err) => {
-            let err = format!("Error: {}", err);
-            return JsonResponse::<StackForm>::build().err(err);
+        Err(_err) => {
+            let msg = format!("Invalid data. {:?}", _err);
+            return JsonResponse::<StackForm>::build().err("Invalid data".to_owned());
         }
     };
-    // println!("app: {:?}", form);
 
     let user_id = user.id.clone();
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
         "Validating a new stack", %request_id,
-        commonDomain=?&form.common_domain,
+        commonDomain=?&form.custom.project_name,
         region=?&form.region,
         domainList=?&form.domain_list
     );
@@ -52,7 +50,7 @@ pub async fn add(
     tracing::info!(
         "request_id {} Adding '{}' '{}' as a new stack",
         request_id,
-        form.common_domain,
+        form.custom.project_name,
         form.region
     );
 
@@ -67,33 +65,18 @@ pub async fn add(
         }
     };
 
-    let stack = Stack {
-        id: 0_i32,                // internal stack id
-        stack_id: Uuid::new_v4(), // public uuid of the stack
-        // user_id: Uuid::from_u128(user_id as u128),
-        user_id: user_id, //
-        name: stack_name,
-        body: body,
-        // body: body_str.to_string(),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    };
-
-    println!("stack object {:?}", stack);
     return match sqlx::query!(
         r#"
-        INSERT INTO user_stack (id, stack_id, user_id, name, body, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO user_stack (stack_id, user_id, name, body, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id;
         "#,
-        0_i32,
-        stack.stack_id,
-        stack.user_id,
-        stack.name,
-        // sqlx::types::Json(stack.body),
-        stack.body,
-        stack.created_at,
-        stack.updated_at
+        Uuid::new_v4(),
+        user_id,
+        stack_name,
+        body,
+        Utc::now(),
+        Utc::now(),
     )
     .fetch_one(pool.get_ref())
     .instrument(query_span)
@@ -104,11 +87,12 @@ pub async fn add(
                 "req_id: {} New stack details have been saved to database",
                 request_id
             );
-            return JsonResponse::build().set_id(record.id).ok("OK".to_string());
+            return JsonResponse::build().set_id(record.id).ok("OK".to_owned());
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().err("Internal Server Error".to_string());
+            return JsonResponse::build().err("Internal Server Error".to_owned());
         }
     };
 }
+

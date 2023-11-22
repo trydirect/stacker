@@ -7,6 +7,7 @@ pub struct Settings {
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
+    pub amqp: AmqpSettings
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -18,6 +19,13 @@ pub struct DatabaseSettings {
     pub database_name: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct AmqpSettings {
+    pub username: String,
+    pub password: String,
+    pub host: String,
+    pub port: u16,
+}
 impl DatabaseSettings {
     // Connection string: postgresql://<username>:<password>@<host>:<port>/<database_name>
     pub fn connection_string(&self) -> String {
@@ -30,6 +38,15 @@ impl DatabaseSettings {
     pub fn connection_string_without_db(&self) -> String {
         format!(
             "postgresql://{}:{}@{}:{}",
+            self.username, self.password, self.host, self.port,
+        )
+    }
+}
+
+impl AmqpSettings {
+    pub fn connection_string(&self) -> String {
+        format!(
+            "amqp://{}:{}@{}:{}/%2f",
             self.username, self.password, self.host, self.port,
         )
     }
