@@ -3,15 +3,19 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
-use actix_web::post;
-use actix_web::{web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
+use actix_web::{
+    web,
+    post,
+    Responder, Result,
+};
 
 // workflow
 // add, update, list, get(user_id), ACL,
 // ACL - access to func for a user
 // ACL - access to objects for a user
+
 
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
@@ -59,10 +63,7 @@ pub async fn add_handler(
                 form.obj_id,
                 form.category
             );
-
-            return JsonResponse::build()
-                .set_id(record.id)
-                .ok(format!("Already Rated"));
+            return JsonResponse::build().conflict("Already rated".to_owned());
         }
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
@@ -95,13 +96,13 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New rating {} have been saved to database", result.id);
 
-            return JsonResponse::build()
+            JsonResponse::build()
                 .set_id(result.id)
-                .ok("Saved".to_string());
+                .ok("Saved".to_owned())
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return JsonResponse::build().err("Failed to insert".to_string());
+            JsonResponse::build().internal_error("Failed to insert".to_owned())
         }
     }
 }

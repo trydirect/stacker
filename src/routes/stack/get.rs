@@ -1,30 +1,24 @@
 use actix_web::{web, get, Responder, Result};
-use serde_derive::Serialize;
 use sqlx::PgPool;
+use crate::helpers::{JsonResponse, JsonResponseBuilder};
 use crate::models;
 use crate::models::user::User;
+use std::convert::From;
+use tracing::Instrument;
 
-#[derive(Serialize)]
-struct JsonResponse {
-    status: String,
-    message: String,
-    code: u32,
-    id: Option<i32>,
-    object: Option<models::Stack>,
-    objects: Option<Vec<models::Stack>>,
-}
 
-#[tracing::instrument(name = "Get stack.")]
+#[tracing::instrument(name = "Get logged user stack.")]
 #[get("/{id}")]
-pub async fn get(
+pub async fn item(
     user: web::ReqData<User>,
     path: web::Path<(i32,)>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    /// Get stack apps of logged user only
 
     let (id,) = path.into_inner();
 
-    tracing::info!("User {:?} is getting stack by id {:?}", user, id);
+    tracing::info!("User {:?} gets stack by id {:?}", user.id, id);
     match sqlx::query_as!(
         models::Stack,
         r#"
@@ -36,37 +30,59 @@ pub async fn get(
     .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id,);
-            let response = JsonResponse {
-                status: "Success".to_string(),
-                code: 200,
-                message: "".to_string(),
-                id: Some(stack.id),
-                object: Some(stack),
-                objects: None
-            };
-            return Ok(web::Json(response));
+            tracing::info!("Stack found: {:?}", stack.id,);
+            return JsonResponse::build().set_item(Some(stack)).ok("OK".to_owned());
         }
         Err(sqlx::Error::RowNotFound) => {
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 404,
-                message: format!("Not Found"),
-                id: None,
-                object: None,
-                objects: None
-            }));
+            JsonResponse::build().not_found("Record not found".to_owned())
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return Ok(web::Json(JsonResponse {
-                status: "Error".to_string(),
-                code: 500,
-                message: format!("Internal Server Error"),
-                id: None,
-                object: None,
-                objects: None
-            }));
+            return JsonResponse::build().internal_error("Could not fetch data".to_owned());
         }
     }
 }
+
+#[tracing::instrument(name = "Get user's stack list.")]
+#[get("/user/{id}")]
+pub async fn list(
+    user: web::ReqData<User>,
+    path: web::Path<(String,)>,
+    pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+
+    /// This is admin endpoint, used by a m2m app, client app is confidential
+    /// it should return stacks by user id
+    /// in order to pass validation at external deployment service
+
+    let (id,) = path.into_inner();
+    tracing::info!("Logged user: {:?}", user.id);
+    tracing::info!("Get stack list for user {:?}", id);
+
+    let query_span = tracing::info_span!("Get stacks by user id.");
+
+    match sqlx::query_as!(
+        models::Stack,
+        r#"
+        SELECT * FROM user_stack WHERE user_id=$1
+        "#,
+        id
+    )
+        .fetch_all(pool.get_ref())
+        .instrument(query_span)
+        .await
+    {
+        Ok(list) => {
+            return JsonResponse::build().set_list(list).ok("OK".to_string());
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            tracing::error!("No stacks found for user: {:?}", &user.id);
+            return JsonResponse::build().not_found("No stacks found for user".to_string())
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch stack, error: {:?}", e);
+            return JsonResponse::build().internal_error("Could not fetch".to_string());
+        }
+    }
+}
+
