@@ -114,15 +114,6 @@ pub async fn run(
                     .service(crate::routes::rating::get_handler)
                     .service(crate::routes::rating::list_handler),
             )
-            // .service(
-            //     web::resource("/stack/{id}")
-            //         .route(web::get()
-            //             .to(crate::routes::stack::get))
-            //         .route(web::post()
-            //             .to(crate::routes::stack::update))
-            //         .route(web::post()
-            //             .to(crate::routes::stack::add)),
-            // )
             .service(
                 web::scope("/stack")
                     .wrap(HttpAuthentication::bearer(bearer_guard))
