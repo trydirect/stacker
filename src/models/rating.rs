@@ -19,17 +19,17 @@ pub struct Product {
 #[derive(Debug, Serialize, Default)]
 pub struct Rating {
     pub id: i32,
-    pub user_id: String,         // external user_id, 100, taken using token (middleware?)
-    pub obj_id: i32,             // id of the external object
-    pub category: String,        // rating of product | rating of service etc
+    pub user_id: String, // external user_id, 100, taken using token (middleware?)
+    pub obj_id: i32,     // id of the external object
+    pub category: String, // rating of product | rating of service etc
     pub comment: Option<String>, // always linked to a product
-    pub hidden: Option<bool>,    // rating can be hidden for non-adequate user behaviour
+    pub hidden: Option<bool>, // rating can be hidden for non-adequate user behaviour
     pub rate: Option<i32>,
-    #[serde(with = "crate::helpers::serialize_datetime")]
     pub created_at: DateTime<Utc>,
-    #[serde(with = "crate::helpers::serialize_datetime")]
     pub updated_at: DateTime<Utc>,
 }
+
+
 
 #[derive(sqlx::Type, Serialize, Deserialize, Debug, Clone, Copy)]
 #[sqlx(rename_all = "lowercase", type_name = "varchar")]

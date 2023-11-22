@@ -2,7 +2,7 @@ use crate::configuration::Settings;
 use crate::helpers::{client, JsonResponse};
 use crate::models::user::User;
 use crate::models::Client;
-use actix_web::{post, web, Responder, Result};
+use actix_web::{error::ErrorInternalServerError, post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -44,14 +44,17 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return JsonResponse::build().internal_error("Failed to insert".to_owned());
+            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
         }
     };
 
     let mut client = Client::default();
     client.id = 1;
     client.user_id = user.id.clone();
-    client.secret = client::generate_secret(255);
+    client.secret = client::generate_secret(pool.get_ref(), 255)
+        .await
+        .map(|s| Some(s))
+        .map_err(|s| ErrorInternalServerError(s))?;
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(

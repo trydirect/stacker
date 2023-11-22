@@ -53,10 +53,7 @@ pub async fn list_handler(
 
     let query_span = tracing::info_span!("Get all rates.");
     // let category = path.0;
-    match sqlx::query_as!(
-        models::Rating,
-        r"SELECT * FROM rating"
-    )
+    match sqlx::query_as!(models::Rating, r"SELECT * FROM rating")
         .fetch_all(pool.get_ref())
         .instrument(query_span)
         .await

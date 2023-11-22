@@ -1,9 +1,8 @@
-use std::net::TcpListener;
 use sqlx::PgPool;
 use stacker::configuration::get_configuration;
 use stacker::startup::run;
 use stacker::telemetry::{get_subscriber, init_subscriber};
-
+use std::net::TcpListener;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -18,8 +17,8 @@ async fn main() -> std::io::Result<()> {
 
     let address = format!("{}:{}", settings.app_host, settings.app_port);
     tracing::info!("Start server at {:?}", &address);
-    let listener = TcpListener::bind(address)
-        .expect(&format!("failed to bind to {}", settings.app_port));
+    let listener =
+        TcpListener::bind(address).expect(&format!("failed to bind to {}", settings.app_port));
 
     run(listener, db_pool, settings).await?.await
 }

@@ -169,7 +169,7 @@ where T: serde::Serialize + Default
     //         list: None,
     //     }
     // }
-
+    //
     // pub(crate) fn internal_error(message: &str) -> Self {
     //
     //     let msg = if !message.trim().is_empty() {
