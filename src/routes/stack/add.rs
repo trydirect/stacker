@@ -3,7 +3,6 @@ use actix_web::{
     web::{Bytes, Data},
     Responder, Result,
 };
-
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
@@ -14,6 +13,7 @@ use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
+use crate::models;
 
 
 #[tracing::instrument(name = "Add stack.")]
@@ -91,7 +91,7 @@ pub async fn add(
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().err("Failed to fetch".to_owned());
+            return JsonResponse::build().err("Internal Server Error".to_owned());
         }
     };
 }
