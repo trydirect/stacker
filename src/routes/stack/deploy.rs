@@ -57,7 +57,7 @@ pub async fn add(
     return match stack {
         Some(stack) => {
             let id = stack.id.clone();
-            let mut dc = DcBuilder::new(stack);
+            let dc = DcBuilder::new(stack);
             dc.build();
 
             let addr = sets.amqp.connection_string();
