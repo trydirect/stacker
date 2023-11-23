@@ -11,10 +11,10 @@ use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgPool;
 use std::str;
-use serde_valid::json::FromJsonValue;
 use serde_valid::Validate;
 use tracing::Instrument;
 use uuid::Uuid;
+use crate::models;
 
 
 #[tracing::instrument(name = "Add stack.")]
@@ -37,6 +37,30 @@ pub async fn add(
         }
     };
 
+    let stack_name = form.custom.custom_stack_code.clone();
+
+    let query_span = tracing::info_span!("Check project/stack existence by custom_stack_code.");
+    match sqlx::query_as!(
+        models::Stack,
+        r"SELECT * FROM user_stack WHERE name = $1",
+        stack_name
+    )
+        .fetch_one(pool.get_ref())
+        .instrument(query_span)
+        .await
+    {
+        Ok(record) => {
+            tracing::info!("record exists: id: {}, name: {}", record.id, record.name);
+            return JsonResponse::build().conflict("Stack with that name already exists"
+                .to_owned());
+        }
+        Err(sqlx::Error::RowNotFound) => {}
+        Err(e) => {
+            tracing::error!("Failed to fetch stack info, error: {:?}", e);
+            return JsonResponse::build().err(format!("Internal Server Error"));
+        }
+    };
+
     let user_id = user.id.clone();
     let request_id = Uuid::new_v4();
     let request_span = tracing::info_span!(
@@ -56,9 +80,6 @@ pub async fn add(
     );
 
     let query_span = tracing::info_span!("Saving new stack details into the database");
-
-    let stack_name = form.custom.custom_stack_code.clone();
-
 
     let errors = form.validate().is_ok();
     println!("{:?}",errors);
