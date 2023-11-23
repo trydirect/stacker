@@ -11,9 +11,10 @@ use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgPool;
 use std::str;
+use serde_valid::json::FromJsonValue;
+use serde_valid::Validate;
 use tracing::Instrument;
 use uuid::Uuid;
-use crate::models;
 
 
 #[tracing::instrument(name = "Add stack.")]
@@ -32,7 +33,7 @@ pub async fn add(
         }
         Err(_err) => {
             let msg = format!("Invalid data. {:?}", _err);
-            return JsonResponse::<StackForm>::build().err("Invalid data".to_owned());
+            return JsonResponse::<StackForm>::build().err(msg);
         }
     };
 
@@ -57,6 +58,10 @@ pub async fn add(
     let query_span = tracing::info_span!("Saving new stack details into the database");
 
     let stack_name = form.custom.custom_stack_code.clone();
+
+
+    let errors = form.validate().is_ok();
+    println!("{:?}",errors);
     let body: Value = match serde_json::to_value::<StackForm>(form) {
         Ok(body) => body,
         Err(err) => {
@@ -65,7 +70,7 @@ pub async fn add(
         }
     };
 
-    return match sqlx::query!(
+    match sqlx::query!(
         r#"
         INSERT INTO user_stack (stack_id, user_id, name, body, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6)

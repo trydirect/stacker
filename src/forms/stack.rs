@@ -36,8 +36,14 @@ pub struct Ports {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerImage {
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub dockerhub_user: Option<String>,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub dockerhub_name: Option<String>,
+    #[validate(min_length=3)]
+    #[validate(max_length=100)]
     pub dockerhub_image: Option<String>,
 }
 
@@ -64,24 +70,46 @@ impl AsRef<DockerImage> for App {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct StackForm {
+    #[validate(min_length=2)]
+    #[validate(max_length=255)]
     #[serde(rename= "commonDomain")]
     pub common_domain: Option<String>,
     pub domain_list: Option<DomainList>,
+    #[validate(min_length=2)]
+    #[validate(max_length=255)]
     pub stack_code: Option<String>,
+    #[validate(min_length=2)]
+    #[validate(max_length=50)]
     pub region: String,
+    #[validate(min_length=2)]
+    #[validate(max_length=50)]
     pub zone: Option<String>,
+    #[validate(min_length=2)]
+    #[validate(max_length=50)]
     pub server: String,
+    #[validate(min_length=2)]
+    #[validate(max_length=50)]
     pub os: String,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub ssl: String,
     pub vars: Option<Vec<Var>>,
     pub integrated_features: Option<Vec<Value>>,
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
     pub form_app: Option<Vec<String>>,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub disk_type: Option<String>,
     pub save_token: bool,
+    #[validate(min_length=10)]
+    #[validate(max_length=255)]
     pub cloud_token: String,
+    #[validate(min_length=2)]
+    #[validate(max_length=50)]
     pub provider: String,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub selected_plan: String,
     pub custom: Custom,
 }
@@ -142,10 +170,16 @@ pub struct Custom {
     pub feature: Option<Vec<Feature>>,
     pub service: Option<Vec<Service>>,
     #[serde(rename = "servers_count")]
+    #[validate(minimum = 0)]
+    #[validate(maximum = 10)]
     pub servers_count: u32,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     #[serde(rename = "custom_stack_code")]
     pub custom_stack_code: String,
     #[serde(rename = "project_git_url")]
+    #[validate(min_length=3)]
+    #[validate(max_length=255)]
     pub project_git_url: Option<String>,
     #[serde(rename = "custom_stack_category")]
     pub custom_stack_category: Option<Vec<String>>,
@@ -154,6 +188,8 @@ pub struct Custom {
     #[serde(rename = "custom_stack_description")]
     pub custom_stack_description: Option<String>,
     #[serde(rename = "project_name")]
+    #[validate(min_length=3)]
+    #[validate(max_length=255)]
     pub project_name: String,
     #[serde(rename = "project_overview")]
     pub project_overview: Option<String>,
@@ -164,6 +200,8 @@ pub struct Custom {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct App {
     #[serde(rename = "_etag")]
+    #[validate(min_length=3)]
+    #[validate(max_length=255)]
     pub etag: Option<String>,
     #[serde(rename = "_id")]
     pub id: u32,
@@ -171,8 +209,14 @@ pub struct App {
     pub created: Option<String>,
     #[serde(rename = "_updated")]
     pub updated: Option<String>,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub name: String,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     pub code: String,
+    #[validate(min_length=3)]
+    #[validate(max_length=50)]
     #[serde(rename = "type")]
     pub type_field: String,
     #[serde(flatten)]
@@ -185,6 +229,7 @@ pub struct App {
     pub docker_image: DockerImage,
     #[serde(flatten)]
     pub requirements: Requirements,
+    #[validate(minimum=1)]
     pub popularity: Option<u32>,
     pub commercial: Option<bool>,
     pub subscription: Option<Value>,
@@ -195,7 +240,6 @@ pub struct App {
     pub price: Option<Price>,
     pub icon: Option<Icon>,
     pub domain: Option<String>,
-    pub main: bool,
     pub category_id: Option<u32>,
     pub parent_app_id: Option<u32>,
     pub descr: Option<String>,
@@ -213,6 +257,7 @@ pub struct Web {
     #[serde(flatten)]
     pub app: App,
     pub custom: Option<bool>,
+    pub main: bool,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -248,8 +293,7 @@ pub struct IconLight {
 pub struct IconDark {
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Version {
     #[serde(rename = "_etag")]
     pub etag: Option<String>,
@@ -259,12 +303,15 @@ pub struct Version {
     pub created: Option<String>,
     #[serde(rename = "_updated")]
     pub updated: Option<String>,
-    #[serde(rename = "app_id")]
-    pub app_id: u32,
+    pub app_id: Option<u32>,
     pub name: String,
+    #[validate(min_length=3)]
+    #[validate(max_length=20)]
     pub version: String,
     #[serde(rename = "update_status")]
     pub update_status: Option<String>,
+    #[validate(min_length=3)]
+    #[validate(max_length=20)]
     pub tag: String,
 }
 

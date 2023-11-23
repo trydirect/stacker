@@ -51,7 +51,7 @@ pub async fn add(
     match stack {
         Some(stack) => {
             let id = stack.id.clone();
-            let mut dc = DcBuilder::new(stack);
+            let dc = DcBuilder::new(stack);
             let fc = dc.build();
             tracing::debug!("Docker compose file content {:?}", fc);
 
@@ -104,7 +104,7 @@ pub async fn admin(
     match stack {
         Some(stack) => {
             let id = stack.id.clone();
-            let mut dc = DcBuilder::new(stack);
+            let dc = DcBuilder::new(stack);
             let fc = dc.build();
             // tracing::debug!("Docker compose file content {:?}", fc);
             return JsonResponse::build()
