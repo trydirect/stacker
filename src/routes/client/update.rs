@@ -68,7 +68,7 @@ pub async fn update_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            JsonResponse::build().err_internal_server_error("")
+            JsonResponse::build().internal_server_error("")
         }
     }
 }

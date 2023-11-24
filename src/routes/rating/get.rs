@@ -32,23 +32,19 @@ pub async fn get_handler(
             return JsonResponse::build().set_item(Some(rating)).ok("OK");
         }
         Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().err("Not Found");
+            return JsonResponse::build().not_found("");
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().err("Internal Server Error");
+            return JsonResponse::build().internal_server_error("");
         }
     }
 }
 
 #[tracing::instrument(name = "Get all ratings.")]
 #[get("")]
-pub async fn list_handler(
-    path: web::Path<()>,
-    pool: web::Data<PgPool>,
-) -> Result<impl Responder> {
+pub async fn list_handler(path: web::Path<()>, pool: web::Data<PgPool>) -> Result<impl Responder> {
     /// Get ratings of all users
-
     let query_span = tracing::info_span!("Get all rates.");
     // let category = path.0;
     match sqlx::query_as!(models::Rating, r"SELECT * FROM rating")
@@ -58,14 +54,14 @@ pub async fn list_handler(
     {
         Ok(rating) => {
             tracing::info!("Ratings found: {:?}", rating.len());
-            return JsonResponse::build().set_list(rating).ok("OK".to_owned());
+            return JsonResponse::build().set_list(rating).ok("OK");
         }
         Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("Not Found".to_owned());
+            return JsonResponse::build().not_found("");
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
+            return JsonResponse::build().internal_server_error("");
         }
     }
 }
