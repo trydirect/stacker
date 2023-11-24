@@ -1,20 +1,19 @@
+use crate::forms::stack::StackForm;
+use crate::helpers::JsonResponse;
+use crate::models;
+use crate::models::user::User;
+use actix_web::post;
 use actix_web::{
     web,
     web::{Bytes, Data},
     Responder, Result,
 };
-use crate::forms::stack::StackForm;
-use crate::helpers::JsonResponse;
-use crate::models::user::User;
-use actix_web::post;
 use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
-use crate::models;
-
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
@@ -23,16 +22,13 @@ pub async fn add(
     user: web::ReqData<User>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
-
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
-        Ok(f) => {
-            f
-        }
+        Ok(f) => f,
         Err(_err) => {
             let msg = format!("Invalid data. {:?}", _err);
-            return JsonResponse::<StackForm>::build().err("Invalid data".to_owned());
+            return JsonResponse::<StackForm>::build().bad_request("Invalid data");
         }
     };
 
@@ -87,12 +83,11 @@ pub async fn add(
                 "req_id: {} New stack details have been saved to database",
                 request_id
             );
-            return JsonResponse::build().set_id(record.id).ok("OK".to_owned());
+            return JsonResponse::build().set_id(record.id).ok("OK");
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().err("Internal Server Error".to_owned());
+            return JsonResponse::build().bad_request("Internal Server Error");
         }
     };
 }
-

@@ -4,6 +4,7 @@ use actix_web::{
     Responder, Result,
 };
 
+use crate::helpers::stack::builder::DcBuilder;
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
 use crate::models::Stack;
@@ -12,7 +13,6 @@ use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
-use crate::helpers::stack::builder::DcBuilder;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
 #[post("/{id}")]
@@ -29,10 +29,11 @@ pub async fn add(
         r#"
         SELECT * FROM user_stack WHERE id=$1 AND user_id=$2 LIMIT 1
         "#,
-        id, user.id
+        id,
+        user.id
     )
-        .fetch_one(pool.get_ref())
-        .await
+    .fetch_one(pool.get_ref())
+    .await
     {
         Ok(stack) => {
             tracing::info!("stack found: {:?}", stack.id,);
@@ -58,10 +59,10 @@ pub async fn add(
             return JsonResponse::build()
                 .set_id(id)
                 .set_item(fc.unwrap())
-                .ok("Success".to_owned());
+                .ok("Success");
         }
         None => {
-            return JsonResponse::build().err("Could not generate compose file".to_owned());
+            return JsonResponse::build().bad_request("Could not generate compose file");
         }
     }
 }
@@ -84,8 +85,8 @@ pub async fn admin(
         "#,
         id,
     )
-        .fetch_one(pool.get_ref())
-        .await
+    .fetch_one(pool.get_ref())
+    .await
     {
         Ok(stack) => {
             tracing::info!("stack found: {:?}", stack.id,);
@@ -109,11 +110,11 @@ pub async fn admin(
             // tracing::debug!("Docker compose file content {:?}", fc);
             return JsonResponse::build()
                 .set_id(id)
-                .set_item(fc.unwrap()).ok("Success".to_owned());
-
+                .set_item(fc.unwrap())
+                .ok("Success");
         }
         None => {
-            return JsonResponse::build().err("Could not generate compose file".to_owned());
+            return JsonResponse::build().bad_request("Could not generate compose file");
         }
     }
 }
