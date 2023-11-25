@@ -75,10 +75,7 @@ pub async fn add_handler(
             tracing::info!("New client {} have been saved to database", result.id);
             client.id = result.id;
 
-            return JsonResponse::build()
-                .set_id(client.id)
-                .set_item(Some(client))
-                .ok("OK");
+            return JsonResponse::build().set_item(Some(client)).ok("OK");
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
