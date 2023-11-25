@@ -7,8 +7,11 @@ use serde_derive::Serialize;
 #[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
     pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) item: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) list: Option<Vec<T>>,
 }
 
