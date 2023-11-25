@@ -122,20 +122,14 @@ where
                 }
             };
 
-            let content_length: usize =
-                get_header(&req, CONTENT_LENGTH.as_str()).map_err(|m| ErrorBadRequest(m))?;
-            let body = req
-                .take_payload()
-                .fold(
-                    BytesMut::with_capacity(content_length),
-                    |mut body, chunk| {
-                        let chunk = chunk.unwrap(); //todo process the potential error of unwrap
-                        body.extend_from_slice(&chunk); //todo
-
-                        ready(body)
-                    },
-                )
-                .await;
+            let content_length: usize = get_header(&req, CONTENT_LENGTH.as_str()).map_err(|m| {
+                ErrorBadRequest(JsonResponse::<Client>::build().set_msg(m).to_string())
+            })?;
+            let mut bytes = BytesMut::with_capacity(content_length);
+            let mut payload = req.take_payload();
+            while let Some(chunk) = payload.next().await {
+                bytes.extend_from_slice(&chunk?);
+            }
 
             let mut mac =
                 match Hmac::<Sha256>::new_from_slice(client.secret.as_ref().unwrap().as_bytes()) {
@@ -149,7 +143,7 @@ where
                     }
                 };
 
-            mac.update(body.as_ref());
+            mac.update(bytes.as_ref());
             let computed_hash = format!("{:x}", mac.finalize().into_bytes());
             if hash != computed_hash {
                 return Err(ErrorBadRequest(
@@ -160,7 +154,7 @@ where
             }
 
             let (_, mut payload) = actix_http::h1::Payload::create(true);
-            payload.unread_data(body.into());
+            payload.unread_data(bytes.into());
             req.set_payload(payload.into());
 
             match req.extensions_mut().insert(Arc::new(client)) {
