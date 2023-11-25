@@ -39,7 +39,9 @@ pub async fn disable_handler(
             Err("")
         }
     }
-    .map_err(|s| ErrorInternalServerError(s))?; //todo
+    .map_err(|s| {
+        ErrorInternalServerError(JsonResponse::<Client>::build().set_msg(s).to_string())
+    })?;
 
     client.secret = None;
     let query_span = tracing::info_span!("Updating client into the database");

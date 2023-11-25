@@ -74,10 +74,12 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id")
-                .map_err(|m| ErrorBadRequest(JsonResponse::<Client>::build().to_string(m)))?;
-            let hash: String = get_header(&req, "stacker-hash")
-                .map_err(|m| ErrorBadRequest(JsonResponse::<Client>::build().to_string(m)))?;
+            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| {
+                ErrorBadRequest(JsonResponse::<Client>::build().set_msg(m).to_string())
+            })?;
+            let hash: String = get_header(&req, "stacker-hash").map_err(|m| {
+                ErrorBadRequest(JsonResponse::<Client>::build().set_msg(m).to_string())
+            })?;
 
             let query_span = tracing::info_span!("Fetching the client by ID");
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
@@ -99,19 +101,23 @@ where
                 Ok(client) if client.secret.is_some() => client,
                 Ok(_client) => {
                     return Err(ErrorForbidden(
-                        JsonResponse::<Client>::build().to_string("client is not active"),
+                        JsonResponse::<Client>::build()
+                            .set_msg("client is not active")
+                            .to_string(),
                     ));
                 }
                 Err(sqlx::Error::RowNotFound) => {
                     return Err(ErrorNotFound(
-                        JsonResponse::<Client>::build().to_string("the client is not found"),
+                        JsonResponse::<Client>::build()
+                            .set_msg("the client is not found")
+                            .to_string(),
                     ));
                 }
                 Err(e) => {
                     tracing::error!("Failed to execute fetch query: {:?}", e);
 
                     return Err(ErrorInternalServerError(
-                        JsonResponse::<Client>::build().to_string(""),
+                        JsonResponse::<Client>::build().to_string(),
                     ));
                 }
             };
@@ -138,7 +144,7 @@ where
                         tracing::error!("error generating hmac {err:?}");
 
                         return Err(ErrorInternalServerError(
-                            JsonResponse::<Client>::build().to_string(""),
+                            JsonResponse::<Client>::build().to_string(),
                         ));
                     }
                 };
@@ -147,7 +153,9 @@ where
             let computed_hash = format!("{:x}", mac.finalize().into_bytes());
             if hash != computed_hash {
                 return Err(ErrorBadRequest(
-                    JsonResponse::<Client>::build().to_string("hash is wrong"),
+                    JsonResponse::<Client>::build()
+                        .set_msg("hash is wrong")
+                        .to_string(),
                 ));
             }
 
@@ -159,7 +167,7 @@ where
                 Some(_) => {
                     tracing::error!("client middleware already called once");
                     return Err(ErrorInternalServerError(
-                        JsonResponse::<Client>::build().to_string(""),
+                        JsonResponse::<Client>::build().to_string(),
                     ));
                 }
                 None => {}

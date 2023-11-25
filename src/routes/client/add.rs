@@ -55,7 +55,9 @@ pub async fn add_handler(
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
         .map(|s| Some(s))
-        .map_err(|s| ErrorInternalServerError(s))?; //todo move to helpers::JsonResponse
+        .map_err(|s| {
+            ErrorInternalServerError(JsonResponse::<Client>::build().set_msg(s).to_string())
+        })?;
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(
