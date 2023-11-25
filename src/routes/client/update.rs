@@ -40,12 +40,12 @@ pub async fn update_handler(
             Err("")
         }
     }
-    .map_err(|s| ErrorBadRequest(s))?; //todo
+    .map_err(|s| ErrorBadRequest(JsonResponse::<Client>::build().set_msg(s).to_string()))?;
 
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
         .map(|s| Some(s))
-        .map_err(|s| ErrorBadRequest(s))?; //todo
+        .map_err(|s| ErrorBadRequest(JsonResponse::<Client>::build().set_msg(s).to_string()))?;
 
     let query_span = tracing::info_span!("Updating client into the database");
     match sqlx::query!(
