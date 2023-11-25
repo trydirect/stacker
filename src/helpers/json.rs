@@ -53,6 +53,11 @@ where
         }
     }
 
+    fn to_string<I: Into<String>>(self, msg: I) -> String {
+        let json_response = self.to_json_response(msg);
+        serde_json::to_string(&json_response).unwrap()
+    }
+
     pub(crate) fn ok<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
         Ok(Json(self.to_json_response(msg)))
     }
@@ -61,38 +66,22 @@ where
         self,
         msg: I,
     ) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = self.to_json_response(msg);
-
-        Err(ErrorBadRequest(
-            serde_json::to_string(&json_response).unwrap(),
-        ))
+        Err(ErrorBadRequest(self.to_string(msg)))
     }
 
     pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = self.to_json_response(msg);
-
-        Err(ErrorNotFound(
-            serde_json::to_string(&json_response).unwrap(),
-        ))
+        Err(ErrorNotFound(self.to_string(msg)))
     }
 
     pub(crate) fn internal_server_error<I: Into<String>>(
         self,
         msg: I,
     ) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = self.to_json_response(msg);
-
-        Err(ErrorInternalServerError(
-            serde_json::to_string(&json_response).unwrap(),
-        ))
+        Err(ErrorInternalServerError(self.to_string(msg)))
     }
 
     pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = self.to_json_response(msg);
-
-        Err(ErrorConflict(
-            serde_json::to_string(&json_response).unwrap(),
-        ))
+        Err(ErrorConflict(self.to_string(msg)))
     }
 }
 
