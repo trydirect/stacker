@@ -9,7 +9,6 @@ struct DeployResponse {
     client: Arc<Client>,
 }
 
-//todo inject client through enpoint's inputs
 #[tracing::instrument(name = "Test deploy.")]
 #[post("/deploy")]
 pub async fn handler(client: web::ReqData<Arc<Client>>) -> Result<impl Responder> {
