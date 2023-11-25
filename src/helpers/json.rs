@@ -53,7 +53,7 @@ where
         }
     }
 
-    fn to_string<I: Into<String>>(self, msg: I) -> String {
+    pub(crate) fn to_string<I: Into<String>>(self, msg: I) -> String {
         let json_response = self.to_json_response(msg);
         serde_json::to_string(&json_response).unwrap()
     }

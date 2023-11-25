@@ -74,8 +74,10 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| ErrorBadRequest(m))?;
-            let hash: String = get_header(&req, "stacker-hash").map_err(|m| ErrorBadRequest(m))?;
+            let client_id: i32 = get_header(&req, "stacker-id")
+                .map_err(|m| ErrorBadRequest(JsonResponse::<Client>::build().to_string(m)))?;
+            let hash: String = get_header(&req, "stacker-hash")
+                .map_err(|m| ErrorBadRequest(JsonResponse::<Client>::build().to_string(m)))?;
 
             let query_span = tracing::info_span!("Fetching the client by ID");
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
@@ -96,15 +98,21 @@ where
             {
                 Ok(client) if client.secret.is_some() => client,
                 Ok(_client) => {
-                    return Err(ErrorForbidden("client is not active"));
+                    return Err(ErrorForbidden(
+                        JsonResponse::<Client>::build().to_string("client is not active"),
+                    ));
                 }
                 Err(sqlx::Error::RowNotFound) => {
-                    return Err(ErrorNotFound("the client is not found"));
+                    return Err(ErrorNotFound(
+                        JsonResponse::<Client>::build().to_string("the client is not found"),
+                    ));
                 }
                 Err(e) => {
                     tracing::error!("Failed to execute fetch query: {:?}", e);
 
-                    return Err(ErrorInternalServerError(""));
+                    return Err(ErrorInternalServerError(
+                        JsonResponse::<Client>::build().to_string(""),
+                    ));
                 }
             };
 
@@ -129,14 +137,18 @@ where
                     Err(err) => {
                         tracing::error!("error generating hmac {err:?}");
 
-                        return Err(ErrorInternalServerError(""));
+                        return Err(ErrorInternalServerError(
+                            JsonResponse::<Client>::build().to_string(""),
+                        ));
                     }
                 };
 
             mac.update(body.as_ref());
             let computed_hash = format!("{:x}", mac.finalize().into_bytes());
             if hash != computed_hash {
-                return Err(ErrorBadRequest("hash is wrong"));
+                return Err(ErrorBadRequest(
+                    JsonResponse::<Client>::build().to_string("hash is wrong"),
+                ));
             }
 
             let (_, mut payload) = actix_http::h1::Payload::create(true);
@@ -146,7 +158,9 @@ where
             match req.extensions_mut().insert(Arc::new(client)) {
                 Some(_) => {
                     tracing::error!("client middleware already called once");
-                    return Err(ErrorInternalServerError(""));
+                    return Err(ErrorInternalServerError(
+                        JsonResponse::<Client>::build().to_string(""),
+                    ));
                 }
                 None => {}
             }
