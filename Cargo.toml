@@ -8,7 +8,11 @@ path="src/lib.rs"
 
 [[bin]]
 path = "src/main.rs"
-name = "stacker"
+name = "server"
+
+[[bin]]
+path = "src/console.rs"
+name = "console"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
