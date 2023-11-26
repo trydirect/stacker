@@ -15,14 +15,14 @@ pub async fn add_handler(
     settings: web::Data<Arc<Settings>>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    match add_handler_inner(user, settings, pool).await {
+    match add_handler_inner(user.into_inner(), settings, pool).await {
         Ok(client) => JsonResponse::build().set_item(client).ok("Ok"),
         Err(msg) => JsonResponse::build().bad_request(msg),
     }
 }
 
 pub async fn add_handler_inner(
-    user: web::ReqData<User>,
+    user: User,
     settings: web::Data<Arc<Settings>>,
     pool: web::Data<PgPool>,
 ) -> Result<models::Client, String> {
