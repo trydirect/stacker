@@ -50,7 +50,6 @@ pub async fn add_handler(
     };
 
     let mut client = Client::default();
-    client.id = 1;
     client.user_id = user.id.clone();
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
