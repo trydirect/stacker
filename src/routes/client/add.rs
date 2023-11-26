@@ -1,9 +1,8 @@
 use crate::configuration::Settings;
 use crate::helpers::client;
 use crate::helpers::JsonResponse;
+use crate::models;
 use crate::models::user::User;
-use crate::models::Client;
-use actix_web::error::ErrorInternalServerError;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -16,6 +15,17 @@ pub async fn add_handler(
     settings: web::Data<Arc<Settings>>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    match add_handler_inner(user, settings, pool).await {
+        Ok(client) => JsonResponse::build().set_item(client).ok("Ok"),
+        Err(msg) => JsonResponse::build().bad_request(msg),
+    }
+}
+
+pub async fn add_handler_inner(
+    user: web::ReqData<User>,
+    settings: web::Data<Arc<Settings>>,
+    pool: web::Data<PgPool>,
+) -> Result<models::Client, String> {
     let query_span = tracing::info_span!("Counting the user's clients");
 
     match sqlx::query!(
@@ -40,23 +50,20 @@ pub async fn add_handler(
                     client_count
                 );
 
-                return JsonResponse::build().bad_request("Too many clients created");
+                return Err("Too many clients created".to_string());
             }
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return JsonResponse::build().internal_server_error("Internal Server Error");
+            return Err("Internal Server Error".to_string());
         }
     };
 
-    let mut client = Client::default();
+    let mut client = models::Client::default();
     client.user_id = user.id.clone();
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
-        .map(|s| Some(s))
-        .map_err(|s| {
-            ErrorInternalServerError(JsonResponse::<Client>::build().set_msg(s).to_string())
-        })?;
+        .map(|s| Some(s))?;
 
     let query_span = tracing::info_span!("Saving new client into the database");
     match sqlx::query!(
@@ -76,12 +83,11 @@ pub async fn add_handler(
             tracing::info!("New client {} have been saved to database", result.id);
             client.id = result.id;
 
-            return JsonResponse::build().set_item(Some(client)).ok("OK");
+            return Ok(client);
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            let err = format!("Failed to insert. {}", e);
-            return JsonResponse::build().bad_request(err);
+            return Err("Failed to insert".to_string());
         }
     }
 }
