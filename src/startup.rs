@@ -16,7 +16,7 @@ pub async fn run(
     db_pool: Pool<Postgres>,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
-    let settings = web::Data::new(Arc::new(settings));
+    let settings = web::Data::new(Arc::new(settings)); //todo web::Data is already an Arc
     let db_pool = web::Data::new(db_pool);
 
     // let address = format!("{}:{}", settings.app_host, settings.app_port);
