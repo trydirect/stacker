@@ -7,7 +7,6 @@ use actix_web::Error;
 use actix_web::HttpMessage;
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use std::sync::Arc;
 
 use crate::models::user::User;
 
@@ -16,7 +15,7 @@ pub async fn bearer_guard(
     req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
-    let settings = req.app_data::<web::Data<Arc<Settings>>>().unwrap();
+    let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let client = reqwest::Client::new();
     let resp = client
         .get(&settings.auth_url)

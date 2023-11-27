@@ -8,7 +8,6 @@ use actix_web::{
 use actix_web_httpauth::middleware::HttpAuthentication;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
-use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 
 pub async fn run(
@@ -16,13 +15,8 @@ pub async fn run(
     db_pool: Pool<Postgres>,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
-    let settings = web::Data::new(Arc::new(settings)); //todo web::Data is already an Arc
+    let settings = web::Data::new(settings);
     let db_pool = web::Data::new(db_pool);
-
-    // let address = format!("{}:{}", settings.app_host, settings.app_port);
-    // tracing::info!("Start server at {:?}", &address);
-    // let listener = std::net::TcpListener::bind(address)
-    //     .expect(&format!("failed to bind to {}", settings.app_port));
 
     let server = HttpServer::new(move || {
         App::new()
