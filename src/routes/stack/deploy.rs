@@ -18,7 +18,7 @@ pub async fn add(
     user: web::ReqData<User>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
-    sets: Data<Arc<Settings>>,
+    sets: Data<Settings>,
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("Received id: {}", id);

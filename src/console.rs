@@ -58,7 +58,7 @@ fn process_app_client_command(
             .await
             .expect("Failed to connect to database.");
 
-        let settings = web::Data::new(Arc::new(settings)); //todo web::Data is already an Arc
+        let settings = web::Data::new(settings); //todo web::Data is already an Arc
         let db_pool = web::Data::new(db_pool);
 
         //todo get user from trydirect
@@ -74,7 +74,4 @@ fn process_app_client_command(
             .expect("todo error"); //todo process the error
         Ok(())
     })
-
-    //rt.block_on(async {})
-    //Ok(())
 }

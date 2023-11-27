@@ -11,7 +11,7 @@ use tracing::Instrument;
 #[put("/{id}")]
 pub async fn update_handler(
     user: web::ReqData<User>,
-    settings: web::Data<Arc<Settings>>,
+    settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {

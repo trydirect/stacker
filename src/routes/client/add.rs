@@ -5,14 +5,13 @@ use crate::models;
 use crate::models::user::User;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
-use std::sync::Arc;
 use tracing::Instrument;
 
 #[tracing::instrument(name = "Add client.")]
 #[post("")]
 pub async fn add_handler(
     user: web::ReqData<User>,
-    settings: web::Data<Arc<Settings>>,
+    settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     match add_handler_inner(user.into_inner(), settings, pool).await {
@@ -23,7 +22,7 @@ pub async fn add_handler(
 
 pub async fn add_handler_inner(
     user: User,
-    settings: web::Data<Arc<Settings>>,
+    settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
 ) -> Result<models::Client, String> {
     let query_span = tracing::info_span!("Counting the user's clients");
