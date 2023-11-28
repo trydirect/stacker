@@ -35,7 +35,7 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
     match cli.command {
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(
-                stacker::console::commands::appclient::New::new(user_id),
+                stacker::console::commands::appclient::NewCommand::new(user_id),
             )),
         },
         _ => Err("command does not match".to_string()),
