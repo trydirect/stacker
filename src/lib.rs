@@ -1,4 +1,5 @@
 pub mod configuration;
+pub mod console;
 pub mod forms;
 pub mod helpers;
 mod middleware;
