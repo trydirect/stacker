@@ -62,22 +62,37 @@ impl AppClientNew {
 
 impl StackerCommand for AppClientNew {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Ok(())
+        let rt = Runtime::new()?;
+
+        rt.block_on(async {
+            let settings = get_configuration().expect("Failed to read configuration.");
+            let db_pool = PgPool::connect(&settings.database.connection_string())
+                .await
+                .expect("Failed to connect to database.");
+
+            let settings = web::Data::new(settings); //todo web::Data is already an Arc
+            let db_pool = web::Data::new(db_pool);
+
+            //todo get user from trydirect
+            let user = stacker::models::user::User {
+                id: "first_name".to_string(),
+                first_name: "first_name".to_string(),
+                last_name: "last_name".to_string(),
+                email: "email".to_string(),
+                email_confirmed: true,
+            };
+            stacker::routes::client::add_handler_inner(user, settings, db_pool)
+                .await
+                .expect("todo error"); //todo process the error
+            Ok(())
+        })
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /*
-    let db_pool = PgPool::connect(&settings.database.connection_string())
-        .await
-        .expect("Failed to connect to database.");
-    */
     let cli = Cli::parse();
-    println!("{cli:?}");
 
-    get_command(cli)?.call();
-
-    Ok(())
+    get_command(cli)?.call()
 }
 
 fn get_command(cli: Cli) -> Result<Box<dyn StackerCommand>, String> {
@@ -91,33 +106,4 @@ fn get_command(cli: Cli) -> Result<Box<dyn StackerCommand>, String> {
         }
         _ => Err("command does not match".to_string()),
     }
-}
-
-fn process_app_client_command(
-    command: AppClientCommands,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let rt = Runtime::new()?;
-
-    rt.block_on(async {
-        let settings = get_configuration().expect("Failed to read configuration.");
-        let db_pool = PgPool::connect(&settings.database.connection_string())
-            .await
-            .expect("Failed to connect to database.");
-
-        let settings = web::Data::new(settings); //todo web::Data is already an Arc
-        let db_pool = web::Data::new(db_pool);
-
-        //todo get user from trydirect
-        let user = stacker::models::user::User {
-            id: "first_name".to_string(),
-            first_name: "first_name".to_string(),
-            last_name: "last_name".to_string(),
-            email: "email".to_string(),
-            email_confirmed: true,
-        };
-        stacker::routes::client::add_handler_inner(user, settings, db_pool)
-            .await
-            .expect("todo error"); //todo process the error
-        Ok(())
-    })
 }
