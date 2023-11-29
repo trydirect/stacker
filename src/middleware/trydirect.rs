@@ -60,7 +60,6 @@ pub async fn bearer_guard(
         tracing::error!("already logged {existent_user:?}");
         return Err((ErrorInternalServerError(""), req));
     }
-    //todo move request outside
 
     Ok(req)
 }
