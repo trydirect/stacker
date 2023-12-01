@@ -74,12 +74,8 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| {
-                ErrorBadRequest(JsonResponse::<Client>::build().set_msg(m).to_string())
-            })?;
-            let hash: String = get_header(&req, "stacker-hash").map_err(|m| {
-                ErrorBadRequest(JsonResponse::<Client>::build().set_msg(m).to_string())
-            })?;
+            let client_id: i32 = get_header(&req, "stacker-id")?;
+            let hash: String = get_header(&req, "stacker-hash")?;
 
             let query_span = tracing::info_span!("Fetching the client by ID");
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
@@ -98,37 +94,20 @@ where
             .instrument(query_span)
             .await
             {
-                Ok(client) if client.secret.is_some() => client,
-                Ok(_client) => {
-                    return Err(ErrorForbidden(
-                        JsonResponse::<Client>::build()
-                            .set_msg("client is not active")
-                            .to_string(),
-                    ));
-                }
-                Err(sqlx::Error::RowNotFound) => {
-                    return Err(ErrorNotFound(
-                        JsonResponse::<Client>::build()
-                            .set_msg("the client is not found")
-                            .to_string(),
-                    ));
-                }
+                Ok(client) if client.secret.is_some() => Ok(client),
+                Ok(_client) => Err("client is not active".to_string()),
+                Err(sqlx::Error::RowNotFound) => Err("the client is not found".to_string()),
                 Err(e) => {
                     tracing::error!("Failed to execute fetch query: {:?}", e);
-
-                    return Err(ErrorInternalServerError(
-                        JsonResponse::<Client>::build().to_string(),
-                    ));
+                    Err("".to_string())
                 }
-            };
+            }?;
 
-            let content_length: usize = get_header(&req, CONTENT_LENGTH.as_str()).map_err(|m| {
-                ErrorBadRequest(JsonResponse::<Client>::build().set_msg(m).to_string())
-            })?;
+            let content_length: usize = get_header(&req, CONTENT_LENGTH.as_str())?;
             let mut bytes = BytesMut::with_capacity(content_length);
             let mut payload = req.take_payload();
             while let Some(chunk) = payload.next().await {
-                bytes.extend_from_slice(&chunk?);
+                bytes.extend_from_slice(&chunk.expect("can't unwrap the chunk"));
             }
 
             let mut mac =
@@ -136,21 +115,14 @@ where
                     Ok(mac) => mac,
                     Err(err) => {
                         tracing::error!("error generating hmac {err:?}");
-
-                        return Err(ErrorInternalServerError(
-                            JsonResponse::<Client>::build().to_string(),
-                        ));
+                        return Err("".to_string());
                     }
                 };
 
             mac.update(bytes.as_ref());
             let computed_hash = format!("{:x}", mac.finalize().into_bytes());
             if hash != computed_hash {
-                return Err(ErrorBadRequest(
-                    JsonResponse::<Client>::build()
-                        .set_msg("hash is wrong")
-                        .to_string(),
-                ));
+                return Err("hash is wrong".to_string());
             }
 
             let (_, mut payload) = actix_http::h1::Payload::create(true);
@@ -160,16 +132,24 @@ where
             match req.extensions_mut().insert(Arc::new(client)) {
                 Some(_) => {
                     tracing::error!("client middleware already called once");
-                    return Err(ErrorInternalServerError(
-                        JsonResponse::<Client>::build().to_string(),
-                    ));
+                    return Err("".to_string());
                 }
                 None => {}
             }
 
-            let service = service.lock().await;
-            service.call(req).await
+            Ok(req)
         }
+        .then(|req| async move {
+            match req {
+                Ok(req) => {
+                    let service = service.lock().await;
+                    service.call(req).await
+                }
+                Err(msg) => Err(ErrorBadRequest(
+                    JsonResponse::<Client>::build().set_msg(msg).to_string(),
+                )),
+            }
+        })
         .boxed_local()
     }
 }
