@@ -11,7 +11,7 @@ use actix_web::{get, post};
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
-use uuid::Uuid;
+// use uuid::Uuid;
 use crate::helpers::stack::builder::DcBuilder;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
@@ -35,7 +35,7 @@ pub async fn add(
         .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id,);
+            tracing::info!("stack found: {:?}", stack.id);
             Some(stack)
         }
         Err(sqlx::Error::RowNotFound) => {
@@ -88,7 +88,7 @@ pub async fn admin(
         .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id,);
+            tracing::info!("stack found: {:?}", stack.id);
             Some(stack)
         }
         Err(sqlx::Error::RowNotFound) => {
@@ -105,11 +105,20 @@ pub async fn admin(
         Some(stack) => {
             let id = stack.id.clone();
             let dc = DcBuilder::new(stack);
-            let fc = dc.build();
+            let fc = match dc.build() {
+                Some(fc) => {
+                    fc
+                }
+                None => {
+                    tracing::error!("Error. Compose builder returned an empty string");
+                    "".to_string()
+                }
+
+            };
             // tracing::debug!("Docker compose file content {:?}", fc);
             return JsonResponse::build()
                 .set_id(id)
-                .set_item(fc.unwrap()).ok("Success".to_owned());
+                .set_item(fc).ok("Success".to_owned());
 
         }
         None => {

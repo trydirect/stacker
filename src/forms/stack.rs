@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
@@ -11,8 +12,10 @@ pub struct Role {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Requirements {
-    #[validate(minimum=0.1)]
-    pub cpu: Option<f64>,
+    #[validate(min_length=1)]
+    #[validate(max_length=10)]
+    #[validate(pattern = r"^\d+\.?[0-9]+$")]
+    pub cpu: Option<String>,
     #[validate(min_length=1)]
     #[validate(max_length=10)]
     #[validate(pattern = r"^\d+G$")]
@@ -25,12 +28,18 @@ pub struct Requirements {
     pub ram_size: Option<String>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Port {
+    pub host_port: Option<String>,
+    pub container_port: Option<String>
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ports {
     #[serde(rename(deserialize = "sharedPorts"))]
     #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub shared_ports: Option<Vec<String>>,
+    // #[serde(alias = "shared_ports")]
+    pub shared_ports: Option<Vec<Port>>,
     pub ports: Option<Vec<String>>,
 }
 
@@ -159,42 +168,32 @@ pub struct Var {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Price {
     pub value: f64
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "camelCase")]
 pub struct Custom {
     pub web: Vec<Web>,
     pub feature: Option<Vec<Feature>>,
     pub service: Option<Vec<Service>>,
-    #[serde(rename = "servers_count")]
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
     pub servers_count: u32,
     #[validate(min_length=3)]
     #[validate(max_length=50)]
-    #[serde(rename = "custom_stack_code")]
     pub custom_stack_code: String,
-    #[serde(rename = "project_git_url")]
     #[validate(min_length=3)]
     #[validate(max_length=255)]
     pub project_git_url: Option<String>,
-    #[serde(rename = "custom_stack_category")]
     pub custom_stack_category: Option<Vec<String>>,
-    #[serde(rename = "custom_stack_short_description")]
     pub custom_stack_short_description: Option<String>,
-    #[serde(rename = "custom_stack_description")]
     pub custom_stack_description: Option<String>,
-    #[serde(rename = "project_name")]
     #[validate(min_length=3)]
     #[validate(max_length=255)]
     pub project_name: String,
-    #[serde(rename = "project_overview")]
     pub project_overview: Option<String>,
-    #[serde(rename = "project_description")]
     pub project_description: Option<String>,
+    pub networks: Option<Vec<String>>, // all networks
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -222,8 +221,6 @@ pub struct App {
     #[serde(flatten)]
     pub role: Role,
     pub default: Option<bool>,
-    #[serde(flatten)]
-    pub ports: Option<Ports>,
     pub versions: Option<Vec<Version>>,
     #[serde(flatten)]
     pub docker_image: DockerImage,
@@ -242,6 +239,7 @@ pub struct App {
     pub domain: Option<String>,
     pub category_id: Option<u32>,
     pub parent_app_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub descr: Option<String>,
     pub full_description: Option<String>,
     pub description: Option<String>,
@@ -250,9 +248,42 @@ pub struct App {
     pub repo_dir: Option<String>,
     pub url_app: Option<String>,
     pub url_git: Option<String>,
+    pub restart: Option<String>,
+    pub volumes: Option<Vec<Volume>>,
+    #[serde(flatten)]
+    pub environment: Environment,
+    #[serde(flatten)]
+    pub network: Networks,
+    // #[serde(flatten)]
+    // pub ports: Ports,
+    #[serde(rename(deserialize = "sharedPorts"))]
+    #[serde(rename(serialize = "shared_ports"))]
+    // #[serde(alias = "shared_ports")]
+    pub ports: Option<Vec<Port>>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Environment {
+    environment: Option<Vec<HashMap<String, String>>>
+}
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Volume {
+    host_path: Option<String>,
+    container_path: Option<String>
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Volumes {
+    volumes: Vec<Volume>
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Networks {
+    //network: Option<Vec<String>>
+    network: Option<String>
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Web {
     #[serde(flatten)]
     pub app: App,
@@ -260,28 +291,33 @@ pub struct Web {
     pub main: bool,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Feature {
+    // #[serde(rename(deserialize = "sharedPorts"))]
+    // #[serde(rename(serialize = "shared_ports"))]
+    // #[serde(alias = "shared_ports")]
+    // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
     pub app: App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "camelCase")]
 pub struct Service {
+    // #[serde(rename(deserialize = "sharedPorts"))]
+    // #[serde(rename(serialize = "shared_ports"))]
+    // #[serde(alias = "shared_ports")]
+    // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
     pub(crate) app: App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Icon {
     pub light: IconLight,
     pub dark: IconDark,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct IconLight {
     pub width: i64,
     pub height: i64,
@@ -289,7 +325,6 @@ pub struct IconLight {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct IconDark {
 }
 

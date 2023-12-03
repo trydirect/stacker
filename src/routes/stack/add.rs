@@ -38,6 +38,7 @@ pub async fn add(
     };
 
     let stack_name = form.custom.custom_stack_code.clone();
+    tracing::debug!("form before convert {:?}", form);
 
     let query_span = tracing::info_span!("Check project/stack existence by custom_stack_code.");
     match sqlx::query_as!(
@@ -81,12 +82,14 @@ pub async fn add(
 
     let query_span = tracing::info_span!("Saving new stack details into the database");
 
-    let errors = form.validate().is_ok();
-    println!("{:?}",errors);
+    let errors = form.validate().unwrap_err();
+    tracing::debug!("{:?}",errors);
+
+
     let body: Value = match serde_json::to_value::<StackForm>(form) {
         Ok(body) => body,
         Err(err) => {
-            tracing::error!("request_id {} unwrap body {:?}", request_id, err);
+            tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
             serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
         }
     };
