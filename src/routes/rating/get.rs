@@ -32,11 +32,11 @@ pub async fn get_handler(
             return JsonResponse::build().set_item(Some(rating)).ok("OK");
         }
         Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().err("Not Found");
+            return JsonResponse::build().bad_request("Not Found");
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().err("Internal Server Error");
+            return JsonResponse::build().bad_request("Internal Server Error");
         }
     }
 }
@@ -58,14 +58,14 @@ pub async fn list_handler(
     {
         Ok(rating) => {
             tracing::info!("Ratings found: {:?}", rating.len());
-            return JsonResponse::build().set_list(rating).ok("OK".to_owned());
+            return JsonResponse::build().set_list(rating).ok("OK");
         }
         Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("Not Found".to_owned());
+            return JsonResponse::build().not_found("Not Found");
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
+            return JsonResponse::build().internal_server_error("Internal Server Error");
         }
     }
 }

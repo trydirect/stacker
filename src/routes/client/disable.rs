@@ -62,7 +62,7 @@ pub async fn disable_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            JsonResponse::build().err("")
+            JsonResponse::build().bad_request("")
         }
     }
 }

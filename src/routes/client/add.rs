@@ -41,12 +41,12 @@ pub async fn add_handler(
                     client_count
                 );
 
-                return JsonResponse::build().err("Too many clients created".to_owned());
+                return JsonResponse::build().bad_request("Too many clients created");
             }
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
+            return JsonResponse::build().internal_server_error("Internal Server Error");
         }
     };
 
@@ -79,12 +79,12 @@ pub async fn add_handler(
             return JsonResponse::build()
                 .set_id(client.id)
                 .set_item(Some(client))
-                .ok("OK".to_owned());
+                .ok("OK");
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
             let err = format!("Failed to insert. {}", e);
-            return JsonResponse::build().err(err);
+            return JsonResponse::build().bad_request(err);
         }
     }
 }
