@@ -79,8 +79,8 @@ impl AsRef<DockerImage> for App {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct StackForm {
-    #[validate(min_length=2)]
-    #[validate(max_length=255)]
+    // #[validate(min_length=2)]
+    // #[validate(max_length=255)]
     #[serde(rename= "commonDomain")]
     pub common_domain: Option<String>,
     pub domain_list: Option<DomainList>,

@@ -67,7 +67,8 @@ pub async fn run(
                     .service(crate::routes::stack::compose::admin)
                     .service(crate::routes::stack::get::item)
                     .service(crate::routes::stack::get::list)
-                    .service(crate::routes::stack::add::add),
+                    .service(crate::routes::stack::add::add)
+                    .service(crate::routes::stack::update::update),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())
