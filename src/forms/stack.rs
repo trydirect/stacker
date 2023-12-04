@@ -34,14 +34,14 @@ pub struct Port {
     pub container_port: Option<String>
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Ports {
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    // #[serde(alias = "shared_ports")]
-    pub shared_ports: Option<Vec<Port>>,
-    pub ports: Option<Vec<String>>,
-}
+// #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+// pub struct Ports {
+//     #[serde(rename(deserialize = "sharedPorts"))]
+//     #[serde(rename(serialize = "shared_ports"))]
+//     // #[serde(alias = "shared_ports")]
+//     pub shared_ports: Option<Vec<Port>>,
+//     pub ports: Option<Vec<String>>,
+// }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerImage {
@@ -258,7 +258,7 @@ pub struct App {
     // pub ports: Ports,
     #[serde(rename(deserialize = "sharedPorts"))]
     #[serde(rename(serialize = "shared_ports"))]
-    // #[serde(alias = "shared_ports")]
+    #[serde(alias = "shared_ports")]
     pub ports: Option<Vec<Port>>,
 }
 
