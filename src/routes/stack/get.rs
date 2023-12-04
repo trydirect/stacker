@@ -31,14 +31,14 @@ pub async fn item(
     {
         Ok(stack) => {
             tracing::info!("Stack found: {:?}", stack.id,);
-            return JsonResponse::build().set_item(Some(stack)).ok("OK".to_owned());
+            return JsonResponse::build().set_item(Some(stack)).ok("OK");
         }
         Err(sqlx::Error::RowNotFound) => {
-            JsonResponse::build().not_found("Record not found".to_owned())
+            JsonResponse::build().not_found("Record not found")
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return JsonResponse::build().internal_error("Could not fetch data".to_owned());
+            return JsonResponse::build().internal_server_error("Could not fetch data");
         }
     }
 }
@@ -81,7 +81,7 @@ pub async fn list(
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return JsonResponse::build().internal_error("Could not fetch".to_string());
+            return JsonResponse::build().internal_server_error("Could not fetch".to_string());
         }
     }
 }

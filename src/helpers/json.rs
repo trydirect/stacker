@@ -1,16 +1,18 @@
-use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorNotFound, ErrorInternalServerError};
-use serde_derive::Serialize;
+use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound};
 use actix_web::web::Json;
 use actix_web::Error;
 use actix_web::Result;
+use serde_derive::Serialize;
 
 #[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
     pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) item: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) list: Option<Vec<T>>,
-    // pub(crate) form: Option<T>
 }
 
 #[derive(Serialize, Default)]
@@ -18,6 +20,7 @@ pub struct JsonResponseBuilder<T>
 where
     T: serde::Serialize + Default,
 {
+    message: String,
     id: Option<i32>,
     item: Option<T>,
     list: Option<Vec<T>>,
@@ -27,6 +30,11 @@ impl<T> JsonResponseBuilder<T>
 where
     T: serde::Serialize + Default,
 {
+    pub(crate) fn set_msg<I: Into<String>>(mut self, msg: I) -> Self {
+        self.message = msg.into();
+        self
+    }
+
     pub(crate) fn set_item(mut self, item: T) -> Self {
         self.item = Some(item);
         self
@@ -42,75 +50,44 @@ where
         self
     }
 
-    fn to_json_response(self, msg: String) -> JsonResponse<T> {
+    fn to_json_response(self) -> JsonResponse<T> {
         JsonResponse {
-            message: msg,
+            message: self.message,
             id: self.id,
             item: self.item,
             list: self.list,
         }
     }
 
+    pub(crate) fn to_string(self) -> String {
+        let json_response = self.to_json_response();
+        serde_json::to_string(&json_response).unwrap()
+    }
+
     pub(crate) fn ok<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        Ok(Json(self.to_json_response(msg.into())))
+        Ok(Json(self.set_msg(msg).to_json_response()))
     }
 
-    pub(crate) fn err<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = self.to_json_response(msg.into());
-
-        Err(ErrorBadRequest(
-            serde_json::to_string(&json_response).unwrap(),
-        ))
-    }
-
-    pub(crate) fn not_found(self, msg: String) -> Result<Json<JsonResponse<T>>, Error>  {
-
-        let json_response = JsonResponse {
-            message: msg,
-            id: self.id,
-            item: self.item,
-            list: self.list
-        };
-
-        Err(ErrorNotFound(
-            serde_json::to_string(&json_response).unwrap()))
-    }
-
-    pub(crate) fn internal_error(self, msg: String) -> Result<Json<JsonResponse<T>>, Error>  {
-
-        let json_response = JsonResponse {
-            message: msg,
-            id: self.id,
-            item: self.item,
-            list: self.list
-        };
-
-        Err(ErrorInternalServerError(
-            serde_json::to_string(&json_response).unwrap()))
-    }
-
-    pub(crate) fn conflict(self, msg: String) -> Result<Json<JsonResponse<T>>, Error>  {
-
-        let json_response = JsonResponse {
-            message: msg,
-            id: self.id,
-            item: self.item,
-            list: self.list
-        };
-
-        Err(ErrorConflict(
-            serde_json::to_string(&json_response).unwrap()))
-    }
-
-    pub(crate) fn err_internal_server_error<I: Into<String>>(
+    pub(crate) fn bad_request<I: Into<String>>(
         self,
         msg: I,
     ) -> Result<Json<JsonResponse<T>>, Error> {
-        let json_response = self.to_json_response(msg.into());
+        Err(ErrorBadRequest(self.set_msg(msg).to_string()))
+    }
 
-        Err(ErrorInternalServerError(
-            serde_json::to_string(&json_response).unwrap(),
-        ))
+    pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
+        Err(ErrorNotFound(self.set_msg(msg).to_string()))
+    }
+
+    pub(crate) fn internal_server_error<I: Into<String>>(
+        self,
+        msg: I,
+    ) -> Result<Json<JsonResponse<T>>, Error> {
+        Err(ErrorInternalServerError(self.set_msg(msg).to_string()))
+    }
+
+    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
+        Err(ErrorConflict(self.set_msg(msg).to_string()))
     }
 }
 
@@ -120,18 +97,5 @@ where
 {
     pub fn build() -> JsonResponseBuilder<T> {
         JsonResponseBuilder::default()
-    }
-
-    pub(crate) fn new(message: String,
-                      id: Option<i32>,
-                      item:Option<T>,
-                      list: Option<Vec<T>>) -> Self {
-        tracing::debug!("Executed..");
-        JsonResponse {
-            message,
-            id,
-            item,
-            list,
-        }
     }
 }

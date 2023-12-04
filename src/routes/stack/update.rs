@@ -43,7 +43,7 @@ pub async fn update(
         Err(e) => {
             tracing::error!("Failed to fetch record: {:?}, error: {:?}", id, e);
             return JsonResponse::<models::Stack>::build()
-                .err(format!("Object not found {}", id));
+                .not_found(format!("Object not found {}", id));
         }
     };
 
@@ -71,7 +71,7 @@ pub async fn update(
         let errors = form.validate().unwrap_err();
         let err_msg = format!("Invalid data received {:?}", &errors.to_string());
         tracing::debug!(err_msg);
-        return JsonResponse::build().err(errors.to_string());
+        return JsonResponse::build().bad_request(errors.to_string());
     }
 
     let body: Value = match serde_json::to_value::<StackForm>(form.into_inner()) {
@@ -105,11 +105,11 @@ pub async fn update(
                 "req_id: {} stack details have been saved to database",
                 request_id
             );
-            return JsonResponse::build().set_id(id).ok("OK".to_owned());
+            return JsonResponse::build().set_id(id).ok("OK");
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().err("Internal Server Error".to_owned());
+            return JsonResponse::build().bad_request("Internal Server Error");
         }
     };
 }

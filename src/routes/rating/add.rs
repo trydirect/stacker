@@ -40,7 +40,7 @@ pub async fn add_handler(
         Err(e) => {
             tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
             return JsonResponse::<models::Rating>::build()
-                .err(format!("Object not found {}", form.obj_id));
+                .not_found(format!("Object not found {}", form.obj_id).as_str());
         }
     };
 
@@ -63,12 +63,12 @@ pub async fn add_handler(
                 form.obj_id,
                 form.category
             );
-            return JsonResponse::build().conflict("Already rated".to_owned());
+            return JsonResponse::build().conflict("Already rated");
         }
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().err(format!("Internal Server Error"));
+            return JsonResponse::build().bad_request("Internal Server Error");
         }
     }
 
@@ -102,7 +102,7 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            JsonResponse::build().internal_error("Failed to insert".to_owned())
+            JsonResponse::build().internal_server_error("Failed to insert")
         }
     }
 }

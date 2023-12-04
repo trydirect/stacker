@@ -58,10 +58,10 @@ pub async fn add(
             return JsonResponse::build()
                 .set_id(id)
                 .set_item(fc.unwrap())
-                .ok("Success".to_owned());
+                .ok("Success");
         }
         None => {
-            return JsonResponse::build().err("Could not generate compose file".to_owned());
+            return JsonResponse::build().bad_request("Could not generate compose file");
         }
     }
 }
@@ -118,11 +118,11 @@ pub async fn admin(
             // tracing::debug!("Docker compose file content {:?}", fc);
             return JsonResponse::build()
                 .set_id(id)
-                .set_item(fc).ok("Success".to_owned());
+                .set_item(fc).ok("Success");
 
         }
         None => {
-            return JsonResponse::build().err("Could not generate compose file".to_owned());
+            return JsonResponse::build().bad_request("Could not generate compose file");
         }
     }
 }

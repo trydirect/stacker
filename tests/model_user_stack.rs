@@ -18,7 +18,7 @@ fn test_deserialize_user_stack_web() {
     //     }
     //     Err(_err) => {
     //         let msg = format!("Invalid data. {:?}", _err);
-    //         return JsonResponse::<StackForm>::build().err(msg);
+    //         return JsonResponse::<StackForm>::build().bad_request(msg);
     //     }
     // };
     //
@@ -38,7 +38,7 @@ fn test_deserialize_user_stack() {
     //     }
     //     Err(_err) => {
     //         let msg = format!("Invalid data. {:?}", _err);
-    //         return JsonResponse::<StackForm>::build().err(msg);
+    //         return JsonResponse::<StackForm>::build().bad_request(msg);
     //     }
     // };
     //
