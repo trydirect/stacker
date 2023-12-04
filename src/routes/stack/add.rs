@@ -25,6 +25,7 @@ pub async fn add(
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
 
+    // @todo ACL
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
@@ -82,9 +83,12 @@ pub async fn add(
 
     let query_span = tracing::info_span!("Saving new stack details into the database");
 
-    let errors = form.validate().unwrap_err();
-    tracing::debug!("{:?}",errors);
-
+    if !form.validate().is_ok() {
+        let errors = form.validate().unwrap_err();
+        let err_msg = format!("Invalid data received {:?}", &errors.to_string());
+        tracing::debug!(err_msg);
+        return JsonResponse::build().err(errors.to_string());// tmp solution
+    }
 
     let body: Value = match serde_json::to_value::<StackForm>(form) {
         Ok(body) => body,

@@ -9,7 +9,8 @@ pub(crate) struct JsonResponse<T> {
     pub(crate) message: String,
     pub(crate) id: Option<i32>,
     pub(crate) item: Option<T>,
-    pub(crate) list: Option<Vec<T>>
+    pub(crate) list: Option<Vec<T>>,
+    // pub(crate) form: Option<T>
 }
 
 #[derive(Serialize, Default)]

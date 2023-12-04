@@ -15,7 +15,7 @@ use tracing::Instrument;
 use crate::helpers::stack::builder::DcBuilder;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
-#[post("/{id}")]
+#[get("/{id}")]
 pub async fn add(
     user: web::ReqData<User>,
     path: web::Path<(i32,)>,
