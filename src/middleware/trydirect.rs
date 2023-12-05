@@ -27,11 +27,11 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
             .map_err(|err| "no resp from auth server".to_string())?;
 
         if !resp.status().is_success() {
-            return Err(("401 Unauthorized".to_string(), req));
+            return Err("401 Unauthorized".to_string());
         }
 
         resp
-            .json()
+            .json::<UserForm>()
             .await
             .map_err(|err| "can't parse the response body".to_string())?
             .try_into() //User"Could not create User from form data"
