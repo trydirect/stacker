@@ -13,12 +13,9 @@ use crate::helpers::JsonResponse;
 use crate::models::user::User; //todo
 
 #[tracing::instrument(name = "Trydirect bearer guard.")]
-pub async fn bearer_guard(
-    req: ServiceRequest,
-    credentials: BearerAuth,
-    ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
-    async {
-        let settings = req.app_data::<web::Data<Settings>>().unwrap();
+pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
+    let settings = req.app_data::<web::Data<Settings>>().unwrap();
+    async move {
         let client = reqwest::Client::new();
         let resp = client
             .get(&settings.auth_url)
@@ -26,51 +23,32 @@ pub async fn bearer_guard(
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json")
             .send()
-            .await;
+            .await
+            .map_err(|err| "no resp from auth server".to_string())?;
 
-        let resp = match resp {
-            Ok(resp) if resp.status().is_success() => resp,
-            Ok(resp) => {
-                tracing::error!("Authentication service returned no success {:?}", resp);
-                return Err(("401 Unauthorized".to_string(), req));
-            }
-            Err(err) => {
-                tracing::error!("error from reqwest {:?}", err);
-                return Err((err.to_string(), req));
-            }
-        };
-
-        let user_form: UserForm = match resp.json().await {
-            Ok(user) => {
-                tracing::info!("unpacked user {user:?}");
-                user
-            }
-            Err(err) => {
-                tracing::error!("can't parse the response body {:?}", err);
-                return Err(("can't parse the response body".to_string(), req));
-            }
-        };
-
-        let user: User = match user_form.try_into() {
-            Ok(user) => user,
-            Err(err) => {
-                tracing::error!("Could not create User from form data: {:?}", err);
-                return Err(("Could not create User from form data".to_string(), req));
-            }
-        };
-        let existent_user = req.extensions_mut().insert(user);
-        if existent_user.is_some() {
-            tracing::error!("already logged {existent_user:?}");
-            return Err(("user already logged".to_string(), req));
+        if !resp.status().is_success() {
+            return Err(("401 Unauthorized".to_string(), req));
         }
 
-        Ok(req)
+        resp
+            .json()
+            .await
+            .map_err(|err| "can't parse the response body".to_string())?
+            .try_into() //User"Could not create User from form data"
     }.await
-    .map_err(|(err, req)| {
-        tracing::error!("Authentication service returned no success {:?}", err);
-        (ErrorUnauthorized(JsonResponse::<i32>::build().set_msg(err).to_string()), req) //todo
-                                                                                        //default
-                                                                                        //type for
-                                                                                        //JsonResponse
+    .map(move |result| {
+        match result {
+            Ok(user) => {
+                let existent_user = req.extensions_mut().insert(user);
+                if existent_user.is_some() {
+                    return Err((ErrorUnauthorized(JsonResponse::<i32>::build().set_msg("user already logged").to_string()), req));
+                }
+
+                return Ok(req);
+            }
+            Err(err) => {
+                return Err((ErrorUnauthorized(JsonResponse::<i32>::build().set_msg(err).to_string()), req));
+            }
+        }
     })
 }
