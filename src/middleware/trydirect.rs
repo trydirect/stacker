@@ -1,16 +1,8 @@
-use crate::configuration::Settings;
-use futures::future::{FutureExt};
-use crate::forms::user::UserForm;
-use actix_web::dev::ServiceRequest;
-use actix_web::error::{ErrorInternalServerError, ErrorUnauthorized};
-use actix_web::web::{self};
-use actix_web::Error;
-use actix_web::HttpMessage;
+use crate::{models::user::User, configuration::Settings, forms::user::UserForm, helpers::JsonResponse};
+use actix_web::{web, dev::ServiceRequest, Error, HttpMessage, error::{ErrorInternalServerError, ErrorUnauthorized}};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
+use futures::future::{FutureExt};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use crate::helpers::JsonResponse;
-
-use crate::models::user::User; //todo
 
 #[tracing::instrument(name = "Trydirect bearer guard.")]
 pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
