@@ -1,24 +1,10 @@
 use actix_web::{get, web, App, HttpServer, Responder};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
-use stacker::configuration::{get_configuration, DatabaseSettings};
+use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
 use stacker::forms;
 use std::net::TcpListener;
 
-pub async fn spawn_app() -> TestApp {
-    let mut configuration = get_configuration().expect("Failed to get configuration");
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("Failed to bind port for testing auth server");
-
-    configuration.auth_url = format!(
-        "http://127.0.0.1:{}/me",
-        listener.local_addr().unwrap().port()
-    );
-    println!("Auth Server is running on: {}", configuration.auth_url);
-
-    let handle = tokio::spawn(mock_auth_server(listener));
-    handle.await.expect("Auth Server can not be started");
-
+pub async fn spawn_app_with_configuration(mut configuration: Settings) -> TestApp {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
 
     let port = listener.local_addr().unwrap().port();
@@ -38,6 +24,24 @@ pub async fn spawn_app() -> TestApp {
         address,
         db_pool: connection_pool,
     }
+}
+
+pub async fn spawn_app() -> TestApp {
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("Failed to bind port for testing auth server");
+
+    configuration.auth_url = format!(
+        "http://127.0.0.1:{}/me",
+        listener.local_addr().unwrap().port()
+    );
+    println!("Auth Server is running on: {}", configuration.auth_url);
+
+    let handle = tokio::spawn(mock_auth_server(listener));
+    handle.await.expect("Auth Server can not be started");
+
+    spawn_app_with_configuration(configuration).await
 }
 
 pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
