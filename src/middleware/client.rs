@@ -75,7 +75,7 @@ where
         let service = self.service.clone();
         async move {
             let client_id: i32 = get_header(&req, "stacker-id")?;
-            let hash: String = get_header(&req, "stacker-hash")?;
+            let header_hash: String = get_header(&req, "stacker-hash")?;
 
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
             let mut client: Client = db_fetch_client(db_pool, client_id).await?;
@@ -83,31 +83,11 @@ where
                 return Err("client is not active".to_string());
             }
 
-            let content_length: usize = get_header(&req, CONTENT_LENGTH.as_str())?;
-            let mut bytes = BytesMut::with_capacity(content_length);
-            let mut payload = req.take_payload();
-            while let Some(chunk) = payload.next().await {
-                bytes.extend_from_slice(&chunk.expect("can't unwrap the chunk"));
-            }
-
-            let mut mac =
-                match Hmac::<Sha256>::new_from_slice(client.secret.as_ref().unwrap().as_bytes()) {
-                    Ok(mac) => mac,
-                    Err(err) => {
-                        tracing::error!("error generating hmac {err:?}");
-                        return Err("".to_string());
-                    }
-                };
-
-            mac.update(bytes.as_ref());
-            let computed_hash = format!("{:x}", mac.finalize().into_bytes());
-            if hash != computed_hash {
+            let client_secret = client.secret.as_ref().unwrap().as_bytes();
+            let body_hash = compute_body_hash(&mut req, client_secret).await?;
+            if header_hash != body_hash {
                 return Err("hash is wrong".to_string());
             }
-
-            let (_, mut payload) = actix_http::h1::Payload::create(true);
-            payload.unread_data(bytes.into());
-            req.set_payload(payload.into());
 
             match req.extensions_mut().insert(Arc::new(client)) {
                 Some(_) => {
@@ -172,4 +152,29 @@ async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Cli
                 }
             }
         })
+}
+
+async fn compute_body_hash(req: &mut ServiceRequest, client_secret: &[u8]) -> Result<String, String> {
+    let content_length: usize = get_header(req, CONTENT_LENGTH.as_str())?;
+    let mut body = BytesMut::with_capacity(content_length);
+    let mut payload = req.take_payload();
+    while let Some(chunk) = payload.next().await {
+        body.extend_from_slice(&chunk.expect("can't unwrap the chunk"));
+    }
+
+    let mut mac =
+        match Hmac::<Sha256>::new_from_slice(client_secret) {
+            Ok(mac) => mac,
+            Err(err) => {
+                tracing::error!("error generating hmac {err:?}");
+                return Err("".to_string());
+            }
+        };
+
+    mac.update(body.as_ref());
+    let (_, mut payload) = actix_http::h1::Payload::create(true);
+    payload.unread_data(body.into());
+    req.set_payload(payload.into());
+
+    Ok(format!("{:x}", mac.finalize().into_bytes()))
 }
