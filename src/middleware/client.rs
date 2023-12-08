@@ -77,31 +77,11 @@ where
             let client_id: i32 = get_header(&req, "stacker-id")?;
             let hash: String = get_header(&req, "stacker-hash")?;
 
-            let query_span = tracing::info_span!("Fetching the client by ID");
-            let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
-
-            let mut client: Client = match sqlx::query_as!(
-                Client,
-                r#"
-            SELECT
-               id, user_id, secret
-            FROM client c
-            WHERE c.id = $1
-            "#,
-                client_id,
-            )
-            .fetch_one(db_pool.get_ref())
-            .instrument(query_span)
-            .await
-            {
-                Ok(client) if client.secret.is_some() => Ok(client),
-                Ok(_client) => Err("client is not active".to_string()),
-                Err(sqlx::Error::RowNotFound) => Err("the client is not found".to_string()),
-                Err(e) => {
-                    tracing::error!("Failed to execute fetch query: {:?}", e);
-                    Err("".to_string())
-                }
-            }?;
+            let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
+            let mut client: Client = db_fetch_client(db_pool, client_id).await?;
+            if client.secret.is_none() {
+                return Err("client is not active".to_string());
+            }
 
             let content_length: usize = get_header(&req, CONTENT_LENGTH.as_str())?;
             let mut bytes = BytesMut::with_capacity(content_length);
@@ -165,9 +145,31 @@ where
 
     let header_value: &str = header_value
         .to_str()
-        .map_err(|_| format!("header {header_name} can't be converted to string"))?; //map_err
-                                                                                     //
+        .map_err(|_| format!("header {header_name} can't be converted to string"))?; 
+
     header_value
         .parse::<T>()
         .map_err(|_| format!("header {header_name} has wrong type"))
+}
+
+async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Client, String> {
+    let query_span = tracing::info_span!("Fetching the client by ID");
+
+    sqlx::query_as!(
+        Client,
+        r#"SELECT id, user_id, secret FROM client c WHERE c.id = $1"#,
+        client_id,
+        )
+        .fetch_one(db_pool)
+        .instrument(query_span)
+        .await
+        .map_err(|err| {
+            match err {
+                sqlx::Error::RowNotFound => "the client is not found".to_string(),
+                e => {
+                    tracing::error!("Failed to execute fetch query: {:?}", e);
+                    String::new()
+                }
+            }
+        })
 }
