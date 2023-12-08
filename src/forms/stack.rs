@@ -264,12 +264,12 @@ pub struct App {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
-    environment: Option<Vec<HashMap<String, String>>>
+    pub(crate) environment: Option<Vec<HashMap<String, String>>>
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volume {
-    host_path: Option<String>,
-    container_path: Option<String>
+    pub(crate) host_path: Option<String>,
+    pub(crate) container_path: Option<String>
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

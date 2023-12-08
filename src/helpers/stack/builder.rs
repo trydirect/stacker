@@ -1,11 +1,6 @@
-use crate::helpers::stack::dctypes::{
-    Compose,
-    Port,
-    Ports,
-    PublishedPort,
-    Service,
-    Services
-};
+use std::collections::HashMap;
+use indexmap::IndexMap;
+use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services, Volumes, Environment, Entrypoint, AdvancedVolumes, SingleValue};
 use serde_yaml;
 use crate::forms::{StackForm, stack};
 use crate::models::stack::Stack;
@@ -37,6 +32,24 @@ pub struct DcBuilder {
     pub(crate) stack: Stack
 }
 
+impl TryInto<AdvancedVolumes> for &stack::Volume {
+    type Error = String;
+    fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
+
+        let source = self.host_path.clone();
+        let target = self.container_path.clone();
+        tracing::debug!("Volume conversion result: source: {:?} target: {:?}", source, target);
+        Ok(AdvancedVolumes {
+            source: source,
+            target: target.unwrap_or("".to_string()),
+            _type: "".to_string(),
+            read_only: false,
+            bind: None,
+            volume: None,
+            tmpfs: None,
+        })
+    }
+}
 
 impl TryInto<Port> for &stack::Port {
     type Error = String;
@@ -79,6 +92,21 @@ fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, St
     Ok(_ports)
 }
 
+// impl TryInto<IndexMap<String, Option<SingleValue>>> for HashMap<String, String> {
+//     type Error = String;
+//
+//     fn try_into(self) -> Result<IndexMap<String, Option<SingleValue>>, Self::Error> {
+//         let mut index_map = IndexMap::new();
+//
+//         for (key, value) in self {
+//             let single_value = Some(SingleValue::String(value));
+//             index_map.insert(key, single_value);
+//         }
+//
+//         Ok(index_map)
+//     }
+// }
+
 impl DcBuilder {
 
     pub fn new(stack: Stack) -> Self {
@@ -110,9 +138,28 @@ impl DcBuilder {
                         .iter()
                         .map(|x| x.try_into().unwrap())
                         .collect();
+
+                    let volumes: Vec<AdvancedVolumes> = app_type.app.volumes
+                        .unwrap()
+                        .iter()
+                        .map(|x| x.try_into().unwrap())
+                        .collect();
+
+                    let mut envs = IndexMap::new();
+                    for item in app_type.app.environment.environment.unwrap() {
+                        let items = item
+                            .into_iter()
+                            .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
+                            .collect::<IndexMap<_, _>>();
+
+                        envs.extend(items);
+                    }
+                    // tracing::debug!("envs: {:?}", envs);
                     service.ports = Ports::Long(ports);
                     service.restart = Some("always".to_owned());
-                    tracing::debug!("service 1 {:?}", &service);
+                    service.volumes = Volumes::Advanced(volumes);
+                    service.environment = Environment::KvPair(envs);
+                    // tracing::debug!("service 1 {:?}", &service);
                     services.insert(
                         code,
                         Some(service),
@@ -182,6 +229,7 @@ impl DcBuilder {
                 ()
             }
         }
+
 
         let compose_content = Compose {
             version: Some("3.8".to_string()),
