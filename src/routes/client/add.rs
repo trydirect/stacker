@@ -6,22 +6,23 @@ use crate::models::user::User;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Add client.")]
 #[post("")]
 pub async fn add_handler(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    match add_handler_inner(user.into_inner(), settings, pool).await {
+    match add_handler_inner(&user.id, settings, pool).await {
         Ok(client) => JsonResponse::build().set_item(client).ok("Ok"),
         Err(msg) => JsonResponse::build().bad_request(msg),
     }
 }
 
 pub async fn add_handler_inner(
-    user: User,
+    user_id: &String,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
 ) -> Result<models::Client, String> {
@@ -34,7 +35,7 @@ pub async fn add_handler_inner(
         FROM client c 
         WHERE c.user_id = $1
         "#,
-        user.id.clone(),
+        user_id.clone(),
     )
     .fetch_one(pool.get_ref())
     .instrument(query_span)
@@ -45,7 +46,7 @@ pub async fn add_handler_inner(
             if client_count >= settings.max_clients_number {
                 tracing::error!(
                     "Too many clients. The user {} has {} clients",
-                    user.id,
+                    user_id,
                     client_count
                 );
 
@@ -59,7 +60,7 @@ pub async fn add_handler_inner(
     };
 
     let mut client = models::Client::default();
-    client.user_id = user.id.clone();
+    client.user_id = user_id.clone();
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
         .map(|s| Some(s))?;

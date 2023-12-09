@@ -13,11 +13,12 @@ use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
 #[post("/{id}")]
 pub async fn add(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -70,7 +71,7 @@ pub async fn add(
 #[tracing::instrument(name = "Generate docker-compose. Admin")]
 #[get("/{id}/compose")]
 pub async fn admin(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {

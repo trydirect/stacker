@@ -6,11 +6,12 @@ use crate::models::Client;
 use actix_web::{error::ErrorBadRequest, put, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Enable client.")]
 #[put("/{id}/enable")]
 pub async fn enable_handler(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
