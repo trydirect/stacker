@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services, Volumes, Environment, Entrypoint, AdvancedVolumes, SingleValue};
 use serde_yaml;
-use crate::forms::{StackForm, stack};
+use crate::forms;
+use crate::forms::{StackForm, stack, Web, Feature, App};
 use crate::models::stack::Stack;
 #[derive(Clone, Debug)]
 struct Config {}
@@ -32,7 +33,7 @@ pub struct DcBuilder {
     pub(crate) stack: Stack
 }
 
-impl TryInto<AdvancedVolumes> for &stack::Volume {
+impl TryInto<AdvancedVolumes> for stack::Volume {
     type Error = String;
     fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
 
@@ -51,7 +52,7 @@ impl TryInto<AdvancedVolumes> for &stack::Volume {
     }
 }
 
-impl TryInto<Port> for &stack::Port {
+impl TryInto<Port> for stack::Port {
     type Error = String;
     fn try_into(self) -> Result<Port, Self::Error> {
         let cp  = self.container_port.clone()
@@ -92,21 +93,63 @@ fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, St
     Ok(_ports)
 }
 
-// impl TryInto<IndexMap<String, Option<SingleValue>>> for HashMap<String, String> {
-//     type Error = String;
-//
-//     fn try_into(self) -> Result<IndexMap<String, Option<SingleValue>>, Self::Error> {
-//         let mut index_map = IndexMap::new();
-//
-//         for (key, value) in self {
-//             let single_value = Some(SingleValue::String(value));
-//             index_map.insert(key, single_value);
-//         }
-//
-//         Ok(index_map)
-//     }
-// }
+trait TryIntoService {
+    fn try_into_service(&self) -> Service;
+}
 
+impl TryIntoService for App {
+    fn try_into_service(&self) -> Service {
+        let mut service = Service {
+            image: Some(self.docker_image.to_string()),
+            ..Default::default()
+        };
+
+        let ports: Vec<Port> = self.ports
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.try_into().unwrap())
+            .collect();
+
+        let volumes: Vec<AdvancedVolumes> = self.volumes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.try_into().unwrap())
+            .collect();
+
+        let mut envs = IndexMap::new();
+        for item in self.environment.environment.clone().unwrap_or_default() {
+            let items = item
+                .into_iter()
+                .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
+                .collect::<IndexMap<_,_>>();
+
+            envs.extend(items);
+        }
+
+        service.ports = Ports::Long(ports);
+        service.restart = Some("always".to_owned());
+        service.volumes = Volumes::Advanced(volumes);
+        service.environment = Environment::KvPair(envs);
+
+        service
+    }
+}
+
+// fn create_service<T>(app_type: T) -> Service
+//     where
+//         T: TryIntoService,
+// {
+//
+//     let mut service = Service {
+//         image: Some(app_type.try_into_service().image.unwrap_or_default()),
+//         ..Default::default()
+//     };
+//
+//     service
+//
+// }
 impl DcBuilder {
 
     pub fn new(stack: Stack) -> Self {
@@ -118,118 +161,40 @@ impl DcBuilder {
 
 
     pub fn build(&self) -> Option<String> {
-
         tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
         let _stack = serde_json::from_value::<StackForm>(self.stack.body.clone());
         let mut services = indexmap::IndexMap::new();
-        match _stack  {
+
+        match _stack {
             Ok(apps) => {
-                // tracing::debug!("stack item {:?}", apps.custom.web);
-
                 for app_type in apps.custom.web {
-                    let code = app_type.app.code.clone().to_owned();
-                    let mut service = Service {
-                        image: Some(app_type.app.docker_image.to_string()),
-                        ..Default::default()
-                    };
-
-                    let ports: Vec<Port> = app_type.app.ports
-                        .unwrap()
-                        .iter()
-                        .map(|x| x.try_into().unwrap())
-                        .collect();
-
-                    let volumes: Vec<AdvancedVolumes> = app_type.app.volumes
-                        .unwrap()
-                        .iter()
-                        .map(|x| x.try_into().unwrap())
-                        .collect();
-
-                    let mut envs = IndexMap::new();
-                    for item in app_type.app.environment.environment.unwrap() {
-                        let items = item
-                            .into_iter()
-                            .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
-                            .collect::<IndexMap<_, _>>();
-
-                        envs.extend(items);
-                    }
-                    // tracing::debug!("envs: {:?}", envs);
-                    service.ports = Ports::Long(ports);
-                    service.restart = Some("always".to_owned());
-                    service.volumes = Volumes::Advanced(volumes);
-                    service.environment = Environment::KvPair(envs);
-                    // tracing::debug!("service 1 {:?}", &service);
-                    services.insert(
-                        code,
-                        Some(service),
-                    );
+                    // let service = create_service(app_type.app.clone());
+                    let service = app_type.app.try_into_service();
+                    services.insert(app_type.app.code.clone().to_owned(), Some(service));
                 }
 
-
                 if let Some(srvs) = apps.custom.service {
-
-                    if !srvs.is_empty() {
-
-                        for app_type in srvs {
-                            let code = app_type.app.code.to_owned();
-                            let mut service = Service {
-                                image: Some(app_type.app.docker_image.to_string()),
-                                ..Default::default()
-                            };
-
-                            let ports: Vec<Port> = app_type.app.ports
-                                .unwrap()
-                                .iter()
-                                .map(|x| x.try_into().unwrap())
-                                .collect();
-
-                            service.ports = Ports::Long(ports);
-                            service.restart = Some("always".to_owned());
-                            services.insert(
-                                code,
-                                Some(service),
-                            );
-                        }
-                        // tracing::debug!("services {:?}", services);
+                    for app_type in srvs {
+                        // let service = create_service(app_type.app.clone());
+                        let service = app_type.app.try_into_service();
+                        services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     }
                 }
 
                 if let Some(features) = apps.custom.feature {
-
-                    if !features.is_empty() {
-
-                        for app_type in features {
-                            let code = app_type.app.code.to_owned();
-                            let mut service = Service {
-                                // image: Some(app.dockerhub_image.as_ref().unwrap().to_owned()),
-                                image: Some(app_type.app.docker_image.to_string()),
-                                ..Default::default()
-                            };
-
-                            let ports: Vec<Port> = app_type.app.ports
-                                .unwrap()
-                                .iter()
-                                .map(|x| x.try_into().unwrap())
-                                .collect();
-                            service.ports = Ports::Long(ports);
-                            service.restart = Some("always".to_owned());
-                            services.insert(
-                                code,
-                                Some(service),
-                            );
-                        }
-                        // tracing::debug!("services### {:?}", &service);
+                    for app_type in features {
+                        // let service = create_service(app_type.app.clone());
+                        let service = app_type.app.try_into_service();
+                        services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     }
                 }
+
                 tracing::debug!("services {:?}", &services);
             }
             Err(e) => {
                 tracing::debug!("Unpack stack form error {:?}", e);
-                ()
             }
         }
-
 
         let compose_content = Compose {
             version: Some("3.8".to_string()),
