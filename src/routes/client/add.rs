@@ -26,38 +26,10 @@ pub async fn add_handler_inner(
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
 ) -> Result<models::Client, String> {
-    let query_span = tracing::info_span!("Counting the user's clients");
-
-    match sqlx::query!(
-        r#"
-        SELECT
-            count(*) as client_count
-        FROM client c 
-        WHERE c.user_id = $1
-        "#,
-        user_id.clone(),
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(result) => {
-            let client_count = result.client_count.unwrap();
-            if client_count >= settings.max_clients_number {
-                tracing::error!(
-                    "Too many clients. The user {} has {} clients",
-                    user_id,
-                    client_count
-                );
-
-                return Err("Too many clients created".to_string());
-            }
-        }
-        Err(e) => {
-            tracing::error!("Failed to execute query: {:?}", e);
-            return Err("Internal Server Error".to_string());
-        }
-    };
+    let client_count = db_count_client_by_user(pool.get_ref(), user_id).await?;
+    if client_count >= settings.max_clients_number {
+        return Err("Too many clients created".to_string());
+    }
 
     let mut client = models::Client::default();
     client.user_id = user_id.clone();
@@ -90,4 +62,26 @@ pub async fn add_handler_inner(
             return Err("Failed to insert".to_string());
         }
     }
+}
+
+async fn db_count_client_by_user(pool: &PgPool , user_id: &String) -> Result<i64, String> {
+    let query_span = tracing::info_span!("Counting the user's clients");
+
+    sqlx::query!(
+        r#"
+        SELECT
+            count(*) as client_count
+        FROM client c 
+        WHERE c.user_id = $1
+        "#,
+        user_id.clone(),
+    )
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map(|result| {result.client_count.unwrap()})
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "Internal Server Error".to_string()
+    })
 }
