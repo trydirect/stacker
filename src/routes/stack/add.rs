@@ -14,12 +14,13 @@ use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
 use uuid::Uuid;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
 pub async fn add(
     body: Bytes,
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();

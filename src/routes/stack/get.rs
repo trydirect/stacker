@@ -5,11 +5,12 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::convert::From;
 use tracing::Instrument;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Get logged user stack.")]
 #[get("/{id}")]
 pub async fn item(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -43,7 +44,7 @@ pub async fn item(
 #[tracing::instrument(name = "Get user's stack list.")]
 #[get("/user/{id}")]
 pub async fn list(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(String,)>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {

@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]
 pub async fn add(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
     sets: Data<Settings>,

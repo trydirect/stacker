@@ -5,11 +5,12 @@ use crate::models::Client;
 use actix_web::{error::ErrorInternalServerError, put, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Disable client.")]
 #[put("/{id}/disable")]
 pub async fn disable_handler(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,

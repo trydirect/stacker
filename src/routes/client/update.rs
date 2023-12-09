@@ -10,7 +10,7 @@ use tracing::Instrument;
 #[tracing::instrument(name = "Update client.")]
 #[put("/{id}")]
 pub async fn update_handler(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,

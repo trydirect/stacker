@@ -3,6 +3,7 @@ use actix_web::{web, dev::ServiceRequest, Error, HttpMessage, error::{ErrorInter
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use futures::future::{FutureExt};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Trydirect bearer guard.")]
 pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
@@ -14,7 +15,7 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
     }
 
     let user = user.unwrap();
-    if req.extensions_mut().insert(user).is_some() {
+    if req.extensions_mut().insert(Arc::new(user)).is_some() {
         return Err((ErrorUnauthorized(JsonResponse::<i32>::build().set_msg("user already logged").to_string()), req));
     }
 

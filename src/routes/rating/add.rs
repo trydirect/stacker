@@ -6,6 +6,7 @@ use crate::models::RateCategory;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
+use std::sync::Arc;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -15,7 +16,7 @@ use tracing::Instrument;
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
 pub async fn add_handler(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     form: web::Json<forms::Rating>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
