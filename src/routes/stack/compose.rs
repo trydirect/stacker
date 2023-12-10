@@ -88,11 +88,11 @@ pub async fn admin(
         .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id);
+            tracing::info!("Record found: {:?}", stack.id);
             Some(stack)
         }
         Err(sqlx::Error::RowNotFound) => {
-            tracing::error!("Row not found 404");
+            tracing::error!("Record not found");
             None
         }
         Err(e) => {
