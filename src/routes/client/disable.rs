@@ -1,7 +1,7 @@
 use crate::configuration::Settings;
 use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::{error::ErrorInternalServerError, put, web, Responder, Result};
+use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
 use std::sync::Arc;
@@ -24,8 +24,8 @@ pub async fn disable_handler(
         client.secret = None;
         db_update_client(pool.get_ref(), client).await
     }.await {
-        Ok(msg) => {
-            JsonResponse::<models::Client>::build().ok(msg)
+        Ok(client) => {
+            JsonResponse::build().set_item(client).ok("success")
         }
         Err(msg) => {
             JsonResponse::<models::Client>::build().bad_request(msg)
@@ -59,7 +59,7 @@ async fn db_fetch_client_by_id(pool: &PgPool, id: i32) -> Result<models::Client,
     })
 }
 
-async fn db_update_client(pool: &PgPool, client: models::Client) -> Result<String , String> {
+async fn db_update_client(pool: &PgPool, client: models::Client) -> Result<models::Client , String> {
     let query_span = tracing::info_span!("Updating client into the database");
     sqlx::query!(
         r#"
@@ -76,7 +76,7 @@ async fn db_update_client(pool: &PgPool, client: models::Client) -> Result<Strin
     .await
     .map(|_|{
         tracing::info!("Client {} have been saved to database", client.id);
-        "success".to_string()
+        client
     })
     .map_err(|err| {
         tracing::error!("Failed to execute query: {:?}", err);
