@@ -1,7 +1,11 @@
 use indexmap::IndexMap;
-use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services, Volumes, Environment, Entrypoint, AdvancedVolumes, SingleValue};
+use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services,
+                                     Volumes, Environment, Entrypoint, AdvancedVolumes, SingleValue,
+                                     Networks, TopLevelVolumes, ComposeVolume, ComposeNetwork,
+                                     ComposeNetworks, MapOrEmpty, ComposeNetworkSettingDetails,
+                                     NetworkSettings};
 use serde_yaml;
-use crate::forms::{StackForm, stack, Web, Feature, App};
+use crate::forms::{StackForm, stack, App};
 use crate::models::stack::Stack;
 #[derive(Clone, Debug)]
 struct Config {}
@@ -71,6 +75,20 @@ impl TryInto<Port> for stack::Port {
     }
 }
 
+impl TryInto<Networks> for stack::ServiceNetworks {
+    type Error = ();
+    fn try_into(self) -> Result<Networks, Self::Error> {
+        Ok(Networks::Simple(self.network.unwrap()))
+    }
+}
+
+impl TryInto<Networks> for stack::ComposeNetworks {
+    type Error = ();
+    fn try_into(self) -> Result<Networks, Self::Error> {
+        Ok(Networks::Simple(self.networks.unwrap()))
+    }
+}
+
 
 fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, String> {
     tracing::debug!("convert shared ports {:?}", &ports);
@@ -102,6 +120,11 @@ impl TryIntoService for App {
             ..Default::default()
         };
 
+        let networks: Networks = self.network
+            .clone()
+            .try_into()
+            .unwrap_or_default();
+
         let ports: Vec<Port> = self.ports
             .clone()
             .unwrap_or_default()
@@ -126,6 +149,7 @@ impl TryIntoService for App {
             envs.extend(items);
         }
 
+        service.networks = networks;
         service.ports = Ports::Long(ports);
         service.restart = Some("always".to_owned());
         service.volumes = Volumes::Advanced(volumes);
@@ -135,19 +159,36 @@ impl TryIntoService for App {
     }
 }
 
-// fn create_service<T>(app_type: T) -> Service
-//     where
-//         T: TryIntoService,
-// {
-//
-//     let mut service = Service {
-//         image: Some(app_type.try_into_service().image.unwrap_or_default()),
-//         ..Default::default()
-//     };
-//
-//     service
-//
-// }
+impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
+    fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
+
+        tracing::debug!("networks found {:?}", self.networks);
+        let mut networks = self.networks.unwrap_or(vec![]);
+        tracing::debug!("networks found {:?}", networks);
+        let networks = networks
+            .into_iter()
+            .map(|net| // ["testnetwork", "testnetwork2"]
+                (net,
+                 MapOrEmpty::Map(
+                     NetworkSettings {
+                         attachable: false,
+                         driver: None,
+                         driver_opts: Default::default(),
+                         enable_ipv6: false,
+                         internal: false,
+                         external: None,
+                         ipam: None,
+                         labels: Default::default(),
+                         name: Some("Anothername".to_string()),
+                     }
+                 ))
+            )
+            .collect::<IndexMap<String, _>>();
+        tracing::debug!("nets: {:?}", networks);
+        networks
+    }
+}
+
 impl DcBuilder {
 
     pub fn new(stack: Stack) -> Self {
@@ -160,20 +201,23 @@ impl DcBuilder {
 
     pub fn build(&self) -> Option<String> {
         tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
+        let mut compose_content = Compose {
+            version: Some("3.8".to_string()),
+            ..Default::default()
+        };
         let _stack = serde_json::from_value::<StackForm>(self.stack.body.clone());
-        let mut services = indexmap::IndexMap::new();
+        let mut services = IndexMap::new();
+        let mut volumes = IndexMap::new();
 
         match _stack {
             Ok(apps) => {
                 for app_type in apps.custom.web {
-                    // let service = create_service(app_type.app.clone());
                     let service = app_type.app.try_into_service();
                     services.insert(app_type.app.code.clone().to_owned(), Some(service));
                 }
 
                 if let Some(srvs) = apps.custom.service {
                     for app_type in srvs {
-                        // let service = create_service(app_type.app.clone());
                         let service = app_type.app.try_into_service();
                         services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     }
@@ -181,26 +225,30 @@ impl DcBuilder {
 
                 if let Some(features) = apps.custom.feature {
                     for app_type in features {
-                        // let service = create_service(app_type.app.clone());
                         let service = app_type.app.try_into_service();
                         services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     }
                 }
 
-                tracing::debug!("services {:?}", &services);
+                let volume = ComposeVolume{
+                    driver: None,
+                    driver_opts: Default::default(),
+                    external: None,
+                    labels: Default::default(),
+                    name: Some("Testvolumes".to_string()),
+                };
+                volumes.insert("mykey".to_string(), MapOrEmpty::Map(volume));
+                compose_content.volumes = TopLevelVolumes(volumes);
+                compose_content.networks = ComposeNetworks(apps.custom.networks.into());
+
             }
             Err(e) => {
                 tracing::debug!("Unpack stack form error {:?}", e);
             }
         }
+        tracing::debug!("services {:?}", &services);
+        compose_content.services = Services(services);
 
-        let compose_content = Compose {
-            version: Some("3.8".to_string()),
-            services: {
-                Services(services)
-            },
-            ..Default::default()
-        };
 
         let fname= format!("./files/{}.yml", self.stack.stack_id);
         tracing::debug!("Saving docker compose to file {:?}", fname);

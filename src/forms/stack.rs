@@ -193,8 +193,15 @@ pub struct Custom {
     pub project_name: String,
     pub project_overview: Option<String>,
     pub project_description: Option<String>,
-    pub networks: Option<Vec<String>>, // all networks
+    #[serde(flatten)]
+    pub networks: ComposeNetworks, // all networks
 }
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Network {
+    name: String
+}
+
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct App {
@@ -253,7 +260,7 @@ pub struct App {
     #[serde(flatten)]
     pub environment: Environment,
     #[serde(flatten)]
-    pub network: Networks,
+    pub network: ServiceNetworks,
     // #[serde(flatten)]
     // pub ports: Ports,
     #[serde(rename(deserialize = "sharedPorts"))]
@@ -277,10 +284,14 @@ pub struct Volumes {
     volumes: Vec<Volume>
 }
 
+// pub(crate) type Networks = Option<Vec<String>>;
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Networks {
-    //network: Option<Vec<String>>
-    network: Option<String>
+pub struct ServiceNetworks {
+    pub network: Option<Vec<String>>
+}
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComposeNetworks {
+    pub networks: Option<Vec<String>>
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
