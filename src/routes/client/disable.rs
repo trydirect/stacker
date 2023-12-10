@@ -1,7 +1,6 @@
 use crate::configuration::Settings;
 use crate::helpers::JsonResponse;
-use crate::models::user::User;
-use crate::models::Client;
+use crate::models;
 use actix_web::{error::ErrorInternalServerError, put, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
@@ -10,61 +9,77 @@ use std::sync::Arc;
 #[tracing::instrument(name = "Disable client.")]
 #[put("/{id}/disable")]
 pub async fn disable_handler(
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
-    let client_id = path.0;
+    match async {
+        let client_id = path.0;
+        let mut client = db_fetch_client_by_id(pool.get_ref(), client_id).await?; 
+        if client.secret.is_none() {
+            return Err("client is not active".to_string());
+        }
+
+        client.secret = None;
+        db_update_client(pool.get_ref(), client).await
+    }.await {
+        Ok(msg) => {
+            JsonResponse::<models::Client>::build().ok(msg)
+        }
+        Err(msg) => {
+            JsonResponse::<models::Client>::build().bad_request(msg)
+        }
+    }
+}
+
+async fn db_fetch_client_by_id(pool: &PgPool, id: i32) -> Result<models::Client, String> {
     let query_span = tracing::info_span!("Fetching the client by ID");
-    let mut client: Client = match sqlx::query_as!(
-        Client,
+    sqlx::query_as!(
+        models::Client,
         r#"
         SELECT
            id, user_id, secret 
         FROM client c
         WHERE c.id = $1
         "#,
-        client_id,
+        id,
     )
-    .fetch_one(pool.get_ref())
+    .fetch_one(pool)
     .instrument(query_span)
     .await
-    {
-        Ok(client) if client.secret.is_some() => Ok(client),
-        Ok(_client) => Err("client is not active"),
-        Err(sqlx::Error::RowNotFound) => Err("client not found"),
-        Err(e) => {
-            tracing::error!("Failed to execute fetch query: {:?}", e);
-            Err("")
+    .map_err(|e| {
+        match e {
+            sqlx::Error::RowNotFound => "client not found".to_string(),
+            s => {
+                tracing::error!("Failed to execute fetch query: {:?}", s);
+                "".to_string()
+            }
         }
-    }
-    .map_err(|s| {
-        ErrorInternalServerError(JsonResponse::<Client>::build().set_msg(s).to_string())
-    })?;
+    })
+}
 
-    client.secret = None;
+async fn db_update_client(pool: &PgPool, client: models::Client) -> Result<String , String> {
     let query_span = tracing::info_span!("Updating client into the database");
-    match sqlx::query!(
+    sqlx::query!(
         r#"
         UPDATE client SET 
-            secret=null,
+            secret=$1,
             updated_at=NOW() at time zone 'utc'
-        WHERE id = $1
+        WHERE id = $2
         "#,
+        client.secret,
         client.id
     )
-    .execute(pool.get_ref())
+    .execute(pool)
     .instrument(query_span)
     .await
-    {
-        Ok(_) => {
-            tracing::info!("Client {} have been saved to database", client.id);
-            JsonResponse::build().set_item(client).ok("success")
-        }
-        Err(e) => {
-            tracing::error!("Failed to execute query: {:?}", e);
-            JsonResponse::build().bad_request("")
-        }
-    }
+    .map(|_|{
+        tracing::info!("Client {} have been saved to database", client.id);
+        "success".to_string()
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
 }
