@@ -12,6 +12,7 @@ use lapin::{
 use sqlx::PgPool;
 use std::sync::Arc;
 
+
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]
 pub async fn add(
