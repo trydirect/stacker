@@ -4,6 +4,7 @@ use actix_web::{
     Responder, Result,
 };
 
+use crate::helpers::stack::builder::DcBuilder;
 use crate::helpers::JsonResponse;
 use crate::models::user::User;
 use crate::models::Stack;
@@ -11,13 +12,12 @@ use actix_web::{get, post};
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
-// use uuid::Uuid;
-use crate::helpers::stack::builder::DcBuilder;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
 #[get("/{id}")]
 pub async fn add(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -29,10 +29,11 @@ pub async fn add(
         r#"
         SELECT * FROM user_stack WHERE id=$1 AND user_id=$2 LIMIT 1
         "#,
-        id, user.id
+        id,
+        user.id
     )
-        .fetch_one(pool.get_ref())
-        .await
+    .fetch_one(pool.get_ref())
+    .await
     {
         Ok(stack) => {
             tracing::info!("stack found: {:?}", stack.id);
@@ -69,7 +70,7 @@ pub async fn add(
 #[tracing::instrument(name = "Generate docker-compose. Admin")]
 #[get("/{id}/compose")]
 pub async fn admin(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -84,8 +85,8 @@ pub async fn admin(
         "#,
         id,
     )
-        .fetch_one(pool.get_ref())
-        .await
+    .fetch_one(pool.get_ref())
+    .await
     {
         Ok(stack) => {
             tracing::info!("Record found: {:?}", stack.id);

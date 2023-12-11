@@ -1,30 +1,25 @@
-use std::sync::Arc;
-use actix_web::{
-    web,
-    post,
-    web::Data,
-    Responder, Result,
-};
-use crate::models::user::User;
-use crate::models::stack::Stack;
-use sqlx::PgPool;
-use lapin::{
-    options::*, publisher_confirm::Confirmation, BasicProperties, Connection,
-    ConnectionProperties
-};
 use crate::configuration::Settings;
-use crate::helpers::JsonResponse;
-use crate::helpers::stack::builder::DcBuilder;
 use crate::forms::StackPayload;
+use crate::helpers::stack::builder::DcBuilder;
+use crate::helpers::JsonResponse;
+use crate::models::stack::Stack;
+use crate::models::user::User;
+use actix_web::{post, web, web::Data, Responder, Result};
+use futures_lite::stream::StreamExt;
+use lapin::{
+    options::*, publisher_confirm::Confirmation, BasicProperties, Connection, ConnectionProperties,
+};
+use sqlx::PgPool;
+use std::sync::Arc;
 
 
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]
 pub async fn add(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
     pool: Data<PgPool>,
-    sets: Data<Arc<Settings>>,
+    sets: Data<Settings>,
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("Received id: {}", id);
@@ -36,8 +31,8 @@ pub async fn add(
         "#,
         id
     )
-        .fetch_one(pool.get_ref())
-        .await
+    .fetch_one(pool.get_ref())
+    .await
     {
         Ok(stack) => {
             tracing::info!("Stack found: {:?}", stack.id,);
@@ -70,9 +65,8 @@ pub async fn add(
             tracing::info!("RABBITMQ CONNECTED");
 
             let channel = conn.create_channel().await.unwrap();
-            let mut stack_data = serde_json::from_value::<StackPayload>(
-                dc.stack.body.clone()
-            ).unwrap();
+            let mut stack_data =
+                serde_json::from_value::<StackPayload>(dc.stack.body.clone()).unwrap();
 
             stack_data.id = Some(id);
             stack_data.user_token = Some(user.id.clone());
@@ -90,8 +84,10 @@ pub async fn add(
                     _payload,
                     BasicProperties::default(),
                 )
-                .await.unwrap()
-                .await.unwrap();
+                .await
+                .unwrap()
+                .await
+                .unwrap();
 
             assert_eq!(confirm, Confirmation::NotRequested);
             tracing::debug!("Message sent to rabbitmq");

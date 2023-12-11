@@ -1,12 +1,13 @@
+use crate::forms::stack::StackForm;
+use crate::helpers::JsonResponse;
+use crate::models;
+use crate::models::user::User;
+use actix_web::post;
 use actix_web::{
     web,
     web::{Bytes, Data},
     Responder, Result,
 };
-use crate::forms::stack::StackForm;
-use crate::helpers::JsonResponse;
-use crate::models::user::User;
-use actix_web::post;
 use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -14,14 +15,13 @@ use std::str;
 use serde_valid::Validate;
 use tracing::Instrument;
 use uuid::Uuid;
-use crate::models;
-
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
 pub async fn add(
     body: Bytes,
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
 
@@ -29,9 +29,7 @@ pub async fn add(
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
-        Ok(f) => {
-            f
-        }
+        Ok(f) => f,
         Err(_err) => {
             let msg = format!("Invalid data. {:?}", _err);
             return JsonResponse::<StackForm>::build().bad_request(msg);
@@ -128,4 +126,3 @@ pub async fn add(
         }
     };
 }
-

@@ -3,24 +3,20 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 use crate::models::RateCategory;
+use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
-use actix_web::{
-    web,
-    post,
-    Responder, Result,
-};
+use std::sync::Arc;
 
 // workflow
 // add, update, list, get(user_id), ACL,
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
 pub async fn add_handler(
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     form: web::Json<forms::Rating>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -39,8 +35,7 @@ pub async fn add_handler(
         }
         Err(e) => {
             tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
-            return JsonResponse::<models::Rating>::build()
-                .not_found(format!("Object not found {}", form.obj_id).as_str());
+            return JsonResponse::<models::Rating>::build().bad_request("Object not found");
         }
     };
 
@@ -68,7 +63,7 @@ pub async fn add_handler(
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().bad_request("Internal Server Error");
+            return JsonResponse::build().internal_server_error("Internal Server Error");
         }
     }
 
@@ -96,9 +91,7 @@ pub async fn add_handler(
         Ok(result) => {
             tracing::info!("New rating {} have been saved to database", result.id);
 
-            JsonResponse::build()
-                .set_id(result.id)
-                .ok("Saved".to_owned())
+            JsonResponse::build().set_id(result.id).ok("Saved")
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);

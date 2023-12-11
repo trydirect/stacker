@@ -14,6 +14,7 @@ use serde_valid::Validate;
 use tracing::Instrument;
 use uuid::Uuid;
 use crate::models;
+use std::sync::Arc;
 
 
 #[tracing::instrument(name = "Update stack.")]
@@ -21,7 +22,7 @@ use crate::models;
 pub async fn update(
     path: web::Path<(i32,)>,
     form: web::Json<StackForm>,
-    user: web::ReqData<User>,
+    user: web::ReqData<Arc<User>>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     // @todo ACL

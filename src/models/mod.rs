@@ -6,3 +6,4 @@ pub mod user;
 pub use client::*;
 pub use rating::*;
 pub use stack::*;
+pub use user::*;
