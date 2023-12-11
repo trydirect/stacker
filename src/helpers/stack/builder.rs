@@ -1,13 +1,11 @@
-use crate::helpers::stack::dctypes::{
-    Compose,
-    Port,
-    Ports,
-    PublishedPort,
-    Service,
-    Services
-};
+use indexmap::IndexMap;
+use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services,
+                                     Volumes, Environment, Entrypoint, AdvancedVolumes, SingleValue,
+                                     Networks, TopLevelVolumes, ComposeVolume, ComposeNetwork,
+                                     ComposeNetworks, MapOrEmpty, ComposeNetworkSettingDetails,
+                                     NetworkSettings};
 use serde_yaml;
-use crate::forms::{StackForm, stack};
+use crate::forms::{StackForm, stack, App};
 use crate::models::stack::Stack;
 #[derive(Clone, Debug)]
 struct Config {}
@@ -18,6 +16,18 @@ impl Default for Config {
     }
 }
 
+impl Default for Port{
+    fn default() -> Self {
+        Port {
+            target: 80,
+            host_ip: None,
+            published: None,
+            protocol: None,
+            mode: None,
+        }
+    }
+}
+
 /// A builder for constructing docker compose.
 #[derive(Clone, Debug)]
 pub struct DcBuilder {
@@ -25,27 +35,158 @@ pub struct DcBuilder {
     pub(crate) stack: Stack
 }
 
-impl TryInto<Vec<Port>> for stack::Ports {
+impl TryInto<AdvancedVolumes> for stack::Volume {
     type Error = String;
-    fn try_into(self) -> Result<Vec<Port>, Self::Error> {
-        convert_shared_ports(self.shared_ports.clone().unwrap())
+    fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
+
+        let source = self.host_path.clone();
+        let target = self.container_path.clone();
+        tracing::debug!("Volume conversion result: source: {:?} target: {:?}", source, target);
+        Ok(AdvancedVolumes {
+            source: source,
+            target: target.unwrap_or("".to_string()),
+            _type: "".to_string(),
+            read_only: false,
+            bind: None,
+            volume: None,
+            tmpfs: None,
+        })
+    }
+}
+
+impl TryInto<Port> for stack::Port {
+    type Error = String;
+    fn try_into(self) -> Result<Port, Self::Error> {
+        let cp  = self.container_port.clone()
+            .unwrap_or("".to_string())
+            .parse::<u16>().map_err(|err| "Could not parse port".to_string() )?;
+        let hp = self.host_port.clone()
+            .unwrap_or("".to_string())
+            .parse::<u16>().map_err(|err| "Could not parse port".to_string() )?;
+
+        tracing::debug!("Port conversion result: cp: {:?} hp: {:?}", cp, hp);
+        Ok(Port {
+            target: cp,
+            host_ip: None,
+            published: Some(PublishedPort::Single(hp)),
+            protocol: None,
+            mode: None,
+        })
+    }
+}
+
+impl TryInto<Networks> for stack::ServiceNetworks {
+    type Error = ();
+    fn try_into(self) -> Result<Networks, Self::Error> {
+        Ok(Networks::Simple(self.network.unwrap()))
+    }
+}
+
+impl TryInto<Networks> for stack::ComposeNetworks {
+    type Error = ();
+    fn try_into(self) -> Result<Networks, Self::Error> {
+        Ok(Networks::Simple(self.networks.unwrap()))
     }
 }
 
 
-fn convert_shared_ports(ports: Vec<String>) -> Result<Vec<Port>, String> {
+fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, String> {
+    tracing::debug!("convert shared ports {:?}", &ports);
     let mut _ports: Vec<Port> = vec![];
-    for p in ports {
-        let port = p.parse::<u16>().map_err(|e| e.to_string())?;
-        _ports.push(Port {
-            target: port,
-            host_ip: None,
-            published: Some(PublishedPort::Single(port)),
-            protocol: None,
-            mode: None,
-        });
+    match ports {
+        Some(ports) => {
+            tracing::debug!("Ports >>>> {:?}", ports);
+            for port in ports {
+            }
+        }
+        None => {
+            tracing::debug!("No ports defined by user");
+            return Ok(_ports);
+        }
     }
+
+    tracing::debug!("ports {:?}", _ports);
     Ok(_ports)
+}
+
+trait TryIntoService {
+    fn try_into_service(&self) -> Service;
+}
+
+impl TryIntoService for App {
+    fn try_into_service(&self) -> Service {
+        let mut service = Service {
+            image: Some(self.docker_image.to_string()),
+            ..Default::default()
+        };
+
+        let networks: Networks = self.network
+            .clone()
+            .try_into()
+            .unwrap_or_default();
+
+        let ports: Vec<Port> = self.ports
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.try_into().unwrap())
+            .collect();
+
+        let volumes: Vec<AdvancedVolumes> = self.volumes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.try_into().unwrap())
+            .collect();
+
+        let mut envs = IndexMap::new();
+        for item in self.environment.environment.clone().unwrap_or_default() {
+            let items = item
+                .into_iter()
+                .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
+                .collect::<IndexMap<_,_>>();
+
+            envs.extend(items);
+        }
+
+        service.networks = networks;
+        service.ports = Ports::Long(ports);
+        service.restart = Some("always".to_owned());
+        service.volumes = Volumes::Advanced(volumes);
+        service.environment = Environment::KvPair(envs);
+
+        service
+    }
+}
+
+impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
+    fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
+
+        tracing::debug!("networks found {:?}", self.networks);
+        let mut networks = self.networks.unwrap_or(vec![]);
+        tracing::debug!("networks found {:?}", networks);
+        let networks = networks
+            .into_iter()
+            .map(|net| // ["testnetwork", "testnetwork2"]
+                (net,
+                 MapOrEmpty::Map(
+                     NetworkSettings {
+                         attachable: false,
+                         driver: None,
+                         driver_opts: Default::default(),
+                         enable_ipv6: false,
+                         internal: false,
+                         external: None,
+                         ipam: None,
+                         labels: Default::default(),
+                         name: Some("Anothername".to_string()),
+                     }
+                 ))
+            )
+            .collect::<IndexMap<String, _>>();
+        tracing::debug!("nets: {:?}", networks);
+        networks
+    }
 }
 
 impl DcBuilder {
@@ -59,100 +200,58 @@ impl DcBuilder {
 
 
     pub fn build(&self) -> Option<String> {
-
         tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
+        let mut compose_content = Compose {
+            version: Some("3.8".to_string()),
+            ..Default::default()
+        };
         let _stack = serde_json::from_value::<StackForm>(self.stack.body.clone());
-        let mut services = indexmap::IndexMap::new();
-        match _stack  {
+        let mut services = IndexMap::new();
+        let mut volumes = IndexMap::new();
+
+        match _stack {
             Ok(apps) => {
-                println!("stack item {:?}", apps.custom.web);
-
                 for app_type in apps.custom.web {
-                    let code = app_type.app.code.clone().to_owned();
-                    let mut service = Service {
-                        image: Some(app_type.app.docker_image.to_string()),
-                        ..Default::default()
-                    };
-
-                    if let Some(ports) = &app_type.app.ports {
-                        if !ports.shared_ports.clone()?.is_empty() {
-                            service.ports = Ports::Long(app_type.app.ports?.try_into().unwrap())
-                        }
-                    }
-
-                    service.restart = Some("always".to_owned());
-                    services.insert(
-                        code,
-                        Some(service),
-                    );
+                    let service = app_type.app.try_into_service();
+                    services.insert(app_type.app.code.clone().to_owned(), Some(service));
                 }
 
                 if let Some(srvs) = apps.custom.service {
-
-                    if !srvs.is_empty() {
-
-                        for app_type in srvs {
-                            let code = app_type.app.code.to_owned();
-                            let mut service = Service {
-                                image: Some(app_type.app.docker_image.to_string()),
-                                ..Default::default()
-                            };
-
-                            if let Some(ports) = &app_type.app.ports {
-                                if !ports.shared_ports.clone()?.is_empty() {
-                                    service.ports = Ports::Long(app_type.app.ports?.try_into().unwrap())
-                                }
-                            }
-                            service.restart = Some("always".to_owned());
-                            services.insert(
-                                code,
-                                Some(service),
-                            );
-                        }
+                    for app_type in srvs {
+                        let service = app_type.app.try_into_service();
+                        services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     }
                 }
+
                 if let Some(features) = apps.custom.feature {
-
-                    if !features.is_empty() {
-
-                        for app_type in features {
-                            let code = app_type.app.code.to_owned();
-                            let mut service = Service {
-                                // image: Some(app.dockerhub_image.as_ref().unwrap().to_owned()),
-                                image: Some(app_type.app.docker_image.to_string()),
-                                ..Default::default()
-                            };
-
-                            if let Some(ports) = &app_type.app.ports {
-                                if !ports.shared_ports.clone()?.is_empty() {
-                                    service.ports = Ports::Long(app_type.app.ports?.try_into().unwrap())
-                                }
-                            }
-                            service.restart = Some("always".to_owned());
-                            services.insert(
-                                code,
-                                Some(service),
-                            );
-                        }
+                    for app_type in features {
+                        let service = app_type.app.try_into_service();
+                        services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     }
                 }
+
+                let volume = ComposeVolume{
+                    driver: None,
+                    driver_opts: Default::default(),
+                    external: None,
+                    labels: Default::default(),
+                    name: Some("Testvolumes".to_string()),
+                };
+                volumes.insert("mykey".to_string(), MapOrEmpty::Map(volume));
+                compose_content.volumes = TopLevelVolumes(volumes);
+                compose_content.networks = ComposeNetworks(apps.custom.networks.into());
+
             }
             Err(e) => {
-                tracing::debug!("Unpack stack form {:?}", e);
-                ()
+                tracing::debug!("Unpack stack form error {:?}", e);
             }
         }
+        tracing::debug!("services {:?}", &services);
+        compose_content.services = Services(services);
 
-        let compose_content = Compose {
-            version: Some("3.8".to_string()),
-            services: {
-                Services(services)
-            },
-            ..Default::default()
-        };
 
         let fname= format!("./files/{}.yml", self.stack.stack_id);
-        tracing::debug!("Save docker compose to file {:?}", fname);
+        tracing::debug!("Saving docker compose to file {:?}", fname);
         let target_file = std::path::Path::new(fname.as_str());
         // serialize to string
         let serialized = match serde_yaml::to_string(&compose_content) {

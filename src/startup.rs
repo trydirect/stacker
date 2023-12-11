@@ -21,7 +21,8 @@ pub async fn run(
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .service(web::scope("/health_check").service(crate::routes::health_check))
+            .service(web::scope("/health_check")
+                .service(crate::routes::health_check))
             .service(
                 web::scope("/client")
                     .wrap(HttpAuthentication::bearer(
@@ -60,7 +61,8 @@ pub async fn run(
                     .service(crate::routes::stack::compose::admin)
                     .service(crate::routes::stack::get::item)
                     .service(crate::routes::stack::get::list)
-                    .service(crate::routes::stack::add::add),
+                    .service(crate::routes::stack::add::add)
+                    .service(crate::routes::stack::update::update),
             )
             .app_data(db_pool.clone())
             .app_data(settings.clone())

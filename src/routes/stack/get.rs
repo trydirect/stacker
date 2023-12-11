@@ -77,7 +77,7 @@ pub async fn list(
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("Could not fetch");
+            return JsonResponse::build().internal_server_error("Could not fetch".to_string());
         }
     }
 }

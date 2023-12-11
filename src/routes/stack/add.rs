@@ -12,6 +12,7 @@ use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgPool;
 use std::str;
+use serde_valid::Validate;
 use tracing::Instrument;
 use uuid::Uuid;
 use std::sync::Arc;
@@ -23,13 +24,40 @@ pub async fn add(
     user: web::ReqData<Arc<User>>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
+
+    // @todo ACL
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
     let form = match serde_json::from_str::<StackForm>(body_str) {
         Ok(f) => f,
         Err(_err) => {
             let msg = format!("Invalid data. {:?}", _err);
-            return JsonResponse::<StackForm>::build().bad_request("Invalid data");
+            return JsonResponse::<StackForm>::build().bad_request(msg);
+        }
+    };
+
+    let stack_name = form.custom.custom_stack_code.clone();
+    tracing::debug!("form before convert {:?}", form);
+
+    let query_span = tracing::info_span!("Check project/stack existence by custom_stack_code.");
+    match sqlx::query_as!(
+        models::Stack,
+        r"SELECT * FROM user_stack WHERE name = $1",
+        stack_name
+    )
+        .fetch_one(pool.get_ref())
+        .instrument(query_span)
+        .await
+    {
+        Ok(record) => {
+            tracing::info!("record exists: id: {}, name: {}", record.id, record.name);
+            return JsonResponse::build().conflict("Stack with that name already exists"
+                .to_owned());
+        }
+        Err(sqlx::Error::RowNotFound) => {}
+        Err(e) => {
+            tracing::error!("Failed to fetch stack info, error: {:?}", e);
+            return JsonResponse::build().bad_request(format!("Internal Server Error"));
         }
     };
 
@@ -53,16 +81,22 @@ pub async fn add(
 
     let query_span = tracing::info_span!("Saving new stack details into the database");
 
-    let stack_name = form.custom.custom_stack_code.clone();
+    if !form.validate().is_ok() {
+        let errors = form.validate().unwrap_err();
+        let err_msg = format!("Invalid data received {:?}", &errors.to_string());
+        tracing::debug!(err_msg);
+        return JsonResponse::build().bad_request(errors.to_string());// tmp solution
+    }
+
     let body: Value = match serde_json::to_value::<StackForm>(form) {
         Ok(body) => body,
         Err(err) => {
-            tracing::error!("request_id {} unwrap body {:?}", request_id, err);
+            tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
             serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
         }
     };
 
-    return match sqlx::query!(
+    match sqlx::query!(
         r#"
         INSERT INTO user_stack (stack_id, user_id, name, body, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -88,7 +122,7 @@ pub async fn add(
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().bad_request("Internal Server Error");
+            return JsonResponse::build().internal_server_error("Internal Server Error");
         }
     };
 }

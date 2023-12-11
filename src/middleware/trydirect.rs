@@ -1,4 +1,4 @@
-use crate::{models::user::User, configuration::Settings, forms::user::UserForm, helpers::JsonResponse};
+use crate::{models, configuration::Settings, forms::user::UserForm, helpers::JsonResponse};
 use actix_web::{web, dev::ServiceRequest, Error, HttpMessage, error::{ErrorInternalServerError, ErrorUnauthorized}};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use futures::future::{FutureExt};
@@ -22,7 +22,7 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
     Ok(req)
 }
 
-async fn fetch_user(auth_url: &str, token: &str) -> Result<User, String> {
+async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String> {
     let client = reqwest::Client::new();
     let resp = client
         .get(auth_url)
