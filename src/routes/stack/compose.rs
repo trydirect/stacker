@@ -12,11 +12,10 @@ use actix_web::{get, post};
 use sqlx::PgPool;
 use std::str;
 use tracing::Instrument;
-use uuid::Uuid;
 use std::sync::Arc;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
-#[post("/{id}")]
+#[get("/{id}")]
 pub async fn add(
     user: web::ReqData<Arc<User>>,
     path: web::Path<(i32,)>,
@@ -37,7 +36,7 @@ pub async fn add(
     .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id,);
+            tracing::info!("stack found: {:?}", stack.id);
             Some(stack)
         }
         Err(sqlx::Error::RowNotFound) => {
@@ -53,7 +52,7 @@ pub async fn add(
     match stack {
         Some(stack) => {
             let id = stack.id.clone();
-            let mut dc = DcBuilder::new(stack);
+            let dc = DcBuilder::new(stack);
             let fc = dc.build();
             tracing::debug!("Docker compose file content {:?}", fc);
 
@@ -90,11 +89,11 @@ pub async fn admin(
     .await
     {
         Ok(stack) => {
-            tracing::info!("stack found: {:?}", stack.id,);
+            tracing::info!("Record found: {:?}", stack.id);
             Some(stack)
         }
         Err(sqlx::Error::RowNotFound) => {
-            tracing::error!("Row not found 404");
+            tracing::error!("Record not found");
             None
         }
         Err(e) => {
@@ -106,13 +105,22 @@ pub async fn admin(
     match stack {
         Some(stack) => {
             let id = stack.id.clone();
-            let mut dc = DcBuilder::new(stack);
-            let fc = dc.build();
+            let dc = DcBuilder::new(stack);
+            let fc = match dc.build() {
+                Some(fc) => {
+                    fc
+                }
+                None => {
+                    tracing::error!("Error. Compose builder returned an empty string");
+                    "".to_string()
+                }
+
+            };
             // tracing::debug!("Docker compose file content {:?}", fc);
             return JsonResponse::build()
                 .set_id(id)
-                .set_item(fc.unwrap())
-                .ok("Success");
+                .set_item(fc).ok("Success");
+
         }
         None => {
             return JsonResponse::build().bad_request("Could not generate compose file");

@@ -50,7 +50,7 @@ pub async fn add(
     return match stack {
         Some(stack) => {
             let id = stack.id.clone();
-            let mut dc = DcBuilder::new(stack);
+            let dc = DcBuilder::new(stack);
             dc.build();
 
             let addr = sets.amqp.connection_string();
@@ -92,6 +92,8 @@ pub async fn add(
             tracing::debug!("Message sent to rabbitmq");
             return JsonResponse::<Stack>::build().set_id(id).ok("Success");
         }
-        None => JsonResponse::build().internal_server_error("Deployment failed"),
-    };
+        None => {
+            JsonResponse::build().internal_server_error("Deployment failed")
+        }
+    }
 }

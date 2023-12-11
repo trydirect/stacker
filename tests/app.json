@@ -1,0 +1,99 @@
+{
+  "_etag": null,
+  "_id": 180,
+  "_created": "2021-12-17T08:11:40.875486",
+  "_updated": "2023-11-21T17:37:24.594545",
+  "name": "Airflow",
+  "code": "airflow",
+  "role": [
+    "airflow"
+  ],
+  "type": "web",
+  "default": true,
+  "popularity": null,
+  "descr": null,
+  "ports": {
+    "private": [
+      "31"
+    ]
+  },
+  "commercial": null,
+  "subscription": null,
+  "autodeploy": null,
+  "suggested": null,
+  "dependency": null,
+  "avoid_render": null,
+  "price": null,
+  "icon": {
+    "light": {
+      "width": 150,
+      "height": 150,
+      "image": "7f41d873-2de5-4c6e-a037-42eeff572db6.svg"
+    },
+    "dark": {
+    }
+  },
+  "category_id": null,
+  "parent_app_id": null,
+  "full_description": null,
+  "description": "<p class=\"content-editor__unstyled\">Airflow description </p>",
+  "plan_type": null,
+  "ansible_var": null,
+  "repo_dir": null,
+  "cpu": "0.0",
+  "ram_size": null,
+  "disk_size": null,
+  "dockerhub_image": "airflow",
+  "form": null,
+  "category": [
+    null
+  ],
+  "group": [
+  ],
+  "versions": [
+    {
+      "_id": 425,
+      "name": "Airflow",
+      "version": "2.7.3",
+      "update_status": "published",
+      "tag": "latest"
+    },
+    {
+      "_id": 426,
+      "name": "Airflow",
+      "version": "2.7.1-unstable",
+      "update_status": "published",
+      "tag": "stable"
+    }
+  ],
+  "links": [
+  ],
+  "domain": "latestports.com",
+  "sharedPorts": [
+    {
+      "host_port": "5000",
+      "container_port": "5000"
+    }
+  ],
+  "main": true,
+  "version": {
+    "_id": 426,
+    "name": "Airflow",
+    "version": "2.7.1-unstable",
+    "update_status": "published",
+    "tag": "stable"
+  },
+  "environment": [
+    {
+      "ENV_VAR1": "ENV_VAR1_VALUE"
+    }
+  ],
+  "network": "testnetwork",
+  "restart": "always",
+  "volumes": [
+    {
+      "host_path": "/airflow/host/path/",
+      "container_path": "/airflow/container/path"
+    }
+  ]
+}
