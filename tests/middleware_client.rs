@@ -1,7 +1,7 @@
 mod common;
 
 #[tokio::test]
-async fn health_check_works() {
+async fn middleware_client_works() {
     // 1. Arrange
     // 2. Act
     // 3. Assert
@@ -19,4 +19,8 @@ async fn health_check_works() {
 
     assert!(response.status().is_success());
     assert_eq!(Some(0), response.content_length());
+
+
+    //todo header stacker-id not found
+    //
 }

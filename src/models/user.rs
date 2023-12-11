@@ -10,15 +10,3 @@ pub struct User {
     // pub phone: Option<String>,
     // pub website: Option<String>,
 }
-
-impl Clone for User {
-    fn clone(&self) -> Self {
-        User {
-            id: self.id.clone(),
-            first_name: self.first_name.clone(),
-            last_name: self.last_name.clone(),
-            email: self.email.clone(),
-            email_confirmed: self.email_confirmed.clone(),
-        }
-    }
-}

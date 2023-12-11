@@ -1,3 +1,4 @@
+use crate::helpers::JsonResponse;
 use crate::models::Client;
 use actix_http::header::CONTENT_LENGTH;
 use actix_web::error::{ErrorForbidden, ErrorInternalServerError, ErrorNotFound, PayloadError};
@@ -73,86 +74,42 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id").map_err(|m| ErrorBadRequest(m))?;
-            let hash: String = get_header(&req, "stacker-hash").map_err(|m| ErrorBadRequest(m))?;
+            let client_id: i32 = get_header(&req, "stacker-id")?;
+            let header_hash: String = get_header(&req, "stacker-hash")?;
 
-            let query_span = tracing::info_span!("Fetching the client by ID");
-            let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap();
-
-            let mut client: Client = match sqlx::query_as!(
-                Client,
-                r#"
-            SELECT
-               id, user_id, secret
-            FROM client c
-            WHERE c.id = $1
-            "#,
-                client_id,
-            )
-            .fetch_one(db_pool.get_ref())
-            .instrument(query_span)
-            .await
-            {
-                Ok(client) if client.secret.is_some() => client,
-                Ok(_client) => {
-                    return Err(ErrorForbidden("client is not active"));
-                }
-                Err(sqlx::Error::RowNotFound) => {
-                    return Err(ErrorNotFound("the client is not found"));
-                }
-                Err(e) => {
-                    tracing::error!("Failed to execute fetch query: {:?}", e);
-
-                    return Err(ErrorInternalServerError(""));
-                }
-            };
-
-            let content_length: usize =
-                get_header(&req, CONTENT_LENGTH.as_str()).map_err(|m| ErrorBadRequest(m))?;
-            let body = req
-                .take_payload()
-                .fold(
-                    BytesMut::with_capacity(content_length),
-                    |mut body, chunk| {
-                        let chunk = chunk.unwrap(); //todo process the potential error of unwrap
-                        body.extend_from_slice(&chunk); //todo
-
-                        ready(body)
-                    },
-                )
-                .await;
-
-            let mut mac =
-                match Hmac::<Sha256>::new_from_slice(client.secret.as_ref().unwrap().as_bytes()) {
-                    Ok(mac) => mac,
-                    Err(err) => {
-                        tracing::error!("error generating hmac {err:?}");
-
-                        return Err(ErrorInternalServerError(""));
-                    }
-                };
-
-            mac.update(body.as_ref());
-            let computed_hash = format!("{:x}", mac.finalize().into_bytes());
-            if hash != computed_hash {
-                return Err(ErrorBadRequest("hash is wrong"));
+            let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
+            let mut client: Client = db_fetch_client(db_pool, client_id).await?;
+            if client.secret.is_none() {
+                return Err("client is not active".to_string());
             }
 
-            let (_, mut payload) = actix_http::h1::Payload::create(true);
-            payload.unread_data(body.into());
-            req.set_payload(payload.into());
+            let client_secret = client.secret.as_ref().unwrap().as_bytes();
+            let body_hash = compute_body_hash(&mut req, client_secret).await?;
+            if header_hash != body_hash {
+                return Err("hash is wrong".to_string());
+            }
 
             match req.extensions_mut().insert(Arc::new(client)) {
                 Some(_) => {
                     tracing::error!("client middleware already called once");
-                    return Err(ErrorInternalServerError(""));
+                    return Err("".to_string());
                 }
                 None => {}
             }
 
-            let service = service.lock().await;
-            service.call(req).await
+            Ok(req)
         }
+        .then(|req| async move {
+            match req {
+                Ok(req) => {
+                    let service = service.lock().await;
+                    service.call(req).await
+                }
+                Err(msg) => Err(ErrorBadRequest(
+                    JsonResponse::<Client>::build().set_msg(msg).to_string(),
+                )),
+            }
+        })
         .boxed_local()
     }
 }
@@ -168,9 +125,56 @@ where
 
     let header_value: &str = header_value
         .to_str()
-        .map_err(|_| format!("header {header_name} can't be converted to string"))?; //map_err
-                                                                                     //
+        .map_err(|_| format!("header {header_name} can't be converted to string"))?; 
+
     header_value
         .parse::<T>()
         .map_err(|_| format!("header {header_name} has wrong type"))
+}
+
+async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Client, String> {
+    let query_span = tracing::info_span!("Fetching the client by ID");
+
+    sqlx::query_as!(
+        Client,
+        r#"SELECT id, user_id, secret FROM client c WHERE c.id = $1"#,
+        client_id,
+        )
+        .fetch_one(db_pool)
+        .instrument(query_span)
+        .await
+        .map_err(|err| {
+            match err {
+                sqlx::Error::RowNotFound => "the client is not found".to_string(),
+                e => {
+                    tracing::error!("Failed to execute fetch query: {:?}", e);
+                    String::new()
+                }
+            }
+        })
+}
+
+async fn compute_body_hash(req: &mut ServiceRequest, client_secret: &[u8]) -> Result<String, String> {
+    let content_length: usize = get_header(req, CONTENT_LENGTH.as_str())?;
+    let mut body = BytesMut::with_capacity(content_length);
+    let mut payload = req.take_payload();
+    while let Some(chunk) = payload.next().await {
+        body.extend_from_slice(&chunk.expect("can't unwrap the chunk"));
+    }
+
+    let mut mac =
+        match Hmac::<Sha256>::new_from_slice(client_secret) {
+            Ok(mac) => mac,
+            Err(err) => {
+                tracing::error!("error generating hmac {err:?}");
+                return Err("".to_string());
+            }
+        };
+
+    mac.update(body.as_ref());
+    let (_, mut payload) = actix_http::h1::Payload::create(true);
+    payload.unread_data(body.into());
+    req.set_payload(payload.into());
+
+    Ok(format!("{:x}", mac.finalize().into_bytes()))
 }
