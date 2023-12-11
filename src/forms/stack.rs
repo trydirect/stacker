@@ -289,6 +289,7 @@ pub struct Volumes {
 pub struct ServiceNetworks {
     pub network: Option<Vec<String>>
 }
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComposeNetworks {
     pub networks: Option<Vec<String>>

@@ -78,17 +78,13 @@ impl TryInto<Port> for stack::Port {
 impl TryInto<Networks> for stack::ServiceNetworks {
     type Error = ();
     fn try_into(self) -> Result<Networks, Self::Error> {
-        Ok(Networks::Simple(self.network.unwrap()))
+        let mut networks = vec!["default_network".to_string()];
+        if self.network.is_some() {
+            networks.append(&mut self.network.unwrap());
+        }
+        Ok(Networks::Simple(networks))
     }
 }
-
-impl TryInto<Networks> for stack::ComposeNetworks {
-    type Error = ();
-    fn try_into(self) -> Result<Networks, Self::Error> {
-        Ok(Networks::Simple(self.networks.unwrap()))
-    }
-}
-
 
 fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, String> {
     tracing::debug!("convert shared ports {:?}", &ports);
@@ -175,7 +171,10 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
     fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
 
         // tracing::debug!("networks found {:?}", self.networks);
-        let mut networks = self.networks.unwrap_or(vec![]);
+        let mut networks = vec!["default_network".to_string()];
+        if self.networks.is_some() {
+            networks.append(&mut self.networks.unwrap());
+        }
         let networks = networks
             .into_iter()
             .map(|net|
@@ -187,8 +186,8 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
                          driver_opts: Default::default(),
                          enable_ipv6: false,
                          internal: false,
-                         external: None,
-                         // external: Some(ComposeNetwork::Bool(true)),
+                         // external: None,
+                         external: Some(ComposeNetwork::Bool(true)),
                          ipam: None,
                          labels: Default::default(),
                          name: Some("default".to_string()),
