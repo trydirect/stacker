@@ -14,23 +14,21 @@ pub async fn disable_handler(
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
-    match async {
         let client_id = path.0;
-        let mut client = db_fetch_client_by_id(pool.get_ref(), client_id).await?; 
+        let mut client = db_fetch_client_by_id(pool.get_ref(), client_id)
+            .await
+            .map_err(|msg| JsonResponse::<models::Client>::build().not_found(msg))
+            ?; 
         if client.secret.is_none() {
-            return Err("client is not active".to_string());
+            return Err(JsonResponse::<models::Client>::build().bad_request("client is not active"));
         }
 
         client.secret = None;
-        db_update_client(pool.get_ref(), client).await
-    }.await {
-        Ok(client) => {
-            JsonResponse::build().set_item(client).ok("success")
-        }
-        Err(msg) => {
-            JsonResponse::<models::Client>::build().bad_request(msg)
-        }
-    }
+        let client = db_update_client(pool.get_ref(), client)
+            .await
+            .map_err(|msg| JsonResponse::<models::Client>::build().bad_request(msg))?;
+
+        Ok(JsonResponse::build().set_item(client).ok("success"))
 }
 
 async fn db_fetch_client_by_id(pool: &PgPool, id: i32) -> Result<models::Client, String> {

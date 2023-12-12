@@ -15,8 +15,8 @@ pub async fn add_handler(
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     match add_handler_inner(&user.id, settings, pool).await {
-        Ok(client) => JsonResponse::build().set_item(client).ok("Ok"),
-        Err(msg) => JsonResponse::build().bad_request(msg),
+        Ok(client) => Ok(JsonResponse::build().set_item(client).ok("Ok")),
+        Err(msg) => Err(JsonResponse::<models::Client>::build().bad_request(msg)),
     }
 }
 
