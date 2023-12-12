@@ -1,4 +1,4 @@
-use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound};
+use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized};
 use actix_web::web::Json;
 use actix_web::Error;
 use serde_derive::Serialize;
