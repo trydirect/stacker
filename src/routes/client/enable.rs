@@ -15,23 +15,24 @@ pub async fn enable_handler(
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
-    match async {
-        let client_id = path.0;
-        let mut client = db_fetch_client_by_id(pool.get_ref(), client_id).await?; 
-        if client.secret.is_some() {
-            return Err("client is already active".to_string());
-        }
+    let client_id = path.0;
+    let mut client = db_fetch_client_by_id(pool.get_ref(), client_id)
+        .await
+        .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))?; 
 
-        client.secret = Some(client::generate_secret(pool.get_ref(), 255).await?);
-        db_update_client(pool.get_ref(), client).await
-    }.await {
-        Ok(client) => {
-            Ok(JsonResponse::build().set_item(client).ok("success"))
-        }
-        Err(msg) => {
-            Err(JsonResponse::<models::Client>::build().bad_request(msg))
-        }
+    if client.secret.is_some() {
+        return Err(JsonResponse::<models::Client>::build().bad_request("client is already active"));
     }
+
+    client.secret = client::generate_secret(pool.get_ref(), 255)
+        .await
+        .map(|secret| Some(secret))
+        .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))?;
+
+    db_update_client(pool.get_ref(), client)
+        .await
+        .map(|client| JsonResponse::build().set_item(client).ok("success"))
+        .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))
 }
 
 async fn db_fetch_client_by_id(pool: &PgPool, id: i32) -> Result<models::Client, String> {
