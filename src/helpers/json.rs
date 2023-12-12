@@ -85,6 +85,13 @@ where
         ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
+    pub(crate) fn unauthorized<I: Into<String>>(
+        self,
+        msg: I,
+    ) -> Error {
+        ErrorUnauthorized(self.set_msg(msg).to_string())
+    }
+ 
     pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
         ErrorConflict(self.set_msg(msg).to_string())
     }
