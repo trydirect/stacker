@@ -9,12 +9,11 @@ use std::sync::Arc;
 pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let token = credentials.token();
-    let user = match fetch_user(settings.auth_url.as_str(), token)
-        .await {
-            Ok(user) => user,
-            Err(err) => {
-                return Err((JsonResponse::<i32>::build().unauthorized(err), req));
-            }
+    let user = match fetch_user(settings.auth_url.as_str(), token).await {
+        Ok(user) => user,
+        Err(err) => {
+            return Err((JsonResponse::<i32>::build().unauthorized(err), req));
+        }
     };
 
     if req.extensions_mut().insert(Arc::new(user)).is_some() {
