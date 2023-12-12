@@ -1,4 +1,4 @@
-use crate::helpers::{JsonResponse, JsonResponseBuilder};
+use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
 use actix_web::{get, web, Responder, Result};
@@ -31,12 +31,12 @@ pub async fn item(
     {
         Ok(stack) => {
             tracing::info!("Stack found: {:?}", stack.id,);
-            return JsonResponse::build().set_item(Some(stack)).ok("OK");
+            return Ok(JsonResponse::build().set_item(Some(stack)).ok("OK"));
         }
-        Err(sqlx::Error::RowNotFound) => JsonResponse::build().not_found("Record not found"),
+        Err(sqlx::Error::RowNotFound) => Err(JsonResponse::<models::Stack>::build().not_found("Record not found")),
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("Could not fetch data");
+            return Err(JsonResponse::<models::Stack>::build().internal_server_error("Could not fetch data"));
         }
     }
 }
@@ -69,15 +69,15 @@ pub async fn list(
     .await
     {
         Ok(list) => {
-            return JsonResponse::build().set_list(list).ok("OK");
+            return Ok(JsonResponse::build().set_list(list).ok("OK"));
         }
         Err(sqlx::Error::RowNotFound) => {
             tracing::error!("No stacks found for user: {:?}", &user.id);
-            return JsonResponse::build().not_found("No stacks found for user");
+            return Err(JsonResponse::<models::Stack>::build().not_found("No stacks found for user"));
         }
         Err(e) => {
             tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("Could not fetch".to_string());
+            return Err(JsonResponse::<models::Stack>::build().internal_server_error("Could not fetch"));
         }
     }
 }

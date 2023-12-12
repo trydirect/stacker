@@ -26,10 +26,10 @@ pub async fn enable_handler(
         db_update_client(pool.get_ref(), client).await
     }.await {
         Ok(client) => {
-            JsonResponse::build().set_item(client).ok("success")
+            Ok(JsonResponse::build().set_item(client).ok("success"))
         }
         Err(msg) => {
-            JsonResponse::<models::Client>::build().bad_request(msg)
+            Err(JsonResponse::<models::Client>::build().bad_request(msg))
         }
     }
 }

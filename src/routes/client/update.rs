@@ -1,6 +1,5 @@
 use crate::helpers::client;
-use crate::models::user::User;
-use crate::models::Client;
+use crate::models;
 use crate::{configuration::Settings, helpers::JsonResponse};
 use actix_web::{error::ErrorBadRequest, put, web, Responder, Result};
 use sqlx::PgPool;
@@ -10,15 +9,15 @@ use tracing::Instrument;
 #[tracing::instrument(name = "Update client.")]
 #[put("/{id}")]
 pub async fn update_handler(
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     settings: web::Data<Settings>,
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
     let client_id = path.0;
     let query_span = tracing::info_span!("Fetching the client by ID");
-    let mut client: Client = match sqlx::query_as!(
-        Client,
+    let mut client: models::Client = match sqlx::query_as!(
+        models::Client,
         r#"
         SELECT
            id, user_id, secret 
@@ -40,12 +39,12 @@ pub async fn update_handler(
             Err("")
         }
     }
-    .map_err(|s| ErrorBadRequest(JsonResponse::<Client>::build().set_msg(s).to_string()))?;
+    .map_err(|s| ErrorBadRequest(JsonResponse::<models::Client>::build().set_msg(s).to_string()))?;
 
     client.secret = client::generate_secret(pool.get_ref(), 255)
         .await
         .map(|s| Some(s))
-        .map_err(|s| ErrorBadRequest(JsonResponse::<Client>::build().set_msg(s).to_string()))?;
+        .map_err(|s| ErrorBadRequest(JsonResponse::<models::Client>::build().set_msg(s).to_string()))?;
 
     let query_span = tracing::info_span!("Updating client into the database");
     match sqlx::query!(
@@ -64,11 +63,11 @@ pub async fn update_handler(
     {
         Ok(_) => {
             tracing::info!("Client {} have been saved to database", client.id);
-            JsonResponse::build().set_item(client).ok("success")
+            Ok(JsonResponse::<models::Client>::build().set_item(client).ok("success"))
         }
         Err(e) => {
             tracing::error!("Failed to execute query: {:?}", e);
-            JsonResponse::build().internal_server_error("")
+            Err(JsonResponse::<models::Client>::build().internal_server_error(""))
         }
     }
 }

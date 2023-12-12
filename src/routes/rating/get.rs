@@ -29,14 +29,14 @@ pub async fn get_handler(
     {
         Ok(rating) => {
             tracing::info!("rating found: {:?}", rating.id);
-            return JsonResponse::build().set_item(Some(rating)).ok("OK");
+            return Ok(JsonResponse::build().set_item(Some(rating)).ok("OK"));
         }
         Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("");
+            return Err(JsonResponse::<models::Rating>::build().not_found(""));
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("");
+            return Err(JsonResponse::<models::Rating>::build().internal_server_error(""));
         }
     }
 }
@@ -54,14 +54,14 @@ pub async fn list_handler(path: web::Path<()>, pool: web::Data<PgPool>) -> Resul
     {
         Ok(rating) => {
             tracing::info!("Ratings found: {:?}", rating.len());
-            return JsonResponse::build().set_list(rating).ok("OK");
+            return Ok(JsonResponse::build().set_list(rating).ok("OK"));
         }
         Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("");
+            return Err(JsonResponse::<models::Rating>::build().not_found(""));
         }
         Err(e) => {
             tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("");
+            return Err(JsonResponse::<models::Rating>::build().internal_server_error(""));
         }
     }
 }

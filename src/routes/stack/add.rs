@@ -32,7 +32,7 @@ pub async fn add(
         Ok(f) => f,
         Err(_err) => {
             let msg = format!("Invalid data. {:?}", _err);
-            return JsonResponse::<StackForm>::build().bad_request(msg);
+            return Err(JsonResponse::<StackForm>::build().bad_request(msg));
         }
     };
 
@@ -51,13 +51,12 @@ pub async fn add(
     {
         Ok(record) => {
             tracing::info!("record exists: id: {}, name: {}", record.id, record.name);
-            return JsonResponse::build().conflict("Stack with that name already exists"
-                .to_owned());
+            return Err(JsonResponse::<models::Stack>::build().conflict("Stack with that name already exists"));
         }
         Err(sqlx::Error::RowNotFound) => {}
         Err(e) => {
             tracing::error!("Failed to fetch stack info, error: {:?}", e);
-            return JsonResponse::build().bad_request(format!("Internal Server Error"));
+            return Err(JsonResponse::<models::Stack>::build().bad_request("Internal Server Error"));
         }
     };
 
@@ -85,7 +84,7 @@ pub async fn add(
         let errors = form.validate().unwrap_err();
         let err_msg = format!("Invalid data received {:?}", &errors.to_string());
         tracing::debug!(err_msg);
-        return JsonResponse::build().bad_request(errors.to_string());// tmp solution
+        return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));// tmp solution
     }
 
     let body: Value = match serde_json::to_value::<StackForm>(form) {
@@ -118,11 +117,11 @@ pub async fn add(
                 "req_id: {} New stack details have been saved to database",
                 request_id
             );
-            return JsonResponse::build().set_id(record.id).ok("OK");
+            return Ok(JsonResponse::<models::Stack>::build().set_id(record.id).ok("OK"));
         }
         Err(e) => {
             tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().internal_server_error("Internal Server Error");
+            return Err(JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error"));
         }
     };
 }
