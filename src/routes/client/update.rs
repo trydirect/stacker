@@ -2,7 +2,7 @@ use crate::helpers::client;
 use crate::models;
 use crate::db;
 use crate::{configuration::Settings, helpers::JsonResponse};
-use actix_web::{error::ErrorBadRequest, put, web, Responder, Result};
+use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
