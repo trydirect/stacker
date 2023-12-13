@@ -92,7 +92,8 @@ pub async fn  insert(pool: &PgPool, mut client: models::Client) -> Result<models
     .map(move |result| {
         client.id = result.id;
         client
-    }).map_err(|e| {
+    })
+    .map_err(|e| {
         tracing::error!("Failed to execute query: {:?}", e);
         "Failed to insert".to_string()
     })

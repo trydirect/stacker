@@ -1,12 +1,12 @@
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::models::user::User;
-use crate::models::RateCategory;
+use crate::db;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
 use std::sync::Arc;
+use futures::TryFutureExt;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -16,86 +16,33 @@ use std::sync::Arc;
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
 pub async fn add_handler(
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     form: web::Json<forms::Rating>,
-    pool: web::Data<PgPool>,
+    pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    let query_span = tracing::info_span!("Check product existence by id.");
-    match sqlx::query_as!(
-        models::Product,
-        r"SELECT * FROM product WHERE obj_id = $1",
-        form.obj_id
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(product) => {
-            tracing::info!("Found product: {:?}", product.obj_id);
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch product: {:?}, error: {:?}", form.obj_id, e);
-            return Err(JsonResponse::<models::Rating>::build().bad_request("Object not found"));
-        }
-    };
+    let _product = db::product::fetch_by_obj(pg_pool.get_ref(), form.obj_id)
+        .await
+        .map_err(|msg| JsonResponse::<models::Rating>::build().not_found(msg))?; 
 
-    let query_span = tracing::info_span!("Search for existing vote.");
-    match sqlx::query!(
-        r"SELECT id FROM rating where user_id=$1 AND obj_id=$2 AND category=$3 LIMIT 1",
-        user.id,
-        form.obj_id,
-        form.category as RateCategory
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
+    match db::rating::fetch_by_obj_and_user_and_category(pg_pool.get_ref(), form.obj_id, user.id.clone(), form.category).await {
         Ok(record) => {
-            tracing::info!(
-                "rating exists: {:?}, user: {}, product: {}, category: {:?}",
-                record.id,
-                user.id,
-                form.obj_id,
-                form.category
-            );
             return Err(JsonResponse::<models::Rating>::build().conflict("Already rated"));
         }
-        Err(sqlx::Error::RowNotFound) => {}
-        Err(e) => {
-            tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return Err(JsonResponse::<models::Rating>::build().internal_server_error("Internal Server Error"));
-        }
+        Err(_e) => {}
     }
 
-    let query_span = tracing::info_span!("Saving new rating details into the database");
-    // Insert rating
-    match sqlx::query!(
-        r#"
-        INSERT INTO rating (user_id, obj_id, category, comment, hidden,rate,
-        created_at,
-        updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
-        RETURNING id
-        "#,
-        user.id,
-        form.obj_id,
-        form.category as models::RateCategory,
-        form.comment,
-        false,
-        form.rate
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(result) => {
-            tracing::info!("New rating {} have been saved to database", result.id);
+    let mut rating = models::Rating::default(); //todo into trait
+    rating.user_id = user.id.clone();
+    rating.obj_id = form.obj_id;
+    rating.category = form.category.into(); //todo change the type of category field to the
+                                            //RateCategory
+    rating.comment = form.comment.clone(); //todo how to do it correctly?
+    rating.hidden = Some(false); //todo add to form
+    rating.rate = Some(form.rate);
 
-            Ok(JsonResponse::<models::Rating>::build().set_id(result.id).ok("Saved"))
-        }
-        Err(e) => {
-            tracing::error!("Failed to execute query: {:?}", e);
-            Err(JsonResponse::<models::Rating>::build().internal_server_error("Failed to insert"))
-        }
-    }
+    db::rating::insert(pg_pool.get_ref(), rating)
+        .await
+        .map(|rating| JsonResponse::build().set_item(rating).ok("success"))
+        .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error("Failed to insert"))
+    //todo. verify that created_at and updated_at are also added to the response
 }
