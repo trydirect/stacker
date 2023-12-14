@@ -14,7 +14,7 @@ pub async fn fetch_by_obj(pg_pool: &PgPool, obj_id: i32) -> Result<models::Produ
     .await
     .map_err(|e|  {
         match e {
-            sqlx::Error::RowNotFound => "client not found".to_string(),
+            sqlx::Error::RowNotFound => "product not found".to_string(),
             s => {
                 tracing::error!("Failed to execute fetch query: {:?}", s);
                 "".to_string()
