@@ -31,18 +31,11 @@ pub async fn add_handler(
         Err(_e) => {}
     }
 
-    let mut rating = models::Rating::default(); //todo into trait
+    let mut rating: models::Rating = form.into_inner().into();
     rating.user_id = user.id.clone();
-    rating.obj_id = form.obj_id;
-    rating.category = form.category.into(); //todo change the type of category field to the
-                                            //RateCategory
-    rating.comment = form.comment.clone(); //todo how to do it correctly?
-    rating.hidden = Some(false); //todo add to form
-    rating.rate = Some(form.rate);
 
     db::rating::insert(pg_pool.get_ref(), rating)
         .await
         .map(|rating| JsonResponse::build().set_item(rating).ok("success"))
         .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error("Failed to insert"))
-    //todo. verify that created_at and updated_at are also added to the response
 }
