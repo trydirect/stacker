@@ -3090,6 +3090,7 @@ dependencies = [
  "actix-http",
  "actix-web",
  "actix-web-httpauth",
+ "brotli",
  "chrono",
  "clap",
  "config",
