@@ -78,32 +78,22 @@ impl TryInto<Port> for stack::Port {
 impl TryInto<Networks> for stack::ServiceNetworks {
     type Error = ();
     fn try_into(self) -> Result<Networks, Self::Error> {
-        let mut networks = vec!["default_network".to_string()];
-        if self.network.is_some() {
-            networks.append(&mut self.network.unwrap());
-        }
-        Ok(Networks::Simple(networks))
-    }
-}
-
-fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, String> {
-    tracing::debug!("convert shared ports {:?}", &ports);
-    let mut _ports: Vec<Port> = vec![];
-    match ports {
-        Some(ports) => {
-            tracing::debug!("Ports >>>> {:?}", ports);
-            for port in ports {
+        let mut default_networks = vec!["default_network".to_string()];
+        let nets = match self.network {
+            Some(mut _nets) => {
+                if !_nets.contains(&"default_network".to_string()) {
+                    _nets.append(&mut default_networks);
+                }
+                _nets
             }
-        }
-        None => {
-            tracing::debug!("No ports defined by user");
-            return Ok(_ports);
-        }
+            None => {
+               default_networks
+            }
+        };
+        Ok(Networks::Simple(nets))
     }
-
-    tracing::debug!("ports {:?}", _ports);
-    Ok(_ports)
 }
+
 
 fn is_named_docker_volume(volume: &str) -> bool {
     // Docker named volumes typically don't contain special characters or slashes
@@ -170,14 +160,23 @@ impl TryIntoService for App {
 impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
     fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
 
-        // tracing::debug!("networks found {:?}", self.networks);
-        let mut networks = vec!["default_network".to_string()];
-        if self.networks.is_some() {
-            networks.append(&mut self.networks.unwrap());
-        }
+        let mut default_network = vec!["default_network".to_string()];
+
+        let networks = match self.networks {
+            None => {
+                default_network
+            }
+            Some(mut nets) => {
+                if !nets.contains(&"default_network".to_string()) {
+                    nets.append(&mut default_network);
+                }
+                nets
+            }
+        };
+
         let networks = networks
             .into_iter()
-            .map(|net|
+            .map(|net| {
                 (net,
                  MapOrEmpty::Map(
                      NetworkSettings {
@@ -193,8 +192,12 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
                          name: Some("default".to_string()),
                      }
                  ))
+            }
             )
             .collect::<IndexMap<String, _>>();
+
+        tracing::debug!("networks collected {:?}", &networks);
+
         networks
     }
 }
@@ -203,26 +206,29 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
 pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVolume>> {
 
     let mut named_volumes = IndexMap::default();
+    if app.volumes.is_none() {
+        return named_volumes;
+    }
 
-        let volumes = app.volumes
-            .unwrap()
-            .into_iter()
-            .filter(|volume| is_named_docker_volume(
-                volume.host_path.clone().unwrap().as_str())
-            )
-            .map(|volume| {
-                let k = volume.host_path.clone().unwrap();
-                (k.clone(), MapOrEmpty::Map(ComposeVolume {
-                    driver: None,
-                    driver_opts: Default::default(),
-                    external: None,
-                    labels: Default::default(),
-                    name: Some(k.clone())
-                }))
-            })
-            .collect::<IndexMap<String, MapOrEmpty<ComposeVolume>>>();
+    let volumes = app.volumes
+        .unwrap()
+        .into_iter()
+        .filter(|volume| is_named_docker_volume(
+            volume.host_path.clone().unwrap().as_str())
+        )
+        .map(|volume| {
+            let k = volume.host_path.clone().unwrap();
+            (k.clone(), MapOrEmpty::Map(ComposeVolume {
+                driver: None,
+                driver_opts: Default::default(),
+                external: None,
+                labels: Default::default(),
+                name: Some(k.clone())
+            }))
+        })
+        .collect::<IndexMap<String, MapOrEmpty<ComposeVolume>>>();
 
-        named_volumes.extend(volumes);
+    named_volumes.extend(volumes);
     // tracing::debug!("Named volumes: {:?}", named_volumes);
 
     named_volumes

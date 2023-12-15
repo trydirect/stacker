@@ -11,6 +11,7 @@ use lapin::{
 };
 use sqlx::PgPool;
 use std::sync::Arc;
+use crate::helpers::compressor::compress;
 
 
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
@@ -52,7 +53,7 @@ pub async fn add(
         Some(stack) => {
             let id = stack.id.clone();
             let dc = DcBuilder::new(stack);
-            dc.build();
+            let fc = dc.build();
 
             let addr = sets.amqp.connection_string();
             let routing_key = "install.start.tfa.all.all".to_string();
@@ -72,6 +73,8 @@ pub async fn add(
             stack_data.user_token = Some(user.id.clone());
             stack_data.user_email = Some(user.email.clone());
             stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
+            let compressed = fc.unwrap_or("".to_string());
+            stack_data.docker_compose = Some(compress(compressed.as_str()));
 
             let payload = serde_json::to_string::<StackPayload>(&stack_data).unwrap();
             let _payload = payload.as_bytes();

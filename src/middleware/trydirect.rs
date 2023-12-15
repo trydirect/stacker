@@ -5,7 +5,7 @@ use futures::future::{FutureExt};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Trydirect bearer guard.")]
+#[tracing::instrument(name = "TryDirect bearer guard.")]
 pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let token = credentials.token();

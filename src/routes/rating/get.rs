@@ -46,7 +46,6 @@ pub async fn get_handler(
 pub async fn list_handler(path: web::Path<()>, pool: web::Data<PgPool>) -> Result<impl Responder> {
     /// Get ratings of all users
     let query_span = tracing::info_span!("Get all rates.");
-    // let category = path.0;
     match sqlx::query_as!(models::Rating, r"SELECT * FROM rating")
         .fetch_all(pool.get_ref())
         .instrument(query_span)
