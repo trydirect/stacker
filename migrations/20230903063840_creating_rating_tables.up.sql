@@ -1,15 +1,15 @@
 -- Add up migration script here
 
 CREATE TYPE rate_category AS ENUM (
-    'Application',
-    'Cloud',      
-    'Stack',
-    'DeploymentSpeed',
-    'Documentation',
-    'Design',
-    'TechSupport',
-    'Price',
-    'MemoryUsage'
+    'application',
+    'cloud',      
+    'stack',
+    'deploymentSpeed',
+    'documentation',
+    'design',
+    'techSupport',
+    'price',
+    'memoryUsage'
 );
 
 CREATE TABLE product (

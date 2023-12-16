@@ -6,7 +6,12 @@ pub async fn fetch_by_obj(pg_pool: &PgPool, obj_id: i32) -> Result<models::Produ
     let query_span = tracing::info_span!("Check product existence by id.");
     sqlx::query_as!(
         models::Product,
-        r"SELECT * FROM product WHERE obj_id = $1",
+        r#"SELECT
+            *
+         FROM product
+         WHERE obj_id = $1
+         LIMIT 1
+         "#,
         obj_id
     )
     .fetch_one(pg_pool)
