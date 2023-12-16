@@ -2,22 +2,93 @@ use sqlx::PgPool;
 use crate::models;
 use tracing::Instrument;
 
-pub async fn fetch_by_obj_and_user_and_category(pool: &PgPool, obj_id: i32, user_id: String, category: models::RateCategory) -> Result<models::Rating, String> {
-    let query_span = tracing::info_span!("Search for existing vote.");
+pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
+    let query_span = tracing::info_span!("Fetch all ratings.");
     sqlx::query_as!(
         models::Rating,
-        r"SELECT * FROM rating where user_id=$1 AND obj_id=$2 AND category=$3 LIMIT 1",
-        user_id,
-        obj_id,
-        "ok" //todo put there the category
-        //category.into() //todo
+        r#"SELECT 
+            id,
+            user_id,
+            obj_id,
+            category as "category: _",
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at
+        FROM rating"#
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to execute fetch query: {:?}", e);
+        "".to_string()
+    })
+}
+
+pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Rating, String> {
+    let query_span = tracing::info_span!("Fetch rating by id");
+    sqlx::query_as!(
+        models::Rating,
+        r#"SELECT 
+            id,
+            user_id,
+            obj_id,
+            category as "category: _",
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at
+        FROM rating
+        WHERE id=$1
+        LIMIT 1"#,
+        id
     )
     .fetch_one(pool)
     .instrument(query_span)
     .await
     .map_err(|e| {
         match e {
-            sqlx::Error::RowNotFound => "client not found".to_string(),
+            sqlx::Error::RowNotFound => "rating not found".to_string(),
+            s => {
+                tracing::error!("Failed to execute fetch query: {:?}", s);
+                "".to_string()
+            }
+        }
+    })
+}
+
+pub async fn fetch_by_obj_and_user_and_category(pool: &PgPool, obj_id: i32, user_id: String, category: models::RateCategory) -> Result<models::Rating, String> {
+    let query_span = tracing::info_span!("Fetch rating by obj, user and category.");
+    sqlx::query_as!(
+        models::Rating,
+        r#"SELECT 
+            id,
+            user_id,
+            obj_id,
+            category as "category: _",
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at
+        FROM rating
+        WHERE user_id=$1
+            AND obj_id=$2
+            AND category=$3
+        LIMIT 1"#,
+        user_id,
+        obj_id,
+        category as _ 
+    )
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        match e {
+            sqlx::Error::RowNotFound => "fetch not found".to_string(),
             s => {
                 tracing::error!("Failed to execute fetch query: {:?}", s);
                 "".to_string()
@@ -36,7 +107,7 @@ pub async fn insert(pool: &PgPool, mut rating: models::Rating) -> Result<models:
         "#,
         rating.user_id,
         rating.obj_id,
-        rating.category,
+        rating.category as _,
         rating.comment,
         rating.hidden,
         rating.rate

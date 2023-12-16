@@ -6,7 +6,8 @@ pub async fn update(pool: &PgPool, client: models::Client) -> Result<models::Cli
     let query_span = tracing::info_span!("Updating client into the database");
     sqlx::query!(
         r#"
-        UPDATE client SET 
+        UPDATE client
+        SET 
             secret=$1,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $2
@@ -33,9 +34,12 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Client, String> {
         models::Client,
         r#"
         SELECT
-           id, user_id, secret 
+           id,
+           user_id,
+           secret 
         FROM client c
         WHERE c.id = $1
+        LIMIT 1
         "#,
         id,
     )
