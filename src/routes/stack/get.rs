@@ -1,6 +1,6 @@
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::models::user::User;
+use crate::db;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::convert::From;
@@ -10,41 +10,30 @@ use std::sync::Arc;
 #[tracing::instrument(name = "Get logged user stack.")]
 #[get("/{id}")]
 pub async fn item(
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: web::Data<PgPool>,
+    pool: web::Data<PgPool>, //&Web::Data<PgPool>
+                             //get_ref
+                             //*
 ) -> Result<impl Responder> {
     /// Get stack apps of logged user only
     let (id,) = path.into_inner();
 
-    tracing::info!("User {:?} gets stack by id {:?}", user.id, id);
-    match sqlx::query_as!(
-        models::Stack,
-        r#"
-        SELECT * FROM user_stack WHERE id=$1 AND user_id=$2 LIMIT 1
-        "#,
-        id,
-        user.id
-    )
-    .fetch_one(pool.get_ref())
-    .await
-    {
-        Ok(stack) => {
-            tracing::info!("Stack found: {:?}", stack.id,);
-            return Ok(JsonResponse::build().set_item(Some(stack)).ok("OK"));
-        }
-        Err(sqlx::Error::RowNotFound) => Err(JsonResponse::<models::Stack>::build().not_found("Record not found")),
-        Err(e) => {
-            tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return Err(JsonResponse::<models::Stack>::build().internal_server_error("Could not fetch data"));
-        }
+    let stack = db::stack::fetch(pool.get_ref(), id) 
+        .await
+        .map_err(|err| JsonResponse::<models::Stack>::build().not_found("Record not found"))?;
+
+    if stack.user_id != user.id {
+        return Err(JsonResponse::<models::Stack>::build().bad_request("Forbidden"));
     }
+
+    Ok(JsonResponse::build().set_item(Some(stack)).ok("OK"))
 }
 
 #[tracing::instrument(name = "Get user's stack list.")]
 #[get("/user/{id}")]
 pub async fn list(
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     path: web::Path<(String,)>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
