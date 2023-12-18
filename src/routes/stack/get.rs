@@ -12,9 +12,7 @@ use std::sync::Arc;
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: web::Data<PgPool>, //&Web::Data<PgPool>
-                             //get_ref
-                             //*
+    pool: web::Data<PgPool>, 
 ) -> Result<impl Responder> {
     /// Get stack apps of logged user only
     let (id,) = path.into_inner();
@@ -40,33 +38,10 @@ pub async fn list(
     /// This is admin endpoint, used by a m2m app, client app is confidential
     /// it should return stacks by user id
     /// in order to pass validation at external deployment service
-    let (id,) = path.into_inner();
-    tracing::info!("Logged user: {:?}", user.id);
-    tracing::info!("Get stack list for user {:?}", id);
+    let (user_id,) = path.into_inner();
 
-    let query_span = tracing::info_span!("Get stacks by user id.");
-
-    match sqlx::query_as!(
-        models::Stack,
-        r#"
-        SELECT * FROM user_stack WHERE user_id=$1
-        "#,
-        id
-    )
-    .fetch_all(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(list) => {
-            return Ok(JsonResponse::build().set_list(list).ok("OK"));
-        }
-        Err(sqlx::Error::RowNotFound) => {
-            tracing::error!("No stacks found for user: {:?}", &user.id);
-            return Err(JsonResponse::<models::Stack>::build().not_found("No stacks found for user"));
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch stack, error: {:?}", e);
-            return Err(JsonResponse::<models::Stack>::build().internal_server_error("Could not fetch"));
-        }
-    }
+    db::stack::fetch_by_user(pool.get_ref(), user_id) 
+        .await
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(""))
+        .map(|stacks| JsonResponse::build().set_list(stacks).ok("OK"))
 }
