@@ -1,8 +1,9 @@
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::post;
+use crate::db;
 use actix_web::{
+    post,
     web,
     web::{Bytes, Data},
     Responder, Result,
@@ -34,28 +35,14 @@ pub async fn add(
         })?;
 
     let stack_name = form.custom.custom_stack_code.clone();
-    tracing::debug!("form before convert {:?}", form);
-
-    let query_span = tracing::info_span!("Check project/stack existence by custom_stack_code.");
-    match sqlx::query_as!(
-        models::Stack,
-        r"SELECT * FROM user_stack WHERE name = $1",
-        stack_name
-    )
-        .fetch_one(pool.get_ref())
-        .instrument(query_span)
-        .await
     {
-        Ok(record) => {
-            tracing::info!("record exists: id: {}, name: {}", record.id, record.name);
+        let stack = db::stack::fetch_one_by_name(pool.get_ref(), stack_name.clone())
+            .await
+            .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error"))?;
+        if stack.is_some() {
             return Err(JsonResponse::<models::Stack>::build().conflict("Stack with that name already exists"));
         }
-        Err(sqlx::Error::RowNotFound) => {}
-        Err(e) => {
-            tracing::error!("Failed to fetch stack info, error: {:?}", e);
-            return Err(JsonResponse::<models::Stack>::build().bad_request("Internal Server Error"));
-        }
-    };
+    }
 
     let user_id = user.id.clone();
     let request_id = Uuid::new_v4();

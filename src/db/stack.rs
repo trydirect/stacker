@@ -49,3 +49,32 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: String) -> Result<Vec<models:
         "".to_string()
     })
 }
+
+pub async fn fetch_one_by_name(pool: &PgPool, name: String) -> Result<Option<models::Stack>, String> {
+    let query_span = tracing::info_span!("Fetch one stack by name.");
+    sqlx::query_as!(
+        models::Stack,
+        r#"
+        SELECT
+            *
+        FROM user_stack
+        WHERE name=$1
+        LIMIT 1
+        "#,
+        name
+    )
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map(|stack| Some(stack))
+    .or_else(|err| {
+        match err {
+            sqlx::Error::RowNotFound => Ok(None),
+            err => {
+                tracing::error!("Failed to fetch one stack by name, error: {:?}", err);
+                Err("".to_string())
+            }
+
+        }
+    })
+}
