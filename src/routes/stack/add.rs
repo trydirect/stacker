@@ -1,7 +1,6 @@
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::models::user::User;
 use actix_web::post;
 use actix_web::{
     web,
@@ -21,20 +20,18 @@ use std::sync::Arc;
 #[post("")]
 pub async fn add(
     body: Bytes,
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
 
     // @todo ACL
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes).unwrap();
-    let form = match serde_json::from_str::<StackForm>(body_str) {
-        Ok(f) => f,
-        Err(_err) => {
-            let msg = format!("Invalid data. {:?}", _err);
-            return Err(JsonResponse::<StackForm>::build().bad_request(msg));
-        }
-    };
+    let form = serde_json::from_str::<StackForm>(body_str)
+        .map_err(|err| {
+            let msg = format!("Invalid data. {:?}", err);
+            JsonResponse::<StackForm>::build().bad_request(msg)
+        })?;
 
     let stack_name = form.custom.custom_stack_code.clone();
     tracing::debug!("form before convert {:?}", form);
