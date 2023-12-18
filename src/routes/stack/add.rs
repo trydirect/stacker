@@ -71,13 +71,11 @@ pub async fn add(
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));// tmp solution
     }
 
-    let body: Value = match serde_json::to_value::<StackForm>(form) {
-        Ok(body) => body,
-        Err(err) => {
+    let body: Value = serde_json::to_value::<StackForm>(form)
+        .or_else(|err| {
             tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
-            serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
-        }
-    };
+            Ok::<Value, Error>(serde_json::to_value::<StackForm>(StackForm::default()).unwrap())
+        }).unwrap();
 
     match sqlx::query!(
         r#"
