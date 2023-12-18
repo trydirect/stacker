@@ -28,3 +28,24 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Stack, String> {
         }
     })
 }
+
+pub async fn fetch_by_user(pool: &PgPool, user_id: String) -> Result<Vec<models::Stack>, String> {
+    let query_span = tracing::info_span!("Fetch stacks by user id.");
+    sqlx::query_as!(
+        models::Stack,
+        r#"
+        SELECT
+            *
+        FROM user_stack
+        WHERE user_id=$1
+        "#,
+        user_id
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch stack, error: {:?}", err);
+        "".to_string()
+    })
+}
