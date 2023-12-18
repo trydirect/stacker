@@ -29,7 +29,7 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Stack, String> {
     })
 }
 
-pub async fn fetch_by_user(pool: &PgPool, user_id: String) -> Result<Vec<models::Stack>, String> {
+pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::Stack>, String> {
     let query_span = tracing::info_span!("Fetch stacks by user id.");
     sqlx::query_as!(
         models::Stack,
@@ -50,7 +50,7 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: String) -> Result<Vec<models:
     })
 }
 
-pub async fn fetch_one_by_name(pool: &PgPool, name: String) -> Result<Option<models::Stack>, String> {
+pub async fn fetch_one_by_name(pool: &PgPool, name: &str) -> Result<Option<models::Stack>, String> {
     let query_span = tracing::info_span!("Fetch one stack by name.");
     sqlx::query_as!(
         models::Stack,
