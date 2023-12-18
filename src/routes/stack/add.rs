@@ -36,7 +36,7 @@ pub async fn add(
 
     let stack_name = form.custom.custom_stack_code.clone();
     {
-        let stack = db::stack::fetch_one_by_name(pool.get_ref(), stack_name.clone())
+        let stack = db::stack::fetch_one_by_name(pool.get_ref(), &stack_name)
             .await
             .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error"))?;
         if stack.is_some() {

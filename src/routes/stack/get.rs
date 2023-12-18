@@ -38,9 +38,9 @@ pub async fn list(
     /// This is admin endpoint, used by a m2m app, client app is confidential
     /// it should return stacks by user id
     /// in order to pass validation at external deployment service
-    let (user_id,) = path.into_inner();
+    let user_id = path.into_inner().0;
 
-    db::stack::fetch_by_user(pool.get_ref(), user_id) 
+    db::stack::fetch_by_user(pool.get_ref(), &user_id) 
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(""))
         .map(|stacks| JsonResponse::build().set_list(stacks).ok("OK"))
