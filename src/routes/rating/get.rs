@@ -17,10 +17,12 @@ pub async fn get_handler(
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let rate_id = path.0;
-    db::rating::fetch(pool.get_ref(), rate_id)
+    let rating = db::rating::fetch(pool.get_ref(), rate_id)
         .await
-        .map(|rating| JsonResponse::build().set_item(rating).ok("OK"))
-        .map_err(|err| JsonResponse::<models::Rating>::build().not_found("not found"))
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))?
+        .ok_or_else(|| JsonResponse::<models::Rating>::build().not_found("not found"))?;
+
+    Ok(JsonResponse::build().set_item(rating).ok("OK"))
 }
 
 #[tracing::instrument(name = "Get all ratings.")]
