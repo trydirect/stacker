@@ -28,7 +28,7 @@ pub async fn update(pool: &PgPool, client: models::Client) -> Result<models::Cli
     })
 }
 
-pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Client, String> {
+pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Client>, String> {
     let query_span = tracing::info_span!("Fetching the client by ID");
     sqlx::query_as!(
         models::Client,
@@ -46,12 +46,13 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Client, String> {
     .fetch_one(pool)
     .instrument(query_span)
     .await
-    .map_err(|e| {
+    .map(|client| Some(client))
+    .or_else(|e| {
         match e {
-            sqlx::Error::RowNotFound => "client not found".to_string(),
+            sqlx::Error::RowNotFound => Ok(None),
             s => {
                 tracing::error!("Failed to execute fetch query: {:?}", s);
-                "".to_string()
+                Err("".to_string())
             }
         }
     })

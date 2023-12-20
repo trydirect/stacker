@@ -19,7 +19,9 @@ pub async fn enable_handler(
     let client_id = path.0;
     let mut client = db::client::fetch(pool.get_ref(), client_id)
         .await
-        .map_err(|msg| JsonResponse::<models::Client>::build().not_found(msg))?; 
+        .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))?
+        .ok_or_else(|| JsonResponse::<models::Client>::build().not_found("not found"))?
+        ; 
 
     if client.secret.is_some() {
         return Err(JsonResponse::<models::Client>::build().bad_request("client is already active"));
