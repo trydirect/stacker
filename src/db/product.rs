@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use crate::models;
 use tracing::Instrument;
 
-pub async fn fetch_by_obj(pg_pool: &PgPool, obj_id: i32) -> Result<models::Product, String> {
+pub async fn fetch_by_obj(pg_pool: &PgPool, obj_id: i32) -> Result<Option<models::Product>, String> {
     let query_span = tracing::info_span!("Check product existence by id.");
     sqlx::query_as!(
         models::Product,
@@ -17,12 +17,13 @@ pub async fn fetch_by_obj(pg_pool: &PgPool, obj_id: i32) -> Result<models::Produ
     .fetch_one(pg_pool)
     .instrument(query_span)
     .await
-    .map_err(|e|  {
+    .map(|product| Some(product))
+    .or_else(|e| {
         match e {
-            sqlx::Error::RowNotFound => "product not found".to_string(),
+            sqlx::Error::RowNotFound => Ok(None),
             s => {
                 tracing::error!("Failed to execute fetch query: {:?}", s);
-                "".to_string()
+                Err("".to_string())
             }
         }
     })

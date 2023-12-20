@@ -22,7 +22,9 @@ pub async fn add_handler(
 ) -> Result<impl Responder> {
     let _product = db::product::fetch_by_obj(pg_pool.get_ref(), form.obj_id)
         .await
-        .map_err(|msg| JsonResponse::<models::Rating>::build().not_found(msg))?; 
+        .map_err(|msg| JsonResponse::<models::Rating>::build().internal_server_error(msg))?
+        .ok_or_else(|| JsonResponse::<models::Rating>::build().not_found("not found"))?
+        ; 
 
     match db::rating::fetch_by_obj_and_user_and_category(pg_pool.get_ref(), form.obj_id, user.id.clone(), form.category).await {
         Ok(record) => {
