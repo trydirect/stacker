@@ -72,10 +72,8 @@ pub async fn add(
     }
 
     let body: Value = serde_json::to_value::<StackForm>(form)
-        .or_else(|err| {
-            tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
-            Ok::<Value, Error>(serde_json::to_value::<StackForm>(StackForm::default()).unwrap())
-        }).unwrap();
+        .or(serde_json::to_value::<StackForm>(StackForm::default()))
+        .unwrap();
 
     match sqlx::query!(
         r#"
