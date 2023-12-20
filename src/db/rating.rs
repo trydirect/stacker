@@ -27,7 +27,7 @@ pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
     })
 }
 
-pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Rating, String> {
+pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Rating>, String> {
     let query_span = tracing::info_span!("Fetch rating by id");
     sqlx::query_as!(
         models::Rating,
@@ -49,12 +49,13 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Rating, String> {
     .fetch_one(pool)
     .instrument(query_span)
     .await
-    .map_err(|e| {
+    .map(|rating| Some(rating))
+    .or_else(|e| {
         match e {
-            sqlx::Error::RowNotFound => "rating not found".to_string(),
+            sqlx::Error::RowNotFound => Ok(None),
             s => {
                 tracing::error!("Failed to execute fetch query: {:?}", s);
-                "".to_string()
+                Err("".to_string())
             }
         }
     })
