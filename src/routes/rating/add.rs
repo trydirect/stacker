@@ -26,11 +26,11 @@ pub async fn add_handler(
         .ok_or_else(|| JsonResponse::<models::Rating>::build().not_found("not found"))?
         ; 
 
-    match db::rating::fetch_by_obj_and_user_and_category(pg_pool.get_ref(), form.obj_id, user.id.clone(), form.category).await {
-        Ok(record) => {
-            return Err(JsonResponse::<models::Rating>::build().conflict("Already rated"));
-        }
-        Err(_e) => {}
+    let rating = db::rating::fetch_by_obj_and_user_and_category(pg_pool.get_ref(), form.obj_id, user.id.clone(), form.category)
+        .await
+        .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error(err))?;
+    if rating.is_some() {
+        return Err(JsonResponse::<models::Rating>::build().bad_request("already rated"));
     }
 
     let mut rating: models::Rating = form.into_inner().into();

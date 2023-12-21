@@ -61,7 +61,12 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Rating>, Str
     })
 }
 
-pub async fn fetch_by_obj_and_user_and_category(pool: &PgPool, obj_id: i32, user_id: String, category: models::RateCategory) -> Result<models::Rating, String> {
+pub async fn fetch_by_obj_and_user_and_category(
+    pool: &PgPool,
+    obj_id: i32,
+    user_id: String,
+    category: models::RateCategory,
+) -> Result<Option<models::Rating>, String> {
     let query_span = tracing::info_span!("Fetch rating by obj, user and category.");
     sqlx::query_as!(
         models::Rating,
@@ -87,12 +92,13 @@ pub async fn fetch_by_obj_and_user_and_category(pool: &PgPool, obj_id: i32, user
     .fetch_one(pool)
     .instrument(query_span)
     .await
-    .map_err(|e| {
+    .map(|rating| Some(rating))
+    .or_else(|e| {
         match e {
-            sqlx::Error::RowNotFound => "fetch not found".to_string(),
+            sqlx::Error::RowNotFound => Ok(None),
             s => {
                 tracing::error!("Failed to execute fetch query: {:?}", s);
-                "".to_string()
+                Err("".to_string())
             }
         }
     })
