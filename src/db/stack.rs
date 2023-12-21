@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use crate::models;
 use tracing::Instrument;
 
-pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Stack, String> {
+pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Stack>, String> {
     tracing::info!("Fecth stack {}", id);
     sqlx::query_as!(
         models::Stack,
@@ -17,12 +17,13 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<models::Stack, String> {
     )
     .fetch_one(pool)
     .await
-    .map_err(|err| {
+    .map(|stack| Some(stack))
+    .or_else(|err| {
         match err {
-            sqlx::Error::RowNotFound => "".to_string(),
+            sqlx::Error::RowNotFound => Ok(None),
             e => {
                 tracing::error!("Failed to fetch stack, error: {:?}", e);
-                return "Could not fetch data".to_string();
+                Err("Could not fetch data".to_string())
             }
 
         }
