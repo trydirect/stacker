@@ -19,7 +19,9 @@ pub async fn item(
 
     let stack = db::stack::fetch(pool.get_ref(), id) 
         .await
-        .map_err(|err| JsonResponse::<models::Stack>::build().not_found("Record not found"))?;
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<models::Stack>::build().not_found("not found"))?
+        ;
 
     if stack.user_id != user.id {
         return Err(JsonResponse::<models::Stack>::build().bad_request("Forbidden"));
