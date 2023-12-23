@@ -1,31 +1,32 @@
+use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::db;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::convert::From;
-use tracing::Instrument;
 use std::sync::Arc;
+use tracing::Instrument;
 
 #[tracing::instrument(name = "Get logged user stack.")]
 #[get("/{id}")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: web::Data<PgPool>, 
+    pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     /// Get stack apps of logged user only
     let (id,) = path.into_inner();
 
-    let stack = db::stack::fetch(pool.get_ref(), id) 
+    let stack = db::stack::fetch(pool.get_ref(), id)
         .await
-        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))?
-        .ok_or_else(|| JsonResponse::<models::Stack>::build().not_found("not found"))?
-        ;
-
-    if stack.user_id != user.id {
-        return Err(JsonResponse::<models::Stack>::build().bad_request("Forbidden"));
-    }
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
+        .and_then(|stack| match stack {
+            Some(stack) if stack.user_id != user.id => {
+                Err(JsonResponse::<models::Stack>::build().not_found("not found"))
+            }
+            Some(stack) => Ok(stack),
+            None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
+        })?;
 
     Ok(JsonResponse::build().set_item(Some(stack)).ok("OK"))
 }
@@ -42,8 +43,8 @@ pub async fn list(
     /// in order to pass validation at external deployment service
     let user_id = path.into_inner().0;
 
-    db::stack::fetch_by_user(pool.get_ref(), &user_id) 
+    db::stack::fetch_by_user(pool.get_ref(), &user_id)
         .await
-        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(""))
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .map(|stacks| JsonResponse::build().set_list(stacks).ok("OK"))
 }
