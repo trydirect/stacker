@@ -7,14 +7,11 @@ use actix_web::{
     web::{Bytes, Data},
     Responder, Result,
 };
-use chrono::Utc;
 use serde_json::Value;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::str;
 use std::sync::Arc;
-use tracing::Instrument;
-use uuid::Uuid;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
@@ -25,7 +22,8 @@ pub async fn add(
 ) -> Result<impl Responder> {
     // @todo ACL
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
-    let body_str = str::from_utf8(&body_bytes).unwrap();
+    let body_str = str::from_utf8(&body_bytes)
+        .map_err(|err| JsonResponse::<StackForm>::build().internal_server_error(err.to_string()))?;
     let form = serde_json::from_str::<StackForm>(body_str).map_err(|err| {
         let msg = format!("Invalid data. {:?}", err);
         JsonResponse::<StackForm>::build().bad_request(msg)
