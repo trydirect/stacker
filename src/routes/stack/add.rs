@@ -22,15 +22,9 @@ pub async fn add(
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     // @todo ACL
-    let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
-    let body_str = str::from_utf8(&body_bytes)
-        .map_err(|err| JsonResponse::<StackForm>::build().internal_server_error(err.to_string()))?;
-    let form = serde_json::from_str::<StackForm>(body_str).map_err(|err| {
-        let msg = format!("Invalid data. {:?}", err);
-        JsonResponse::<StackForm>::build().bad_request(msg)
-    })?;
-
+    let form = convert_body_to_form(body).await?;
     let stack_name = form.custom.custom_stack_code.clone();
+
     check_if_stack_exists(pool.get_ref(), &stack_name).await?;
 
     if !form.validate().is_ok() {
@@ -65,4 +59,14 @@ async fn check_if_stack_exists(pool: &PgPool, stack_name: &String) -> Result<(),
                 .conflict("Stack with that name already exists")),
             None => Ok(()),
         })
+}
+
+async fn convert_body_to_form(body: Bytes) -> Result<StackForm, Error> {
+    let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
+    let body_str = str::from_utf8(&body_bytes)
+        .map_err(|err| JsonResponse::<StackForm>::build().internal_server_error(err.to_string()))?;
+    serde_json::from_str::<StackForm>(body_str).map_err(|err| {
+        let msg = format!("Invalid data. {:?}", err);
+        JsonResponse::<StackForm>::build().bad_request(msg)
+    })
 }
