@@ -22,18 +22,10 @@ pub async fn add(
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     // @todo ACL
-    let form = convert_body_to_form(body).await?;
+    let form = body_into_form(body).await?;
     let stack_name = form.custom.custom_stack_code.clone();
 
     check_if_stack_exists(pool.get_ref(), &stack_name).await?;
-
-    if !form.validate().is_ok() {
-        let errors = form.validate().unwrap_err();
-        let err_msg = format!("Invalid data received {:?}", &errors.to_string());
-        tracing::debug!(err_msg);
-        return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
-        // tmp solution
-    }
 
     let body: Value = serde_json::to_value::<StackForm>(form)
         .or(serde_json::to_value::<StackForm>(StackForm::default()))
@@ -61,12 +53,23 @@ async fn check_if_stack_exists(pool: &PgPool, stack_name: &String) -> Result<(),
         })
 }
 
-async fn convert_body_to_form(body: Bytes) -> Result<StackForm, Error> {
+async fn body_into_form(body: Bytes) -> Result<StackForm, Error> {
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes)
         .map_err(|err| JsonResponse::<StackForm>::build().internal_server_error(err.to_string()))?;
-    serde_json::from_str::<StackForm>(body_str).map_err(|err| {
-        let msg = format!("Invalid data. {:?}", err);
-        JsonResponse::<StackForm>::build().bad_request(msg)
-    })
+    serde_json::from_str::<StackForm>(body_str)
+        .map_err(|err| {
+            let msg = format!("Invalid data. {:?}", err);
+            JsonResponse::<StackForm>::build().bad_request(msg)
+        })
+        .and_then(|form| {
+            if !form.validate().is_ok() {
+                let errors = form.validate().unwrap_err();
+                let err_msg = format!("Invalid data received {:?}", &errors.to_string());
+                tracing::debug!(err_msg);
+                return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+            }
+
+            Ok(form)
+        })
 }
