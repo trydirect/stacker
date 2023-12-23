@@ -28,7 +28,7 @@ pub async fn add(
 
     let id = stack.id.clone();
     let dc = DcBuilder::new(stack);
-    let fc = dc.build();
+    let fc = dc.build(); //todo process the error
     tracing::debug!("Docker compose file content {:?}", fc);
 
     Ok(JsonResponse::build()
@@ -46,49 +46,24 @@ pub async fn admin(
 ) -> Result<impl Responder> {
     ///  Admin function for generating compose file for specified user
     let id = path.0;
-    tracing::debug!("Received id: {}", id);
+    let stack = db::stack::fetch(pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
+        .and_then(|stack| match stack {
+            Some(stack) => Ok(stack),
+            None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
+        })?;
 
-    let stack = match sqlx::query_as!(
-        models::Stack,
-        r#"
-        SELECT * FROM user_stack WHERE id=$1 LIMIT 1
-        "#,
-        id,
-    )
-    .fetch_one(pool.get_ref())
-    .await
-    {
-        Ok(stack) => {
-            tracing::info!("Record found: {:?}", stack.id);
-            Some(stack)
-        }
-        Err(sqlx::Error::RowNotFound) => {
-            tracing::error!("Record not found");
-            None
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch stack, error: {:?}", e);
-            None
+    let id = stack.id.clone();
+    let dc = DcBuilder::new(stack);
+    let fc = match dc.build() {
+        //todo process the error
+        Some(fc) => fc,
+        None => {
+            tracing::error!("Error. Compose builder returned an empty string");
+            "".to_string()
         }
     };
 
-    match stack {
-        Some(stack) => {
-            let id = stack.id.clone();
-            let dc = DcBuilder::new(stack);
-            let fc = match dc.build() {
-                Some(fc) => fc,
-                None => {
-                    tracing::error!("Error. Compose builder returned an empty string");
-                    "".to_string()
-                }
-            };
-            // tracing::debug!("Docker compose file content {:?}", fc);
-            return Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"));
-        }
-        None => {
-            return Err(JsonResponse::<models::Stack>::build()
-                .bad_request("Could not generate compose file"));
-        }
-    }
+    Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
