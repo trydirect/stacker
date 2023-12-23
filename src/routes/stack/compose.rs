@@ -28,13 +28,12 @@ pub async fn add(
 
     let id = stack.id.clone();
     let dc = DcBuilder::new(stack);
-    let fc = dc.build(); //todo process the error
-    tracing::debug!("Docker compose file content {:?}", fc);
+    let fc = dc.build().ok_or_else(|| {
+        tracing::error!("Error. Compose builder returned an empty string");
+        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
+    })?;
 
-    Ok(JsonResponse::build()
-        .set_id(id)
-        .set_item(fc.unwrap())
-        .ok("Success"))
+    Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
 
 #[tracing::instrument(name = "Generate docker-compose. Admin")]
@@ -56,14 +55,10 @@ pub async fn admin(
 
     let id = stack.id.clone();
     let dc = DcBuilder::new(stack);
-    let fc = match dc.build() {
-        //todo process the error
-        Some(fc) => fc,
-        None => {
-            tracing::error!("Error. Compose builder returned an empty string");
-            "".to_string()
-        }
-    };
+    let fc = dc.build().ok_or_else(|| {
+        tracing::error!("Error. Compose builder returned an empty string");
+        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
+    })?;
 
     Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
