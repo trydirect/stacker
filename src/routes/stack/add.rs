@@ -2,6 +2,7 @@ use crate::db;
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models;
+use actix_web::Error;
 use actix_web::{
     post, web,
     web::{Bytes, Data},
@@ -30,18 +31,7 @@ pub async fn add(
     })?;
 
     let stack_name = form.custom.custom_stack_code.clone();
-    {
-        let stack = db::stack::fetch_one_by_name(pool.get_ref(), &stack_name)
-            .await
-            .map_err(|err| {
-                JsonResponse::<models::Stack>::build()
-                    .internal_server_error("Internal Server Error")
-            })?;
-        if stack.is_some() {
-            return Err(JsonResponse::<models::Stack>::build()
-                .conflict("Stack with that name already exists"));
-        }
-    }
+    check_if_stack_exists(pool.get_ref(), &stack_name).await?;
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
@@ -61,5 +51,18 @@ pub async fn add(
         .map(|stack| JsonResponse::build().set_item(stack).ok("Ok"))
         .map_err(|_| {
             JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error")
+        })
+}
+
+async fn check_if_stack_exists(pool: &PgPool, stack_name: &String) -> Result<(), Error> {
+    db::stack::fetch_one_by_name(pool, stack_name)
+        .await
+        .map_err(|_| {
+            JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error")
+        })
+        .and_then(|stack| match stack {
+            Some(_) => Err(JsonResponse::<models::Stack>::build()
+                .conflict("Stack with that name already exists")),
+            None => Ok(()),
         })
 }
