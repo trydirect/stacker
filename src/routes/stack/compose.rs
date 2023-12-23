@@ -1,9 +1,8 @@
-use actix_web::{get, web, web::Data, Responder, Result};
-
 use crate::db;
 use crate::helpers::stack::builder::DcBuilder;
 use crate::helpers::JsonResponse;
 use crate::models;
+use actix_web::{get, web, web::Data, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -27,8 +26,7 @@ pub async fn add(
         })?;
 
     let id = stack.id.clone();
-    let dc = DcBuilder::new(stack);
-    let fc = dc.build().ok_or_else(|| {
+    let fc = DcBuilder::new(stack).build().ok_or_else(|| {
         tracing::error!("Error. Compose builder returned an empty string");
         JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
     })?;
@@ -54,8 +52,7 @@ pub async fn admin(
         })?;
 
     let id = stack.id.clone();
-    let dc = DcBuilder::new(stack);
-    let fc = dc.build().ok_or_else(|| {
+    let fc = DcBuilder::new(stack).build().ok_or_else(|| {
         tracing::error!("Error. Compose builder returned an empty string");
         JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
     })?;
