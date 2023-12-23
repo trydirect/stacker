@@ -45,26 +45,6 @@ pub async fn add(
         }
     }
 
-    let user_id = user.id.clone();
-    let request_id = Uuid::new_v4();
-    let request_span = tracing::info_span!(
-        "Validating a new stack", %request_id,
-        commonDomain=?&form.custom.project_name,
-        region=?&form.region,
-        domainList=?&form.domain_list
-    );
-    // using `enter` is an async function
-    let _request_span_guard = request_span.enter(); // ->exit
-
-    tracing::info!(
-        "request_id {} Adding '{}' '{}' as a new stack",
-        request_id,
-        form.custom.project_name,
-        form.region
-    );
-
-    let query_span = tracing::info_span!("Saving new stack details into the database");
-
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
         let err_msg = format!("Invalid data received {:?}", &errors.to_string());
@@ -77,7 +57,7 @@ pub async fn add(
         .or(serde_json::to_value::<StackForm>(StackForm::default()))
         .unwrap();
 
-    let stack = models::Stack::new(user_id, stack_name, body);
+    let stack = models::Stack::new(user.id.clone(), stack_name, body);
     db::stack::insert(pool.get_ref(), stack)
         .await
         .map(|stack| JsonResponse::build().set_item(stack).ok("Ok"))
