@@ -73,21 +73,4 @@ async fn body_into_form(body: Bytes) -> Result<StackForm, Error> {
 
             Ok(form)
         })
-    /*
-    serde_json::from_str::<StackForm>(body_str)
-        .map_err(|err| {
-            let msg = format!("Invalid data. {:?}", err);
-            JsonResponse::<StackForm>::build().bad_request(msg)
-        })
-        .and_then(|form| {
-            if !form.validate().is_ok() {
-                let errors = form.validate().unwrap_err();
-                let err_msg = format!("Invalid data received {:?}", &errors.to_string());
-                tracing::debug!(err_msg);
-                return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
-            }
-
-            Ok(form)
-        })
-    */
 }
