@@ -26,7 +26,7 @@ impl crate::console::commands::CallableTrait for NewCommand {
 
             //todo get user from trydirect
             let user = crate::models::user::User {
-                id: "first_name".to_string(),
+                id: format!("{}", self.user_id),
                 first_name: "first_name".to_string(),
                 last_name: "last_name".to_string(),
                 email: "email".to_string(),

@@ -13,5 +13,5 @@ struct DeployResponse {
 #[tracing::instrument(name = "Test deploy.")]
 #[post("/deploy")]
 pub async fn handler(client: web::ReqData<Arc<Client>>) -> Result<impl Responder> {
-    JsonResponse::build().set_item(client.into_inner()).ok("success")
+    Ok(JsonResponse::build().set_item(client.into_inner()).ok("success"))
 }

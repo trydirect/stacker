@@ -1,128 +1,76 @@
+use crate::db;
 use crate::forms::stack::StackForm;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::models::user::User;
-use actix_web::post;
+use actix_web::Error;
 use actix_web::{
-    web,
+    post, web,
     web::{Bytes, Data},
     Responder, Result,
 };
-use chrono::Utc;
 use serde_json::Value;
+use serde_valid::Validate;
 use sqlx::PgPool;
 use std::str;
-use serde_valid::Validate;
-use tracing::Instrument;
-use uuid::Uuid;
 use std::sync::Arc;
 
 #[tracing::instrument(name = "Add stack.")]
 #[post("")]
 pub async fn add(
     body: Bytes,
-    user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<models::User>>,
     pool: Data<PgPool>,
 ) -> Result<impl Responder> {
-
     // @todo ACL
-    let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
-    let body_str = str::from_utf8(&body_bytes).unwrap();
-    let form = match serde_json::from_str::<StackForm>(body_str) {
-        Ok(f) => f,
-        Err(_err) => {
-            let msg = format!("Invalid data. {:?}", _err);
-            return JsonResponse::<StackForm>::build().bad_request(msg);
-        }
-    };
-
+    let form = body_into_form(body).await?;
     let stack_name = form.custom.custom_stack_code.clone();
-    tracing::debug!("form before convert {:?}", form);
 
-    let query_span = tracing::info_span!("Check project/stack existence by custom_stack_code.");
-    match sqlx::query_as!(
-        models::Stack,
-        r"SELECT * FROM user_stack WHERE name = $1",
-        stack_name
-    )
-        .fetch_one(pool.get_ref())
-        .instrument(query_span)
+    check_if_stack_exists(pool.get_ref(), &stack_name).await?;
+
+    let body: Value = serde_json::to_value::<StackForm>(form)
+        .or(serde_json::to_value::<StackForm>(StackForm::default()))
+        .unwrap();
+
+    let stack = models::Stack::new(user.id.clone(), stack_name, body);
+    db::stack::insert(pool.get_ref(), stack)
         .await
-    {
-        Ok(record) => {
-            tracing::info!("record exists: id: {}, name: {}", record.id, record.name);
-            return JsonResponse::build().conflict("Stack with that name already exists"
-                .to_owned());
-        }
-        Err(sqlx::Error::RowNotFound) => {}
-        Err(e) => {
-            tracing::error!("Failed to fetch stack info, error: {:?}", e);
-            return JsonResponse::build().bad_request(format!("Internal Server Error"));
-        }
-    };
+        .map(|stack| JsonResponse::build().set_item(stack).ok("Ok"))
+        .map_err(|_| {
+            JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error")
+        })
+}
 
-    let user_id = user.id.clone();
-    let request_id = Uuid::new_v4();
-    let request_span = tracing::info_span!(
-        "Validating a new stack", %request_id,
-        commonDomain=?&form.custom.project_name,
-        region=?&form.region,
-        domainList=?&form.domain_list
-    );
-    // using `enter` is an async function
-    let _request_span_guard = request_span.enter(); // ->exit
+async fn check_if_stack_exists(pool: &PgPool, stack_name: &String) -> Result<(), Error> {
+    db::stack::fetch_one_by_name(pool, stack_name)
+        .await
+        .map_err(|_| {
+            JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error")
+        })
+        .and_then(|stack| match stack {
+            Some(_) => Err(JsonResponse::<models::Stack>::build()
+                .conflict("Stack with that name already exists")),
+            None => Ok(()),
+        })
+}
 
-    tracing::info!(
-        "request_id {} Adding '{}' '{}' as a new stack",
-        request_id,
-        form.custom.project_name,
-        form.region
-    );
+async fn body_into_form(body: Bytes) -> Result<StackForm, Error> {
+    let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
+    let body_str = str::from_utf8(&body_bytes)
+        .map_err(|err| JsonResponse::<StackForm>::build().internal_server_error(err.to_string()))?;
+    let deserializer = &mut serde_json::Deserializer::from_str(body_str);
+    serde_path_to_error::deserialize(deserializer)
+        .map_err(|err| {
+            let msg = format!("{}:{:?}", err.path().to_string(), err);
+            JsonResponse::<StackForm>::build().bad_request(msg)
+        })
+        .and_then(|form: StackForm| {
+            if !form.validate().is_ok() {
+                let errors = form.validate().unwrap_err();
+                let err_msg = format!("Invalid data received {:?}", &errors.to_string());
+                tracing::debug!(err_msg);
+                return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+            }
 
-    let query_span = tracing::info_span!("Saving new stack details into the database");
-
-    if !form.validate().is_ok() {
-        let errors = form.validate().unwrap_err();
-        let err_msg = format!("Invalid data received {:?}", &errors.to_string());
-        tracing::debug!(err_msg);
-        return JsonResponse::build().bad_request(errors.to_string());// tmp solution
-    }
-
-    let body: Value = match serde_json::to_value::<StackForm>(form) {
-        Ok(body) => body,
-        Err(err) => {
-            tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
-            serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
-        }
-    };
-
-    match sqlx::query!(
-        r#"
-        INSERT INTO user_stack (stack_id, user_id, name, body, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id;
-        "#,
-        Uuid::new_v4(),
-        user_id,
-        stack_name,
-        body,
-        Utc::now(),
-        Utc::now(),
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(record) => {
-            tracing::info!(
-                "req_id: {} New stack details have been saved to database",
-                request_id
-            );
-            return JsonResponse::build().set_id(record.id).ok("OK");
-        }
-        Err(e) => {
-            tracing::error!("req_id: {} Failed to execute query: {:?}", request_id, e);
-            return JsonResponse::build().internal_server_error("Internal Server Error");
-        }
-    };
+            Ok(form)
+        })
 }
