@@ -1,5 +1,6 @@
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::db;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
@@ -15,53 +16,20 @@ pub async fn get_handler(
     path: web::Path<(i32,)>,
     pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// Get rating of any user
     let rate_id = path.0;
-    let query_span = tracing::info_span!("Search for rate id={}.", rate_id);
-    match sqlx::query_as!(
-        models::Rating,
-        r"SELECT * FROM rating WHERE id=$1 LIMIT 1",
-        rate_id
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(rating) => {
-            tracing::info!("rating found: {:?}", rating.id);
-            return JsonResponse::build().set_item(Some(rating)).ok("OK");
-        }
-        Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("");
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("");
-        }
-    }
+    let rating = db::rating::fetch(pool.get_ref(), rate_id)
+        .await
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))?
+        .ok_or_else(|| JsonResponse::<models::Rating>::build().not_found("not found"))?;
+
+    Ok(JsonResponse::build().set_item(rating).ok("OK"))
 }
 
 #[tracing::instrument(name = "Get all ratings.")]
 #[get("")]
 pub async fn list_handler(path: web::Path<()>, pool: web::Data<PgPool>) -> Result<impl Responder> {
-    /// Get ratings of all users
-    let query_span = tracing::info_span!("Get all rates.");
-    // let category = path.0;
-    match sqlx::query_as!(models::Rating, r"SELECT * FROM rating")
-        .fetch_all(pool.get_ref())
-        .instrument(query_span)
+    db::rating::fetch_all(pool.get_ref())
         .await
-    {
-        Ok(rating) => {
-            tracing::info!("Ratings found: {:?}", rating.len());
-            return JsonResponse::build().set_list(rating).ok("OK");
-        }
-        Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("");
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_server_error("");
-        }
-    }
+        .map(|ratings| JsonResponse::build().set_list(ratings).ok("OK"))
+        .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error(""))
 }

@@ -1,5 +1,5 @@
 use crate::{models, configuration::Settings, forms::user::UserForm, helpers::JsonResponse};
-use actix_web::{web, dev::ServiceRequest, Error, HttpMessage, error::{ErrorInternalServerError, ErrorUnauthorized}};
+use actix_web::{web, dev::ServiceRequest, Error, HttpMessage};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use futures::future::{FutureExt};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
@@ -9,14 +9,15 @@ use std::sync::Arc;
 pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let token = credentials.token();
-    let user = fetch_user(settings.auth_url.as_str(), token).await;
-    if let Err(err) = user {
-        return Err((ErrorUnauthorized(JsonResponse::<i32>::build().set_msg(err).to_string()), req));
-    }
+    let user = match fetch_user(settings.auth_url.as_str(), token).await {
+        Ok(user) => user,
+        Err(err) => {
+            return Err((JsonResponse::<i32>::build().unauthorized(err), req));
+        }
+    };
 
-    let user = user.unwrap();
     if req.extensions_mut().insert(Arc::new(user)).is_some() {
-        return Err((ErrorUnauthorized(JsonResponse::<i32>::build().set_msg("user already logged").to_string()), req));
+        return Err((JsonResponse::<i32>::build().unauthorized("user already logged"), req));
     }
 
     Ok(req)
