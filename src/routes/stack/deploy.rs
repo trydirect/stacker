@@ -42,13 +42,24 @@ pub async fn add(
 
     let conn = Connection::connect(&addr, ConnectionProperties::default())
         .await
-        .expect("Could not connect RabbitMQ");
+        .map_err(|err| {
+            JsonResponse::<models::Stack>::build()
+                .internal_server_error("Could not connect RabbitMQ")
+        })?;
 
-    tracing::info!("RABBITMQ CONNECTED");
+    let channel = conn.create_channel().await.map_err(|err| {
+        JsonResponse::<models::Stack>::build()
+            .internal_server_error("Can't create rabbitMQ channel")
+    })?;
+    let mut stack_data = serde_json::from_value::<StackPayload>(dc.stack.body.clone())
+        .map_err(|err| JsonResponse::<models::Stack>::build().bad_request("can't deserialize"))?; //todo
+                                                                                                  //add
+                                                                                                  //json
+                                                                                                  //error
+                                                                                                  //path
 
-    let channel = conn.create_channel().await.unwrap();
-    let mut stack_data = serde_json::from_value::<StackPayload>(dc.stack.body.clone()).unwrap();
-
+    Ok(JsonResponse::<models::Stack>::build().ok("bdc"))
+    /*
     stack_data.id = Some(id);
     stack_data.user_token = Some(user.id.clone());
     stack_data.user_email = Some(user.email.clone());
@@ -66,12 +77,16 @@ pub async fn add(
             BasicProperties::default(),
         )
         .await
-        .unwrap()
+        .unwrap() //todo
         .await
-        .unwrap();
-
-    assert_eq!(confirm, Confirmation::NotRequested);
-    return Ok(JsonResponse::<models::Stack>::build()
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
+        .and_then(|confirm| {
+            match confirm {
+                Confirmation::NotRequested => Err(JsonResponse::<models::Stack>::build().bad_request("confirmation is NotRequested")),
+                _ => Ok(JsonResponse::<models::Stack>::build()
         .set_id(id)
-        .ok("Success"));
+        .ok("Success"))
+            }
+        })
+    */
 }
