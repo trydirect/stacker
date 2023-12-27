@@ -36,17 +36,6 @@ pub async fn add(
         JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
 
-    let addr = sets.amqp.connection_string();
-    let routing_key = "install.start.tfa.all.all".to_string();
-    tracing::debug!("Sending message to {:?}", routing_key);
-
-    let conn = Connection::connect(&addr, ConnectionProperties::default())
-        .await
-        .map_err(|err| {
-            tracing::error!("connecting to RabbitMQ {:?}", err);
-            JsonResponse::<models::Stack>::build().internal_server_error("")
-        })?;
-
     let mut stack_data =
         serde_json::from_value::<StackPayload>(dc.stack.body.clone()).map_err(|err| {
             tracing::error!("transforming json Value into StackPayload {:?}", err);
@@ -63,7 +52,17 @@ pub async fn add(
         JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
 
-    conn.create_channel()
+    let addr = sets.amqp.connection_string();
+    let routing_key = "install.start.tfa.all.all".to_string();
+    tracing::debug!("Sending message to {:?}", routing_key);
+
+    Connection::connect(&addr, ConnectionProperties::default())
+        .await
+        .map_err(|err| {
+            tracing::error!("connecting to RabbitMQ {:?}", err);
+            JsonResponse::<models::Stack>::build().internal_server_error("")
+        })?
+        .create_channel()
         .await
         .map_err(|err| {
             tracing::error!("creating RabbitMQ channel {:?}", err);
