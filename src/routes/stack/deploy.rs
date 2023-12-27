@@ -47,10 +47,6 @@ pub async fn add(
             JsonResponse::<models::Stack>::build().internal_server_error("")
         })?;
 
-    let channel = conn.create_channel().await.map_err(|err| {
-        tracing::error!("creating RabbitMQ channel {:?}", err);
-        JsonResponse::<models::Stack>::build().internal_server_error("")
-    })?;
     let mut stack_data =
         serde_json::from_value::<StackPayload>(dc.stack.body.clone()).map_err(|err| {
             tracing::error!("transforming json Value into StackPayload {:?}", err);
@@ -67,7 +63,12 @@ pub async fn add(
         JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
 
-    channel
+    conn.create_channel()
+        .await
+        .map_err(|err| {
+            tracing::error!("creating RabbitMQ channel {:?}", err);
+            JsonResponse::<models::Stack>::build().internal_server_error("")
+        })?
         .basic_publish(
             "install",
             routing_key.as_str(),
