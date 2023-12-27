@@ -52,41 +52,40 @@ pub async fn add(
             .internal_server_error("Can't create rabbitMQ channel")
     })?;
     let mut stack_data = serde_json::from_value::<StackPayload>(dc.stack.body.clone())
-        .map_err(|err| JsonResponse::<models::Stack>::build().bad_request("can't deserialize"))?; //todo
-                                                                                                  //add
-                                                                                                  //json
-                                                                                                  //error
-                                                                                                  //path
+        .map_err(|err| JsonResponse::<models::Stack>::build().bad_request("can't deserialize"))?;
 
-    Ok(JsonResponse::<models::Stack>::build().ok("bdc"))
-    /*
     stack_data.id = Some(id);
     stack_data.user_token = Some(user.id.clone());
     stack_data.user_email = Some(user.email.clone());
     stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
 
-    let payload = serde_json::to_string::<StackPayload>(&stack_data).unwrap();
-    let _payload = payload.as_bytes();
+    let payload = serde_json::to_string::<StackPayload>(&stack_data).map_err(|err| {
+        JsonResponse::<models::Stack>::build().internal_server_error(format!("{}", err))
+    })?;
 
-    let confirm = channel
+    channel
         .basic_publish(
             "install",
             routing_key.as_str(),
             BasicPublishOptions::default(),
-            _payload,
+            payload.as_bytes(),
             BasicProperties::default(),
         )
         .await
-        .unwrap() //todo
+        .map_err(|_| {
+            JsonResponse::<models::Stack>::build().internal_server_error("internal server error")
+        })? //todo the correct err
         .await
-        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
-        .and_then(|confirm| {
-            match confirm {
-                Confirmation::NotRequested => Err(JsonResponse::<models::Stack>::build().bad_request("confirmation is NotRequested")),
-                _ => Ok(JsonResponse::<models::Stack>::build()
-        .set_id(id)
-        .ok("Success"))
-            }
+        .map_err(|_| {
+            JsonResponse::<models::Stack>::build().internal_server_error("internal server error")
         })
-    */
+        .and_then(|confirm| match confirm {
+            Confirmation::NotRequested => {
+                Err(JsonResponse::<models::Stack>::build()
+                    .bad_request("confirmation is NotRequested"))
+            }
+            _ => Ok(JsonResponse::<models::Stack>::build()
+                .set_id(id)
+                .ok("Success")),
+        })
 }
