@@ -33,7 +33,7 @@ pub async fn add(
     let dc = DcBuilder::new(stack);
     dc.build().ok_or_else(|| {
         tracing::error!("Error. Compose builder returned an empty string");
-        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
+        JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
 
     let addr = sets.amqp.connection_string();
@@ -43,16 +43,19 @@ pub async fn add(
     let conn = Connection::connect(&addr, ConnectionProperties::default())
         .await
         .map_err(|err| {
-            JsonResponse::<models::Stack>::build()
-                .internal_server_error("Could not connect RabbitMQ")
+            tracing::error!("connecting to RabbitMQ {:?}", err);
+            JsonResponse::<models::Stack>::build().internal_server_error("")
         })?;
 
     let channel = conn.create_channel().await.map_err(|err| {
-        JsonResponse::<models::Stack>::build()
-            .internal_server_error("Can't create rabbitMQ channel")
+        tracing::error!("creating RabbitMQ channel {:?}", err);
+        JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
-    let mut stack_data = serde_json::from_value::<StackPayload>(dc.stack.body.clone())
-        .map_err(|err| JsonResponse::<models::Stack>::build().bad_request("can't deserialize"))?;
+    let mut stack_data =
+        serde_json::from_value::<StackPayload>(dc.stack.body.clone()).map_err(|err| {
+            tracing::error!("transforming json Value into StackPayload {:?}", err);
+            JsonResponse::<models::Stack>::build().bad_request("")
+        })?;
 
     stack_data.id = Some(id);
     stack_data.user_token = Some(user.id.clone());
@@ -60,7 +63,8 @@ pub async fn add(
     stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
 
     let payload = serde_json::to_string::<StackPayload>(&stack_data).map_err(|err| {
-        JsonResponse::<models::Stack>::build().internal_server_error(format!("{}", err))
+        tracing::error!("serializing StackPayload {:?}", err);
+        JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
 
     channel
@@ -72,12 +76,14 @@ pub async fn add(
             BasicProperties::default(),
         )
         .await
-        .map_err(|_| {
-            JsonResponse::<models::Stack>::build().internal_server_error("internal server error")
-        })? //todo the correct err
+        .map_err(|err| {
+            tracing::error!("publishing the message {:?}", err);
+            JsonResponse::<models::Stack>::build().internal_server_error("")
+        })?
         .await
-        .map_err(|_| {
-            JsonResponse::<models::Stack>::build().internal_server_error("internal server error")
+        .map_err(|err| {
+            tracing::error!("confirming the publication {:?}", err);
+            JsonResponse::<models::Stack>::build().internal_server_error("")
         })
         .and_then(|confirm| match confirm {
             Confirmation::NotRequested => {
