@@ -6,9 +6,7 @@ use crate::helpers::{JsonResponse, MqManager};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
 use futures_lite::stream::StreamExt;
-use lapin::{
-    options::*, publisher_confirm::Confirmation, BasicProperties, Connection, ConnectionProperties,
-};
+use lapin::publisher_confirm::Confirmation;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -51,48 +49,19 @@ pub async fn add(
     let payload = serde_json::to_string::<StackPayload>(&stack_data).map_err(|err| {
         tracing::error!("serializing StackPayload {:?}", err);
         JsonResponse::<models::Stack>::build().internal_server_error("")
-    })?;
+    })?; //todo is it possible to use lapin serde
 
-    let addr = sets.amqp.connection_string();
-    let routing_key = "install.start.tfa.all.all".to_string();
-    tracing::debug!("Sending message to {:?}", routing_key);
-
-    Connection::connect(&addr, ConnectionProperties::default())
-        .await
-        .map_err(|err| {
-            tracing::error!("connecting to RabbitMQ {:?}", err);
-            JsonResponse::<models::Stack>::build().internal_server_error("")
-        })?
-        .create_channel()
-        .await
-        .map_err(|err| {
-            tracing::error!("creating RabbitMQ channel {:?}", err);
-            JsonResponse::<models::Stack>::build().internal_server_error("")
-        })?
-        .basic_publish(
-            "install",
-            routing_key.as_str(),
-            BasicPublishOptions::default(),
+    mq_manager
+        .publish_and_confirm(
+            "install".to_string(),
+            "install.start.tfa.all.all".to_string(),
             payload.as_bytes(),
-            BasicProperties::default(),
         )
         .await
-        .map_err(|err| {
-            tracing::error!("publishing the message {:?}", err);
-            JsonResponse::<models::Stack>::build().internal_server_error("")
-        })?
-        .await
-        .map_err(|err| {
-            tracing::error!("confirming the publication {:?}", err);
-            JsonResponse::<models::Stack>::build().internal_server_error("")
-        })
-        .and_then(|confirm| match confirm {
-            Confirmation::NotRequested => {
-                Err(JsonResponse::<models::Stack>::build()
-                    .bad_request("confirmation is NotRequested"))
-            }
-            _ => Ok(JsonResponse::<models::Stack>::build()
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
+        .map(|_| {
+            JsonResponse::<models::Stack>::build()
                 .set_id(id)
-                .ok("Success")),
+                .ok("Success")
         })
 }
