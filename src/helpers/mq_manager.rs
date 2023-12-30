@@ -2,7 +2,7 @@ use deadpool_lapin::{Config, CreatePoolError, Pool, Runtime};
 use lapin::{
     options::*,
     publisher_confirm::{Confirmation, PublisherConfirm},
-    BasicProperties, Connection, ConnectionProperties,
+    BasicProperties, Channel, Connection, ConnectionProperties,
 };
 
 #[derive(Debug)]
@@ -30,24 +30,30 @@ impl MqManager {
         Ok(Self { pool })
     }
 
+    async fn create_channel(&self) -> Result<Channel, String> {
+        self.pool
+            .get()
+            .await
+            .map_err(|err| {
+                tracing::error!("getting connection from pool {:?}", err);
+                format!("getting connection from pool {:?}", err)
+            })?
+            .create_channel()
+            .await
+            .map_err(|err| {
+                tracing::error!("creating RabbitMQ channel {:?}", err);
+                format!("creating RabbitMQ channel {:?}", err)
+            })
+    }
+
     pub async fn publish(
         &self,
         exchange: String,
         routing_key: String,
         payload: &[u8],
     ) -> Result<PublisherConfirm, String> {
-        let connection = self.pool.get().await.map_err(|err| {
-            tracing::error!("getting connection from pool {:?}", err);
-            format!("getting connection from pool {:?}", err)
-        })?;
-
-        connection
-            .create_channel()
-            .await
-            .map_err(|err| {
-                tracing::error!("creating RabbitMQ channel {:?}", err);
-                format!("creating RabbitMQ channel {:?}", err)
-            })?
+        self.create_channel()
+            .await?
             .basic_publish(
                 exchange.as_str(),
                 routing_key.as_str(),
@@ -69,11 +75,7 @@ impl MqManager {
         payload: &[u8],
     ) -> Result<(), String> {
         self.publish(exchange, routing_key, payload)
-            .await
-            .map_err(|err| {
-                tracing::error!("publishing the message {:?}", err);
-                format!("publishing the message {:?}", err)
-            })?
+            .await?
             .await
             .map_err(|err| {
                 tracing::error!("confirming the publication {:?}", err);
