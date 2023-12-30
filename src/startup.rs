@@ -12,17 +12,16 @@ use tracing_actix_web::TracingLogger;
 
 pub async fn run(
     listener: TcpListener,
-    db_pool: Pool<Postgres>,
+    pg_pool: Pool<Postgres>,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
     let settings = web::Data::new(settings);
-    let db_pool = web::Data::new(db_pool);
+    let pg_pool = web::Data::new(pg_pool);
 
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .service(web::scope("/health_check")
-                .service(crate::routes::health_check))
+            .service(web::scope("/health_check").service(crate::routes::health_check))
             .service(
                 web::scope("/client")
                     .wrap(HttpAuthentication::bearer(
@@ -64,7 +63,7 @@ pub async fn run(
                     .service(crate::routes::stack::add::add)
                     .service(crate::routes::stack::update::update),
             )
-            .app_data(db_pool.clone())
+            .app_data(pg_pool.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?
