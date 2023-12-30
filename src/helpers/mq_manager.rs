@@ -1,8 +1,8 @@
-use deadpool_lapin::{Config, CreatePoolError, Pool, Runtime};
+use deadpool_lapin::{Config, CreatePoolError, Object, Pool, Runtime};
 use lapin::{
     options::*,
     publisher_confirm::{Confirmation, PublisherConfirm},
-    BasicProperties, Channel, Connection, ConnectionProperties,
+    BasicProperties, Channel,
 };
 
 #[derive(Debug)]
@@ -30,14 +30,16 @@ impl MqManager {
         Ok(Self { pool })
     }
 
+    async fn get_connection(&self) -> Result<Object, String> {
+        self.pool.get().await.map_err(|err| {
+            tracing::error!("getting connection from pool {:?}", err);
+            format!("getting connection from pool {:?}", err)
+        })
+    }
+
     async fn create_channel(&self) -> Result<Channel, String> {
-        self.pool
-            .get()
-            .await
-            .map_err(|err| {
-                tracing::error!("getting connection from pool {:?}", err);
-                format!("getting connection from pool {:?}", err)
-            })?
+        self.get_connection()
+            .await?
             .create_channel()
             .await
             .map_err(|err| {
