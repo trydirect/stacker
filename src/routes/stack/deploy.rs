@@ -2,7 +2,7 @@ use crate::configuration::Settings;
 use crate::db;
 use crate::forms::StackPayload;
 use crate::helpers::stack::builder::DcBuilder;
-use crate::helpers::JsonResponse;
+use crate::helpers::{JsonResponse, MqPool};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
 use futures_lite::stream::StreamExt;
@@ -18,6 +18,7 @@ pub async fn add(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
     pg_pool: Data<PgPool>,
+    mq_pool: Data<MqPool>,
     sets: Data<Settings>,
 ) -> Result<impl Responder> {
     let id = path.0;
