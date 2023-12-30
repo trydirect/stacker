@@ -17,11 +17,11 @@ use std::sync::Arc;
 pub async fn add(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: Data<PgPool>,
+    pg_pool: Data<PgPool>,
     sets: Data<Settings>,
 ) -> Result<impl Responder> {
     let id = path.0;
-    let stack = db::stack::fetch(pool.get_ref(), id)
+    let stack = db::stack::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {

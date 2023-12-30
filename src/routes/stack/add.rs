@@ -19,20 +19,20 @@ use std::sync::Arc;
 pub async fn add(
     body: Bytes,
     user: web::ReqData<Arc<models::User>>,
-    pool: Data<PgPool>,
+    pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     // @todo ACL
     let form = body_into_form(body).await?;
     let stack_name = form.custom.custom_stack_code.clone();
 
-    check_if_stack_exists(pool.get_ref(), &stack_name).await?;
+    check_if_stack_exists(pg_pool.get_ref(), &stack_name).await?;
 
     let body: Value = serde_json::to_value::<StackForm>(form)
         .or(serde_json::to_value::<StackForm>(StackForm::default()))
         .unwrap();
 
     let stack = models::Stack::new(user.id.clone(), stack_name, body);
-    db::stack::insert(pool.get_ref(), stack)
+    db::stack::insert(pg_pool.get_ref(), stack)
         .await
         .map(|stack| JsonResponse::build().set_item(stack).ok("Ok"))
         .map_err(|_| {
@@ -40,8 +40,8 @@ pub async fn add(
         })
 }
 
-async fn check_if_stack_exists(pool: &PgPool, stack_name: &String) -> Result<(), Error> {
-    db::stack::fetch_one_by_name(pool, stack_name)
+async fn check_if_stack_exists(pg_pool: &PgPool, stack_name: &String) -> Result<(), Error> {
+    db::stack::fetch_one_by_name(pg_pool, stack_name)
         .await
         .map_err(|_| {
             JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error")
