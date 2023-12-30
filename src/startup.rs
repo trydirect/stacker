@@ -19,8 +19,8 @@ pub async fn run(
     let settings = web::Data::new(settings);
     let pg_pool = web::Data::new(pg_pool);
 
-    let mq_pool = helpers::MqPool::try_new(settings.amqp.connection_string())?;
-    let mq_pool = web::Data::new(mq_pool);
+    let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
+    let mq_manager = web::Data::new(mq_manager);
 
     let server = HttpServer::new(move || {
         App::new()
@@ -68,7 +68,7 @@ pub async fn run(
                     .service(crate::routes::stack::update::update),
             )
             .app_data(pg_pool.clone())
-            .app_data(mq_pool.clone())
+            .app_data(mq_manager.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?
