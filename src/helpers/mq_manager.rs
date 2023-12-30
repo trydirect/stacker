@@ -1,11 +1,11 @@
 use deadpool_lapin::{Config, CreatePoolError, Pool, Runtime};
 
 #[derive(Debug)]
-pub struct MqPool {
+pub struct MqManager {
     pool: Pool,
 }
 
-impl MqPool {
+impl MqManager {
     pub fn try_new(url: String) -> Result<Self, std::io::Error> {
         let mut cfg = Config::default();
         cfg.url = Some(url);
@@ -22,6 +22,8 @@ impl MqPool {
             }
         })?;
 
-        Ok(MqPool { pool })
+        Ok(Self { pool })
     }
+
+    pub async fn create_channel() {}
 }
