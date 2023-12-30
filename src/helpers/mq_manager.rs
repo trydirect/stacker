@@ -36,13 +36,12 @@ impl MqManager {
         routing_key: String,
         payload: &[u8],
     ) -> Result<PublisherConfirm, String> {
-        let addr = String::new();
-        Connection::connect(&addr, ConnectionProperties::default())
-            .await
-            .map_err(|err| {
-                tracing::error!("connecting to RabbitMQ {:?}", err);
-                format!("connecting to RabbitMQ {:?}", err)
-            })?
+        let connection = self.pool.get().await.map_err(|err| {
+            tracing::error!("getting connection from pool {:?}", err);
+            format!("getting connection from pool {:?}", err)
+        })?;
+
+        connection
             .create_channel()
             .await
             .map_err(|err| {
@@ -50,7 +49,7 @@ impl MqManager {
                 format!("creating RabbitMQ channel {:?}", err)
             })?
             .basic_publish(
-                "install",
+                exchange.as_str(),
                 routing_key.as_str(),
                 BasicPublishOptions::default(),
                 payload,
