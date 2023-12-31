@@ -206,8 +206,12 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
 pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVolume>> {
     let mut named_volumes = IndexMap::default();
 
-    let volumes = app
-        .volumes
+    let volumes = app.volumes;
+    if volumes.is_none() {
+        return named_volumes;
+    }
+
+    let volumes = volumes
         .unwrap()
         .into_iter()
         .filter(|volume| is_named_docker_volume(volume.host_path.clone().unwrap().as_str()))
@@ -293,12 +297,11 @@ impl DcBuilder {
         tracing::debug!("Saving docker compose to file {:?}", fname);
         let target_file = std::path::Path::new(fname.as_str());
         // serialize to string
-        let serialized = match serde_yaml::to_string(&compose_content) {
-            Ok(s) => s,
-            Err(e) => panic!("Failed to serialize docker-compose file: {}", e),
-        };
-        // serialize to file
-        std::fs::write(target_file, serialized.clone()).unwrap();
+        let serialized = serde_yaml::to_string(&compose_content)
+            .map_err(|err| panic!("Failed to serialize docker-compose file: {}", err))
+            .unwrap();
+
+        std::fs::write(target_file, serialized.clone()).map_err(|err| panic!("{}", err));
 
         Some(serialized)
     }
