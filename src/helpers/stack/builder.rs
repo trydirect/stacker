@@ -1,12 +1,12 @@
-use indexmap::IndexMap;
-use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Service, Services,
-                                     Volumes, Environment, Entrypoint, AdvancedVolumes, SingleValue,
-                                     Networks, TopLevelVolumes, ComposeVolume, ComposeNetwork,
-                                     ComposeNetworks, MapOrEmpty, ComposeNetworkSettingDetails,
-                                     NetworkSettings};
-use serde_yaml;
-use crate::forms::{StackForm, stack, App, Volume, Web};
+use crate::forms::{stack, App, StackForm, Volume, Web};
+use crate::helpers::stack::dctypes::{
+    AdvancedVolumes, Compose, ComposeNetwork, ComposeNetworkSettingDetails, ComposeNetworks,
+    ComposeVolume, Entrypoint, Environment, MapOrEmpty, NetworkSettings, Networks, Port, Ports,
+    PublishedPort, Service, Services, SingleValue, TopLevelVolumes, Volumes,
+};
 use crate::models::stack::Stack;
+use indexmap::IndexMap;
+use serde_yaml;
 #[derive(Clone, Debug)]
 struct Config {}
 
@@ -16,7 +16,7 @@ impl Default for Config {
     }
 }
 
-impl Default for Port{
+impl Default for Port {
     fn default() -> Self {
         Port {
             target: 80,
@@ -38,10 +38,13 @@ pub struct DcBuilder {
 impl TryInto<AdvancedVolumes> for Volume {
     type Error = String;
     fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
-
         let source = self.host_path.clone();
         let target = self.container_path.clone();
-        tracing::debug!("Volume conversion result: source: {:?} target: {:?}", source, target);
+        tracing::debug!(
+            "Volume conversion result: source: {:?} target: {:?}",
+            source,
+            target
+        );
         Ok(AdvancedVolumes {
             source: source,
             target: target.unwrap_or("".to_string()),
@@ -57,12 +60,18 @@ impl TryInto<AdvancedVolumes> for Volume {
 impl TryInto<Port> for stack::Port {
     type Error = String;
     fn try_into(self) -> Result<Port, Self::Error> {
-        let cp  = self.container_port.clone()
+        let cp = self
+            .container_port
+            .clone()
             .unwrap_or("".to_string())
-            .parse::<u16>().map_err(|err| "Could not parse port".to_string() )?;
-        let hp = self.host_port.clone()
+            .parse::<u16>()
+            .map_err(|err| "Could not parse port".to_string())?;
+        let hp = self
+            .host_port
+            .clone()
             .unwrap_or("".to_string())
-            .parse::<u16>().map_err(|err| "Could not parse port".to_string() )?;
+            .parse::<u16>()
+            .map_err(|err| "Could not parse port".to_string())?;
 
         tracing::debug!("Port conversion result: cp: {:?} hp: {:?}", cp, hp);
         Ok(Port {
@@ -92,8 +101,7 @@ fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, St
     match ports {
         Some(ports) => {
             tracing::debug!("Ports >>>> {:?}", ports);
-            for port in ports {
-            }
+            for port in ports {}
         }
         None => {
             tracing::debug!("No ports defined by user");
@@ -126,25 +134,22 @@ impl TryIntoService for App {
             ..Default::default()
         };
 
-        let networks: Networks = self.network
-            .clone()
-            .try_into()
-            .unwrap_or_default();
+        let networks: Networks = self.network.clone().try_into().unwrap_or_default();
 
-        let ports: Vec<Port> = self.ports
+        let ports: Vec<Port> = self
+            .ports
             .clone()
             .unwrap_or_default()
             .into_iter()
             .map(|x| x.try_into().unwrap())
             .collect();
 
-        let volumes: Vec<AdvancedVolumes> = self.volumes
+        let volumes: Vec<AdvancedVolumes> = self
+            .volumes
             .clone()
             .unwrap_or_default()
             .into_iter()
-            .map(|x| {
-                x.try_into().unwrap()
-            })
+            .map(|x| x.try_into().unwrap())
             .collect();
 
         let mut envs = IndexMap::new();
@@ -152,7 +157,7 @@ impl TryIntoService for App {
             let items = item
                 .into_iter()
                 .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
-                .collect::<IndexMap<_,_>>();
+                .collect::<IndexMap<_, _>>();
 
             envs.extend(items);
         }
@@ -169,7 +174,6 @@ impl TryIntoService for App {
 
 impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
     fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
-
         // tracing::debug!("networks found {:?}", self.networks);
         let mut networks = vec!["default_network".to_string()];
         if self.networks.is_some() {
@@ -177,59 +181,58 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
         }
         let networks = networks
             .into_iter()
-            .map(|net|
-                (net,
-                 MapOrEmpty::Map(
-                     NetworkSettings {
-                         attachable: false,
-                         driver: None,
-                         driver_opts: Default::default(),
-                         enable_ipv6: false,
-                         internal: false,
-                         // external: None,
-                         external: Some(ComposeNetwork::Bool(true)),
-                         ipam: None,
-                         labels: Default::default(),
-                         name: Some("default".to_string()),
-                     }
-                 ))
-            )
+            .map(|net| {
+                (
+                    net,
+                    MapOrEmpty::Map(NetworkSettings {
+                        attachable: false,
+                        driver: None,
+                        driver_opts: Default::default(),
+                        enable_ipv6: false,
+                        internal: false,
+                        // external: None,
+                        external: Some(ComposeNetwork::Bool(true)),
+                        ipam: None,
+                        labels: Default::default(),
+                        name: Some("default".to_string()),
+                    }),
+                )
+            })
             .collect::<IndexMap<String, _>>();
         networks
     }
 }
 
-
 pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVolume>> {
-
     let mut named_volumes = IndexMap::default();
 
-        let volumes = app.volumes
-            .unwrap()
-            .into_iter()
-            .filter(|volume| is_named_docker_volume(
-                volume.host_path.clone().unwrap().as_str())
-            )
-            .map(|volume| {
-                let k = volume.host_path.clone().unwrap();
-                (k.clone(), MapOrEmpty::Map(ComposeVolume {
+    let volumes = app
+        .volumes
+        .unwrap()
+        .into_iter()
+        .filter(|volume| is_named_docker_volume(volume.host_path.clone().unwrap().as_str()))
+        .map(|volume| {
+            let k = volume.host_path.clone().unwrap();
+            (
+                k.clone(),
+                MapOrEmpty::Map(ComposeVolume {
                     driver: None,
                     driver_opts: Default::default(),
                     external: None,
                     labels: Default::default(),
-                    name: Some(k.clone())
-                }))
-            })
-            .collect::<IndexMap<String, MapOrEmpty<ComposeVolume>>>();
+                    name: Some(k.clone()),
+                }),
+            )
+        })
+        .collect::<IndexMap<String, MapOrEmpty<ComposeVolume>>>();
 
-        named_volumes.extend(volumes);
+    named_volumes.extend(volumes);
     // tracing::debug!("Named volumes: {:?}", named_volumes);
 
     named_volumes
 }
 
 impl DcBuilder {
-
     pub fn new(stack: Stack) -> Self {
         DcBuilder {
             config: Config::default(),
@@ -237,6 +240,7 @@ impl DcBuilder {
         }
     }
 
+    #[tracing::instrument(name = "building stack")]
     pub fn build(&self) -> Option<String> {
         tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
         let mut compose_content = Compose {
@@ -277,7 +281,6 @@ impl DcBuilder {
                 if !named_volumes.is_empty() {
                     compose_content.volumes = TopLevelVolumes(named_volumes);
                 }
-
             }
             Err(e) => {
                 tracing::debug!("Unpack stack form error {:?}", e);
@@ -286,8 +289,7 @@ impl DcBuilder {
         tracing::debug!("services {:?}", &services);
         compose_content.services = Services(services);
 
-
-        let fname= format!("./files/{}.yml", self.stack.stack_id);
+        let fname = format!("./files/{}.yml", self.stack.stack_id);
         tracing::debug!("Saving docker compose to file {:?}", fname);
         let target_file = std::path::Path::new(fname.as_str());
         // serialize to string
