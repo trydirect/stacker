@@ -1,7 +1,6 @@
-use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound};
+use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized};
 use actix_web::web::Json;
 use actix_web::Error;
-use actix_web::Result;
 use serde_derive::Serialize;
 
 #[derive(Serialize)]
@@ -64,30 +63,37 @@ where
         serde_json::to_string(&json_response).unwrap()
     }
 
-    pub(crate) fn ok<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        Ok(Json(self.set_msg(msg).to_json_response()))
+    pub(crate) fn ok<I: Into<String>>(self, msg: I) -> Json<JsonResponse<T>> {
+        Json(self.set_msg(msg).to_json_response())
     }
 
     pub(crate) fn bad_request<I: Into<String>>(
         self,
         msg: I,
-    ) -> Result<Json<JsonResponse<T>>, Error> {
-        Err(ErrorBadRequest(self.set_msg(msg).to_string()))
+    ) -> Error {
+        ErrorBadRequest(self.set_msg(msg).to_string())
     }
 
-    pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        Err(ErrorNotFound(self.set_msg(msg).to_string()))
+    pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> Error {
+        ErrorNotFound(self.set_msg(msg).to_string())
     }
 
     pub(crate) fn internal_server_error<I: Into<String>>(
         self,
         msg: I,
-    ) -> Result<Json<JsonResponse<T>>, Error> {
-        Err(ErrorInternalServerError(self.set_msg(msg).to_string()))
+    ) -> Error {
+        ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
-    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Result<Json<JsonResponse<T>>, Error> {
-        Err(ErrorConflict(self.set_msg(msg).to_string()))
+    pub(crate) fn unauthorized<I: Into<String>>(
+        self,
+        msg: I,
+    ) -> Error {
+        ErrorUnauthorized(self.set_msg(msg).to_string())
+    }
+ 
+    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
+        ErrorConflict(self.set_msg(msg).to_string())
     }
 }
 

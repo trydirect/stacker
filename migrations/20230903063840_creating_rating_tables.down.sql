@@ -6,3 +6,5 @@ DROP INDEX idx_obj_id_rating_id;
 
 DROP table rating;
 DROP table product;
+
+DROP TYPE rate_category;

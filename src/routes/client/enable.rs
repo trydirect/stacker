@@ -2,9 +2,10 @@ use crate::configuration::Settings;
 use crate::helpers::client;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::db;
 use actix_web::{put, web, Responder, Result};
-use sqlx::PgPool;
 use tracing::Instrument;
+use sqlx::PgPool;
 use std::sync::Arc;
 
 #[tracing::instrument(name = "Enable client.")]
@@ -15,72 +16,24 @@ pub async fn enable_handler(
     pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
-    match async {
-        let client_id = path.0;
-        let mut client = db_fetch_client_by_id(pool.get_ref(), client_id).await?; 
-        if client.secret.is_some() {
-            return Err("client is already active".to_string());
-        }
+    let client_id = path.0;
+    let mut client = db::client::fetch(pool.get_ref(), client_id)
+        .await
+        .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))?
+        .ok_or_else(|| JsonResponse::<models::Client>::build().not_found("not found"))?
+        ; 
 
-        client.secret = Some(client::generate_secret(pool.get_ref(), 255).await?);
-        db_update_client(pool.get_ref(), client).await
-    }.await {
-        Ok(client) => {
-            JsonResponse::build().set_item(client).ok("success")
-        }
-        Err(msg) => {
-            JsonResponse::<models::Client>::build().bad_request(msg)
-        }
+    if client.secret.is_some() {
+        return Err(JsonResponse::<models::Client>::build().bad_request("client is already active"));
     }
-}
 
-async fn db_fetch_client_by_id(pool: &PgPool, id: i32) -> Result<models::Client, String> {
-    let query_span = tracing::info_span!("Fetching the client by ID");
-    sqlx::query_as!(
-        models::Client,
-        r#"
-        SELECT
-           id, user_id, secret 
-        FROM client c
-        WHERE c.id = $1
-        "#,
-        id,
-    )
-    .fetch_one(pool)
-    .instrument(query_span)
-    .await
-    .map_err(|e| {
-        match e {
-            sqlx::Error::RowNotFound => "client not found".to_string(),
-            s => {
-                tracing::error!("Failed to execute fetch query: {:?}", s);
-                "".to_string()
-            }
-        }
-    })
-}
+    client.secret = client::generate_secret(pool.get_ref(), 255)
+        .await
+        .map(|secret| Some(secret))
+        .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))?;
 
-async fn db_update_client(pool: &PgPool, client: models::Client) -> Result<models::Client, String> {
-    let query_span = tracing::info_span!("Updating client into the database");
-    sqlx::query!(
-        r#"
-        UPDATE client SET 
-            secret=$1,
-            updated_at=NOW() at time zone 'utc'
-        WHERE id = $2
-        "#,
-        client.secret,
-        client.id
-    )
-    .execute(pool)
-    .instrument(query_span)
-    .await
-    .map(|_|{
-        tracing::info!("Client {} have been saved to database", client.id);
-        client
-    })
-    .map_err(|err| {
-        tracing::error!("Failed to execute query: {:?}", err);
-        "".to_string()
-    })
+    db::client::update(pool.get_ref(), client)
+        .await
+        .map(|client| JsonResponse::build().set_item(client).ok("success"))
+        .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))
 }

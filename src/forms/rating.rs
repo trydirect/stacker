@@ -12,3 +12,16 @@ pub struct Rating {
     #[validate(maximum = 10)]
     pub rate: i32, //
 }
+
+impl Into<models::Rating> for Rating {
+    fn into(self) -> models::Rating {
+        let mut rating = models::Rating::default(); 
+        rating.obj_id = self.obj_id;
+        rating.category = self.category.into(); //todo change the type of category field to the RateCategory
+        rating.hidden = Some(false); 
+        rating.rate = Some(self.rate);
+        rating.comment = self.comment; 
+
+        rating
+    }
+}
