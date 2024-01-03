@@ -94,10 +94,10 @@ pub async fn add(
 
             assert_eq!(confirm, Confirmation::NotRequested);
             tracing::debug!("Message sent to rabbitmq");
-            return JsonResponse::<Stack>::build().set_id(id).ok("Success");
+            return Ok(JsonResponse::<Stack>::build().set_id(id).ok("Success"));
         }
         None => {
-            JsonResponse::build().internal_server_error("Deployment failed")
+            Err(JsonResponse::<Stack>::build().internal_server_error("Deployment failed"))
         }
     }
 }
