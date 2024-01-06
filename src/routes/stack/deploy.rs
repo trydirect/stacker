@@ -1,6 +1,6 @@
 use crate::configuration::Settings;
 use crate::db;
-use crate::forms::StackPayload;
+use crate::forms;
 use crate::helpers::stack::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager};
 use crate::models;
@@ -35,16 +35,10 @@ pub async fn add(
         JsonResponse::<models::Stack>::build().internal_server_error("")
     })?;
 
-    let mut stack_data =
-        serde_json::from_value::<StackPayload>(dc.stack.body.clone()).map_err(|err| {
-            tracing::error!("transforming json Value into StackPayload {:?}", err);
-            JsonResponse::<models::Stack>::build().bad_request("")
-        })?;
-
-    stack_data.id = Some(id);
+    let mut stack_data = forms::StackPayload::try_from(&dc.stack)
+        .map_err(|err| JsonResponse::<models::Stack>::build().bad_request(err))?;
     stack_data.user_token = Some(user.id.clone());
     stack_data.user_email = Some(user.email.clone());
-    stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
 
     mq_manager
         .publish_and_confirm(

@@ -4,7 +4,7 @@ use crate::helpers::stack::dctypes::{
     ComposeVolume, Entrypoint, Environment, MapOrEmpty, NetworkSettings, Networks, Port, Ports,
     PublishedPort, Service, Services, SingleValue, TopLevelVolumes, Volumes,
 };
-use crate::models::stack::Stack;
+use crate::models;
 use indexmap::IndexMap;
 use serde_yaml;
 #[derive(Clone, Debug)]
@@ -32,7 +32,7 @@ impl Default for Port {
 #[derive(Clone, Debug)]
 pub struct DcBuilder {
     config: Config,
-    pub(crate) stack: Stack,
+    pub(crate) stack: models::Stack,
 }
 
 impl TryInto<AdvancedVolumes> for Volume {
@@ -237,7 +237,7 @@ pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVol
 }
 
 impl DcBuilder {
-    pub fn new(stack: Stack) -> Self {
+    pub fn new(stack: models::Stack) -> Self {
         DcBuilder {
             config: Config::default(),
             stack,
