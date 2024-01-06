@@ -4,6 +4,7 @@ use lapin::{
     publisher_confirm::{Confirmation, PublisherConfirm},
     BasicProperties, Channel,
 };
+use serde::ser::Serialize;
 
 #[derive(Debug)]
 pub struct MqManager {
@@ -48,19 +49,23 @@ impl MqManager {
             })
     }
 
-    pub async fn publish(
+    pub async fn publish<T: ?Sized + Serialize>(
         &self,
         exchange: String,
         routing_key: String,
-        payload: &[u8],
+        msg: &T,
     ) -> Result<PublisherConfirm, String> {
+        let payload = serde_json::to_string::<T>(msg).map_err(|err| {
+            format!("{:?}", err)
+        })?;
+
         self.create_channel()
             .await?
             .basic_publish(
                 exchange.as_str(),
                 routing_key.as_str(),
                 BasicPublishOptions::default(),
-                payload,
+                payload.as_bytes(),
                 BasicProperties::default(),
             )
             .await
@@ -70,13 +75,13 @@ impl MqManager {
             })
     }
 
-    pub async fn publish_and_confirm(
+    pub async fn publish_and_confirm<T: ?Sized + Serialize>(
         &self,
         exchange: String,
         routing_key: String,
-        payload: &[u8],
+        msg: &T
     ) -> Result<(), String> {
-        self.publish(exchange, routing_key, payload)
+        self.publish(exchange, routing_key, msg)
             .await?
             .await
             .map_err(|err| {
