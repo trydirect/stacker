@@ -46,16 +46,11 @@ pub async fn add(
     stack_data.user_email = Some(user.email.clone());
     stack_data.stack_code = stack_data.custom.custom_stack_code.clone();
 
-    let payload = serde_json::to_string::<StackPayload>(&stack_data).map_err(|err| {
-        tracing::error!("serializing StackPayload {:?}", err);
-        JsonResponse::<models::Stack>::build().internal_server_error("")
-    })?; //todo is it possible to use lapin serde
-
     mq_manager
         .publish_and_confirm(
             "install".to_string(),
             "install.start.tfa.all.all".to_string(),
-            payload.as_bytes(),
+            &stack_data,
         )
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
