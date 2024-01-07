@@ -26,10 +26,11 @@ pub async fn add(
         })?;
 
     let id = stack.id.clone();
-    let fc = DcBuilder::new(stack).build().ok_or_else(|| {
-        tracing::error!("Error. Compose builder returned an empty string");
-        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
-    })?;
+    let fc = DcBuilder::new(stack)
+        .build()
+        .map_err(|err| {
+            JsonResponse::<models::Stack>::build().internal_server_error(err)
+        })?;
 
     Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
@@ -52,10 +53,11 @@ pub async fn admin(
         })?;
 
     let id = stack.id.clone();
-    let fc = DcBuilder::new(stack).build().ok_or_else(|| {
-        tracing::error!("Error. Compose builder returned an empty string");
-        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
-    })?;
+    let fc = DcBuilder::new(stack)
+        .build()
+        .map_err(|err| {
+            JsonResponse::<models::Stack>::build().internal_server_error(err)
+        })?;
 
     Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }

@@ -124,7 +124,7 @@ fn is_named_docker_volume(volume: &str) -> bool {
 }
 
 trait TryIntoService {
-    fn try_into_service(&self) -> Service;
+    fn try_into_service(&self) -> Service; //todo transform into try_into
 }
 
 impl TryIntoService for App {
@@ -245,64 +245,56 @@ impl DcBuilder {
     }
 
     #[tracing::instrument(name = "building stack")]
-    pub fn build(&self) -> Option<String> {
-        tracing::debug!("Start build docker compose from {:?}", &self.stack.body);
+    pub fn build(&self) -> Result<String, String> {
         let mut compose_content = Compose {
             version: Some("3.8".to_string()),
             ..Default::default()
         };
-        let _stack = serde_json::from_value::<StackForm>(self.stack.body.clone());
+        let apps = serde_json::from_value::<StackForm>(self.stack.body.clone())
+            .map_err(|err| format!("{:?}", err))?;
         let mut services = IndexMap::new();
         let mut named_volumes = IndexMap::default();
 
-        match _stack {
-            Ok(apps) => {
-                for app_type in &apps.custom.web {
-                    let service = app_type.app.try_into_service();
-                    services.insert(app_type.app.code.clone().to_owned(), Some(service));
-                    named_volumes.extend(extract_named_volumes(app_type.app.clone()));
-                }
+        for app_type in &apps.custom.web {
+            let service = app_type.app.try_into_service(); //todo
+            services.insert(app_type.app.code.clone().to_owned(), Some(service));
+            named_volumes.extend(extract_named_volumes(app_type.app.clone()));
+        }
 
-                if let Some(srvs) = apps.custom.service {
-                    for app_type in srvs {
-                        let service = app_type.app.try_into_service();
-                        services.insert(app_type.app.code.clone().to_owned(), Some(service));
-                        named_volumes.extend(extract_named_volumes(app_type.app.clone()));
-                    }
-                }
-
-                if let Some(features) = apps.custom.feature {
-                    for app_type in features {
-                        let service = app_type.app.try_into_service();
-                        services.insert(app_type.app.code.clone().to_owned(), Some(service));
-                        named_volumes.extend(extract_named_volumes(app_type.app.clone()));
-                    }
-                }
-
-                let networks = apps.custom.networks.clone();
-                compose_content.networks = ComposeNetworks(networks.into());
-
-                if !named_volumes.is_empty() {
-                    compose_content.volumes = TopLevelVolumes(named_volumes);
-                }
-            }
-            Err(e) => {
-                tracing::debug!("Unpack stack form error {:?}", e);
+        if let Some(srvs) = apps.custom.service {
+            for app_type in srvs {
+                let service = app_type.app.try_into_service(); //todo
+                services.insert(app_type.app.code.clone().to_owned(), Some(service));
+                named_volumes.extend(extract_named_volumes(app_type.app.clone()));
             }
         }
+
+        if let Some(features) = apps.custom.feature {
+            for app_type in features {
+                let service = app_type.app.try_into_service(); //todo
+                services.insert(app_type.app.code.clone().to_owned(), Some(service));
+                named_volumes.extend(extract_named_volumes(app_type.app.clone()));
+            }
+        }
+
+        let networks = apps.custom.networks.clone();
+        compose_content.networks = ComposeNetworks(networks.into());
+
+        if !named_volumes.is_empty() {
+            compose_content.volumes = TopLevelVolumes(named_volumes);
+        }
+
         tracing::debug!("services {:?}", &services);
         compose_content.services = Services(services);
 
         let fname = format!("./files/{}.yml", self.stack.stack_id);
         tracing::debug!("Saving docker compose to file {:?}", fname);
         let target_file = std::path::Path::new(fname.as_str());
-        // serialize to string
         let serialized = serde_yaml::to_string(&compose_content)
-            .map_err(|err| panic!("Failed to serialize docker-compose file: {}", err))
-            .unwrap();
+            .map_err(|err| format!("Failed to serialize docker-compose file: {}", err))?;
 
-        std::fs::write(target_file, serialized.clone()).map_err(|err| panic!("{}", err));
+        std::fs::write(target_file, serialized.clone()).map_err(|err| format!("{}", err))?;
 
-        Some(serialized)
+        Ok(serialized)
     }
 }
