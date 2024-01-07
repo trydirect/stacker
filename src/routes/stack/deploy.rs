@@ -30,9 +30,8 @@ pub async fn add(
 
     let id = stack.id.clone();
     let dc = DcBuilder::new(stack);
-    dc.build().ok_or_else(|| {
-        tracing::error!("Error. Compose builder returned an empty string");
-        JsonResponse::<models::Stack>::build().internal_server_error("")
+    dc.build().map_err(|err| {
+        JsonResponse::<models::Stack>::build().internal_server_error(err)
     })?;
 
     let mut stack_data = forms::StackPayload::try_from(&dc.stack)
