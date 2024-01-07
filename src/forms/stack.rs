@@ -79,52 +79,6 @@ impl AsRef<DockerImage> for App {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct StackForm {
-    // #[validate(min_length=2)]
-    // #[validate(max_length=255)]
-    #[serde(rename = "commonDomain")]
-    pub common_domain: Option<String>,
-    pub domain_list: Option<DomainList>,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 255)]
-    pub stack_code: Option<String>,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 50)]
-    pub region: String,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 50)]
-    pub zone: Option<String>,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 50)]
-    pub server: String,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 50)]
-    pub os: String,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub ssl: String,
-    pub vars: Option<Vec<Var>>,
-    pub integrated_features: Option<Vec<Value>>,
-    pub extended_features: Option<Vec<Value>>,
-    pub subscriptions: Option<Vec<String>>,
-    pub form_app: Option<Vec<String>>,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub disk_type: Option<String>,
-    pub save_token: bool,
-    #[validate(min_length = 10)]
-    #[validate(max_length = 255)]
-    pub cloud_token: String,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 50)]
-    pub provider: String,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub selected_plan: String,
-    pub custom: Custom,
-}
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DomainList {}

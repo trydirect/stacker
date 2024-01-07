@@ -250,8 +250,8 @@ impl DcBuilder {
             version: Some("3.8".to_string()),
             ..Default::default()
         };
-        let apps = serde_json::from_value::<StackForm>(self.stack.body.clone())
-            .map_err(|err| format!("{:?}", err))?;
+
+        let apps = StackForm::try_from(&self.stack)?; 
         let mut services = IndexMap::new();
         let mut named_volumes = IndexMap::default();
 
