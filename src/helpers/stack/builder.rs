@@ -84,14 +84,18 @@ impl TryInto<Port> for stack::Port {
     }
 }
 
-impl TryInto<Networks> for stack::ServiceNetworks {
+impl TryFrom<&stack::ServiceNetworks> for Networks {
     type Error = ();
-    fn try_into(self) -> Result<Networks, Self::Error> {
-        let mut networks = vec!["default_network".to_string()];
-        if self.network.is_some() {
-            networks.append(&mut self.network.unwrap());
-        }
-        Ok(Networks::Simple(networks))
+
+    fn try_from(serviceNetworks: &stack::ServiceNetworks) -> Result<Networks, Self::Error> {
+        let mut result = vec!["default_network".to_string()];
+        serviceNetworks.network.as_ref().map(|networks| {
+            for n in networks {
+                result.push(n.to_string());
+            }
+        });
+
+        Ok(Networks::Simple(result))
     }
 }
 
@@ -123,20 +127,18 @@ fn is_named_docker_volume(volume: &str) -> bool {
     is_alphanumeric && does_not_contain_slash
 }
 
-trait TryIntoService {
-    fn try_into_service(&self) -> Service; //todo transform into try_into
-}
+impl TryFrom<&App> for Service {
+    type Error = String;
 
-impl TryIntoService for App {
-    fn try_into_service(&self) -> Service {
+    fn try_from(app: &App) -> Result<Self, Self::Error> {
         let mut service = Service {
-            image: Some(self.docker_image.to_string()),
+            image: Some(app.docker_image.to_string()),
             ..Default::default()
         };
 
-        let networks: Networks = self.network.clone().try_into().unwrap_or_default();
+        let networks = Networks::try_from(&app.network).unwrap_or_default();
 
-        let ports: Vec<Port> = self
+        let ports: Vec<Port> = app //todo
             .ports
             .clone()
             .unwrap_or_default()
@@ -144,7 +146,7 @@ impl TryIntoService for App {
             .map(|x| x.try_into().unwrap())
             .collect();
 
-        let volumes: Vec<AdvancedVolumes> = self
+        let volumes: Vec<AdvancedVolumes> = app //todo
             .volumes
             .clone()
             .unwrap_or_default()
@@ -153,7 +155,7 @@ impl TryIntoService for App {
             .collect();
 
         let mut envs = IndexMap::new();
-        for item in self.environment.environment.clone().unwrap_or_default() {
+        for item in app.environment.environment.clone().unwrap_or_default() { //todo
             let items = item
                 .into_iter()
                 .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
@@ -168,7 +170,7 @@ impl TryIntoService for App {
         service.volumes = Volumes::Advanced(volumes);
         service.environment = Environment::KvPair(envs);
 
-        service
+        Ok(service)
     }
 }
 
@@ -256,14 +258,14 @@ impl DcBuilder {
         let mut named_volumes = IndexMap::default();
 
         for app_type in &apps.custom.web {
-            let service = app_type.app.try_into_service(); //todo
+            let service = Service::try_from(&app_type.app)?;
             services.insert(app_type.app.code.clone().to_owned(), Some(service));
             named_volumes.extend(extract_named_volumes(app_type.app.clone()));
         }
 
         if let Some(srvs) = apps.custom.service {
             for app_type in srvs {
-                let service = app_type.app.try_into_service(); //todo
+                let service = Service::try_from(&app_type.app)?;
                 services.insert(app_type.app.code.clone().to_owned(), Some(service));
                 named_volumes.extend(extract_named_volumes(app_type.app.clone()));
             }
@@ -271,7 +273,7 @@ impl DcBuilder {
 
         if let Some(features) = apps.custom.feature {
             for app_type in features {
-                let service = app_type.app.try_into_service(); //todo
+                let service = Service::try_from(&app_type.app)?;
                 services.insert(app_type.app.code.clone().to_owned(), Some(service));
                 named_volumes.extend(extract_named_volumes(app_type.app.clone()));
             }
