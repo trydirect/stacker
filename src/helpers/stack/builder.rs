@@ -1,4 +1,5 @@
 use crate::forms::{stack, App, StackForm, Volume, Web};
+use crate::forms;
 use crate::helpers::stack::dctypes::{
     AdvancedVolumes, Compose, ComposeNetwork, ComposeNetworkSettingDetails, ComposeNetworks,
     ComposeVolume, Entrypoint, Environment, MapOrEmpty, NetworkSettings, Networks, Port, Ports,
@@ -57,23 +58,21 @@ impl TryInto<AdvancedVolumes> for Volume {
     }
 }
 
-impl TryInto<Port> for stack::Port {
+impl TryInto<Port> for &stack::Port {
     type Error = String;
     fn try_into(self) -> Result<Port, Self::Error> {
         let cp = self
             .container_port
-            .clone()
-            .unwrap_or("".to_string())
-            .parse::<u16>()
-            .map_err(|err| "Could not parse port".to_string())?;
-        let hp = self
-            .host_port
-            .clone()
-            .unwrap_or("".to_string())
-            .parse::<u16>()
+            .as_ref()
+            .map_or(Ok(0u16), |s| s.parse::<u16>())
             .map_err(|err| "Could not parse port".to_string())?;
 
-        tracing::debug!("Port conversion result: cp: {:?} hp: {:?}", cp, hp);
+        let hp = self
+            .host_port
+            .as_ref()
+            .map_or(Ok(0u16), |s| s.parse::<u16>())
+            .map_err(|err| "Could not parse port".to_string())?;
+
         Ok(Port {
             target: cp,
             host_ip: None,
@@ -138,13 +137,16 @@ impl TryFrom<&App> for Service {
 
         let networks = Networks::try_from(&app.network).unwrap_or_default();
 
-        let ports: Vec<Port> = app //todo
-            .ports
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|x| x.try_into().unwrap())
-            .collect();
+        let ports: Vec<Port> = match &app.ports {
+            Some(ports) => {
+                let mut collector = vec![];
+                for port in ports {
+                    collector.push(port.try_into()?);
+                }
+                collector
+            }
+            None => vec![]
+        };
 
         let volumes: Vec<AdvancedVolumes> = app //todo
             .volumes
