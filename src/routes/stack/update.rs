@@ -1,4 +1,4 @@
-use crate::forms::stack::StackForm;
+use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::models::user::User;
@@ -16,7 +16,7 @@ use uuid::Uuid;
 #[post("/{id}")]
 pub async fn update(
     path: web::Path<(i32,)>,
-    form: web::Json<StackForm>,
+    form: web::Json<forms::StackForm>,
     user: web::ReqData<Arc<User>>,
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -67,11 +67,11 @@ pub async fn update(
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
     }
 
-    let body: Value = match serde_json::to_value::<StackForm>(form.into_inner()) {
+    let body: Value = match serde_json::to_value::<forms::StackForm>(form.into_inner()) {
         Ok(body) => body,
         Err(err) => {
             tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
-            serde_json::to_value::<StackForm>(StackForm::default()).unwrap()
+            serde_json::to_value::<forms::StackForm>(forms::StackForm::default()).unwrap()
         }
     };
 
