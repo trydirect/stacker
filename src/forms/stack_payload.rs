@@ -35,7 +35,7 @@ pub struct StackPayload {
     pub stack_code: String,
     #[serde(rename = "selected_plan")]
     pub selected_plan: String,
-    pub custom: forms::stack::Custom,
+    pub custom: forms::Custom,
 }
 
 impl TryFrom<&models::Stack> for StackPayload {
