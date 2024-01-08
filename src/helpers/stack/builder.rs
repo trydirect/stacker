@@ -116,16 +116,6 @@ fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, St
     Ok(_ports)
 }
 
-fn is_named_docker_volume(volume: &str) -> bool {
-    // Docker named volumes typically don't contain special characters or slashes
-    // They are alphanumeric and may include underscores or hyphens
-    let is_alphanumeric = volume
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-    let does_not_contain_slash = !volume.contains('/');
-    is_alphanumeric && does_not_contain_slash
-}
-
 impl TryFrom<&App> for Service {
     type Error = String;
 
@@ -207,39 +197,6 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
     }
 }
 
-pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVolume>> {
-    let mut named_volumes = IndexMap::default();
-
-    let volumes = app.volumes;
-    if volumes.is_none() {
-        return named_volumes;
-    }
-
-    let volumes = volumes
-        .unwrap()
-        .into_iter()
-        .filter(|volume| is_named_docker_volume(volume.host_path.clone().unwrap().as_str()))
-        .map(|volume| {
-            let k = volume.host_path.clone().unwrap();
-            (
-                k.clone(),
-                MapOrEmpty::Map(ComposeVolume {
-                    driver: None,
-                    driver_opts: Default::default(),
-                    external: None,
-                    labels: Default::default(),
-                    name: Some(k.clone()),
-                }),
-            )
-        })
-        .collect::<IndexMap<String, MapOrEmpty<ComposeVolume>>>();
-
-    named_volumes.extend(volumes);
-    // tracing::debug!("Named volumes: {:?}", named_volumes);
-
-    named_volumes
-}
-
 impl DcBuilder {
     pub fn new(stack: models::Stack) -> Self {
         DcBuilder {
@@ -256,30 +213,8 @@ impl DcBuilder {
         };
 
         let apps = StackForm::try_from(&self.stack)?; 
-        let mut services = IndexMap::new();
-        let mut named_volumes = IndexMap::default();
-
-        for app_type in &apps.custom.web {
-            let service = Service::try_from(&app_type.app)?;
-            services.insert(app_type.app.code.clone().to_owned(), Some(service));
-            named_volumes.extend(extract_named_volumes(app_type.app.clone()));
-        }
-
-        if let Some(srvs) = apps.custom.service {
-            for app_type in srvs {
-                let service = Service::try_from(&app_type.app)?;
-                services.insert(app_type.app.code.clone().to_owned(), Some(service));
-                named_volumes.extend(extract_named_volumes(app_type.app.clone()));
-            }
-        }
-
-        if let Some(features) = apps.custom.feature {
-            for app_type in features {
-                let service = Service::try_from(&app_type.app)?;
-                services.insert(app_type.app.code.clone().to_owned(), Some(service));
-                named_volumes.extend(extract_named_volumes(app_type.app.clone()));
-            }
-        }
+        let  services = apps.custom.services()?;
+        let  named_volumes = apps.custom.named_volumes()?;
 
         let networks = apps.custom.networks.clone();
         compose_content.networks = ComposeNetworks(networks.into());

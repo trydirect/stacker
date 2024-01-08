@@ -3,6 +3,7 @@ use serde_json::Value;
 use serde_valid::Validate;
 use std::collections::HashMap;
 use std::fmt;
+use crate::forms;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -73,12 +74,6 @@ impl fmt::Display for DockerImage {
     }
 }
 
-impl AsRef<DockerImage> for App {
-    fn as_ref(&self) -> &DockerImage {
-        &self.docker_image
-    }
-}
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DomainList {}
@@ -92,100 +87,8 @@ pub struct Price {
     pub value: f64,
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct Custom {
-    pub web: Vec<Web>,
-    pub feature: Option<Vec<Feature>>,
-    pub service: Option<Vec<Service>>,
-    #[validate(minimum = 0)]
-    #[validate(maximum = 10)]
-    pub servers_count: u32,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub custom_stack_code: String,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 255)]
-    pub project_git_url: Option<String>,
-    pub custom_stack_category: Option<Vec<String>>,
-    pub custom_stack_short_description: Option<String>,
-    pub custom_stack_description: Option<String>,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 255)]
-    pub project_name: String,
-    pub project_overview: Option<String>,
-    pub project_description: Option<String>,
-    #[serde(flatten)]
-    pub networks: ComposeNetworks, // all networks
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Network {
     name: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct App {
-    #[serde(rename = "_etag")]
-    #[validate(min_length = 3)]
-    #[validate(max_length = 255)]
-    pub etag: Option<String>,
-    #[serde(rename = "_id")]
-    pub id: u32,
-    #[serde(rename = "_created")]
-    pub created: Option<String>,
-    #[serde(rename = "_updated")]
-    pub updated: Option<String>,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub name: String,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub code: String,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    #[serde(rename = "type")]
-    pub type_field: String,
-    #[serde(flatten)]
-    pub role: Role,
-    pub default: Option<bool>,
-    pub versions: Option<Vec<Version>>,
-    #[serde(flatten)]
-    pub docker_image: DockerImage,
-    #[serde(flatten)]
-    pub requirements: Requirements,
-    #[validate(minimum = 1)]
-    pub popularity: Option<u32>,
-    pub commercial: Option<bool>,
-    pub subscription: Option<Value>,
-    pub autodeploy: Option<bool>,
-    pub suggested: Option<bool>,
-    pub dependency: Option<Value>,
-    pub avoid_render: Option<bool>,
-    pub price: Option<Price>,
-    pub icon: Option<Icon>,
-    pub domain: Option<String>,
-    pub category_id: Option<u32>,
-    pub parent_app_id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub descr: Option<String>,
-    pub full_description: Option<String>,
-    pub description: Option<String>,
-    pub plan_type: Option<String>,
-    pub ansible_var: Option<String>,
-    pub repo_dir: Option<String>,
-    pub url_app: Option<String>,
-    pub url_git: Option<String>,
-    pub restart: Option<String>,
-    pub volumes: Option<Vec<Volume>>,
-    #[serde(flatten)]
-    pub environment: Environment,
-    #[serde(flatten)]
-    pub network: ServiceNetworks,
-    // #[serde(flatten)]
-    // pub ports: Ports,
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub ports: Option<Vec<Port>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -217,7 +120,7 @@ pub struct ComposeNetworks {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Web {
     #[serde(flatten)]
-    pub app: App,
+    pub app: forms::App,
     pub custom: Option<bool>,
     pub main: bool,
 }
@@ -229,7 +132,7 @@ pub struct Feature {
     // #[serde(alias = "shared_ports")]
     // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
-    pub app: App,
+    pub app: forms::App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -239,7 +142,7 @@ pub struct Service {
     // #[serde(alias = "shared_ports")]
     // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
-    pub(crate) app: App,
+    pub(crate) app: forms::App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
