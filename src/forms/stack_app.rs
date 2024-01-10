@@ -72,36 +72,28 @@ pub struct App {
 }
 
 impl App {
-    pub fn named_volumes(&self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>> { //todo Result
+    pub fn named_volumes(&self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>> { 
         let mut named_volumes = IndexMap::default();
 
-        let volumes = &self.volumes;
-        if volumes.is_none() {
+        if self.volumes.is_none() {
             return named_volumes;
         }
 
-        let volumes = volumes
-            .clone() //todo remove it
-            .unwrap()
-            .into_iter()
-            .filter(|volume| is_named_docker_volume(volume.host_path.clone().unwrap().as_str()))
-            .map(|volume| {
-                let k = volume.host_path.clone().unwrap();
-                (
-                    k.clone(),
-                    dctypes::MapOrEmpty::Map(dctypes::ComposeVolume {
-                        driver: None,
-                        driver_opts: Default::default(),
-                        external: None,
-                        labels: Default::default(),
-                        name: Some(k.clone()),
-                    }),
-                    )
-            })
-        .collect::<IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>>>();
+        for volume in self.volumes.as_ref().unwrap() {
+            if !volume.is_named_docker() {
+                continue;
+            }
 
-        named_volumes.extend(volumes);
-        // tracing::debug!("Named volumes: {:?}", named_volumes);
+            let k = volume.host_path.as_ref().unwrap().clone();
+            let v = dctypes::MapOrEmpty::Map(dctypes::ComposeVolume {
+                driver: None,
+                driver_opts: Default::default(),
+                external: None,
+                labels: Default::default(),
+                name: Some(k.clone()),
+            });
+            named_volumes.insert(k, v);
+        }
 
         named_volumes
     }
@@ -112,15 +104,3 @@ impl AsRef<forms::DockerImage> for App {
         &self.docker_image
     }
 }
-
-
-fn is_named_docker_volume(volume: &str) -> bool { //todo
-    // Docker named volumes typically don't contain special characters or slashes
-    // They are alphanumeric and may include underscores or hyphens
-    let is_alphanumeric = volume
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-    let does_not_contain_slash = !volume.contains('/');
-    is_alphanumeric && does_not_contain_slash
-}
-

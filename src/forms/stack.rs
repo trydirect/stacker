@@ -101,6 +101,19 @@ pub struct Volume {
     pub(crate) container_path: Option<String>,
 }
 
+impl Volume {
+    pub fn is_named_docker(&self) -> bool {
+        // Docker named volumes typically don't contain special characters or slashes
+        // They are alphanumeric and may include underscores or hyphens
+        self
+            .host_path
+            .as_ref()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volumes {
     volumes: Vec<Volume>,
