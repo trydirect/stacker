@@ -7,9 +7,9 @@ use crate::helpers::stack::dctypes;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Custom {
-    pub web: Vec<forms::Web>,
-    pub feature: Option<Vec<forms::Feature>>,
-    pub service: Option<Vec<forms::Service>>,
+    pub web: Vec<forms::stack::Web>,
+    pub feature: Option<Vec<forms::stack::Feature>>,
+    pub service: Option<Vec<forms::stack::Service>>,
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
     pub servers_count: u32,
@@ -28,7 +28,7 @@ pub struct Custom {
     pub project_overview: Option<String>,
     pub project_description: Option<String>,
     #[serde(flatten)]
-    pub networks: forms::ComposeNetworks, // all networks
+    pub networks: forms::stack::ComposeNetworks, // all networks
 }
 
 impl Custom {

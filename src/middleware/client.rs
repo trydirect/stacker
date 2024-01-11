@@ -77,7 +77,7 @@ where
             let header_hash: String = get_header(&req, "stacker-hash")?;
 
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
-            let mut client: Client = db_fetch_client(db_pool, client_id).await?;
+            let client: Client = db_fetch_client(db_pool, client_id).await?;
             if client.secret.is_none() {
                 return Err("client is not active".to_string());
             }

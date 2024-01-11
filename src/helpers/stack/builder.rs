@@ -1,4 +1,3 @@
-use crate::forms::{stack, App, StackForm, Volume, Web};
 use crate::forms;
 use crate::helpers::stack::dctypes::{
     AdvancedVolumes, Compose, ComposeNetwork, ComposeNetworkSettingDetails, ComposeNetworks,
@@ -36,7 +35,7 @@ pub struct DcBuilder {
     pub(crate) stack: models::Stack,
 }
 
-impl TryInto<AdvancedVolumes> for Volume {
+impl TryInto<AdvancedVolumes> for forms::stack::Volume {
     type Error = String;
     fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
         let source = self.host_path.clone();
@@ -58,20 +57,20 @@ impl TryInto<AdvancedVolumes> for Volume {
     }
 }
 
-impl TryInto<Port> for &stack::Port {
+impl TryInto<Port> for &forms::stack::Port {
     type Error = String;
     fn try_into(self) -> Result<Port, Self::Error> {
         let cp = self
             .container_port
             .as_ref()
             .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|err| "Could not parse port".to_string())?;
+            .map_err(|_| "Could not parse port".to_string())?;
 
         let hp = self
             .host_port
             .as_ref()
             .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|err| "Could not parse port".to_string())?;
+            .map_err(|_| "Could not parse port".to_string())?;
 
         Ok(Port {
             target: cp,
@@ -83,12 +82,12 @@ impl TryInto<Port> for &stack::Port {
     }
 }
 
-impl TryFrom<&stack::ServiceNetworks> for Networks {
+impl TryFrom<&forms::stack::ServiceNetworks> for Networks {
     type Error = ();
 
-    fn try_from(serviceNetworks: &stack::ServiceNetworks) -> Result<Networks, Self::Error> {
+    fn try_from(service_networks: &forms::stack::ServiceNetworks) -> Result<Networks, Self::Error> {
         let mut result = vec!["default_network".to_string()];
-        serviceNetworks.network.as_ref().map(|networks| {
+        service_networks.network.as_ref().map(|networks| {
             for n in networks {
                 result.push(n.to_string());
             }
@@ -98,13 +97,13 @@ impl TryFrom<&stack::ServiceNetworks> for Networks {
     }
 }
 
-fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, String> {
+//todo
+fn convert_shared_ports(ports: Option<Vec<forms::stack::Port>>) -> Result<Vec<Port>, String> {
     tracing::debug!("convert shared ports {:?}", &ports);
     let mut _ports: Vec<Port> = vec![];
     match ports {
         Some(ports) => {
             tracing::debug!("Ports >>>> {:?}", ports);
-            for port in ports {}
         }
         None => {
             tracing::debug!("No ports defined by user");
@@ -116,10 +115,10 @@ fn convert_shared_ports(ports: Option<Vec<stack::Port>>) -> Result<Vec<Port>, St
     Ok(_ports)
 }
 
-impl TryFrom<&App> for Service {
+impl TryFrom<&forms::stack::App> for Service {
     type Error = String;
 
-    fn try_from(app: &App) -> Result<Self, Self::Error> {
+    fn try_from(app: &forms::stack::App) -> Result<Self, Self::Error> {
         let mut service = Service {
             image: Some(app.docker_image.to_string()),
             ..Default::default()
@@ -166,7 +165,7 @@ impl TryFrom<&App> for Service {
     }
 }
 
-impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
+impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for forms::stack::ComposeNetworks {
     fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
         // tracing::debug!("networks found {:?}", self.networks);
         let mut networks = vec!["default_network".to_string()];
@@ -212,7 +211,7 @@ impl DcBuilder {
             ..Default::default()
         };
 
-        let apps = StackForm::try_from(&self.stack)?; 
+        let apps = forms::stack::Stack::try_from(&self.stack)?; 
         let  services = apps.custom.services()?;
         let  named_volumes = apps.custom.named_volumes()?;
 

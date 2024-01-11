@@ -5,6 +5,16 @@ use std::collections::HashMap;
 use std::fmt;
 use crate::forms;
 
+mod app;
+mod custom;
+mod form;
+mod payload;
+
+pub use app::*;
+pub use custom::*;
+pub use form::*;
+pub use payload::*;
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
     pub role: Option<Vec<String>>,
@@ -133,7 +143,7 @@ pub struct ComposeNetworks {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Web {
     #[serde(flatten)]
-    pub app: forms::App,
+    pub app: forms::stack::App,
     pub custom: Option<bool>,
     pub main: bool,
 }
@@ -145,7 +155,7 @@ pub struct Feature {
     // #[serde(alias = "shared_ports")]
     // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
-    pub app: forms::App,
+    pub app: forms::stack::App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -155,7 +165,7 @@ pub struct Service {
     // #[serde(alias = "shared_ports")]
     // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
-    pub(crate) app: forms::App,
+    pub(crate) app: forms::stack::App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

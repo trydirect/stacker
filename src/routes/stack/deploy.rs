@@ -5,7 +5,6 @@ use crate::helpers::stack::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
-use futures_lite::stream::StreamExt;
 use lapin::publisher_confirm::Confirmation;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -34,7 +33,7 @@ pub async fn add(
         JsonResponse::<models::Stack>::build().internal_server_error(err)
     })?;
 
-    let mut stack_data = forms::StackPayload::try_from(&dc.stack)
+    let mut stack_data = forms::stack::Payload::try_from(&dc.stack)
         .map_err(|err| JsonResponse::<models::Stack>::build().bad_request(err))?;
     stack_data.user_token = Some(user.id.clone());
     stack_data.user_email = Some(user.email.clone());
