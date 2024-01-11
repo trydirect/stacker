@@ -7,7 +7,7 @@ use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "snake_case")]
-pub struct StackPayload {
+pub struct Payload {
     pub(crate) id: Option<i32>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
@@ -35,14 +35,14 @@ pub struct StackPayload {
     pub stack_code: String,
     #[serde(rename = "selected_plan")]
     pub selected_plan: String,
-    pub custom: forms::Custom,
+    pub custom: forms::stack::Custom,
 }
 
-impl TryFrom<&models::Stack> for StackPayload {
+impl TryFrom<&models::Stack> for Payload {
     type Error = String;
 
     fn try_from(stack: &models::Stack) -> Result<Self, Self::Error> {
-        let mut stack_data = serde_json::from_value::<StackPayload>(stack.body.clone()).map_err(|err| {
+        let mut stack_data = serde_json::from_value::<Payload>(stack.body.clone()).map_err(|err| {
             format!("{:?}", err)
         })?;
 

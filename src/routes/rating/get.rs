@@ -34,5 +34,5 @@ pub async fn list_handler(
     db::rating::fetch_all(pg_pool.get_ref())
         .await
         .map(|ratings| JsonResponse::build().set_list(ratings).ok("OK"))
-        .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
 }

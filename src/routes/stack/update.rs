@@ -16,7 +16,7 @@ use uuid::Uuid;
 #[post("/{id}")]
 pub async fn update(
     path: web::Path<(i32,)>,
-    form: web::Json<forms::StackForm>,
+    form: web::Json<forms::stack::Stack>,
     user: web::ReqData<Arc<User>>,
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -67,11 +67,11 @@ pub async fn update(
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
     }
 
-    let body: Value = match serde_json::to_value::<forms::StackForm>(form.into_inner()) {
+    let body: Value = match serde_json::to_value::<forms::stack::Stack>(form.into_inner()) {
         Ok(body) => body,
         Err(err) => {
             tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
-            serde_json::to_value::<forms::StackForm>(forms::StackForm::default()).unwrap()
+            serde_json::to_value::<forms::stack::Stack>(forms::stack::Stack::default()).unwrap()
         }
     };
 
@@ -93,7 +93,7 @@ pub async fn update(
     .instrument(query_span)
     .await
     {
-        Ok(record) => {
+        Ok(_record) => {
             tracing::info!(
                 "req_id: {} stack details have been saved to database",
                 request_id

@@ -28,13 +28,13 @@ pub struct App {
     #[serde(rename = "type")]
     pub type_field: String,
     #[serde(flatten)]
-    pub role: forms::Role,
+    pub role: forms::stack::Role,
     pub default: Option<bool>,
-    pub versions: Option<Vec<forms::Version>>,
+    pub versions: Option<Vec<forms::stack::Version>>,
     #[serde(flatten)]
-    pub docker_image: forms::DockerImage,
+    pub docker_image: forms::stack::DockerImage,
     #[serde(flatten)]
-    pub requirements: forms::Requirements,
+    pub requirements: forms::stack::Requirements,
     #[validate(minimum = 1)]
     pub popularity: Option<u32>,
     pub commercial: Option<bool>,
@@ -43,8 +43,8 @@ pub struct App {
     pub suggested: Option<bool>,
     pub dependency: Option<Value>,
     pub avoid_render: Option<bool>,
-    pub price: Option<forms::Price>,
-    pub icon: Option<forms::Icon>,
+    pub price: Option<forms::stack::Price>,
+    pub icon: Option<forms::stack::Icon>,
     pub domain: Option<String>,
     pub category_id: Option<u32>,
     pub parent_app_id: Option<u32>,
@@ -58,17 +58,17 @@ pub struct App {
     pub url_app: Option<String>,
     pub url_git: Option<String>,
     pub restart: Option<String>,
-    pub volumes: Option<Vec<forms::Volume>>,
+    pub volumes: Option<Vec<forms::stack::Volume>>,
     #[serde(flatten)]
-    pub environment: forms::Environment,
+    pub environment: forms::stack::Environment,
     #[serde(flatten)]
-    pub network: forms::ServiceNetworks,
+    pub network: forms::stack::ServiceNetworks,
     // #[serde(flatten)]
     // pub ports: Ports,
     #[serde(rename(deserialize = "sharedPorts"))]
     #[serde(rename(serialize = "shared_ports"))]
     #[serde(alias = "shared_ports")]
-    pub ports: Option<Vec<forms::Port>>,
+    pub ports: Option<Vec<forms::stack::Port>>,
 }
 
 impl App {
@@ -99,8 +99,8 @@ impl App {
     }
 }
 
-impl AsRef<forms::DockerImage> for App {
-    fn as_ref(&self) -> &forms::DockerImage {
+impl AsRef<forms::stack::DockerImage> for App {
+    fn as_ref(&self) -> &forms::stack::DockerImage {
         &self.docker_image
     }
 }

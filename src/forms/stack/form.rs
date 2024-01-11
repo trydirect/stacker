@@ -7,12 +7,12 @@ use crate::models;
 use crate::forms;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct StackForm {
+pub struct Stack { 
     // #[validate(min_length=2)]
     // #[validate(max_length=255)]
     #[serde(rename = "commonDomain")]
     pub common_domain: Option<String>,
-    pub domain_list: Option<forms::DomainList>,
+    pub domain_list: Option<forms::stack::DomainList>,
     #[validate(min_length = 2)]
     #[validate(max_length = 255)]
     pub stack_code: Option<String>,
@@ -31,7 +31,7 @@ pub struct StackForm {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     pub ssl: String,
-    pub vars: Option<Vec<forms::Var>>,
+    pub vars: Option<Vec<forms::stack::Var>>,
     pub integrated_features: Option<Vec<Value>>,
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
@@ -49,13 +49,13 @@ pub struct StackForm {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     pub selected_plan: String,
-    pub custom: forms::Custom,
+    pub custom: forms::stack::Custom,
 }
 
-impl TryFrom<&models::Stack> for StackForm {
+impl TryFrom<&models::Stack> for Stack {
     type Error = String;
 
     fn try_from(stack: &models::Stack) -> Result<Self, Self::Error> {
-        serde_json::from_value::<StackForm>(stack.body.clone()).map_err(|err| format!("{:?}", err))
+        serde_json::from_value::<Stack>(stack.body.clone()).map_err(|err| format!("{:?}", err))
     }
 }
