@@ -1,3 +1,19 @@
+mod port;
+mod published_port;
+mod compose_file;
+mod single_service;
+mod service;
+mod sys_ctls;
+
+pub use port::*;
+pub use published_port::*;
+pub use compose_file::*;
+pub use single_service::*;
+pub use service::*;
+pub use sys_ctls::*;
+
+use crate::helpers::stack::dctypes;
+
 use derive_builder::*;
 #[cfg(feature = "indexmap")]
 use indexmap::IndexMap;
@@ -8,23 +24,6 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
 use std::str::FromStr;
-
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum ComposeFile {
-    V2Plus(Compose),
-    #[cfg(feature = "indexmap")]
-    V1(IndexMap<String, Service>),
-    #[cfg(not(feature = "indexmap"))]
-    V1(HashMap<String, Service>),
-    Single(SingleService),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
-pub struct SingleService {
-    pub service: Service,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Compose {
@@ -44,119 +43,6 @@ pub struct Compose {
     #[cfg(not(feature = "indexmap"))]
     #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
     pub extensions: HashMap<Extension, Value>,
-}
-
-#[derive(Builder, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
-#[builder(setter(into), default)]
-pub struct Service {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hostname: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub privileged: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub healthcheck: Option<Healthcheck>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deploy: Option<Deploy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "build")]
-    pub build_: Option<BuildStep>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pid: Option<String>,
-    #[serde(default, skip_serializing_if = "Ports::is_empty")]
-    pub ports: Ports,
-    #[serde(default, skip_serializing_if = "Environment::is_empty")]
-    pub environment: Environment,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub network_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub devices: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub restart: Option<String>,
-    #[serde(default, skip_serializing_if = "Labels::is_empty")]
-    pub labels: Labels,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tmpfs: Option<Tmpfs>,
-    #[serde(default, skip_serializing_if = "Ulimits::is_empty")]
-    pub ulimits: Ulimits,
-    #[serde(default, skip_serializing_if = "Volumes::is_empty")]
-    pub volumes: Volumes,
-    #[serde(default, skip_serializing_if = "Networks::is_empty")]
-    pub networks: Networks,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cap_add: Vec<String>,
-    #[serde(default, skip_serializing_if = "DependsOnOptions::is_empty")]
-    pub depends_on: DependsOnOptions,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<Command>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entrypoint: Option<Entrypoint>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env_file: Option<EnvFile>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_grace_period: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub profiles: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub links: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dns: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ipc: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub net: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_signal: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub working_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub expose: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub volumes_from: Vec<String>,
-    #[cfg(feature = "indexmap")]
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    pub extends: IndexMap<String, String>,
-    #[cfg(not(feature = "indexmap"))]
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub extends: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logging: Option<LoggingParameters>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub scale: i64,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub init: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub stdin_open: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shm_size: Option<String>,
-    #[cfg(feature = "indexmap")]
-    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
-    pub extensions: IndexMap<Extension, Value>,
-    #[cfg(not(feature = "indexmap"))]
-    #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<Extension, Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_hosts: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub tty: bool,
-    #[serde(default, skip_serializing_if = "SysCtls::is_empty")]
-    pub sysctls: SysCtls,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub security_opt: Vec<String>,
-}
-
-impl Service {
-    pub fn image(&self) -> &str {
-        self.image.as_deref().unwrap_or_default()
-    }
-
-    pub fn network_mode(&self) -> &str {
-        self.network_mode.as_deref().unwrap_or_default()
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -211,7 +97,7 @@ pub struct LoggingParameters {
 #[serde(untagged)]
 pub enum Ports {
     Short(Vec<String>),
-    Long(Vec<Port>),
+    Long(Vec<dctypes::Port>),
 }
 
 impl Default for Ports {
@@ -227,26 +113,6 @@ impl Ports {
             Self::Long(v) => v.is_empty(),
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Port {
-    pub target: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host_ip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub published: Option<PublishedPort>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum PublishedPort {
-    Single(u16),
-    Range(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -455,31 +321,6 @@ pub struct AdvancedNetworkSettings {
     pub ipv6_address: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SysCtls {
-    List(Vec<String>),
-    #[cfg(feature = "indexmap")]
-    Map(IndexMap<String, Option<SingleValue>>),
-    #[cfg(not(feature = "indexmap"))]
-    Map(HashMap<String, Option<SingleValue>>),
-}
-
-impl Default for SysCtls {
-    fn default() -> Self {
-        Self::List(Vec::new())
-    }
-}
-
-impl SysCtls {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::List(v) => v.is_empty(),
-            Self::Map(m) => m.is_empty(),
-        }
-    }
 }
 
 #[cfg(feature = "indexmap")]
