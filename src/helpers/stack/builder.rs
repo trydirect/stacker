@@ -16,18 +16,6 @@ impl Default for Config {
     }
 }
 
-impl Default for Port {
-    fn default() -> Self {
-        Port {
-            target: 80,
-            host_ip: None,
-            published: None,
-            protocol: None,
-            mode: None,
-        }
-    }
-}
-
 /// A builder for constructing docker compose.
 #[derive(Clone, Debug)]
 pub struct DcBuilder {
@@ -53,31 +41,6 @@ impl TryInto<AdvancedVolumes> for forms::stack::Volume {
             bind: None,
             volume: None,
             tmpfs: None,
-        })
-    }
-}
-
-impl TryInto<Port> for &forms::stack::Port {
-    type Error = String;
-    fn try_into(self) -> Result<Port, Self::Error> {
-        let cp = self
-            .container_port
-            .as_ref()
-            .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|_| "Could not parse port".to_string())?;
-
-        let hp = self
-            .host_port
-            .as_ref()
-            .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|_| "Could not parse port".to_string())?;
-
-        Ok(Port {
-            target: cp,
-            host_ip: None,
-            published: Some(PublishedPort::Single(hp)),
-            protocol: None,
-            mode: None,
         })
     }
 }
