@@ -4,6 +4,16 @@ mod compose_file;
 mod single_service;
 mod service;
 mod sys_ctls;
+mod compose;
+mod env_file;
+mod depends_on_options;
+mod depends_condition;
+mod logging_parameters;
+mod ports;
+mod environment;
+mod extension;
+mod extension_parse_error;
+mod services;
 
 pub use port::*;
 pub use published_port::*;
@@ -11,6 +21,16 @@ pub use compose_file::*;
 pub use single_service::*;
 pub use service::*;
 pub use sys_ctls::*;
+pub use compose::*;
+pub use env_file::*;
+pub use depends_on_options::*;
+pub use depends_condition::*;
+pub use logging_parameters::*;
+pub use ports::*;
+pub use environment::*;
+pub use extension::*;
+pub use extension_parse_error::*;
+pub use services::*;
 
 use crate::helpers::stack::dctypes;
 
@@ -23,174 +43,6 @@ use serde_yaml::Value;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
-use std::str::FromStr;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
-pub struct Compose {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Services::is_empty")]
-    pub services: Services,
-    #[serde(default, skip_serializing_if = "TopLevelVolumes::is_empty")]
-    pub volumes: TopLevelVolumes,
-    #[serde(default, skip_serializing_if = "ComposeNetworks::is_empty")]
-    pub networks: ComposeNetworks,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service: Option<Service>,
-    #[cfg(feature = "indexmap")]
-    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
-    pub extensions: IndexMap<Extension, Value>,
-    #[cfg(not(feature = "indexmap"))]
-    #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<Extension, Value>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-#[serde(untagged)]
-pub enum EnvFile {
-    Simple(String),
-    List(Vec<String>),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum DependsOnOptions {
-    Simple(Vec<String>),
-    #[cfg(feature = "indexmap")]
-    Conditional(IndexMap<String, DependsCondition>),
-    #[cfg(not(feature = "indexmap"))]
-    Conditional(HashMap<String, DependsCondition>),
-}
-
-impl Default for DependsOnOptions {
-    fn default() -> Self {
-        Self::Simple(Vec::new())
-    }
-}
-
-impl DependsOnOptions {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::Simple(v) => v.is_empty(),
-            Self::Conditional(m) => m.is_empty(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub struct DependsCondition {
-    pub condition: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct LoggingParameters {
-    pub driver: String,
-    #[cfg(feature = "indexmap")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<IndexMap<String, SingleValue>>,
-    #[cfg(not(feature = "indexmap"))]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<HashMap<String, SingleValue>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum Ports {
-    Short(Vec<String>),
-    Long(Vec<dctypes::Port>),
-}
-
-impl Default for Ports {
-    fn default() -> Self {
-        Self::Short(Vec::default())
-    }
-}
-
-impl Ports {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::Short(v) => v.is_empty(),
-            Self::Long(v) => v.is_empty(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum Environment {
-    List(Vec<String>),
-    #[cfg(feature = "indexmap")]
-    KvPair(IndexMap<String, Option<SingleValue>>),
-    #[cfg(not(feature = "indexmap"))]
-    KvPair(HashMap<String, Option<SingleValue>>),
-}
-
-impl Default for Environment {
-    fn default() -> Self {
-        Self::List(Vec::new())
-    }
-}
-
-impl Environment {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::List(v) => v.is_empty(),
-            Self::KvPair(m) => m.is_empty(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash, Default, Ord, PartialOrd)]
-#[serde(try_from = "String")]
-pub struct Extension(String);
-
-impl FromStr for Extension {
-    type Err = ExtensionParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let owned = s.to_owned();
-        Extension::try_from(owned)
-    }
-}
-
-impl TryFrom<String> for Extension {
-    type Error = ExtensionParseError;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        if s.starts_with("x-") {
-            Ok(Self(s))
-        } else {
-            Err(ExtensionParseError(s))
-        }
-    }
-}
-
-/// The result of a failed TryFrom<String> conversion for [`Extension`]
-///
-/// Contains the string that was being converted
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ExtensionParseError(pub String);
-
-impl fmt::Display for ExtensionParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "unknown attribute {:?}, extensions must start with 'x-' (see https://docs.docker.com/compose/compose-file/#extension)", self.0)
-    }
-}
-
-impl std::error::Error for ExtensionParseError {}
-
-#[cfg(feature = "indexmap")]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Services(pub IndexMap<String, Option<Service>>);
-#[cfg(not(feature = "indexmap"))]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Services(pub HashMap<String, Option<Service>>);
-
-impl Services {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(untagged)]
