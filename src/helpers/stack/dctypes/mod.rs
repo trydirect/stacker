@@ -14,6 +14,19 @@ mod environment;
 mod extension;
 mod extension_parse_error;
 mod services;
+mod labels;
+mod tmpfs;
+mod ulimit;
+mod ulimits;
+mod networks;
+mod build_step;
+mod advanced_build_step;
+mod build_args;
+mod advanced_networks;
+mod advanced_network_settings;
+mod top_level_volumes;
+mod compose_volume;
+mod external_volume;
 
 pub use port::*;
 pub use published_port::*;
@@ -31,6 +44,19 @@ pub use environment::*;
 pub use extension::*;
 pub use extension_parse_error::*;
 pub use services::*;
+pub use labels::*;
+pub use tmpfs::*;
+pub use ulimit::*;
+pub use ulimits::*;
+pub use networks::*;
+pub use build_step::*;
+pub use advanced_build_step::*;
+pub use build_args::*;
+pub use advanced_networks::*;
+pub use advanced_network_settings::*;
+pub use top_level_volumes::*;
+pub use compose_volume::*;
+pub use external_volume::*;
 
 use crate::helpers::stack::dctypes;
 
@@ -43,175 +69,6 @@ use serde_yaml::Value;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum Labels {
-    List(Vec<String>),
-    #[cfg(feature = "indexmap")]
-    Map(IndexMap<String, String>),
-    #[cfg(not(feature = "indexmap"))]
-    Map(HashMap<String, String>),
-}
-
-impl Default for Labels {
-    fn default() -> Self {
-        Self::List(Vec::new())
-    }
-}
-
-impl Labels {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::List(v) => v.is_empty(),
-            Self::Map(m) => m.is_empty(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum Tmpfs {
-    Simple(String),
-    List(Vec<String>),
-}
-
-#[cfg(feature = "indexmap")]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Ulimits(pub IndexMap<String, Ulimit>);
-#[cfg(not(feature = "indexmap"))]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Ulimits(pub HashMap<String, Ulimit>);
-
-impl Ulimits {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum Ulimit {
-    Single(i64),
-    SoftHard { soft: i64, hard: i64 },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum Networks {
-    Simple(Vec<String>),
-    Advanced(AdvancedNetworks),
-}
-
-impl Default for Networks {
-    fn default() -> Self {
-        Self::Simple(Vec::new())
-    }
-}
-
-impl Networks {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::Simple(n) => n.is_empty(),
-            Self::Advanced(n) => n.0.is_empty(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum BuildStep {
-    Simple(String),
-    Advanced(AdvancedBuildStep),
-}
-
-#[derive(Builder, Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
-#[builder(setter(into), default)]
-pub struct AdvancedBuildStep {
-    pub context: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dockerfile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<BuildArgs>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shm_size: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cache_from: Vec<String>,
-    #[serde(default, skip_serializing_if = "Labels::is_empty")]
-    pub labels: Labels,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum BuildArgs {
-    Simple(String),
-    List(Vec<String>),
-    #[cfg(feature = "indexmap")]
-    KvPair(IndexMap<String, String>),
-    #[cfg(not(feature = "indexmap"))]
-    KvPair(HashMap<String, String>),
-}
-
-#[cfg(feature = "indexmap")]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct AdvancedNetworks(pub IndexMap<String, MapOrEmpty<AdvancedNetworkSettings>>);
-#[cfg(not(feature = "indexmap"))]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct AdvancedNetworks(pub HashMap<String, MapOrEmpty<AdvancedNetworkSettings>>);
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq, Hash)]
-#[serde(deny_unknown_fields)]
-pub struct AdvancedNetworkSettings {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ipv4_address: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ipv6_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub aliases: Vec<String>,
-}
-
-#[cfg(feature = "indexmap")]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
-pub struct TopLevelVolumes(pub IndexMap<String, MapOrEmpty<ComposeVolume>>);
-#[cfg(not(feature = "indexmap"))]
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
-pub struct TopLevelVolumes(pub HashMap<String, MapOrEmpty<ComposeVolume>>);
-
-impl TopLevelVolumes {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ComposeVolume {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub driver: Option<String>,
-    #[cfg(feature = "indexmap")]
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    pub driver_opts: IndexMap<String, Option<SingleValue>>,
-    #[cfg(not(feature = "indexmap"))]
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub driver_opts: HashMap<String, Option<SingleValue>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub external: Option<ExternalVolume>,
-    #[serde(default, skip_serializing_if = "Labels::is_empty")]
-    pub labels: Labels,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum ExternalVolume {
-    Bool(bool),
-    Name { name: String },
-}
 
 #[cfg(feature = "indexmap")]
 #[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
