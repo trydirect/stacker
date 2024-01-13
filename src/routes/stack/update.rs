@@ -72,6 +72,7 @@ pub async fn update(
         let errors = form.validate().unwrap_err();
         let err_msg = format!("Invalid data received {:?}", &errors.to_string());
         tracing::debug!(err_msg);
+
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
     }
 
