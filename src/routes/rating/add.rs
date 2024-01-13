@@ -22,13 +22,15 @@ pub async fn add_handler(
 ) -> Result<impl Responder> {
     let _product = db::product::fetch_by_obj(pg_pool.get_ref(), form.obj_id)
         .await
-        .map_err(|msg| JsonResponse::<models::Rating>::build().internal_server_error(msg))?
+        .map_err(|_msg| JsonResponse::<models::Rating>::build().internal_server_error(_msg))?
         .ok_or_else(|| JsonResponse::<models::Rating>::build().not_found("not found"))?
         ; 
 
-    let rating = db::rating::fetch_by_obj_and_user_and_category(pg_pool.get_ref(), form.obj_id, user.id.clone(), form.category)
+    let rating = db::rating::fetch_by_obj_and_user_and_category(
+        pg_pool.get_ref(), form.obj_id, user.id.clone(), form.category)
         .await
         .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error(err))?;
+
     if rating.is_some() {
         return Err(JsonResponse::<models::Rating>::build().bad_request("already rated"));
     }
@@ -39,5 +41,6 @@ pub async fn add_handler(
     db::rating::insert(pg_pool.get_ref(), rating)
         .await
         .map(|rating| JsonResponse::build().set_item(rating).ok("success"))
-        .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error("Failed to insert"))
+        .map_err(|_err| JsonResponse::<models::Rating>::build()
+            .internal_server_error("Failed to insert"))
 }

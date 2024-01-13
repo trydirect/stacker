@@ -3,6 +3,7 @@ use serde_json::Value;
 use serde_valid::Validate;
 use std::collections::HashMap;
 use std::fmt;
+use crate::helpers::{login, docker_image_exists};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -33,37 +34,73 @@ pub struct Port {
     pub container_port: Option<String>,
 }
 
+async fn validate_dockerhub_image(
+    dockerhub_user: &Option<String>,
+    dockerhub_password: &Option<String>,
+    dockerhub_name: &Option<String>) -> Result<(), serde_valid::validation::Error> {
 
+    let result = login(
+        dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
+        dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
+    ).await;
+
+    let exists: bool = match result.unwrap().token {
+        Some(tok) => {
+            let exists = docker_image_exists(
+                dockerhub_user.clone().unwrap().as_str(),
+                dockerhub_name.clone().unwrap().as_str(), tok).await;
+            match exists {
+                Ok(_) => true,
+                Err(err) => {
+                    println!("{:?}", err);
+                    false
+                }
+            }
+        }
+        _ => false,
+    };
+    if !exists {
+        return Err(serde_valid::validation::Error::Custom(
+            "Could not access docker image repository, please check credentials.".to_owned(),
+        ));
+    }
+    Ok(())
+}
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[validate(custom(|s| validate_dockerhub_image(dockerhub_user,dockerhub_name, dockerhub_password)))]
 pub struct DockerImage {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
+    #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]
     pub dockerhub_user: Option<String>,
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
+    #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]
     pub dockerhub_name: Option<String>,
     #[validate(min_length = 3)]
     #[validate(max_length = 100)]
+    #[validate(pattern = r"^(?:(?=[^:\/]{1,253})(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*(?::[0-9]{1,5})?/)?((?![._-])(?:[a-z0-9._-]*)(?<![._-])(?:/(?![._-])[a-z0-9._-]*(?<![._-]))*)(?::(?![.-])[a-zA-Z0-9_.-]{1,128})?$
+")]
     pub dockerhub_image: Option<String>,
+    pub dockerhub_password: Option<String>,
 }
 
 impl fmt::Display for DockerImage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let tag = "latest";
+        let dh_image = self.dockerhub_image.as_ref().map(String::as_str).unwrap_or("");
+        let dh_nmspc = self.dockerhub_user.as_ref().map(String::as_str).unwrap_or("");
+        let dh_name = self.dockerhub_name.as_ref().map(String::as_str).unwrap_or("");
 
-        let dim = self.dockerhub_image.clone().unwrap_or("".to_string());
         write!(
             f,
-            "{}/{}:{}",
-            self.dockerhub_user
-                .clone()
-                .unwrap_or("trydirect".to_string())
-                .clone(),
-            self.dockerhub_name.clone().unwrap_or(dim),
-            tag
+            "{}{}{}",
+            if !dh_nmspc.is_empty() { format!("{}/", dh_nmspc) } else { String::new() },
+            if !dh_name.is_empty() { dh_name } else { dh_image },
+            if !dh_name.contains(":") && dh_image.is_empty() { ":latest".to_string() } else { String::new() },
         )
     }
 }
+
 
 impl AsRef<DockerImage> for App {
     fn as_ref(&self) -> &DockerImage {
