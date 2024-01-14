@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::helpers::stack::dctypes;
+use crate::helpers::stack::dctypes::*;
 #[cfg(feature = "indexmap")]
 use indexmap::IndexMap;
 use serde_yaml::Value;
@@ -8,18 +8,18 @@ use serde_yaml::Value;
 pub struct Compose {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "dctypes::Services::is_empty")]
-    pub services: dctypes::Services,
-    #[serde(default, skip_serializing_if = "dctypes::TopLevelVolumes::is_empty")]
-    pub volumes: dctypes::TopLevelVolumes,
-    #[serde(default, skip_serializing_if = "dctypes::ComposeNetworks::is_empty")]
-    pub networks: dctypes::ComposeNetworks,
+    #[serde(default, skip_serializing_if = "Services::is_empty")]
+    pub services: Services,
+    #[serde(default, skip_serializing_if = "TopLevelVolumes::is_empty")]
+    pub volumes: TopLevelVolumes,
+    #[serde(default, skip_serializing_if = "ComposeNetworks::is_empty")]
+    pub networks: ComposeNetworks,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service: Option<dctypes::Service>,
+    pub service: Option<Service>,
     #[cfg(feature = "indexmap")]
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
-    pub extensions: IndexMap<dctypes::Extension, Value>,
+    pub extensions: IndexMap<Extension, Value>,
     #[cfg(not(feature = "indexmap"))]
     #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<dctypes::Extension, Value>,
+    pub extensions: HashMap<Extension, Value>,
 }
