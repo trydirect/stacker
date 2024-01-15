@@ -1,6 +1,4 @@
 use crate::models::rating::Rating;
-use sqlx::PgPool;
-use reqwest::Url;
 use tracing::Instrument;
 use tracing_subscriber::fmt::format;
 
