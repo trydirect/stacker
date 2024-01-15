@@ -3,3 +3,4 @@ target
 files
 configuration.yaml
 configuration.yaml.backup
+configuration.yaml.orig
