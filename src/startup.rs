@@ -1,5 +1,4 @@
 use crate::configuration::Settings;
-use crate::helpers;
 use actix_cors::Cors;
 use actix_web::dev::Server;
 use actix_web::{
@@ -13,19 +12,17 @@ use tracing_actix_web::TracingLogger;
 
 pub async fn run(
     listener: TcpListener,
-    pg_pool: Pool<Postgres>,
+    db_pool: Pool<Postgres>,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
     let settings = web::Data::new(settings);
-    let pg_pool = web::Data::new(pg_pool);
-
-    let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
-    let mq_manager = web::Data::new(mq_manager);
+    let db_pool = web::Data::new(db_pool);
 
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .service(web::scope("/health_check").service(crate::routes::health_check))
+            .service(web::scope("/health_check")
+                .service(crate::routes::health_check))
             .service(
                 web::scope("/client")
                     .wrap(HttpAuthentication::bearer(
@@ -67,8 +64,7 @@ pub async fn run(
                     .service(crate::routes::stack::add::add)
                     .service(crate::routes::stack::update::update),
             )
-            .app_data(pg_pool.clone())
-            .app_data(mq_manager.clone())
+            .app_data(db_pool.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?
