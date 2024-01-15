@@ -46,6 +46,12 @@ pub struct Compose {
     pub extensions: HashMap<Extension, Value>,
 }
 
+impl Compose {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
 #[derive(Builder, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
 #[builder(setter(into), default)]
 pub struct Service {

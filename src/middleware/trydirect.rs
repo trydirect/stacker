@@ -32,7 +32,7 @@ async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String>
         .header(ACCEPT, "application/json")
         .send()
         .await
-        .map_err(|_err| "no resp from auth server".to_string())?;
+        .map_err(|err| "no resp from auth server".to_string())?;
 
     if !resp.status().is_success() {
         return Err("401 Unauthorized".to_string());
@@ -41,6 +41,6 @@ async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String>
     resp
         .json::<UserForm>()
         .await
-        .map_err(|_err| "can't parse the response body".to_string())?
+        .map_err(|err| "can't parse the response body".to_string())?
         .try_into()
 }
