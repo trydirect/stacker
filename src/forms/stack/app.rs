@@ -1,5 +1,5 @@
 use crate::forms;
-use crate::helpers::stack::dctypes;
+use docker_compose_types as dctypes;
 use indexmap::IndexMap;
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
