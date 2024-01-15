@@ -6,7 +6,6 @@ use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
 use std::sync::Arc;
-use futures::TryFutureExt;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -39,5 +38,5 @@ pub async fn add_handler(
     db::rating::insert(pg_pool.get_ref(), rating)
         .await
         .map(|rating| JsonResponse::build().set_item(rating).ok("success"))
-        .map_err(|err| JsonResponse::<models::Rating>::build().internal_server_error("Failed to insert"))
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error("Failed to insert"))
 }

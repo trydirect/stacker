@@ -12,12 +12,12 @@ use tracing::Instrument;
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: web::Data<PgPool>,
+    pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     /// Get stack apps of logged user only
     let (id,) = path.into_inner();
 
-    let stack = db::stack::fetch(pool.get_ref(), id)
+    let stack = db::stack::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
@@ -36,14 +36,14 @@ pub async fn item(
 pub async fn list(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(String,)>,
-    pool: web::Data<PgPool>,
+    pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     /// This is admin endpoint, used by a m2m app, client app is confidential
     /// it should return stacks by user id
     /// in order to pass validation at external deployment service
     let user_id = path.into_inner().0;
 
-    db::stack::fetch_by_user(pool.get_ref(), &user_id)
+    db::stack::fetch_by_user(pg_pool.get_ref(), &user_id)
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .map(|stacks| JsonResponse::build().set_list(stacks).ok("OK"))

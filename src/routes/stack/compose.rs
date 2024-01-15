@@ -11,10 +11,10 @@ use std::sync::Arc;
 pub async fn add(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: Data<PgPool>,
+    pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     let id = path.0;
-    let stack = db::stack::fetch(pool.get_ref(), id)
+    let stack = db::stack::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
@@ -26,10 +26,11 @@ pub async fn add(
         })?;
 
     let id = stack.id.clone();
-    let fc = DcBuilder::new(stack).build().ok_or_else(|| {
-        tracing::error!("Error. Compose builder returned an empty string");
-        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
-    })?;
+    let fc = DcBuilder::new(stack)
+        .build()
+        .map_err(|err| {
+            JsonResponse::<models::Stack>::build().internal_server_error(err)
+        })?;
 
     Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
@@ -39,11 +40,11 @@ pub async fn add(
 pub async fn admin(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    pool: Data<PgPool>,
+    pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     ///  Admin function for generating compose file for specified user
     let id = path.0;
-    let stack = db::stack::fetch(pool.get_ref(), id)
+    let stack = db::stack::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
@@ -52,10 +53,11 @@ pub async fn admin(
         })?;
 
     let id = stack.id.clone();
-    let fc = DcBuilder::new(stack).build().ok_or_else(|| {
-        tracing::error!("Error. Compose builder returned an empty string");
-        JsonResponse::<models::Stack>::build().internal_server_error("troubles at building")
-    })?;
+    let fc = DcBuilder::new(stack)
+        .build()
+        .map_err(|err| {
+            JsonResponse::<models::Stack>::build().internal_server_error(err)
+        })?;
 
     Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
