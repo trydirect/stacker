@@ -1,5 +1,5 @@
 use crate::forms;
-use crate::helpers::stack::dctypes::{
+use docker_compose_types::{
     AdvancedVolumes, Compose, ComposeNetwork, ComposeNetworkSettingDetails, ComposeNetworks,
     ComposeVolume, Entrypoint, Environment, MapOrEmpty, NetworkSettings, Networks, Port, Ports,
     PublishedPort, Service, Services, SingleValue, TopLevelVolumes, Volumes,
@@ -13,18 +13,6 @@ struct Config {}
 impl Default for Config {
     fn default() -> Self {
         Config {}
-    }
-}
-
-impl Default for Port {
-    fn default() -> Self {
-        Port {
-            target: 80,
-            host_ip: None,
-            published: None,
-            protocol: None,
-            mode: None,
-        }
     }
 }
 
@@ -120,12 +108,12 @@ impl TryFrom<&forms::stack::App> for Service {
             None => vec![]
         };
 
-        let volumes: Vec<AdvancedVolumes> = app //todo
+        let volumes: Vec<Volumes> = app 
             .volumes
             .clone()
             .unwrap_or_default()
             .into_iter()
-            .map(|x| x.try_into().unwrap())
+            .map(|x| Volumes::Advanced(x.try_into().unwrap())) //todo
             .collect();
 
         let mut envs = IndexMap::new();
@@ -141,7 +129,7 @@ impl TryFrom<&forms::stack::App> for Service {
         service.networks = networks;
         service.ports = Ports::Long(ports);
         service.restart = Some("always".to_owned());
-        service.volumes = Volumes::Advanced(volumes);
+        service.volumes = volumes;
         service.environment = Environment::KvPair(envs);
 
         Ok(service)
