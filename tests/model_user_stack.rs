@@ -67,7 +67,8 @@ fn test_docker_image_only_name_other_empty() {
     let docker_image = DockerImage {
         dockerhub_user: Some("".to_string()),
         dockerhub_name: Some("mysql".to_string()),
-        dockerhub_image: Some("".to_string(),)
+        dockerhub_image: Some("".to_string(),),
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("mysql:latest"), output);
@@ -78,7 +79,8 @@ fn test_docker_image_only_name_other_none() {
     let docker_image = DockerImage {
         dockerhub_user: None,
         dockerhub_name: Some("mysql".to_string()),
-        dockerhub_image: None
+        dockerhub_image: None,
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("mysql:latest"), output);
@@ -88,7 +90,8 @@ fn test_docker_image_namespace_and_repo() {
     let docker_image = DockerImage {
         dockerhub_user: Some("trydirect".to_string()),
         dockerhub_name: Some("mysql".to_string()),
-        dockerhub_image: Some("".to_string(),)
+        dockerhub_image: Some("".to_string(),),
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:latest"), output);
@@ -99,7 +102,8 @@ fn test_docker_image_namespace_and_repo_tag() {
     let docker_image = DockerImage {
         dockerhub_user: Some("trydirect".to_string()),
         dockerhub_name: Some("mysql:8.1".to_string()),
-        dockerhub_image: Some("".to_string(),)
+        dockerhub_image: Some("".to_string(),),
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:8.1"), output);
@@ -109,7 +113,8 @@ fn test_docker_image_only_image() {
     let docker_image = DockerImage {
         dockerhub_user: None,
         dockerhub_name: None,
-        dockerhub_image: Some("trydirect/mysql:stable".to_string(),)
+        dockerhub_image: Some("trydirect/mysql:stable".to_string(),),
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:stable"), output);
@@ -120,7 +125,8 @@ fn test_docker_image_only_image_other_empty() {
     let docker_image = DockerImage {
         dockerhub_user: Some("".to_string()),
         dockerhub_name: Some("".to_string()),
-        dockerhub_image: Some("trydirect/mysql:stable".to_string())
+        dockerhub_image: Some("trydirect/mysql:stable".to_string()),
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("trydirect/mysql:stable"), output);
@@ -130,7 +136,8 @@ fn test_docker_repo_name_with_tag_other_none() {
     let docker_image = DockerImage {
         dockerhub_user: None,
         dockerhub_name: Some("mysql:stable".to_string()),
-        dockerhub_image: None
+        dockerhub_image: None,
+        dockerhub_password: None,
     };
     let output = docker_image.to_string();
     assert_eq!(String::from("mysql:stable"), output);

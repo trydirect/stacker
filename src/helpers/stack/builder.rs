@@ -138,14 +138,12 @@ impl TryIntoService for App {
             .collect();
 
         let mut envs = IndexMap::new();
-        for item in self.environment.environment.clone().unwrap_or_default() {
-            let items = item
-                .into_iter()
-                .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
-                .collect::<IndexMap<_,_>>();
+        let items = self.environment.environment.clone().unwrap_or_default()
+            .into_iter()
+            .map(|env_var| (env_var.key, Some(SingleValue::String(env_var.value.clone()))))
+            .collect::<IndexMap<_,_>>();
 
-            envs.extend(items);
-        }
+        envs.extend(items);
 
         service.networks = networks;
         service.ports = Ports::Long(ports);
