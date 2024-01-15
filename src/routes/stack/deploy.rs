@@ -8,6 +8,7 @@ use actix_web::{post, web, web::Data, Responder, Result};
 use lapin::publisher_confirm::Confirmation;
 use sqlx::PgPool;
 use std::sync::Arc;
+use crate::helpers::compressor::compress;
 
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]

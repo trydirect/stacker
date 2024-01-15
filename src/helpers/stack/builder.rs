@@ -97,23 +97,6 @@ impl TryFrom<&forms::stack::ServiceNetworks> for Networks {
     }
 }
 
-//todo
-fn convert_shared_ports(ports: Option<Vec<forms::stack::Port>>) -> Result<Vec<Port>, String> {
-    tracing::debug!("convert shared ports {:?}", &ports);
-    let mut _ports: Vec<Port> = vec![];
-    match ports {
-        Some(ports) => {
-            tracing::debug!("Ports >>>> {:?}", ports);
-        }
-        None => {
-            tracing::debug!("No ports defined by user");
-            return Ok(_ports);
-        }
-    }
-
-    tracing::debug!("ports {:?}", _ports);
-    Ok(_ports)
-}
 
 impl TryFrom<&forms::stack::App> for Service {
     type Error = String;
@@ -192,6 +175,9 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for forms::stack::Compo
                 )
             })
             .collect::<IndexMap<String, _>>();
+
+        tracing::debug!("networks collected {:?}", &networks);
+
         networks
     }
 }
