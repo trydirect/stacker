@@ -4,6 +4,7 @@ use serde_valid::Validate;
 use std::collections::HashMap;
 use std::fmt;
 use crate::helpers::{login, docker_image_exists};
+use tokio::runtime::Runtime;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -28,46 +29,51 @@ pub struct Requirements {
     pub ram_size: Option<String>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Port {
+    #[validate(pattern = r"^\d+$")]
     pub host_port: Option<String>,
+    #[validate(pattern = r"^\d+$")]
     pub container_port: Option<String>,
+    #[validate(enumerate("tcp", "udp"))]
+    pub protocol: Option<String>
 }
 
-async fn validate_dockerhub_image(
-    dockerhub_user: &Option<String>,
-    dockerhub_password: &Option<String>,
-    dockerhub_name: &Option<String>) -> Result<(), serde_valid::validation::Error> {
+fn validate_dockerhub_image(docker_image: DockerImage) -> Result<(), serde_valid::validation::Error> {
 
-    let result = login(
-        dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
-        dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
-    ).await;
+    // Create the runtime
+    let rt = Runtime::new().unwrap();
 
-    let exists: bool = match result.unwrap().token {
-        Some(tok) => {
-            let exists = docker_image_exists(
-                dockerhub_user.clone().unwrap().as_str(),
-                dockerhub_name.clone().unwrap().as_str(), tok).await;
-            match exists {
-                Ok(_) => true,
-                Err(err) => {
-                    println!("{:?}", err);
-                    false
-                }
+    // Spawn a blocking function onto the runtime
+    rt.block_on(async {
+        let result = login(
+            docker_image.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
+            docker_image.dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
+        )
+            .await
+            .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?;
+
+        match result.token {
+            None => {
+                return Err(serde_valid::validation::Error::Custom(
+                    "Could not access docker image repository, please check credentials.".to_owned(),
+                ));
+            },
+            Some(tok) => {
+
+                tracing::debug!("We were able to login hub.docker.com!");
+                docker_image_exists(
+                    docker_image.dockerhub_user.clone().unwrap().as_str(),
+                    docker_image.dockerhub_name.clone().unwrap().as_str(), tok)
+                    .await
+                    .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
+                    .map(|_| ())
             }
         }
-        _ => false,
-    };
-    if !exists {
-        return Err(serde_valid::validation::Error::Custom(
-            "Could not access docker image repository, please check credentials.".to_owned(),
-        ));
-    }
-    Ok(())
+    })
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[validate(custom(|s| validate_dockerhub_image(dockerhub_user,dockerhub_name, dockerhub_password)))]
+#[validate(custom(|docker_image| validate_dockerhub_image(docker_image)))]
 pub struct DockerImage {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
@@ -238,7 +244,7 @@ pub struct App {
     #[validate(max_length = 255)]
     pub etag: Option<String>,
     #[serde(rename = "_id")]
-    pub id: u32,
+    pub id: String,
     #[serde(rename = "_created")]
     pub created: Option<String>,
     #[serde(rename = "_updated")]
@@ -296,8 +302,14 @@ pub struct App {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvVar {
+    pub(crate) key: String,
+    pub(crate) value: String
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
-    pub(crate) environment: Option<Vec<HashMap<String, String>>>,
+    pub(crate) environment: Option<Vec<EnvVar>>,
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volume {
