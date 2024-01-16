@@ -96,7 +96,6 @@ impl TryFrom<&forms::stack::App> for Service {
         };
 
         let networks = Networks::try_from(&app.network).unwrap_or_default();
-
         let ports: Vec<Port> = match &app.ports {
             Some(ports) => {
                 let mut collector = vec![];
@@ -108,16 +107,20 @@ impl TryFrom<&forms::stack::App> for Service {
             None => vec![]
         };
 
-        let volumes: Vec<Volumes> = app 
-            .volumes
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|x| Volumes::Advanced(x.try_into().unwrap())) //todo
-            .collect();
+        let volumes: Vec<Volumes> = match &app.volumes {
+            Some(volumes) => {
+                let mut collector = vec![];
+                for volume in volumes {
+                    collector.push(Volumes::Advanced(volume.clone().try_into()?));
+                }
+
+                collector
+            },
+            None => vec![]
+        };
 
         let mut envs = IndexMap::new();
-        for item in app.environment.environment.clone().unwrap_or_default() { //todo
+        for item in app.environment.environment.clone().unwrap_or_default() {
             let items = item
                 .into_iter()
                 .map(|(k, v)| (k, Some(SingleValue::String(v.clone()))))
