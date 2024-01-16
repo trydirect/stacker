@@ -23,53 +23,6 @@ pub struct DcBuilder {
     pub(crate) stack: models::Stack,
 }
 
-impl TryInto<AdvancedVolumes> for forms::stack::Volume {
-    type Error = String;
-    fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
-        let source = self.host_path.clone();
-        let target = self.container_path.clone();
-        tracing::debug!(
-            "Volume conversion result: source: {:?} target: {:?}",
-            source,
-            target
-        );
-        Ok(AdvancedVolumes {
-            source: source,
-            target: target.unwrap_or("".to_string()),
-            _type: "".to_string(),
-            read_only: false,
-            bind: None,
-            volume: None,
-            tmpfs: None,
-        })
-    }
-}
-
-impl TryInto<Port> for &forms::stack::Port {
-    type Error = String;
-    fn try_into(self) -> Result<Port, Self::Error> {
-        let cp = self
-            .container_port
-            .as_ref()
-            .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|_| "Could not parse port".to_string())?;
-
-        let hp = self
-            .host_port
-            .as_ref()
-            .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|_| "Could not parse port".to_string())?;
-
-        Ok(Port {
-            target: cp,
-            host_ip: None,
-            published: Some(PublishedPort::Single(hp)),
-            protocol: None,
-            mode: None,
-        })
-    }
-}
-
 impl TryFrom<&forms::stack::ServiceNetworks> for Networks {
     type Error = ();
 
