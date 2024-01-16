@@ -8,12 +8,18 @@ use crate::forms;
 mod app;
 mod custom;
 mod form;
+mod port;
 mod payload;
+mod volumes;
+mod volume;
 
 pub use app::*;
 pub use custom::*;
 pub use form::*;
+pub use port::*;
 pub use payload::*;
+pub use volumes::*;
+pub use volume::*;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -38,11 +44,6 @@ pub struct Requirements {
     pub ram_size: Option<String>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Port {
-    pub host_port: Option<String>,
-    pub container_port: Option<String>,
-}
 
 // #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 // pub struct Ports {
@@ -104,29 +105,6 @@ pub struct Network {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
     pub(crate) environment: Option<Vec<HashMap<String, String>>>,
-}
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Volume {
-    pub(crate) host_path: Option<String>,
-    pub(crate) container_path: Option<String>,
-}
-
-impl Volume {
-    pub fn is_named_docker(&self) -> bool {
-        // Docker named volumes typically don't contain special characters or slashes
-        // They are alphanumeric and may include underscores or hyphens
-        self
-            .host_path
-            .as_ref()
-            .unwrap()
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    }
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Volumes {
-    volumes: Vec<Volume>,
 }
 
 // pub(crate) type Networks = Option<Vec<String>>;
