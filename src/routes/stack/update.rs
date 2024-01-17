@@ -60,14 +60,6 @@ pub async fn update(
     );
     let _request_span_guard = request_span.enter(); // ->exit
 
-    tracing::info!("request_id {} Updating '{}' '{}'",
-        request_id,
-        form.custom.project_name,
-        form.region
-    );
-
-    let query_span = tracing::info_span!("Update stack details in db.");
-
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
         let err_msg = format!("Invalid data received {:?}", &errors.to_string());
@@ -76,6 +68,12 @@ pub async fn update(
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
     }
 
+    tracing::info!("request_id {} Updating '{}' '{}'",
+        request_id,
+        form.custom.project_name,
+        form.region
+    );
+    let query_span = tracing::info_span!("Update stack details in db.");
     let body: Value = match serde_json::to_value::<StackForm>(form.into_inner()) {
         Ok(body) => body,
         Err(err) => {

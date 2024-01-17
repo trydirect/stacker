@@ -11,8 +11,8 @@ pub struct DockerHubToken {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerHubCreds<'a>  {
-    username: &'a str,
-    password: &'a str
+    pub(crate) username: &'a str,
+    pub(crate) password: &'a str
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -102,3 +102,43 @@ pub async fn docker_image_exists(user: &str, repo: &str, token: String) -> Resul
         Err(String::from("There were no active tags found in this repository"))
     }
 }
+
+// pub fn docker_image_exists(user: &str, repo: &str, token: DockerHubToken) -> Result<bool, serde_valid::validation::Error> {
+//     // get repo images
+//     let tags_url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
+//                            user, repo);
+//     //
+//     // let tags = reqwest::Client::new()
+//     //     .get(tags_url)
+//     //     .header("Accept", "application/json")
+//     //     .bearer_auth(token)
+//     //     .send()
+//     //     .await
+//     //     .map_err(|err| format!("{}", err))?
+//     //     .json::<TagResult>()
+//     //     // .json::<serde_json::Value>()
+//     //     .await
+//     //     .map_err(|err| format!("{}", err))?;
+//
+//     reqwest::blocking::Client::new()
+//         .get(tags_url)
+//         .header("Accept", "application/json")
+//         .bearer_auth(token.token.unwrap())
+//         .send()
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
+//         .json::<TagResult>()
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
+//         .and_then(|tags|{
+//             println!("tags count: {:?}", tags.count);
+//             if tags.count > 0 {
+//                 // let's find at least one active tag
+//                 let active = tags.results
+//                     .into_iter()
+//                     .any(|tag| tag.tag_status.contains("active") );
+//                 Ok(active)
+//             } else {
+//                 Err(serde_valid::validation::Error::Custom("There were no active tags found in this repository".to_string()))
+//             }
+//         })
+//
+// }
