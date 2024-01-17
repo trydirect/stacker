@@ -58,13 +58,13 @@ impl TryInto<Port> for stack::Port {
     type Error = String;
     fn try_into(self) -> Result<Port, Self::Error> {
         let cp  = self.container_port.clone()
-            .unwrap_or("".to_string())
-            .parse::<u16>().map_err(|err| "Could not parse port".to_string() )?;
+            .parse::<u16>().map_err(|err| "Could not parse container port".to_string() )?;
         let hp = self.host_port.clone()
             .unwrap_or("".to_string())
-            .parse::<u16>().map_err(|err| "Could not parse port".to_string() )?;
+            .parse::<u16>().map_err(|err| "Could not parse host port".to_string() )?;
 
         tracing::debug!("Port conversion result: cp: {:?} hp: {:?}", cp, hp);
+
         Ok(Port {
             target: cp,
             host_ip: None,

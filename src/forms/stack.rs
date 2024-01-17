@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
-use std::collections::HashMap;
 use std::fmt;
 use crate::helpers::{login, docker_image_exists};
 use tokio::runtime::Runtime;
@@ -34,21 +33,23 @@ pub struct Port {
     #[validate(pattern = r"^\d+$")]
     pub host_port: Option<String>,
     #[validate(pattern = r"^\d+$")]
-    pub container_port: Option<String>,
+    pub container_port: String,
     #[validate(enumerate("tcp", "udp"))]
     pub protocol: Option<String>
 }
 
-fn validate_dockerhub_image(docker_image: DockerImage) -> Result<(), serde_valid::validation::Error> {
+fn validate_dockerhub_image(dockerhub: &DockerImage) -> Result<(), serde_valid::validation::Error> {
 
+    println!("validate dockerhub image {:?}", dockerhub);
+    tracing::debug!("Validate image at hub.docker.com...");
     // Create the runtime
     let rt = Runtime::new().unwrap();
 
     // Spawn a blocking function onto the runtime
     rt.block_on(async {
         let result = login(
-            docker_image.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
-            docker_image.dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
+            dockerhub.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
+            dockerhub.dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
         )
             .await
             .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?;
@@ -63,8 +64,8 @@ fn validate_dockerhub_image(docker_image: DockerImage) -> Result<(), serde_valid
 
                 tracing::debug!("We were able to login hub.docker.com!");
                 docker_image_exists(
-                    docker_image.dockerhub_user.clone().unwrap().as_str(),
-                    docker_image.dockerhub_name.clone().unwrap().as_str(), tok)
+                    dockerhub.dockerhub_user.clone().unwrap().as_str(),
+                    dockerhub.dockerhub_name.clone().unwrap().as_str(), tok)
                     .await
                     .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
                     .map(|_| ())
@@ -73,7 +74,7 @@ fn validate_dockerhub_image(docker_image: DockerImage) -> Result<(), serde_valid
     })
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[validate(custom(|docker_image| validate_dockerhub_image(docker_image)))]
+#[validate(custom(|dockerhub|validate_dockerhub_image(dockerhub)))]
 pub struct DockerImage {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
