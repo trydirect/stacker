@@ -3,25 +3,6 @@ use serde_valid::Validate;
 // use tracing_subscriber::fmt::format;
 use serde_json::Value;
 
-// #[tokio::main]
-// async fn main() -> Result<(), String> {
-    // tokio::select! {
-    //     Ok(true) = docker_image_exist()  => {
-    //         println!("first branch. image exists.");
-    //     }
-    //     Ok(true) = docker_image_exist()  => {
-    //         println!("second branch. image exists.");
-    //     }
-    //     Ok(true) = docker_image_exist()  => {
-    //         println!("third branch. image exists.");
-    //     }
-    //     else => {
-    //         println!("else branch. image does not exists");
-    //     }
-    // };
-//     Ok(())
-// }
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerHubToken {
@@ -116,9 +97,8 @@ pub async fn docker_image_exists(user: &str, repo: &str, token: String) -> Resul
         let active = tags.results
             .into_iter()
             .any(|tag| tag.tag_status.contains("active") );
-        // println!("is active {:?}", active);
         Ok(active)
     } else {
-        Err(String::from("There was no active images found in this repository"))
+        Err(String::from("There were no active tags found in this repository"))
     }
 }
