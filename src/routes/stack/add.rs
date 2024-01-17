@@ -55,6 +55,7 @@ async fn stack_exists(pool: &PgPool, stack_name: &String) -> Result<(), Error> {
 }
 
 async fn body_into_form(body: Bytes) -> Result<StackForm, Error> {
+    tracing::debug!("Body into form ...");
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
     let body_str = str::from_utf8(&body_bytes)
         .map_err(|_err| JsonResponse::<StackForm>::build().internal_server_error(_err.to_string()))?;
@@ -66,6 +67,8 @@ async fn body_into_form(body: Bytes) -> Result<StackForm, Error> {
         })
         .and_then(|form: StackForm| {
 
+
+            tracing::debug!("Validating form ...");
             if !form.validate().is_ok() {
                 let errors = form.validate().unwrap_err();
                 let err_msg = format!("Invalid data received {:?}", &errors.to_string());

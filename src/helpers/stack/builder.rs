@@ -121,7 +121,7 @@ impl TryIntoService for App {
             .try_into()
             .unwrap_or_default();
 
-        let ports: Vec<Port> = self.ports
+        let ports: Vec<Port> = self.shared_ports
             .clone()
             .unwrap_or_default()
             .into_iter()

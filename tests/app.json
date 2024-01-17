@@ -69,7 +69,7 @@
   "links": [
   ],
   "domain": "latestports.com",
-  "sharedPorts": [
+  "shared_ports": [
     {
       "host_port": "5000",
       "container_port": "5000"

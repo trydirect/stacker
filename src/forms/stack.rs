@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 use std::fmt;
-use crate::helpers::{login, docker_image_exists};
+use crate::helpers::{login, docker_image_exists, DockerHubCreds, DockerHubToken};
 use tokio::runtime::Runtime;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -25,54 +25,156 @@ pub struct Requirements {
     #[validate(min_length = 1)]
     #[validate(max_length = 10)]
     #[validate(pattern = r"^\d+G$")]
-    pub ram_size: Option<String>,
+    pub ram_size: Option<String>
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Port {
-    #[validate(pattern = r"^\d+$")]
+    #[validate(pattern = r"^\d{2,6}+$")]
     pub host_port: Option<String>,
-    #[validate(pattern = r"^\d+$")]
+    #[validate(pattern = r"^\d{2,6}+$")]
     pub container_port: String,
     #[validate(enumerate("tcp", "udp"))]
     pub protocol: Option<String>
 }
 
-fn validate_dockerhub_image(dockerhub: &DockerImage) -> Result<(), serde_valid::validation::Error> {
+// fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
+//
+//
+//     let rt = Runtime::new().unwrap();
+//
+//     // Spawn a blocking function onto the runtime
+//     rt.block_on(async {
+//         let client = reqwest::Client::new();
+//         let dockerhub_api_url = format!(
+//             "https://hub.docker.com/v2/repositories/{}/{}",
+//             docker_image.dockerhub_user.as_ref().unwrap(),
+//             docker_image.dockerhub_name.as_ref().unwrap()
+//         );
+//
+//         let response = client.get(&dockerhub_api_url)
+//             .send()
+//             .await;
+//
+//         match response {
+//             Ok(resp) => {
+//                 if resp.status().is_success() {
+//                     Ok(())
+//                 } else {
+//                     Err(serde_valid::validation::Error::Custom("Not exists".to_string()))
+//                 }
+//             },
+//             Err(_) => Err(serde_valid::validation::Error::Custom("Not exists".to_string()))
+//         }
+//     })
+// }
 
-    println!("validate dockerhub image {:?}", dockerhub);
+
+fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
+    println!("validate dockerhub image {:?}", docker_image);
     tracing::debug!("Validate image at hub.docker.com...");
-    // Create the runtime
-    let rt = Runtime::new().unwrap();
 
-    // Spawn a blocking function onto the runtime
-    rt.block_on(async {
-        let result = login(
-            dockerhub.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
-            dockerhub.dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
-        )
-            .await
-            .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?;
-
-        match result.token {
-            None => {
-                return Err(serde_valid::validation::Error::Custom(
-                    "Could not access docker image repository, please check credentials.".to_owned(),
-                ));
-            },
-            Some(tok) => {
-
-                tracing::debug!("We were able to login hub.docker.com!");
-                docker_image_exists(
-                    dockerhub.dockerhub_user.clone().unwrap().as_str(),
-                    dockerhub.dockerhub_name.clone().unwrap().as_str(), tok)
-                    .await
-                    .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
-                    .map(|_| ())
-            }
-        }
-    })
+    let endpoint = "https://hub.docker.com/v2/users/login";
+    let creds = DockerHubCreds {
+        username: docker_image.dockerhub_user.as_ref().unwrap(),
+        password: docker_image.dockerhub_password.as_ref().unwrap()
+    };
+    let client = reqwest::blocking::Client::new();
+    client.post(endpoint)
+        .json(&creds)
+        .send()
+        .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
+        .json::<DockerHubToken>()
+        .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
+        .and_then(|token| {
+            tracing::debug!("got token {:?}", token);
+            Ok(())
+        })
 }
+
+//
+// fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
+//
+//     println!("validate dockerhub image {:?}", docker_image);
+//     tracing::debug!("Validate image at hub.docker.com...");
+//
+//     let endpoint = "https://hub.docker.com/v2/users/login";
+//     let creds = DockerHubCreds {
+//         username: docker_image.dockerhub_user.as_ref().unwrap(),
+//         password: docker_image.dockerhub_password.as_ref().unwrap()
+//     };
+//     reqwest::blocking::Client::new()
+//         .post(endpoint)
+//         .json(&creds)
+//         .send()
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
+//         .json::<DockerHubToken>()
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
+//         .and_then(|token|{
+//             tracing::debug!("got token {:?}", token);
+//             Ok(())
+//         })
+//
+//
+//
+//     // Create the runtime
+//     // let rt = Runtime::new().unwrap();
+//     //
+//     // // Spawn a blocking function onto the runtime
+//     // rt.block_on(async {
+//     //     let result = login(
+//     //         docker_image.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
+//     //         docker_image.dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
+//     //     )
+//     //         .await
+//     //         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?;
+//     //
+//     //     match result.token {
+//     //         None => {
+//     //             return Err(serde_valid::validation::Error::Custom(
+//     //                 "Could not access docker image repository, please check credentials.".to_owned(),
+//     //             ));
+//     //         },
+//     //         Some(tok) => {
+//     //             tracing::debug!("We were able to login hub.docker.com!");
+//     //             docker_image_exists(
+//     //                 docker_image.dockerhub_user.clone().unwrap().as_str(),
+//     //                 docker_image.dockerhub_name.clone().unwrap().as_str(), tok)
+//     //                 .await
+//     //                 .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
+//     //                 .map(|_| ())
+//     //         }
+//     //     }
+//     // })
+//
+// }
+
+// fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
+//
+//     tracing::debug!("validate dockerhub image {:?}", docker_image);
+//     let endpoint = "https://hub.docker.com/v2/users/login";
+//     let creds = DockerHubCreds {
+//         username: docker_image.dockerhub_user.as_ref().unwrap(),
+//         password: docker_image.dockerhub_password.as_ref().unwrap()
+//     };
+//     reqwest::blocking::Client::new()
+//         .post(endpoint)
+//         .json(&creds)
+//         .send()
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
+//         .json::<DockerHubToken>()
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
+//         .and_then(|token|{
+//             docker_image_exists(
+//                 docker_image.dockerhub_user.clone().unwrap().as_str(),
+//                 docker_image.dockerhub_name.clone().unwrap().as_str(),
+//                 token
+//             )
+//                 .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
+//                 .map(|_| ())
+//         })
+// }
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[validate(custom(|dockerhub|validate_dockerhub_image(dockerhub)))]
 pub struct DockerImage {
@@ -86,8 +188,6 @@ pub struct DockerImage {
     pub dockerhub_name: Option<String>,
     #[validate(min_length = 3)]
     #[validate(max_length = 100)]
-    #[validate(pattern = r"^(?:(?=[^:\/]{1,253})(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*(?::[0-9]{1,5})?/)?((?![._-])(?:[a-z0-9._-]*)(?<![._-])(?:/(?![._-])[a-z0-9._-]*(?<![._-]))*)(?::(?![.-])[a-zA-Z0-9_.-]{1,128})?$
-")]
     pub dockerhub_image: Option<String>,
     pub dockerhub_password: Option<String>,
 }
@@ -117,8 +217,7 @@ impl AsRef<DockerImage> for App {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct StackForm {
-    // #[validate(min_length=2)]
-    // #[validate(max_length=255)]
+    #[validate(max_length=255)]
     #[serde(rename = "commonDomain")]
     pub common_domain: Option<String>,
     pub domain_list: Option<DomainList>,
@@ -158,6 +257,7 @@ pub struct StackForm {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     pub selected_plan: String,
+    #[validate]
     pub custom: Custom,
 }
 
@@ -209,8 +309,11 @@ pub struct Price {
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Custom {
+    #[validate]
     pub web: Vec<Web>,
+    #[validate]
     pub feature: Option<Vec<Feature>>,
+    #[validate]
     pub service: Option<Vec<Service>>,
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
@@ -265,8 +368,10 @@ pub struct App {
     pub default: Option<bool>,
     pub versions: Option<Vec<Version>>,
     #[serde(flatten)]
+    #[validate]
     pub docker_image: DockerImage,
     #[serde(flatten)]
+    #[validate]
     pub requirements: Requirements,
     #[validate(minimum = 1)]
     pub popularity: Option<u32>,
@@ -296,10 +401,8 @@ pub struct App {
     pub environment: Environment,
     #[serde(flatten)]
     pub network: ServiceNetworks,
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub ports: Option<Vec<Port>>,
+    #[validate]
+    pub shared_ports: Option<Vec<Port>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -334,23 +437,26 @@ pub struct ComposeNetworks {
     pub networks: Option<Vec<String>>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Web {
     #[serde(flatten)]
+    #[validate]
     pub app: App,
     pub custom: Option<bool>,
     pub main: Option<bool>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Feature {
     #[serde(flatten)]
+    #[validate]
     pub app: App,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Service {
     #[serde(flatten)]
+    #[validate]
     pub(crate) app: App,
 }
 

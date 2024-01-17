@@ -2823,9 +2823,9 @@ dependencies = [
 
 [[package]]
 name = "serde_valid"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ede56947572525b2c9640542edfa35bbc2f575fa03f97d4d68e9eb4e4c5136b"
+checksum = "70c0e00fab6460447391a1981c21341746bc2d0178a7c46a3bbf667f450ac6e4"
 dependencies = [
  "indexmap 2.1.0",
  "itertools",
@@ -2843,9 +2843,9 @@ dependencies = [
 
 [[package]]
 name = "serde_valid_derive"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79ffdd7f3a5dea22dc86747bc02f5292a091977383c0124e7d77fc4fd120c486"
+checksum = "88c60a851514741a6088b2cd18eefb3f0d02ff3a1c87234de47153f2724d395d"
 dependencies = [
  "paste",
  "proc-macro-error",
@@ -2857,9 +2857,9 @@ dependencies = [
 
 [[package]]
 name = "serde_valid_literal"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be811ca7379637055f6474a1c0d0ed985c86966e580279ec980f77816b8f41b0"
+checksum = "aced4f1b31605a2b55eeacf2ec4dcbd96583263e9ded17eed1d41ab75915d12e"
 dependencies = [
  "paste",
  "regex",
