@@ -104,3 +104,56 @@ impl AsRef<forms::stack::DockerImage> for App {
         &self.docker_image
     }
 }
+
+impl TryFrom<&App> for dctypes::Service {
+    type Error = String;
+
+    fn try_from(app: &App) -> Result<Self, Self::Error> {
+        let mut service = dctypes::Service {
+            image: Some(app.docker_image.to_string()),
+            ..Default::default()
+        };
+
+        let networks = dctypes::Networks::try_from(&app.network).unwrap_or_default();
+        let ports: Vec<dctypes::Port> = match &app.ports {
+            Some(ports) => {
+                let mut collector = vec![];
+                for port in ports {
+                    collector.push(port.try_into()?);
+                }
+                collector
+            }
+            None => vec![]
+        };
+
+        let volumes: Vec<dctypes::Volumes> = match &app.volumes {
+            Some(volumes) => {
+                let mut collector = vec![];
+                for volume in volumes {
+                    collector.push(dctypes::Volumes::Advanced(volume.try_into()?));
+                }
+
+                collector
+            },
+            None => vec![]
+        };
+
+        let mut envs = IndexMap::new();
+        for item in app.environment.environment.clone().unwrap_or_default() {
+            let items = item
+                .into_iter()
+                .map(|(k, v)| (k, Some(dctypes::SingleValue::String(v.clone()))))
+                .collect::<IndexMap<_, _>>();
+
+            envs.extend(items);
+        }
+
+        service.networks = networks;
+        service.ports = dctypes::Ports::Long(ports);
+        service.restart = Some("always".to_owned());
+        service.volumes = volumes;
+        service.environment = dctypes::Environment::KvPair(envs);
+
+        Ok(service)
+    }
+}
