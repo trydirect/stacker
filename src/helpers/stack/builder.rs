@@ -64,7 +64,7 @@ impl TryFrom<&forms::stack::App> for Service {
             Some(volumes) => {
                 let mut collector = vec![];
                 for volume in volumes {
-                    collector.push(Volumes::Advanced(volume.clone().try_into()?));
+                    collector.push(Volumes::Advanced(volume.try_into()?));
                 }
 
                 collector

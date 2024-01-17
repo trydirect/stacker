@@ -20,7 +20,7 @@ impl Volume {
     }
 }
 
-impl TryInto<dctypes::AdvancedVolumes> for Volume { //todo reference
+impl TryInto<dctypes::AdvancedVolumes> for &Volume {
     type Error = String;
     fn try_into(self) -> Result<dctypes::AdvancedVolumes, Self::Error> {
         let source = self.host_path.clone();
