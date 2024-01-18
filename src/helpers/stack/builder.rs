@@ -187,7 +187,7 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
                          external: Some(ComposeNetwork::Bool(true)),
                          ipam: None,
                          labels: Default::default(),
-                         name: Some("default".to_string()),
+                         name: Some("default_network".to_string()),
                      }
                  ))
             }
