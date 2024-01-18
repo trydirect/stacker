@@ -4,6 +4,7 @@ use serde_valid::Validate;
 use std::fmt;
 use crate::helpers::{login, docker_image_exists, DockerHubCreds, DockerHubToken};
 use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -71,27 +72,69 @@ pub struct Port {
 
 
 fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
-    println!("validate dockerhub image {:?}", docker_image);
+    println!("validate dockerhub image {:?}", &docker_image);
     tracing::debug!("Validate image at hub.docker.com...");
+    // Ok(())
 
-    let endpoint = "https://hub.docker.com/v2/users/login";
-    let creds = DockerHubCreds {
-        username: docker_image.dockerhub_user.as_ref().unwrap(),
-        password: docker_image.dockerhub_password.as_ref().unwrap()
-    };
-    let client = reqwest::blocking::Client::new();
-    client.post(endpoint)
-        .json(&creds)
-        .send()
-        .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
-        .json::<DockerHubToken>()
-        .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
-        .and_then(|token| {
-            tracing::debug!("got token {:?}", token);
-            Ok(())
-        })
+    let name = docker_image.clone().dockerhub_user.unwrap();
+    let passw = docker_image.clone().dockerhub_password.unwrap();
+    let repo = docker_image.clone().dockerhub_name.unwrap();
+    actix_web::rt::spawn(
+        async move {
+            let result = login(name.as_ref(),passw.as_ref()).await;
+            match result {
+                Ok(token) => {
+                    if token.token.is_some() {
+                        tracing::debug!("we got token {:?}", token);
+                        // while let Ok(true) = docker_image_exists(
+                        //     name.as_ref(),
+                        //     repo.as_ref(),
+                        //     token.clone().token.unwrap()
+                        // ).await {}
+
+                        let _ = docker_image_exists(
+                            name.as_ref(),
+                            repo.as_ref(),
+                            token.clone().token.unwrap()
+                        ).await
+                        .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
+                        .map(|_| ());
+                    }
+                },
+                Err(err) => {
+                    tracing::debug!("no token received {}", err);
+                }
+            }
+        }
+    );
+
+    Ok(())
+    // let rt = Runtime::new().unwrap();
+    // // Spawn a blocking function onto the runtime
+    // let join_handle = rt.block_on( async {
+    //     let endpoint = "https://hub.docker.com/v2/users/login";
+    //     let creds = DockerHubCreds {
+    //         username: docker_image.dockerhub_user.as_ref().unwrap(),
+    //         password: docker_image.dockerhub_password.as_ref().unwrap()
+    //     };
+    //     Ok(())
+        // Err(serde_valid::validation::Error::Custom(format!("Error blablablal")))
+        // let client = reqwest::Client::new();
+        // client.post(endpoint)
+        //     .json(&creds)
+        //     .send()
+        //     .await
+        //     .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
+        //     .json::<DockerHubToken>()
+        //     .await
+        //     .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
+        //     .and_then(|token| {
+        //         tracing::debug!("got token {:?}", token);
+        //         Ok(())
+        //     })
+    // });
+    // join_handle
 }
-
 //
 // fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
 //
@@ -177,7 +220,7 @@ fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_vali
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[validate(custom(|dockerhub|validate_dockerhub_image(dockerhub)))]
-pub struct DockerImage {
+pub struct DockerImage  {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]

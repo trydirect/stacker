@@ -58,8 +58,9 @@ struct TagResult {
 }
 pub async fn login(username: &str, password: &str) -> Result<DockerHubToken, String> {
     let endpoint = "https://hub.docker.com/v2/users/login";
+    tracing::debug!("Login to {} with user {} and passw {}",endpoint, username, password);
     let creds = DockerHubCreds { username, password };
-    let token = reqwest::Client::new()
+    reqwest::Client::new()
         .post(endpoint)
         .json(&creds)
         .send()
@@ -67,11 +68,24 @@ pub async fn login(username: &str, password: &str) -> Result<DockerHubToken, Str
         .map_err(|err| format!("{}", err))?
         .json::<DockerHubToken>()
         .await
-        .map_err(|err| format!("{}", err))?;
-
-    Ok(token)
+        .map_err(|err| format!("{}", err))
+        .map(|token| { token })
 }
 
+// pub async fn login(username: &str, password: &str) -> Result<DockerHubToken, serde_valid::validation::Error> {
+//     let endpoint = "https://hub.docker.com/v2/users/login";
+//     let creds = DockerHubCreds { username, password };
+//     reqwest::Client::new()
+//         .post(endpoint)
+//         .json(&creds)
+//         .send()
+//         .await
+//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{}", err)))?
+//         .json::<DockerHubToken>()
+//         .await
+//         .map_err(|err|  serde_valid::validation::Error::Custom(format!("{}", err)))
+//         .map(|token| { token })
+// }
 
 pub async fn docker_image_exists(user: &str, repo: &str, token: String) -> Result<bool, String> {
     // get repo images

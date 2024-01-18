@@ -54,6 +54,7 @@ futures-lite = "1.13.0"
 clap = { version = "4.4.8", features = ["derive"] }
 brotli = "3.4.0"
 serde_path_to_error = "0.1.14"
+actix = "0.13.1"
 
 [dependencies.sqlx]
 version = "0.6.3"
