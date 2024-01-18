@@ -4,6 +4,7 @@ use stacker::startup::run;
 use stacker::telemetry::{get_subscriber, init_subscriber};
 use std::net::TcpListener;
 
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let subscriber = get_subscriber("stacker".into(), "info".into());
