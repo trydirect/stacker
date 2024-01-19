@@ -62,8 +62,7 @@ pub async fn update(
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
-        let err_msg = format!("Invalid data received {:?}", &errors.to_string());
-        tracing::debug!(err_msg);
+        tracing::debug!("Invalid data received {:?}", &errors.to_string());
 
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
     }
@@ -74,7 +73,15 @@ pub async fn update(
         form.region
     );
     let query_span = tracing::info_span!("Update stack details in db.");
-    let body: Value = match serde_json::to_value::<StackForm>(form.into_inner()) {
+
+    let form_inner = form.into_inner();
+
+    if !form_inner.is_readable_docker_image().await.is_ok() {
+
+        return Err(JsonResponse::<models::Stack>::build().bad_request("Can not access docker image"));
+    }
+
+    let body: Value = match serde_json::to_value::<StackForm>(form_inner) {
         Ok(body) => body,
         Err(err) => {
             tracing::error!("Request_id {} error unwrap body {:?}", request_id, err);
