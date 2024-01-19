@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 use std::fmt;
-use crate::helpers::{login, docker_image_exists, DockerHubCreds, DockerHubToken};
-use tokio::runtime::Runtime;
-use tokio::runtime::Handle;
+use serde_valid::validation::error::Format::Default;
+use crate::helpers::dockerhub::{DockerHub, DockerHubCreds, DockerHubToken};
+// use tokio::runtime::Runtime;
+// use tokio::runtime::Handle;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -39,187 +40,7 @@ pub struct Port {
     pub protocol: Option<String>
 }
 
-// fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
-//
-//
-//     let rt = Runtime::new().unwrap();
-//
-//     // Spawn a blocking function onto the runtime
-//     rt.block_on(async {
-//         let client = reqwest::Client::new();
-//         let dockerhub_api_url = format!(
-//             "https://hub.docker.com/v2/repositories/{}/{}",
-//             docker_image.dockerhub_user.as_ref().unwrap(),
-//             docker_image.dockerhub_name.as_ref().unwrap()
-//         );
-//
-//         let response = client.get(&dockerhub_api_url)
-//             .send()
-//             .await;
-//
-//         match response {
-//             Ok(resp) => {
-//                 if resp.status().is_success() {
-//                     Ok(())
-//                 } else {
-//                     Err(serde_valid::validation::Error::Custom("Not exists".to_string()))
-//                 }
-//             },
-//             Err(_) => Err(serde_valid::validation::Error::Custom("Not exists".to_string()))
-//         }
-//     })
-// }
-
-
-fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
-    println!("validate dockerhub image {:?}", &docker_image);
-    tracing::debug!("Validate image at hub.docker.com...");
-    // Ok(())
-
-    let name = docker_image.clone().dockerhub_user.unwrap();
-    let passw = docker_image.clone().dockerhub_password.unwrap();
-    let repo = docker_image.clone().dockerhub_name.unwrap();
-    actix_web::rt::spawn(
-        async move {
-            let result = login(name.as_ref(),passw.as_ref()).await;
-            match result {
-                Ok(token) => {
-                    if token.token.is_some() {
-                        tracing::debug!("we got token {:?}", token);
-                        // while let Ok(true) = docker_image_exists(
-                        //     name.as_ref(),
-                        //     repo.as_ref(),
-                        //     token.clone().token.unwrap()
-                        // ).await {}
-
-                        let _ = docker_image_exists(
-                            name.as_ref(),
-                            repo.as_ref(),
-                            token.clone().token.unwrap()
-                        ).await
-                        .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
-                        .map(|_| ());
-                    }
-                },
-                Err(err) => {
-                    tracing::debug!("no token received {}", err);
-                }
-            }
-        }
-    );
-
-    Ok(())
-    // let rt = Runtime::new().unwrap();
-    // // Spawn a blocking function onto the runtime
-    // let join_handle = rt.block_on( async {
-    //     let endpoint = "https://hub.docker.com/v2/users/login";
-    //     let creds = DockerHubCreds {
-    //         username: docker_image.dockerhub_user.as_ref().unwrap(),
-    //         password: docker_image.dockerhub_password.as_ref().unwrap()
-    //     };
-    //     Ok(())
-        // Err(serde_valid::validation::Error::Custom(format!("Error blablablal")))
-        // let client = reqwest::Client::new();
-        // client.post(endpoint)
-        //     .json(&creds)
-        //     .send()
-        //     .await
-        //     .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
-        //     .json::<DockerHubToken>()
-        //     .await
-        //     .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
-        //     .and_then(|token| {
-        //         tracing::debug!("got token {:?}", token);
-        //         Ok(())
-        //     })
-    // });
-    // join_handle
-}
-//
-// fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
-//
-//     println!("validate dockerhub image {:?}", docker_image);
-//     tracing::debug!("Validate image at hub.docker.com...");
-//
-//     let endpoint = "https://hub.docker.com/v2/users/login";
-//     let creds = DockerHubCreds {
-//         username: docker_image.dockerhub_user.as_ref().unwrap(),
-//         password: docker_image.dockerhub_password.as_ref().unwrap()
-//     };
-//     reqwest::blocking::Client::new()
-//         .post(endpoint)
-//         .json(&creds)
-//         .send()
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
-//         .json::<DockerHubToken>()
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
-//         .and_then(|token|{
-//             tracing::debug!("got token {:?}", token);
-//             Ok(())
-//         })
-//
-//
-//
-//     // Create the runtime
-//     // let rt = Runtime::new().unwrap();
-//     //
-//     // // Spawn a blocking function onto the runtime
-//     // rt.block_on(async {
-//     //     let result = login(
-//     //         docker_image.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
-//     //         docker_image.dockerhub_password.clone().unwrap_or("".to_string()).as_ref()
-//     //     )
-//     //         .await
-//     //         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?;
-//     //
-//     //     match result.token {
-//     //         None => {
-//     //             return Err(serde_valid::validation::Error::Custom(
-//     //                 "Could not access docker image repository, please check credentials.".to_owned(),
-//     //             ));
-//     //         },
-//     //         Some(tok) => {
-//     //             tracing::debug!("We were able to login hub.docker.com!");
-//     //             docker_image_exists(
-//     //                 docker_image.dockerhub_user.clone().unwrap().as_str(),
-//     //                 docker_image.dockerhub_name.clone().unwrap().as_str(), tok)
-//     //                 .await
-//     //                 .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
-//     //                 .map(|_| ())
-//     //         }
-//     //     }
-//     // })
-//
-// }
-
-// fn validate_dockerhub_image(docker_image: &DockerImage) -> Result<(), serde_valid::validation::Error> {
-//
-//     tracing::debug!("validate dockerhub image {:?}", docker_image);
-//     let endpoint = "https://hub.docker.com/v2/users/login";
-//     let creds = DockerHubCreds {
-//         username: docker_image.dockerhub_user.as_ref().unwrap(),
-//         password: docker_image.dockerhub_password.as_ref().unwrap()
-//     };
-//     reqwest::blocking::Client::new()
-//         .post(endpoint)
-//         .json(&creds)
-//         .send()
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
-//         .json::<DockerHubToken>()
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
-//         .and_then(|token|{
-//             docker_image_exists(
-//                 docker_image.dockerhub_user.clone().unwrap().as_str(),
-//                 docker_image.dockerhub_name.clone().unwrap().as_str(),
-//                 token
-//             )
-//                 .map_err(|err| serde_valid::validation::Error::Custom("Not exists".to_string()))
-//                 .map(|_| ())
-//         })
-// }
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-#[validate(custom(|dockerhub|validate_dockerhub_image(dockerhub)))]
 pub struct DockerImage  {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
@@ -248,6 +69,28 @@ impl fmt::Display for DockerImage {
             if !dh_name.is_empty() { dh_name } else { dh_image },
             if !dh_name.contains(":") && dh_image.is_empty() { ":latest".to_string() } else { String::new() },
         )
+    }
+}
+
+
+impl DockerImage {
+
+    async fn is_active(&self) -> Result<bool, String> {
+        tracing::debug!("Validate image at DockerHub {:?}", &self);
+        let mut dockerhub = DockerHub::build();
+
+        dockerhub
+            .login(
+                self.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
+                self.dockerhub_password.clone().unwrap().as_ref(),
+            )
+            .await
+            .set_image(self.dockerhub_image.clone().unwrap_or(String::from("")).as_str())
+            .await
+            .set_repos(self.dockerhub_name.clone().unwrap_or(String::from("")).as_str())
+            .await
+            .is_active()
+            .await
     }
 }
 
@@ -304,6 +147,48 @@ pub struct StackForm {
     pub custom: Custom,
 }
 
+impl StackForm {
+
+    pub async fn is_readable_docker_image(&self) -> Result<bool, String> {
+
+        let mut is_active = true;
+        for app in &self.custom.web {
+           if !app.app.docker_image.is_active().await? {
+               is_active = false;
+               break;
+           }
+        }
+
+        // self.custom.service
+        //     .into_iter()
+        //     .map(|item| {
+        //         item.iter()
+        //             .any(|item| {
+        //                 item.app.docker_image.is_active()?
+        //             })
+        //             .collect()
+        //     }).collect();
+        //
+        if let Some(service) = &self.custom.service {
+            for app in service {
+                if !app.app.docker_image.is_active().await? {
+                    is_active = false;
+                    break;
+                }
+            }
+        }
+
+        if let Some(features) = &self.custom.feature {
+            for app in features {
+                if !app.app.docker_image.is_active().await? {
+                    is_active = false;
+                    break;
+                }
+            }
+        }
+        Ok(is_active)
+    }
+}
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "snake_case")]
 pub struct StackPayload {
@@ -447,6 +332,7 @@ pub struct App {
     #[validate]
     pub shared_ports: Option<Vec<Port>>,
 }
+
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnvVar {

@@ -1,6 +1,5 @@
 use serde_derive::{Deserialize, Serialize};
 use serde_valid::Validate;
-// use tracing_subscriber::fmt::format;
 use serde_json::Value;
 
 
@@ -10,7 +9,7 @@ pub struct DockerHubToken {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct DockerHubCreds<'a>  {
+pub struct DockerHubCreds<'a> {
     pub(crate) username: &'a str,
     pub(crate) password: &'a str
 }
@@ -56,103 +55,111 @@ struct TagResult {
     previous: Value,
     results: Vec<Tag>
 }
-pub async fn login(username: &str, password: &str) -> Result<DockerHubToken, String> {
-    let endpoint = "https://hub.docker.com/v2/users/login";
-    tracing::debug!("Login to {} with user {} and passw {}",endpoint, username, password);
-    let creds = DockerHubCreds { username, password };
-    reqwest::Client::new()
-        .post(endpoint)
-        .json(&creds)
-        .send()
-        .await
-        .map_err(|err| format!("{}", err))?
-        .json::<DockerHubToken>()
-        .await
-        .map_err(|err| format!("{}", err))
-        .map(|token| { token })
+
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
+pub(crate) struct DockerHub<'a> {
+    pub(crate) creds: DockerHubCreds<'a>,
+    pub(crate) repos: String,
+    pub(crate) token: DockerHubToken,
+    pub(crate) image: String,
+}
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
+pub(crate) struct DockerHubBuilder<'a> {
+    pub(crate) creds: DockerHubCreds<'a>,
+    pub(crate) repos: &'a str,
+    pub(crate) token: DockerHubToken,
+    pub(crate) image: &'a str,
 }
 
-// pub async fn login(username: &str, password: &str) -> Result<DockerHubToken, serde_valid::validation::Error> {
-//     let endpoint = "https://hub.docker.com/v2/users/login";
-//     let creds = DockerHubCreds { username, password };
-//     reqwest::Client::new()
-//         .post(endpoint)
-//         .json(&creds)
-//         .send()
-//         .await
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{}", err)))?
-//         .json::<DockerHubToken>()
-//         .await
-//         .map_err(|err|  serde_valid::validation::Error::Custom(format!("{}", err)))
-//         .map(|token| { token })
-// }
+impl<'a> DockerHubBuilder<'a> {
 
-pub async fn docker_image_exists(user: &str, repo: &str, token: String) -> Result<bool, String> {
-    // get repo images
-    let tags_url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
-        user, repo);
+    pub async fn set_repos(&'a mut self, repo_name: &'a str) -> &'a mut Self {
+        self.repos = repo_name;
+        self
+    }
 
-    let tags = reqwest::Client::new()
-        .get(tags_url)
-        .header("Accept", "application/json")
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|err| format!("{}", err))?
-        .json::<TagResult>()
-        // .json::<serde_json::Value>()
-        .await
-        .map_err(|err| format!("{}", err))?;
+    pub async fn set_image(&'a mut self, image: &'a str) -> &'a mut Self {
+        self.image = image;
+        self
+    }
+    pub async fn login(&'a mut self, username: &'a str, password: &'a str) -> &'a mut Self {
+        let endpoint = "https://hub.docker.com/v2/users/login";
 
-    // println!("tags count: {:?}", tags.count);
+        self.creds = DockerHubCreds {
+            username: username,
+            password: password
+        };
 
-    if tags.count > 0 {
-        // let's find at least one active tag
-        let active = tags.results
-            .into_iter()
-            .any(|tag| tag.tag_status.contains("active") );
-        Ok(active)
-    } else {
-        Err(String::from("There were no active tags found in this repository"))
+        if self.creds.password.is_empty() {
+            tracing::debug!("DockerHub credentials were not provided, login not required/image considered public");
+            return self;
+        }
+
+        let response = reqwest::Client::new()
+            .post(endpoint)
+            .json(&self.creds)
+            .send()
+            .await
+            .map_err(|err| format!("{:?}", err))
+            .unwrap()
+            .json::<DockerHubToken>()
+            .await
+            .map_err(|err| format!("{:?}", err))
+            .map(|token| {
+                self.token = token;
+            });
+
+        tracing::debug!("Login response was: {:?}", response);
+        self
+    }
+
+    pub async fn is_active(&'a self) -> Result<bool, String> {
+        // get repo images
+        let tags_url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
+                               &self.creds.username, &self.repos);
+
+        let mut client = reqwest::Client::new()
+            .get(tags_url)
+            .header("Accept", "application/json");
+
+        client = match self.token.token.as_ref() {
+            Some(token) => {
+                if !token.is_empty() {
+                    client = client.bearer_auth(token);
+                }
+                client
+            },
+            None => {
+                client
+            }
+        };
+
+        client
+            .send()
+            .await
+            .map_err(|err| format!("{}", err))?
+            .json::<TagResult>()
+            .await
+            .map_err(|err| format!("{}", err))
+            .map(|tags| {
+                if tags.count > 0 {
+                    // let's find at least one active tag
+                    let active = tags.results
+                        .into_iter()
+                        .any(|tag| tag.tag_status.contains("active") );
+                    active
+                } else {
+                    false
+                }
+            })
+    }
+
+}
+
+impl<'a> DockerHub<'a>
+{
+    pub fn build() -> DockerHubBuilder<'a> {
+        DockerHubBuilder::default()
     }
 }
-
-// pub fn docker_image_exists(user: &str, repo: &str, token: DockerHubToken) -> Result<bool, serde_valid::validation::Error> {
-//     // get repo images
-//     let tags_url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
-//                            user, repo);
-//     //
-//     // let tags = reqwest::Client::new()
-//     //     .get(tags_url)
-//     //     .header("Accept", "application/json")
-//     //     .bearer_auth(token)
-//     //     .send()
-//     //     .await
-//     //     .map_err(|err| format!("{}", err))?
-//     //     .json::<TagResult>()
-//     //     // .json::<serde_json::Value>()
-//     //     .await
-//     //     .map_err(|err| format!("{}", err))?;
-//
-//     reqwest::blocking::Client::new()
-//         .get(tags_url)
-//         .header("Accept", "application/json")
-//         .bearer_auth(token.token.unwrap())
-//         .send()
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))?
-//         .json::<TagResult>()
-//         .map_err(|err| serde_valid::validation::Error::Custom(format!("{:?}", err)))
-//         .and_then(|tags|{
-//             println!("tags count: {:?}", tags.count);
-//             if tags.count > 0 {
-//                 // let's find at least one active tag
-//                 let active = tags.results
-//                     .into_iter()
-//                     .any(|tag| tag.tag_status.contains("active") );
-//                 Ok(active)
-//             } else {
-//                 Err(serde_valid::validation::Error::Custom("There were no active tags found in this repository".to_string()))
-//             }
-//         })
-//
-// }
