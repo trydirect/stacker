@@ -75,22 +75,9 @@ impl fmt::Display for DockerImage {
 
 impl DockerImage {
 
+    #[tracing::instrument(name="is_active")]
     async fn is_active(&self) -> Result<bool, String> {
-        tracing::debug!("Validate image at DockerHub {:?}", &self);
-        let mut dockerhub = DockerHub::build();
-
-        dockerhub
-            .login(
-                self.dockerhub_user.clone().unwrap_or("".to_string()).as_ref(),
-                self.dockerhub_password.clone().unwrap().as_ref(),
-            )
-            .await
-            .set_image(self.dockerhub_image.clone().unwrap_or(String::from("")).as_str())
-            .await
-            .set_repos(self.dockerhub_name.clone().unwrap_or(String::from("")).as_str())
-            .await
-            .is_active()
-            .await
+        DockerHub::from(self).is_active().await
     }
 }
 
