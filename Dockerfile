@@ -44,7 +44,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
 # deploy production
 FROM debian:bookworm-slim as production
 
-RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev;
+RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev ca-certificates;
 # create app directory
 WORKDIR /app
 RUN mkdir ./files && chmod 0777 ./files
