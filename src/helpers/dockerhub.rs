@@ -58,6 +58,31 @@ struct TagResult {
     results: Vec<Tag>
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct RepoResults {
+    pub count: i64,
+    pub next: Value,
+    pub previous: Value,
+    pub results: Vec<RepoResult>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoResult {
+    pub name: String,
+    pub namespace: String,
+    pub repository_type: String,
+    pub status: i64,
+    pub status_description: String,
+    pub description: String,
+    pub is_private: bool,
+    pub star_count: i64,
+    pub pull_count: i64,
+    pub last_updated: String,
+    pub date_registered: String,
+    pub affiliation: String,
+    pub media_types: Vec<String>,
+    pub content_types: Vec<String>,
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
 pub(crate) struct DockerHub<'a> {
@@ -82,25 +107,58 @@ impl<'a> DockerHub<'a> {
             .map_err(|err| format!("{:?}", err))
     }
 
-    pub async fn is_active(&'a self) -> Result<bool, String> {
-
-        // get repo images
-        let tags_url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
-                               &self.creds.username, &self.repos);
-        let mut client = reqwest::Client::new()
-            .get(tags_url)
+    pub async fn lookup_public_repo(&self) -> Result<bool, String> {
+        let url = format!("https://hub.docker.com/v2/repositories/{}", &self.repos);
+        tracing::debug!("Validate public repositories {:?}", url);
+        let client = reqwest::Client::new()
+            .get(url)
             .header("Accept", "application/json");
-
         let mut client = self.set_token(client).await?;
+        client
+            .send()
+            .await
+            .map_err(|err| {
+                tracing::debug!("Error response {:?}", err);
+                format!("{}", err)
+            })?
+            .json::<RepoResults>()
+            .await
+            .map_err(|err| format!("{}", err))
+            .map(|repositories| {
+                tracing::debug!("Get public image repositories response {:?}", repositories);
+                if repositories.count > 0 {
+                    // let's find at least one active tag
+                    let active = repositories.results
+                        .into_iter()
+                        .any(|mut repo| repo.status == 1 );
+                    active
+                } else {
+                    false
+                }
+            })
+    }
 
+    pub async fn lookup_private_repo(&self) -> Result<bool, String> {
+        let url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
+                          &self.creds.username,
+                          &self.repos);
+        tracing::debug!("Validate image {:?}", url);
+        let client = reqwest::Client::new()
+            .get(url)
+            .header("Accept", "application/json");
+        let mut client = self.set_token(client).await?;
         client
             .send()
             .await
             .map_err(|err| format!("{}", err))?
             .json::<TagResult>()
             .await
-            .map_err(|err| format!("{}", err))
+            .map_err(|err| {
+                tracing::debug!("Error response {:?}", err);
+                format!("{}", err)
+            })
             .map(|tags| {
+                tracing::debug!("Validate private image response {:?}", tags);
                 if tags.count > 0 {
                     // let's find at least one active tag
                     let active = tags.results
@@ -112,12 +170,25 @@ impl<'a> DockerHub<'a> {
                 }
             })
     }
+    pub async fn is_active(&'a self) -> Result<bool, String> {
+
+        // if namespace/user is not set change endpoint and return a different response
+        if self.creds.username.is_empty() {
+            return self.lookup_public_repo().await;
+        }
+        return self.lookup_private_repo().await;
+
+    }
 
     pub async fn set_token(&self, mut client: RequestBuilder) -> Result<RequestBuilder, String> {
 
         if self.creds.password.is_empty() {
+            tracing::debug!("Password is empty. Image should be public");
             return Ok(client);
+        } else{
+
         }
+        tracing::debug!("Password is set. Login..");
         let token = self.login().await?;
 
         match token.token {
