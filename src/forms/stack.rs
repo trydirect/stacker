@@ -40,17 +40,21 @@ pub struct Port {
     pub protocol: Option<String>
 }
 
+
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerImage  {
-    #[validate(min_length = 3)]
+    // #[validate(min_length = 3)]
     #[validate(max_length = 50)]
-    #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]
+    // @todo conditional check, if not empty
+    // #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]
     pub dockerhub_user: Option<String>,
-    #[validate(min_length = 3)]
+    // #[validate(min_length = 3)]
     #[validate(max_length = 50)]
-    #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]
+    // @todo conditional check, if not empty
+    // #[validate(pattern = r"^[a-z0-9]+([-_.][a-z0-9]+)*$")]
     pub dockerhub_name: Option<String>,
-    #[validate(min_length = 3)]
+    // #[validate(min_length = 3)]
     #[validate(max_length = 100)]
     pub dockerhub_image: Option<String>,
     pub dockerhub_password: Option<String>,
@@ -146,16 +150,6 @@ impl StackForm {
            }
         }
 
-        // self.custom.service
-        //     .into_iter()
-        //     .map(|item| {
-        //         item.iter()
-        //             .any(|item| {
-        //                 item.app.docker_image.is_active()?
-        //             })
-        //             .collect()
-        //     }).collect();
-        //
         if let Some(service) = &self.custom.service {
             for app in service {
                 if !app.app.docker_image.is_active().await? {
