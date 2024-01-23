@@ -11,6 +11,11 @@ use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;
 
+use actix_casbin_auth::casbin::{DefaultModel, FileAdapter};//, Result};
+use actix_casbin_auth::CasbinService;
+use actix_casbin_auth::casbin::function_map::key_match2;
+use actix_casbin_auth::casbin::CoreApi;
+
 pub async fn run(
     listener: TcpListener,
     pg_pool: Pool<Postgres>,
@@ -21,6 +26,22 @@ pub async fn run(
 
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
+
+    //casbin
+     let m = DefaultModel::from_file("rbac/rbac_with_pattern_model.conf")
+        .await
+        .unwrap();
+    let a = FileAdapter::new("rbac/rbac_with_pattern_policy.csv");  //You can also use diesel-adapter or sqlx-adapter
+
+    let casbin_middleware = CasbinService::new(m, a).await.unwrap(); //todo
+
+    casbin_middleware
+        .write()
+        .await
+        .get_role_manager()
+        .write()
+        //.unwrap()
+        .matching_fn(Some(key_match2), None);
 
     let server = HttpServer::new(move || {
         App::new()
@@ -39,9 +60,19 @@ pub async fn run(
             )
             .service(
                 web::scope("/test")
+                    .wrap(casbin_middleware.clone())
                     .wrap(crate::middleware::client::Guard::new())
                     .wrap(Cors::permissive())
                     .service(crate::routes::test::deploy::handler),
+            )
+            .service(
+                web::scope("/pen/1")
+                    .wrap(casbin_middleware.clone()) //todo
+                    .wrap(HttpAuthentication::bearer(
+                        crate::middleware::trydirect::bearer_guard,
+                    ))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::test::casbin::handler),
             )
             .service(
                 web::scope("/rating")
