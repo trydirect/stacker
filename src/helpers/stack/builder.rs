@@ -57,18 +57,34 @@ impl TryInto<AdvancedVolumes> for Volume {
 impl TryInto<Port> for stack::Port {
     type Error = String;
     fn try_into(self) -> Result<Port, Self::Error> {
-        let cp  = self.container_port.clone()
-            .parse::<u16>().map_err(|err| "Could not parse container port".to_string() )?;
-        let hp = self.host_port.clone()
-            .unwrap_or("".to_string())
-            .parse::<u16>().map_err(|err| "Could not parse host port".to_string() )?;
+        let cp = self.container_port
+            .clone()
+            .parse::<u16>()
+            .map_err(|err| "Could not parse container port".to_string() )?;
+
+        let hp = match self.host_port.clone() {
+            Some(hp) => {
+                if hp.is_empty() {
+                    None
+                } else {
+                    match hp.parse::<u16>() {
+                        Ok(port) => Some(PublishedPort::Single(port)),
+                        Err(_) => {
+                            tracing::debug!("Could not parse host port: {}", hp);
+                            None
+                        }
+                    }
+                }
+            }
+            _ => None
+        };
 
         tracing::debug!("Port conversion result: cp: {:?} hp: {:?}", cp, hp);
 
         Ok(Port {
             target: cp,
             host_ip: None,
-            published: Some(PublishedPort::Single(hp)),
+            published: hp,
             protocol: None,
             mode: None,
         })

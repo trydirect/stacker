@@ -2,10 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 use std::fmt;
-use serde_valid::validation::error::Format::Default;
+use regex::Regex;
 use crate::helpers::dockerhub::{DockerHub, DockerHubCreds, DockerHubToken};
-// use tokio::runtime::Runtime;
-// use tokio::runtime::Handle;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -27,23 +25,48 @@ pub struct Requirements {
     #[validate(min_length = 1)]
     #[validate(max_length = 10)]
     #[validate(pattern = r"^\d+G$")]
-    pub ram_size: Option<String>
+    pub ram_size: Option<String>,
+}
+
+fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation::Error> {
+    if v.is_none() {
+        return Ok(());
+    }
+
+    if let Some(value) = v {
+        if value.is_empty() {
+            return Ok(());
+        }
+
+        // #[validate(pattern = r"^\d{2,6}+$")]
+        let re = Regex::new(r"^\d{2,6}+$").unwrap();
+
+        if !re.is_match(value.as_str()) {
+            return Err(serde_valid::validation::Error::Custom("Port is not valid.".to_owned()));
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Validate)]
+struct Data {
+    val: i32,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Port {
-    #[validate(pattern = r"^\d{2,6}+$")]
+    #[validate(custom(|v| validate_non_empty(v)))]
     pub host_port: Option<String>,
     #[validate(pattern = r"^\d{2,6}+$")]
     pub container_port: String,
     #[validate(enumerate("tcp", "udp"))]
-    pub protocol: Option<String>
+    pub protocol: Option<String>,
 }
 
 
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct DockerImage  {
+pub struct DockerImage {
     // #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     // @todo conditional check, if not empty
@@ -78,8 +101,7 @@ impl fmt::Display for DockerImage {
 
 
 impl DockerImage {
-
-    #[tracing::instrument(name="is_active")]
+    #[tracing::instrument(name = "is_active")]
     async fn is_active(&self) -> Result<bool, String> {
         DockerHub::from(self).is_active().await
     }
@@ -94,7 +116,7 @@ impl AsRef<DockerImage> for App {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct StackForm {
-    #[validate(max_length=255)]
+    #[validate(max_length = 255)]
     #[serde(rename = "commonDomain")]
     pub common_domain: Option<String>,
     pub domain_list: Option<DomainList>,
@@ -139,15 +161,13 @@ pub struct StackForm {
 }
 
 impl StackForm {
-
     pub async fn is_readable_docker_image(&self) -> Result<bool, String> {
-
         let mut is_active = true;
         for app in &self.custom.web {
-           if !app.app.docker_image.is_active().await? {
-               is_active = false;
-               break;
-           }
+            if !app.app.docker_image.is_active().await? {
+                is_active = false;
+                break;
+            }
         }
 
         if let Some(service) = &self.custom.service {
@@ -170,6 +190,7 @@ impl StackForm {
         Ok(is_active)
     }
 }
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "snake_case")]
 pub struct StackPayload {
@@ -201,7 +222,7 @@ pub struct StackPayload {
     #[serde(rename = "selected_plan")]
     pub selected_plan: String,
     pub custom: Custom,
-    pub docker_compose: Option<Vec<u8>>
+    pub docker_compose: Option<Vec<u8>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,6 +237,7 @@ pub struct Var {}
 pub struct Price {
     pub value: f64,
 }
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Custom {
     #[validate]
@@ -318,13 +340,14 @@ pub struct App {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnvVar {
     pub(crate) key: String,
-    pub(crate) value: String
+    pub(crate) value: String,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
     pub(crate) environment: Option<Vec<EnvVar>>,
 }
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volume {
     pub(crate) host_path: Option<String>,
