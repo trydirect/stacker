@@ -327,7 +327,8 @@ pub struct App {
     pub repo_dir: Option<String>,
     pub url_app: Option<String>,
     pub url_git: Option<String>,
-    pub restart: Option<String>,
+    #[validate(enumerate("always", "no", "unless-stopped", "on-failure"))]
+    pub restart: String,
     pub volumes: Option<Vec<Volume>>,
     #[serde(flatten)]
     pub environment: Environment,
