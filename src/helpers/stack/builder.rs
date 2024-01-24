@@ -5,7 +5,7 @@ use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Servic
                                      ComposeNetworks, MapOrEmpty, ComposeNetworkSettingDetails,
                                      NetworkSettings};
 use serde_yaml;
-use crate::forms::{StackForm, stack, App, Volume, Web};
+use crate::forms::{StackForm, stack, App, Volume};
 use crate::models::stack::Stack;
 #[derive(Clone, Debug)]
 struct Config {}
@@ -36,16 +36,23 @@ pub struct DcBuilder {
 }
 
 impl TryInto<AdvancedVolumes> for Volume {
+    // service volumes
     type Error = String;
     fn try_into(self) -> Result<AdvancedVolumes, Self::Error> {
 
         let source = self.host_path.clone();
         let target = self.container_path.clone();
         tracing::debug!("Volume conversion result: source: {:?} target: {:?}", source, target);
+        let _type = if is_named_docker_volume(source.as_ref().unwrap()) {
+            "volume"
+        } else {
+            "bind"
+        };
+
         Ok(AdvancedVolumes {
-            source: source,
+            source,
             target: target.unwrap_or("".to_string()),
-            _type: "".to_string(),
+            _type: _type.to_string(),
             read_only: false,
             bind: None,
             volume: None,
@@ -216,7 +223,28 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
     }
 }
 
+impl Into<ComposeVolume> for Volume {
+    fn into(self) -> ComposeVolume {
+        // let's create a symlink to /var/docker/volumes in project docroot
+        let mut driver_opts = IndexMap::default();
+        let host_path = self.host_path.unwrap();
+        driver_opts.insert(String::from("type"), Some(SingleValue::String("none".to_string())));
+        driver_opts.insert(String::from("o"), Some(SingleValue::String("bind".to_string())));
+        // @todo move to config stack docroot on host
+        let path = format!("/root/stack/{}", &host_path);
+        driver_opts.insert(String::from("device"), Some(SingleValue::String(path)));
 
+        ComposeVolume {
+            driver: Some(String::from("local")),
+            driver_opts: driver_opts,
+            external: None,
+            labels: Default::default(),
+            name: Some(host_path)
+        }
+    }
+}
+
+#[tracing::instrument(name = "extract_named_volumes")]
 pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVolume>> {
 
     let mut named_volumes = IndexMap::default();
@@ -232,18 +260,12 @@ pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVol
         )
         .map(|volume| {
             let k = volume.host_path.clone().unwrap();
-            (k.clone(), MapOrEmpty::Map(ComposeVolume {
-                driver: None,
-                driver_opts: Default::default(),
-                external: None,
-                labels: Default::default(),
-                name: Some(k.clone())
-            }))
+            (k.clone(), MapOrEmpty::Map(volume.into()))
         })
         .collect::<IndexMap<String, MapOrEmpty<ComposeVolume>>>();
 
     named_volumes.extend(volumes);
-    // tracing::debug!("Named volumes: {:?}", named_volumes);
+    tracing::debug!("Named volumes: {:?}", named_volumes);
 
     named_volumes
 }
