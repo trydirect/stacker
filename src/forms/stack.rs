@@ -3,7 +3,7 @@ use serde_json::Value;
 use serde_valid::Validate;
 use std::fmt;
 use regex::Regex;
-use crate::helpers::dockerhub::{DockerHub, DockerHubCreds, DockerHubToken};
+use crate::helpers::dockerhub::DockerHub;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -102,7 +102,7 @@ impl fmt::Display for DockerImage {
 
 impl DockerImage {
     #[tracing::instrument(name = "is_active")]
-    async fn is_active(&self) -> Result<bool, String> {
+    pub async fn is_active(&self) -> Result<bool, String> {
         DockerHub::from(self).is_active().await
     }
 }
@@ -170,23 +170,24 @@ impl StackForm {
             }
         }
 
-        if let Some(service) = &self.custom.service {
-            for app in service {
-                if !app.app.docker_image.is_active().await? {
-                    is_active = false;
-                    break;
-                }
-            }
-        }
-
-        if let Some(features) = &self.custom.feature {
-            for app in features {
-                if !app.app.docker_image.is_active().await? {
-                    is_active = false;
-                    break;
-                }
-            }
-        }
+        // temporarily disabled
+        // if let Some(service) = &self.custom.service {
+        //     for app in service {
+        //         if !app.app.docker_image.is_active().await? {
+        //             is_active = false;
+        //             break;
+        //         }
+        //     }
+        // }
+        //
+        // if let Some(features) = &self.custom.feature {
+        //     for app in features {
+        //         if !app.app.docker_image.is_active().await? {
+        //             is_active = false;
+        //             break;
+        //         }
+        //     }
+        // }
         Ok(is_active)
     }
 }
@@ -350,8 +351,8 @@ pub struct Environment {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volume {
-    pub(crate) host_path: Option<String>,
-    pub(crate) container_path: Option<String>,
+    pub host_path: Option<String>,
+    pub container_path: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -52,17 +52,17 @@ struct Tag {
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 struct TagResult {
-    count: i64,
-    next: Value,
-    previous: Value,
+    pub count: Option<i64>,
+    next: Option<Value>,
+    previous: Option<Value>,
     results: Vec<Tag>
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct RepoResults {
-    pub count: i64,
-    pub next: Value,
-    pub previous: Value,
+    pub count: Option<i64>,
+    pub next: Option<Value>,
+    pub previous: Option<Value>,
     pub results: Vec<RepoResult>,
 }
 
@@ -85,7 +85,7 @@ pub struct RepoResult {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
-pub(crate) struct DockerHub<'a> {
+pub struct DockerHub<'a> {
     pub(crate) creds: DockerHubCreds<'a>,
     pub(crate) repos: String,
     pub(crate) image: String,
@@ -123,10 +123,10 @@ impl<'a> DockerHub<'a> {
             })?
             .json::<RepoResults>()
             .await
-            .map_err(|err| format!("{}", err))
+            .map_err(|err| format!("Error on getting results:: {}", err))
             .map(|repositories| {
                 tracing::debug!("Get public image repositories response {:?}", repositories);
-                if repositories.count > 0 {
+                if repositories.count.unwrap_or(0) > 0 {
                     // let's find at least one active tag
                     let active = repositories.results
                         .into_iter()
@@ -159,7 +159,7 @@ impl<'a> DockerHub<'a> {
             })
             .map(|tags| {
                 tracing::debug!("Validate private image response {:?}", tags);
-                if tags.count > 0 {
+                if tags.count.unwrap_or(0) > 0 {
                     // let's find at least one active tag
                     let active = tags.results
                         .into_iter()
@@ -174,10 +174,16 @@ impl<'a> DockerHub<'a> {
 
         // if namespace/user is not set change endpoint and return a different response
         if self.creds.username.is_empty() {
-            return self.lookup_public_repo().await;
+            match self.lookup_public_repo().await {
+               Ok(result) => Ok(result),
+               Err(_e) => Ok(false)
+            }
+        } else{
+            match self.lookup_private_repo().await {
+                Ok(result) => Ok(result),
+                Err(_e) => Ok(false)
+            }
         }
-        return self.lookup_private_repo().await;
-
     }
 
     pub async fn set_token(&self, mut client: RequestBuilder) -> Result<RequestBuilder, String> {

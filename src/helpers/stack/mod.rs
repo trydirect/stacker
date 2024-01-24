@@ -1,2 +1,2 @@
 pub(crate) mod builder;
-pub(crate) mod dctypes;
+pub mod dctypes;
