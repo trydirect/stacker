@@ -170,7 +170,7 @@ impl TryIntoService for App {
 
         service.networks = networks;
         service.ports = Ports::Long(ports);
-        service.restart = Some("always".to_owned());
+        service.restart = Some(self.restart.clone());
         service.volumes = Volumes::Advanced(volumes);
         service.environment = Environment::KvPair(envs);
 
