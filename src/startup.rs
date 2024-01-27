@@ -33,7 +33,7 @@ pub async fn run(
         .unwrap();
     let a = FileAdapter::new("rbac/rbac_with_pattern_policy.csv");  //You can also use diesel-adapter or sqlx-adapter
 
-    let casbin_middleware = CasbinService::new(m, a).await.unwrap(); //todo
+    let mut casbin_middleware = CasbinService::new(m, a).await.unwrap(); //todo
 
     casbin_middleware
         .write()
@@ -60,7 +60,6 @@ pub async fn run(
             )
             .service(
                 web::scope("/test")
-                    .wrap(casbin_middleware.clone())
                     .wrap(crate::middleware::client::Guard::new())
                     .wrap(Cors::permissive())
                     .service(crate::routes::test::deploy::handler),

@@ -1,10 +1,6 @@
-p, petru, /testcasbin, GET
-p, alice, /pen/1, GET
-p, alice, /pen2/1, GET
-p, book_admin, book_group, GET
-p, pen_admin, pen_group, GET
-
-g, alice, book_admin
-g, bob, pen_admin
-g2, /book/:id, book_group
-g2, /pen/:id, pen_group
+p, admin, domain1, /pen/1, GET
+p, admin, domain1, /pen/2, GET
+p, admin, domain2, /book/1, GET
+p, admin, domain2, /book/2, GET
+g, alice, admin, domain1
+g, bob, admin, domain2
