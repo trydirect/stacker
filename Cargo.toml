@@ -55,7 +55,8 @@ clap = { version = "4.4.8", features = ["derive"] }
 serde_path_to_error = "0.1.14"
 deadpool-lapin = "0.11.0"
 docker-compose-types = "0.7.0"
-actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
+#actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
+actix-casbin-auth = { git = "https://github.com/smart--petea/actix-casbin-auth.git", branch = "dirty-master"}
 
 [dependencies.sqlx]
 version = "0.6.3"

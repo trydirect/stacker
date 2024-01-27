@@ -22,7 +22,7 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
 
     let vals = actix_casbin_auth::CasbinVals { //todo
         subject: String::from("alice"),
-        domain: Some("/pen/1".to_string()),
+        domain: Some("domain1".to_string()),
     };
     let result = req.extensions_mut().insert(vals); //todo
     tracing::error!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA {}", result.is_some()); //todo
