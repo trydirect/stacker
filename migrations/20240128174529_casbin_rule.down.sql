@@ -1,2 +1,2 @@
 -- Add down migration script here
-DROP TABLE user_stack;
+DROP TABLE casbin_rule;
