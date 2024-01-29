@@ -466,7 +466,7 @@ checksum = "05b1b633a2115cd122d73b955eadd9916c18c8f510ec9cd1686404c60ad1c29c"
 dependencies = [
  "async-channel 2.1.1",
  "async-executor",
- "async-io 2.3.0",
+ "async-io 2.3.1",
  "async-lock 3.3.0",
  "blocking",
  "futures-lite 2.2.0",
@@ -506,9 +506,9 @@ dependencies = [
 
 [[package]]
 name = "async-io"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb41eb19024a91746eba0773aa5e16036045bbf45733766661099e182ea6a744"
+checksum = "8f97ab0c5b00a7cdbe5a371b9a782ee7be1316095885c8a4ea1daf490eb0ef65"
 dependencies = [
  "async-lock 3.3.0",
  "cfg-if",
@@ -1265,10 +1265,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e366950e7785fe0e404901a2b4e5c09ebd6656767f0c2167e34c5068ce0cc2d"
 dependencies = [
  "derive_builder 0.13.0",
- "indexmap 2.1.0",
+ "indexmap 2.2.1",
  "serde",
  "serde_yaml",
 ]
+
+[[package]]
+name = "dotenv"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
 name = "dotenvy"
@@ -1645,7 +1651,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "http",
- "indexmap 2.1.0",
+ "indexmap 2.2.1",
  "slab",
  "tokio",
  "tokio-util",
@@ -1872,9 +1878,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.1.0"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d530e1a18b1cb4c484e6e34556a0d948706958449fca0cab753d649f2bce3d1f"
+checksum = "433de089bd45971eecf4668ee0ee8f4cec17db4f8bd8f7bc3197a6ce37aa7d9b"
 dependencies = [
  "equivalent",
  "hashbrown 0.14.3",
@@ -2431,7 +2437,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d3afd2628e69da2be385eb6f2fd57c8ac7977ceeff6dc166ff1657b0e386a9"
 dependencies = [
  "fixedbitset",
- "indexmap 2.1.0",
+ "indexmap 2.2.1",
 ]
 
 [[package]]
@@ -2572,9 +2578,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b16a41fe73d9f20da4dae1440a2c4f23db602db9b4699b9b694f007c0a84f67d"
+checksum = "57206b407293d2bcd3af849ce869d52068623f19e1b5ff8e8778e3309439682b"
 dependencies = [
  "bitflags 2.4.2",
  "memchr",
@@ -3089,9 +3095,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.112"
+version = "1.0.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d1bd37ce2324cf3bf85e5a25f96eb4baf0d5aa6eba43e7ae8958870c4ec48ed"
+checksum = "69801b70b1c3dac963ecb03a364ba0ceda9cf60c71cfe475e99864759c8b8a79"
 dependencies = [
  "itoa",
  "ryu",
@@ -3177,11 +3183,11 @@ dependencies = [
 
 [[package]]
 name = "serde_yaml"
-version = "0.9.30"
+version = "0.9.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1bf28c79a99f70ee1f1d83d10c875d2e70618417fda01ad1785e027579d9d38"
+checksum = "adf8a49373e98a4c5f0ceb5d05aa7c648d75f63774981ed95b7c7443bbd50c6e"
 dependencies = [
- "indexmap 2.1.0",
+ "indexmap 2.2.1",
  "itoa",
  "ryu",
  "serde",
@@ -3330,6 +3336,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlx-adapter"
+version = "0.4.2"
+source = "git+https://github.com/smart--petea/sqlx-adapter.git?branch=dirty-master#5f7cabbde494098a1b460f26c4b74fcbcf2d5857"
+dependencies = [
+ "async-trait",
+ "casbin",
+ "dotenv",
+ "sqlx",
+]
+
+[[package]]
 name = "sqlx-core"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3437,7 +3454,7 @@ dependencies = [
  "futures-util",
  "glob",
  "hmac",
- "indexmap 2.1.0",
+ "indexmap 2.2.1",
  "lapin",
  "rand 0.8.5",
  "regex",
@@ -3450,6 +3467,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "sqlx",
+ "sqlx-adapter",
  "thiserror",
  "tokio",
  "tokio-stream",

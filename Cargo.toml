@@ -44,7 +44,8 @@ tokio-stream = "0.1.14"
 actix-http = "3.4.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
-sqlx-adapter = { version = "0.4.2", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
+#sqlx-adapter = { version = "0.4.2", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
+sqlx-adapter = { git="https://github.com/smart--petea/sqlx-adapter.git", branch="dirty-master", default-features = false, features = ["postgres"]}
 
 # dctypes
 derive_builder = "0.12.0"
