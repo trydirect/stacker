@@ -10,7 +10,7 @@ use std::io::{Error, ErrorKind};
 use sqlx_adapter::SqlxAdapter;
 
 pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Error> {
-    let m = DefaultModel::from_file("rbac/rbac_with_pattern_model.conf")
+    let m = DefaultModel::from_file("access_control.conf")
         .await
         .map_err(|err| Error::new(ErrorKind::Other, format!("{err:?}")))?;
     let a = SqlxAdapter::new(db_connection_address, 8)
