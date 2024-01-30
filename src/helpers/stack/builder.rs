@@ -5,7 +5,7 @@ use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Servic
                                      ComposeNetworks, MapOrEmpty, ComposeNetworkSettingDetails,
                                      NetworkSettings};
 use serde_yaml;
-use crate::forms::{StackForm, stack, App, Volume};
+use crate::forms::{StackForm, stack, App, Volume, Network, NetworkDriver};
 use crate::models::stack::Stack;
 #[derive(Clone, Debug)]
 struct Config {}
@@ -101,12 +101,10 @@ impl TryInto<Port> for stack::Port {
 impl TryInto<Networks> for stack::ServiceNetworks {
     type Error = ();
     fn try_into(self) -> Result<Networks, Self::Error> {
-        let mut default_networks = vec!["default_network".to_string()];
+        let mut default_networks = vec![];
         let nets = match self.network {
             Some(mut _nets) => {
-                if !_nets.contains(&"default_network".to_string()) {
                     _nets.append(&mut default_networks);
-                }
                 _nets
             }
             None => {
@@ -178,18 +176,42 @@ impl TryIntoService for App {
     }
 }
 
+impl Into<IndexMap<String, Option<SingleValue>>> for NetworkDriver {
+    fn into(self) -> IndexMap<String, Option<SingleValue>> {
+        IndexMap::new()
+    }
+}
+
+impl Into<NetworkSettings> for Network {
+
+    fn into(self) -> NetworkSettings {
+
+        NetworkSettings {
+            attachable: self.attachable.unwrap_or(false),
+            driver: self.driver.clone(),
+            driver_opts: self.driver_opts.unwrap_or_default().into(), // @todo
+            enable_ipv6: self.enable_ipv6.unwrap_or(false),
+            internal: self.internal.unwrap_or(false),
+            external: Some(ComposeNetwork::Bool(self.external.unwrap_or(false))),
+            ipam: None,                                                       // @todo
+            labels: Default::default(),
+            name: Some(self.name.clone()),
+        }
+    }
+}
 impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
     fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
 
-        let mut default_network = vec!["default_network".to_string()];
+        // let mut default_networks = vec![Network::default()];
+        let mut default_networks = vec![];
 
         let networks = match self.networks {
             None => {
-                default_network
+                default_networks
             }
             Some(mut nets) => {
-                if !nets.contains(&"default_network".to_string()) {
-                    nets.append(&mut default_network);
+                if !nets.is_empty() {
+                    nets.append(&mut default_networks);
                 }
                 nets
             }
@@ -198,21 +220,7 @@ impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetwo
         let networks = networks
             .into_iter()
             .map(|net| {
-                (net,
-                 MapOrEmpty::Map(
-                     NetworkSettings {
-                         attachable: false,
-                         driver: None,
-                         driver_opts: Default::default(),
-                         enable_ipv6: false,
-                         internal: false,
-                         // external: None,
-                         external: Some(ComposeNetwork::Bool(true)),
-                         ipam: None,
-                         labels: Default::default(),
-                         name: Some("default_network".to_string()),
-                     }
-                 ))
+                (net.name.clone(), MapOrEmpty::Map(net.into()))
             }
             )
             .collect::<IndexMap<String, _>>();
