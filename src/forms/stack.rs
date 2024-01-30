@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 use std::fmt;
+use indexmap::IndexMap;
 use regex::Regex;
 use crate::helpers::dockerhub::DockerHub;
+use crate::helpers::stack::dctypes::SingleValue;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Role {
@@ -268,10 +270,6 @@ pub struct Custom {
     pub networks: ComposeNetworks, // all networks
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct Network {
-    name: String,
-}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct App {
@@ -367,9 +365,46 @@ pub struct ServiceNetworks {
     pub network: Option<Vec<String>>,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct NetworkDriver {
+    // not implemented
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+pub struct Network {
+    pub(crate) id: String,
+    pub(crate) attachable: Option<bool>,
+    pub(crate) driver: Option<String>,
+    pub(crate) driver_opts: Option<NetworkDriver>,
+    pub(crate) enable_ipv6: Option<bool>,
+    pub(crate) internal: Option<bool>,
+    pub(crate) external: Option<bool>,
+    pub(crate) ipam: Option<String>,
+    pub(crate) labels: Option<String>,
+    pub(crate) name: String,
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        // The case when we need at least one external network to be preconfigured
+        Network {
+            id: "default_network".to_string(),
+            attachable: None,
+            driver: None,
+            driver_opts: Default::default(),
+            enable_ipv6: None,
+            internal: None,
+            external: Some(true),
+            ipam: None,
+            labels: None,
+            name: "default_network".to_string(),
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComposeNetworks {
-    pub networks: Option<Vec<String>>,
+    pub networks: Option<Vec<Network>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
