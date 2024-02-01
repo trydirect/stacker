@@ -5,6 +5,7 @@ use crate::helpers::stack::dctypes::{Compose, Port, Ports, PublishedPort, Servic
                                      ComposeNetworks, MapOrEmpty, ComposeNetworkSettingDetails,
                                      NetworkSettings};
 use serde_yaml;
+use tracing::Value;
 use crate::forms::{StackForm, stack, App, Volume, Network, NetworkDriver};
 use crate::models::stack::Stack;
 #[derive(Clone, Debug)]
@@ -186,14 +187,18 @@ impl Into<NetworkSettings> for Network {
 
     fn into(self) -> NetworkSettings {
 
+        // default_network is always external=true
+        let is_default = self.name == String::from("default_network");
+        let external = is_default || self.external.unwrap_or(false);
+
         NetworkSettings {
             attachable: self.attachable.unwrap_or(false),
             driver: self.driver.clone(),
             driver_opts: self.driver_opts.unwrap_or_default().into(), // @todo
             enable_ipv6: self.enable_ipv6.unwrap_or(false),
             internal: self.internal.unwrap_or(false),
-            external: Some(ComposeNetwork::Bool(self.external.unwrap_or(false))),
-            ipam: None,                                                       // @todo
+            external: Some(ComposeNetwork::Bool(external)),
+            ipam: None,                                               // @todo
             labels: Default::default(),
             name: Some(self.name.clone()),
         }
@@ -278,6 +283,34 @@ pub fn extract_named_volumes(app: App) -> IndexMap<String, MapOrEmpty<ComposeVol
     named_volumes
 }
 
+fn matches_network_by_id(id: &String, networks: &Vec<Network>) -> Option<String> {
+
+    for n in networks.into_iter() {
+        if id == &n.id {
+            tracing::debug!("matches:  {:?}", n.name);
+            return Some(n.name.clone());
+        }
+    }
+    None
+}
+
+pub fn replace_id_with_name(service_networks: Networks, all_networks: &Vec<Network>) -> Vec<String> {
+
+    match service_networks {
+        Networks::Simple(nets) => {
+            nets
+                .iter()
+                .map(|id| {
+                    if let Some(name) = matches_network_by_id(&id, all_networks) {
+                        name
+                    } else { "".to_string() }
+                })
+                .collect::<Vec<String>>()
+        },
+        _ => vec![]
+    }
+}
+
 impl DcBuilder {
 
     pub fn new(stack: Stack) -> Self {
@@ -299,15 +332,23 @@ impl DcBuilder {
 
         match _stack {
             Ok(apps) => {
+                let all_networks = &apps.custom.networks.networks.clone().unwrap_or(vec![]);
+
                 for app_type in &apps.custom.web {
-                    let service = app_type.app.try_into_service();
+                    let mut service = app_type.app.try_into_service();
+                    let service_networks = service.networks.clone();
+                    let networks = replace_id_with_name(service_networks, all_networks);
+                    service.networks = Networks::Simple(networks);
                     services.insert(app_type.app.code.clone().to_owned(), Some(service));
                     named_volumes.extend(extract_named_volumes(app_type.app.clone()));
                 }
 
                 if let Some(srvs) = apps.custom.service {
                     for app_type in srvs {
-                        let service = app_type.app.try_into_service();
+                        let mut service = app_type.app.try_into_service();
+                        let service_networks = service.networks.clone();
+                        let networks = replace_id_with_name(service_networks, all_networks);
+                        service.networks = Networks::Simple(networks);
                         services.insert(app_type.app.code.clone().to_owned(), Some(service));
                         named_volumes.extend(extract_named_volumes(app_type.app.clone()));
                     }
@@ -315,7 +356,10 @@ impl DcBuilder {
 
                 if let Some(features) = apps.custom.feature {
                     for app_type in features {
-                        let service = app_type.app.try_into_service();
+                        let mut service = app_type.app.try_into_service();
+                        let service_networks = service.networks.clone();
+                        let networks = replace_id_with_name(service_networks, all_networks);
+                        service.networks = Networks::Simple(networks);
                         services.insert(app_type.app.code.clone().to_owned(), Some(service));
                         named_volumes.extend(extract_named_volumes(app_type.app.clone()));
                     }
