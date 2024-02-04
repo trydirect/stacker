@@ -1,5 +1,5 @@
 -- Add up migration script here
-CREATE TABLE public.client (
+CREATE TABLE client (
   id serial4 NOT NULL,
   user_id varchar(50) NOT NULL,
   secret varchar(255),

@@ -1,1 +1,1 @@
-delete from product where id=1;
+DELETE FROM product WHERE id=1;
