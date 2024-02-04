@@ -8,7 +8,7 @@ use serde_yaml;
 use stacker::forms::Volume;
 
 const DOCKER_USERNAME: &str = "trydirect";
-const DOCKER_PASSWORD: &str = "*******";
+const DOCKER_PASSWORD: &str = "***************";
 //  Unit Test
 
 // #[test]
