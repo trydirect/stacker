@@ -25,14 +25,12 @@ pub async fn add(
             None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
         })?;
 
-    let id = stack.id.clone();
-    let fc = DcBuilder::new(stack)
+    DcBuilder::new(stack)
         .build()
         .map_err(|err| {
             JsonResponse::<models::Stack>::build().internal_server_error(err)
-        })?;
-
-    Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
+        })
+        .map(|fc| JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
 
 #[tracing::instrument(name = "Generate docker-compose. Admin")]
@@ -52,12 +50,10 @@ pub async fn admin(
             None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
         })?;
 
-    let id = stack.id.clone();
-    let fc = DcBuilder::new(stack)
+    DcBuilder::new(stack)
         .build()
         .map_err(|err| {
             JsonResponse::<models::Stack>::build().internal_server_error(err)
-        })?;
-
-    Ok(JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
+        })
+        .map(|fc| JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }

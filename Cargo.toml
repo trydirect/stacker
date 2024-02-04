@@ -44,6 +44,8 @@ tokio-stream = "0.1.14"
 actix-http = "3.4.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
+#sqlx-adapter = { version = "0.4.2", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
+sqlx-adapter = { git="https://github.com/smart--petea/sqlx-adapter.git", branch="dirty-master", default-features = false, features = ["postgres"]}
 
 # dctypes
 derive_builder = "0.12.0"
@@ -54,6 +56,9 @@ futures-lite = "1.13.0"
 clap = { version = "4.4.8", features = ["derive"] }
 serde_path_to_error = "0.1.14"
 deadpool-lapin = "0.11.0"
+docker-compose-types = "0.7.0"
+#actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
+actix-casbin-auth = { git = "https://github.com/smart--petea/actix-casbin-auth.git", branch = "dirty-master"}
 
 [dependencies.sqlx]
 version = "0.6.3"

@@ -5,7 +5,7 @@ use futures::future::{FutureExt};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Trydirect bearer guard.")]
+#[tracing::instrument(name = "TryDirect bearer guard.")]
 pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let token = credentials.token();
@@ -18,6 +18,14 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
 
     if req.extensions_mut().insert(Arc::new(user)).is_some() {
         return Err((JsonResponse::<i32>::build().unauthorized("user already logged"), req));
+    }
+
+    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+        subject: String::from("alice"),
+        domain: None,
+    };
+    if req.extensions_mut().insert(accesscontrol_vals).is_some() {
+        return Err((JsonResponse::<i32>::build().unauthorized("sth wrong with access control"), req));
     }
 
     Ok(req)
