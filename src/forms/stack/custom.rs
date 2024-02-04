@@ -3,7 +3,7 @@ use serde_json::Value;
 use serde_valid::Validate;
 use crate::forms;
 use indexmap::IndexMap;
-use crate::helpers::stack::dctypes;
+use docker_compose_types as dctypes;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Custom {

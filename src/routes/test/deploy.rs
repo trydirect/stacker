@@ -1,14 +1,7 @@
 use crate::models::Client;
 use actix_web::{post, web, Responder, Result};
-use serde::Serialize;
 use std::sync::Arc;
 use crate::helpers::JsonResponse;
-
-#[derive(Serialize)]
-struct DeployResponse {
-    status: String,
-    client: Arc<Client>,
-}
 
 #[tracing::instrument(name = "Test deploy.")]
 #[post("/deploy")]
