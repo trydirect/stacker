@@ -19,8 +19,13 @@ pub async fn get_handler(
     let rate_id = path.0;
     let rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
-        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))?
-        .ok_or_else(|| JsonResponse::<models::Rating>::build().not_found("not found"))?;
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .and_then(|rating| {
+            match rating {
+                Some(rating) => { Ok(rating) },
+                None => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
+            }
+        })?;
 
     Ok(JsonResponse::build().set_item(rating).ok("OK"))
 }

@@ -6,6 +6,7 @@ use actix_web::{
     web::{self},
     App, HttpServer,
 };
+use crate::middleware;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
@@ -22,6 +23,8 @@ pub async fn run(
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
 
+    let access_control_manager = middleware::access_manager::try_new(settings.database.connection_string()).await?;
+
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
@@ -29,7 +32,7 @@ pub async fn run(
             .service(
                 web::scope("/client")
                     .wrap(HttpAuthentication::bearer(
-                        crate::middleware::trydirect::bearer_guard,
+                        middleware::trydirect::bearer_guard,
                     ))
                     .wrap(Cors::permissive())
                     .service(crate::routes::client::add_handler)
@@ -39,14 +42,23 @@ pub async fn run(
             )
             .service(
                 web::scope("/test")
-                    .wrap(crate::middleware::client::Guard::new())
+                    .wrap(middleware::client::Guard::new())
                     .wrap(Cors::permissive())
                     .service(crate::routes::test::deploy::handler),
             )
             .service(
+                web::scope("/pen/1")
+                    .wrap(access_control_manager.clone()) 
+                    .wrap(HttpAuthentication::bearer(
+                        middleware::trydirect::bearer_guard,
+                    ))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::test::casbin::handler),
+            )
+            .service(
                 web::scope("/rating")
                     .wrap(HttpAuthentication::bearer(
-                        crate::middleware::trydirect::bearer_guard,
+                        middleware::trydirect::bearer_guard,
                     ))
                     .wrap(Cors::permissive())
                     .service(crate::routes::rating::add_handler)
@@ -56,7 +68,7 @@ pub async fn run(
             .service(
                 web::scope("/stack")
                     .wrap(HttpAuthentication::bearer(
-                        crate::middleware::trydirect::bearer_guard,
+                        middleware::trydirect::bearer_guard,
                     ))
                     .wrap(Cors::permissive())
                     .service(crate::routes::stack::deploy::add)

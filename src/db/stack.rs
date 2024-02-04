@@ -101,3 +101,40 @@ pub async fn insert(pool: &PgPool, mut stack: models::Stack) -> Result<models::S
         "Failed to insert".to_string()
     })
 }
+
+pub async fn update(pool: &PgPool, mut stack: models::Stack) -> Result<models::Stack, String> {
+    let query_span = tracing::info_span!("Updating user stack into the database");
+    sqlx::query_as!(
+        models::Stack,
+        r#"
+        UPDATE user_stack
+        SET 
+            stack_id=$2,
+            user_id=$3,
+            name=$4,
+            body=$5,
+            created_at=$6, 
+            updated_at=NOW() at time zone 'utc'
+        WHERE id = $1
+        RETURNING *
+        "#,
+        stack.id,
+        stack.stack_id,
+        stack.user_id,
+        stack.name,
+        stack.body,
+        stack.created_at,
+    )
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map(|result|{
+        tracing::info!("Stack {} have been saved to database", stack.id);
+        stack.updated_at = result.updated_at;
+        stack
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
+}
