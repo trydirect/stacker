@@ -22,7 +22,7 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
 
     let accesscontrol_vals = actix_casbin_auth::CasbinVals {
         subject: String::from("alice"),
-        domain: None,
+        domain: Some(String::from("human")),
     };
     if req.extensions_mut().insert(accesscontrol_vals).is_some() {
         return Err((JsonResponse::<i32>::build().unauthorized("sth wrong with access control"), req));

@@ -42,6 +42,7 @@ pub async fn run(
             )
             .service(
                 web::scope("/test")
+                    .wrap(access_control_manager.clone()) 
                     .wrap(middleware::client::Guard::new())
                     .wrap(Cors::permissive())
                     .service(crate::routes::test::deploy::handler),
