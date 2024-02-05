@@ -96,6 +96,14 @@ where
                 None => {}
             }
 
+            let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+                subject: client_id.to_string(),
+                domain: Some(String::from("app")),
+            };
+            if req.extensions_mut().insert(accesscontrol_vals).is_some() {
+                return Err("sth wrong with access control".to_string());
+            }
+
             Ok(req)
         }
         .then(|req| async move {
