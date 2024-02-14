@@ -1,4 +1,6 @@
-use crate::{models, configuration::Settings, forms::user::UserForm, helpers::JsonResponse};
+use crate::{configuration::Settings, helpers::JsonResponse};
+use crate::models;
+use crate::forms;
 use actix_web::{web, dev::ServiceRequest, Error, HttpMessage};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use futures::future::{FutureExt};
@@ -12,20 +14,20 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
     let user = match fetch_user(settings.auth_url.as_str(), token).await {
         Ok(user) => user,
         Err(err) => {
-            return Err((JsonResponse::<i32>::build().unauthorized(err), req));
+            return Err((JsonResponse::<i32>::build().unauthorized(err), req)); //todo anonymous
         }
     };
 
     if req.extensions_mut().insert(Arc::new(user)).is_some() {
-        return Err((JsonResponse::<i32>::build().unauthorized("user already logged"), req));
+        return Err((JsonResponse::<i32>::build().unauthorized("user already logged"), req)); //todo 500 internal error
     }
 
     let accesscontrol_vals = actix_casbin_auth::CasbinVals {
-        subject: String::from("alice"),
-        domain: Some(String::from("human")),
+        subject: String::from("alice"), //todo username or anonymous
+        domain: None,
     };
     if req.extensions_mut().insert(accesscontrol_vals).is_some() {
-        return Err((JsonResponse::<i32>::build().unauthorized("sth wrong with access control"), req));
+        return Err((JsonResponse::<i32>::build().unauthorized("sth wrong with access control"), req)); //todo 500 internal error
     }
 
     Ok(req)
@@ -47,7 +49,7 @@ async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String>
     }
 
     resp
-        .json::<UserForm>()
+        .json::<forms::UserForm>()
         .await
         .map_err(|_err| "can't parse the response body".to_string())?
         .try_into()
