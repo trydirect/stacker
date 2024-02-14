@@ -98,7 +98,7 @@ where
 
             let accesscontrol_vals = actix_casbin_auth::CasbinVals {
                 subject: client_id.to_string(),
-                domain: Some(String::from("app")),
+                domain: None,
             };
             if req.extensions_mut().insert(accesscontrol_vals).is_some() {
                 return Err("sth wrong with access control".to_string());
