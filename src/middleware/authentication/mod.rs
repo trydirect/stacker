@@ -73,8 +73,8 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id")?;
-            let header_hash: String = get_header(&req, "stacker-hash")?;
+            let client_id: i32 = get_header(&req, "stacker-id")?.unwrap(); //todo
+            let header_hash: String = get_header(&req, "stacker-hash")?.unwrap(); //todo
 
             let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
             let client: Client = db_fetch_client(db_pool, client_id).await?;
@@ -121,25 +121,28 @@ where
     }
 }
 
-fn get_header<T>(req: &ServiceRequest, header_name: &'static str) -> Result<T, String>
+fn get_header<T>(req: &ServiceRequest, header_name: &'static str) -> Result<Option<T>, String>
 where
     T: FromStr,
 {
     let header_value = req
         .headers()
-        .get(HeaderName::from_static(header_name))
-        .ok_or(format!("header {header_name} not found"))?;
+        .get(HeaderName::from_static(header_name));
 
-    let header_value: &str = header_value
-        .to_str()
-        .map_err(|_| format!("header {header_name} can't be converted to string"))?; 
+    if header_value.is_none() {
+        return Ok(None);
+    }
 
     header_value
+        .unwrap()
+        .to_str()
+        .map_err(|_| format!("header {header_name} can't be converted to string"))? 
         .parse::<T>()
         .map_err(|_| format!("header {header_name} has wrong type"))
+        .map(|v| Some(v))
 }
 
-async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Client, String> {
+async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Client, String> { //todo
     let query_span = tracing::info_span!("Fetching the client by ID");
 
     sqlx::query_as!(
@@ -162,7 +165,7 @@ async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Cli
 }
 
 async fn compute_body_hash(req: &mut ServiceRequest, client_secret: &[u8]) -> Result<String, String> {
-    let content_length: usize = get_header(req, CONTENT_LENGTH.as_str())?;
+    let content_length: usize = get_header(req, CONTENT_LENGTH.as_str())?.unwrap(); //todo
     let mut body = BytesMut::with_capacity(content_length);
     let mut payload = req.take_payload();
     while let Some(chunk) = payload.next().await {
