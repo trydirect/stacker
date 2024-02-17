@@ -24,18 +24,13 @@ pub async fn run(
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
 
-    let authorization_manager = middleware::authorization_manager::try_new(settings.database.connection_string()).await?;
+    let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
 
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            /*
-                    .wrap(middleware::client::Guard::new())
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-            */
-            .wrap(authorization_manager.clone()) 
+            .wrap(middleware::authentication::Manager::new())
+            .wrap(authorization.clone()) 
             .wrap(Cors::permissive())
             .service(
                 web::scope("/health_check").service(routes::health_check)
