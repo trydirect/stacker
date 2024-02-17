@@ -73,40 +73,25 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let client_id: i32 = get_header(&req, "stacker-id")?.unwrap(); //todo
-            let header_hash: String = get_header(&req, "stacker-hash")?.unwrap(); //todo
-
-            let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
-            let client: Client = db_fetch_client(db_pool, client_id).await?;
-            if client.secret.is_none() {
-                return Err("client is not active".to_string());
-            }
-
-            let client_secret = client.secret.as_ref().unwrap().as_bytes();
-            let body_hash = compute_body_hash(&mut req, client_secret).await?;
-            if header_hash != body_hash {
-                return Err("hash is wrong".to_string());
-            }
-
-            match req.extensions_mut().insert(Arc::new(client)) {
-                Some(_) => {
-                    tracing::error!("client middleware already called once");
-                    return Err("".to_string());
+            let authorization = get_header::<String>(&req, "authorization")?;
+            let client_id = get_header::<i32>(&req, "stacker-id")?;
+            if authorization.is_some() {
+                //try_authorize_bearer(); //todo
+            } else if client_id.is_some() {
+                try_authorize_id_hash(&mut req, client_id.unwrap()).await?;
+            } else {
+                let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+                    subject: "anonym".to_string(),
+                    domain: None,
+                };
+                if req.extensions_mut().insert(accesscontrol_vals).is_some() {
+                    return Err("sth wrong with access control".to_string());
                 }
-                None => {}
-            }
-
-            let accesscontrol_vals = actix_casbin_auth::CasbinVals {
-                subject: client_id.to_string(),
-                domain: None,
-            };
-            if req.extensions_mut().insert(accesscontrol_vals).is_some() {
-                return Err("sth wrong with access control".to_string());
             }
 
             Ok(req)
         }
-        .then(|req| async move {
+        .then(|req: Result<ServiceRequest, String>| async move {
             match req {
                 Ok(req) => {
                     let service = service.lock().await;
@@ -165,7 +150,7 @@ async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Cli
 }
 
 async fn compute_body_hash(req: &mut ServiceRequest, client_secret: &[u8]) -> Result<String, String> {
-    let content_length: usize = get_header(req, CONTENT_LENGTH.as_str())?.unwrap(); //todo
+    let content_length: usize = get_header(req, CONTENT_LENGTH.as_str())?.unwrap(); 
     let mut body = BytesMut::with_capacity(content_length);
     let mut payload = req.take_payload();
     while let Some(chunk) = payload.next().await {
@@ -187,4 +172,42 @@ async fn compute_body_hash(req: &mut ServiceRequest, client_secret: &[u8]) -> Re
     req.set_payload(payload.into());
 
     Ok(format!("{:x}", mac.finalize().into_bytes()))
+}
+
+async fn try_authorize_id_hash(req: &mut ServiceRequest, client_id: i32) -> Result<(), String> {
+    let header_hash = get_header::<String>(&req, "stacker-hash")?; 
+    if header_hash.is_none() {
+        return Err("stacker-hash header is not set".to_string());
+    } //todo
+    let header_hash = header_hash.unwrap();
+
+    let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
+    let client: Client = db_fetch_client(db_pool, client_id).await?;
+    if client.secret.is_none() {
+        return Err("client is not active".to_string());
+    }
+
+    let client_secret = client.secret.as_ref().unwrap().as_bytes();
+    let body_hash = compute_body_hash(req, client_secret).await?;
+    if header_hash != body_hash {
+        return Err("hash is wrong".to_string());
+    }
+
+    match req.extensions_mut().insert(Arc::new(client)) {
+        Some(_) => {
+            tracing::error!("client middleware already called once");
+            return Err("".to_string());
+        }
+        None => {}
+    }
+
+    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+        subject: client_id.to_string(),
+        domain: None,
+    };
+    if req.extensions_mut().insert(accesscontrol_vals).is_some() {
+        return Err("sth wrong with access control".to_string());
+    }
+
+    Ok(())
 }

@@ -29,8 +29,8 @@ pub async fn run(
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .wrap(middleware::authentication::Manager::new())
             .wrap(authorization.clone()) 
+            .wrap(middleware::authentication::Manager::new())
             .wrap(Cors::permissive())
             .service(
                 web::scope("/health_check").service(routes::health_check)
