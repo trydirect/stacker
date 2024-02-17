@@ -1,24 +1,34 @@
-use crate::helpers::JsonResponse;
-use crate::models::Client;
+use crate::{
+    helpers::JsonResponse,
+    models,
+    forms,
+    configuration::Settings,
+};
 use actix_http::header::CONTENT_LENGTH;
-use actix_web::web::BytesMut;
-use actix_web::HttpMessage;
-use futures::future::{FutureExt, LocalBoxFuture};
-use futures::lock::Mutex;
-use futures::task::{Context, Poll};
-use futures::StreamExt;
+use futures::{
+    future::{FutureExt, LocalBoxFuture},
+    lock::Mutex,
+    task::{Context, Poll},
+    StreamExt,
+};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use std::future::{ready, Ready};
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{
+    future::{ready, Ready},
+    str::FromStr,
+    sync::Arc,
+};
 use tracing::Instrument;
-
-use actix_web::{
-    dev::{Service, ServiceRequest, ServiceResponse, Transform},
+use actix_web::{};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use actix_web::{ 
+    web::BytesMut,
+    HttpMessage,
+    web,
+    Error,
+    dev::{ServiceRequest, Service, ServiceResponse, Transform},
     error::ErrorBadRequest,
     http::header::HeaderName,
-    web, Error,
 };
 use sqlx::{Pool, Postgres};
 
@@ -76,7 +86,7 @@ where
             let authorization = get_header::<String>(&req, "authorization")?;
             let client_id = get_header::<i32>(&req, "stacker-id")?;
             if authorization.is_some() {
-                //try_authorize_bearer(); //todo
+                try_authorize_bearer(&mut req, authorization.unwrap()).await?; 
             } else if client_id.is_some() {
                 try_authorize_id_hash(&mut req, client_id.unwrap()).await?;
             } else {
@@ -98,7 +108,7 @@ where
                     service.call(req).await
                 }
                 Err(msg) => Err(ErrorBadRequest(
-                    JsonResponse::<Client>::build().set_msg(msg).to_string(),
+                    JsonResponse::<models::Client>::build().set_msg(msg).to_string(),
                 )),
             }
         })
@@ -127,11 +137,11 @@ where
         .map(|v| Some(v))
 }
 
-async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<Client, String> { //todo
+async fn db_fetch_client(db_pool: &Pool<Postgres>, client_id: i32) -> Result<models::Client, String> { //todo
     let query_span = tracing::info_span!("Fetching the client by ID");
 
     sqlx::query_as!(
-        Client,
+        models::Client,
         r#"SELECT id, user_id, secret FROM client c WHERE c.id = $1"#,
         client_id,
         )
@@ -174,6 +184,7 @@ async fn compute_body_hash(req: &mut ServiceRequest, client_secret: &[u8]) -> Re
     Ok(format!("{:x}", mac.finalize().into_bytes()))
 }
 
+#[tracing::instrument(name = "try authorize. stacker-id header")]
 async fn try_authorize_id_hash(req: &mut ServiceRequest, client_id: i32) -> Result<(), String> {
     let header_hash = get_header::<String>(&req, "stacker-hash")?; 
     if header_hash.is_none() {
@@ -182,7 +193,7 @@ async fn try_authorize_id_hash(req: &mut ServiceRequest, client_id: i32) -> Resu
     let header_hash = header_hash.unwrap();
 
     let db_pool = req.app_data::<web::Data<Pool<Postgres>>>().unwrap().get_ref();
-    let client: Client = db_fetch_client(db_pool, client_id).await?;
+    let client: models::Client = db_fetch_client(db_pool, client_id).await?;
     if client.secret.is_none() {
         return Err("client is not active".to_string());
     }
@@ -210,4 +221,52 @@ async fn try_authorize_id_hash(req: &mut ServiceRequest, client_id: i32) -> Resu
     }
 
     Ok(())
+}
+
+#[tracing::instrument(name = "try authorize. Authorization header")]
+async fn try_authorize_bearer(req: &mut ServiceRequest, authorization: String) -> Result<(), String> {
+    let settings = req.app_data::<web::Data<Settings>>().unwrap();
+    let token = "abc"; //todo
+    let user = match fetch_user(settings.auth_url.as_str(), token).await {
+        Ok(user) => user,
+        Err(err) => {
+            return Err(format!("{}", err));
+        }
+    }; //todo . process the err
+
+    if req.extensions_mut().insert(Arc::new(user)).is_some() {
+        return Err("user already logged".to_string());
+    }
+
+    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+        subject: String::from("alice"), //todo username or anonymous
+        domain: None,
+    };
+    if req.extensions_mut().insert(accesscontrol_vals).is_some() {
+        return Err("sth wrong with access control".to_string());
+    }
+
+    Ok(())
+}
+
+async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(auth_url)
+        .bearer_auth(token)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|_err| "no resp from auth server".to_string())?;
+
+    if !resp.status().is_success() {
+        return Err("401 Unauthorized".to_string());
+    }
+
+    resp
+        .json::<forms::UserForm>()
+        .await
+        .map_err(|_err| "can't parse the response body".to_string())?
+        .try_into()
 }
