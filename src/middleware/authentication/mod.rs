@@ -22,15 +22,15 @@ use actix_web::{
 };
 use sqlx::{Pool, Postgres};
 
-pub struct Guard {}
+pub struct Manager {}
 
-impl Guard {
+impl Manager {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl<S, B> Transform<S, ServiceRequest> for Guard
+impl<S, B> Transform<S, ServiceRequest> for Manager
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
     S::Future: 'static,
@@ -39,21 +39,21 @@ where
     type Response = ServiceResponse<B>;
     type Error = Error;
     type InitError = ();
-    type Transform = GuardMiddleware<S>;
+    type Transform = ManagerMiddleware<S>;
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ready(Ok(GuardMiddleware {
+        ready(Ok(ManagerMiddleware {
             service: Arc::new(Mutex::new(service)),
         }))
     }
 }
 
-pub struct GuardMiddleware<S> {
+pub struct ManagerMiddleware<S> {
     service: Arc<Mutex<S>>,
 }
 
-impl<S, B> Service<ServiceRequest> for GuardMiddleware<S>
+impl<S, B> Service<ServiceRequest> for ManagerMiddleware<S>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
     S::Future: 'static,
@@ -66,7 +66,7 @@ where
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service
             .try_lock()
-            .expect("GuardMiddleware was called allready")
+            .expect("Authentication ManagerMiddleware was called allready")
             .poll_ready(ctx)
     }
 

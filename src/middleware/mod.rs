@@ -1,3 +1,3 @@
-pub mod client;
+pub mod authentication;
 pub mod trydirect;
-pub mod authorization_manager;
+pub mod authorization;
