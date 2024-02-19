@@ -1,4 +1,9 @@
 use crate::middleware::authentication::*;
+use actix_web::{error::ErrorBadRequest, HttpMessage, Error, dev::{ServiceRequest, ServiceResponse, Service}};
+use crate::helpers::JsonResponse;
+use futures::{task::{Poll, Context}, future::{FutureExt, LocalBoxFuture}, lock::Mutex};
+use crate::models;
+use std::sync::Arc;
 
 pub struct ManagerMiddleware<S> {
     pub service: Arc<Mutex<S>>,
@@ -24,13 +29,14 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let authorization = get_header::<String>(&req, "authorization")?;
-            let client_id = get_header::<i32>(&req, "stacker-id")?;
-            if authorization.is_some() {
-                try_authorize_bearer(&mut req, authorization.unwrap()).await?; 
-            } else if client_id.is_some() {
-                try_authorize_id_hash(&mut req, client_id.unwrap()).await?;
-            } else {
+            /*
+            method::try_oauth(&mut req).await?
+            || method::try_hmac(&mut req).await?
+            || method::anonym(&mut req); //todo
+            */
+
+            if (!(method::try_oauth(&mut req).await? || method::try_hmac(&mut req).await?)) 
+            {
                 let accesscontrol_vals = actix_casbin_auth::CasbinVals {
                     subject: "anonym".to_string(),
                     domain: None,
