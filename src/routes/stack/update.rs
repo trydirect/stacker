@@ -35,6 +35,12 @@ pub async fn update(
         return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
     }
 
+    let form_inner = form.into_inner();
+
+    if !form_inner.is_readable_docker_image().await.is_ok() {
+        return Err(JsonResponse::<models::Stack>::build().bad_request("Can not access docker image"));
+    }
+
     let body: Value = serde_json::to_value::<forms::stack::Stack>(form.into_inner())
         .map_err(|err| 
             JsonResponse::<models::Stack>::build().bad_request(format!("{err}"))

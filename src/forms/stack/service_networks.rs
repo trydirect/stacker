@@ -10,13 +10,16 @@ impl TryFrom<&ServiceNetworks> for dctypes::Networks {
     type Error = ();
 
     fn try_from(service_networks: &ServiceNetworks) -> Result<dctypes::Networks, Self::Error> {
-        let mut result = vec!["default_network".to_string()];
-        service_networks.network.as_ref().map(|networks| {
-            for n in networks {
-                result.push(n.to_string());
+        let mut default_networks = vec![];
+        let nets = match  service_networks.network.as_ref() {
+            Some(mut _nets) => {
+                    _nets.append(&mut default_networks);
+                _nets
             }
-        });
-
+            None => {
+               default_networks
+            }
+        };
         Ok(dctypes::Networks::Simple(result))
     }
 }

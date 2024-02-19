@@ -36,7 +36,7 @@ pub async fn list(
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// This is admin endpoint, used by a m2m app, client app is confidential
+    /// This is admin endpoint, used by a client app, client app is confidential
     /// it should return stacks by user id
     /// in order to pass validation at external deployment service
     let user_id = path.into_inner().0;

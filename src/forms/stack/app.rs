@@ -4,6 +4,8 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
+use crate::forms::stack::network::Network;
+use crate::forms::stack::replace_id_with_name;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct App {
@@ -72,7 +74,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn named_volumes(&self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>> { 
+    #[tracing::instrument(name = "named_volumes")]
+    pub fn named_volumes(&self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>> {
         let mut named_volumes = IndexMap::default();
 
         if self.volumes.is_none() {
@@ -80,21 +83,16 @@ impl App {
         }
 
         for volume in self.volumes.as_ref().unwrap() {
-            if !volume.is_named_docker() {
+            if !volume.is_named_docker_volume() {
                 continue;
             }
 
             let k = volume.host_path.as_ref().unwrap().clone();
-            let v = dctypes::MapOrEmpty::Map(dctypes::ComposeVolume {
-                driver: None,
-                driver_opts: Default::default(),
-                external: None,
-                labels: Default::default(),
-                name: Some(k.clone()),
-            });
+            let v = dctypes::MapOrEmpty::Map(volume.into());
             named_volumes.insert(k, v);
         }
 
+        tracing::debug!("Named volumes: {:?}", named_volumes);
         named_volumes
     }
 }
@@ -108,13 +106,23 @@ impl AsRef<forms::stack::DockerImage> for App {
 impl TryFrom<&App> for dctypes::Service {
     type Error = String;
 
-    fn try_from(app: &App) -> Result<Self, Self::Error> {
+    fn try_from(args:(&App, Vec<Network>)) -> Result<Self, Self::Error> {
+        let (app, all_networks) = args;
+
         let mut service = dctypes::Service {
             image: Some(app.docker_image.to_string()),
             ..Default::default()
         };
 
         let networks = dctypes::Networks::try_from(&app.network).unwrap_or_default();
+
+        // @todo refactoring all_networks and
+        // let networks = replace_id_with_name(service_networks, all_networks);
+        // service.networks = Networks::Simple(networks);
+
+        let networks = replace_id_with_name(networks, &all_networks);
+        service.networks = dctypes::Networks::Simple(networks);
+
         let ports: Vec<dctypes::Port> = match &app.ports {
             Some(ports) => {
                 let mut collector = vec![];
