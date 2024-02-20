@@ -6,7 +6,7 @@ use crate::forms;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::sync::Arc;
 
-#[tracing::instrument(name = "try authorize. Authorization header")]
+#[tracing::instrument(name = "try authenticate via bearer")]
 pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
     let authentication = get_header::<String>(&req, "authorization")?; //todo
     if authentication.is_none() {

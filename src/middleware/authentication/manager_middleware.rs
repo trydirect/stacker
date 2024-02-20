@@ -29,22 +29,9 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            /*
             method::try_oauth(&mut req).await?
             || method::try_hmac(&mut req).await?
-            || method::anonym(&mut req); //todo
-            */
-
-            if (!(method::try_oauth(&mut req).await? || method::try_hmac(&mut req).await?)) 
-            {
-                let accesscontrol_vals = actix_casbin_auth::CasbinVals {
-                    subject: "anonym".to_string(),
-                    domain: None,
-                };
-                if req.extensions_mut().insert(accesscontrol_vals).is_some() {
-                    return Err("sth wrong with access control".to_string());
-                }
-            }
+            || method::anonym(&mut req)?;
 
             Ok(req)
         }
