@@ -6,17 +6,30 @@ use crate::forms;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::sync::Arc;
 
+fn try_extract_token(authentication: String) -> Result<String, String> {
+    let mut authentication_parts = authentication.splitn(2, ' ');
+    match authentication_parts.next() {
+        Some("Bearer") => {}
+        _ => return Err("Bearer missing scheme".to_string())
+    }
+    let token = authentication_parts.next();
+    if token.is_none() {
+        return Err("Empty bearer token".to_string());
+    }
+
+    Ok(token.unwrap().into())
+}
+
 #[tracing::instrument(name = "try authenticate via bearer")]
 pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
-    let authentication = get_header::<String>(&req, "authorization")?; //todo
-    println!("{authentication:?}");
+    let authentication = get_header::<String>(&req, "authorization")?;
     if authentication.is_none() {
         return Ok(false);
     }
 
+    let token = try_extract_token(authentication.unwrap())?; 
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
-    let token = "abc"; //todo
-    let user = match fetch_user(settings.auth_url.as_str(), token).await {
+    let user = match fetch_user(settings.auth_url.as_str(), &token).await {
         Ok(user) => user,
         Err(err) => {
             return Err(format!("{}", err));
