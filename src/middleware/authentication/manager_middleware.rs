@@ -29,7 +29,7 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            method::try_oauth(&mut req).await?
+            let _ = method::try_oauth(&mut req).await?
             || method::try_hmac(&mut req).await?
             || method::anonym(&mut req)?;
 
