@@ -15,6 +15,8 @@ pub async fn disable_handler(
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
+    //todo. the owner
+    //todo. add admin endpoint
     let client_id = path.0;
     let mut client = db::client::fetch(pg_pool.get_ref(), client_id)
         .await
