@@ -29,21 +29,19 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
 
     let token = try_extract_token(authentication.unwrap())?; 
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
-    let user = match fetch_user(settings.auth_url.as_str(), &token).await {
-        Ok(user) => user,
-        Err(err) => {
-            return Err(format!("{}", err));
-        }
-    }; //todo . process the err
+    let user = fetch_user(settings.auth_url.as_str(), &token)
+        .await
+        .map_err(|err| format!("{err}"))?;
+
+    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+        subject: user.id.clone(),
+        domain: None,
+    };
 
     if req.extensions_mut().insert(Arc::new(user)).is_some() {
         return Err("user already logged".to_string());
     }
 
-    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
-        subject: String::from("alice"), //todo username or anonymous
-        domain: None,
-    };
     if req.extensions_mut().insert(accesscontrol_vals).is_some() {
         return Err("sth wrong with access control".to_string());
     }
