@@ -149,9 +149,12 @@ pub struct StackForm {
     #[validate(max_length = 50)]
     pub disk_type: Option<String>,
     pub save_token: bool,
-    #[validate(min_length = 10)]
     #[validate(max_length = 255)]
-    pub cloud_token: String,
+    pub cloud_token: Option<String>,
+    #[validate(max_length = 255)]
+    pub cloud_key: Option<String>,
+    #[validate(max_length = 255)]
+    pub cloud_secret: Option<String>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
     pub provider: String,
@@ -216,10 +219,10 @@ pub struct StackPayload {
     pub subscriptions: Option<Vec<String>>,
     pub form_app: Option<Vec<String>>,
     pub disk_type: Option<String>,
-    #[serde(rename = "save_token")]
     pub save_token: bool,
-    #[serde(rename = "cloud_token")]
-    pub cloud_token: String,
+    pub cloud_token: Option<String>,
+    pub cloud_key: Option<String>,
+    pub cloud_secret: Option<String>,
     pub provider: String,
     pub stack_code: String,
     #[serde(rename = "selected_plan")]

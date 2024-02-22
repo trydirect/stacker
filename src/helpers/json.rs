@@ -74,6 +74,10 @@ where
         ErrorBadRequest(self.set_msg(msg).to_string())
     }
 
+    pub(crate) fn form_error(self, msg: String) -> Error {
+        ErrorBadRequest(msg)
+    }
+
     pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> Error {
         ErrorNotFound(self.set_msg(msg).to_string())
     }

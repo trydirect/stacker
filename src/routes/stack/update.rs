@@ -61,10 +61,10 @@ pub async fn update(
     let _request_span_guard = request_span.enter(); // ->exit
 
     if !form.validate().is_ok() {
-        let errors = form.validate().unwrap_err();
-        tracing::debug!("Invalid data received {:?}", &errors.to_string());
+        let errors = form.validate().unwrap_err().to_string();
+        tracing::debug!("Invalid data received {:?}", &errors);
 
-        return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+        return Err(JsonResponse::<models::Stack>::build().form_error(errors));
     }
 
     tracing::info!("request_id {} Updating '{}' '{}'",
