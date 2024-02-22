@@ -20,13 +20,13 @@ pub struct Requirements {
     pub cpu: Option<String>,
     #[validate(min_length = 1)]
     #[validate(max_length = 10)]
-    #[validate(pattern = r"^\d+G$")]
+    #[validate(pattern = r"^\d+Gb?$")]
     #[serde(rename = "disk_size")]
     pub disk_size: Option<String>,
     #[serde(rename = "ram_size")]
     #[validate(min_length = 1)]
     #[validate(max_length = 10)]
-    #[validate(pattern = r"^\d+G$")]
+    #[validate(pattern = r"^\d+Gb?$")]
     pub ram_size: Option<String>,
 }
 
@@ -128,7 +128,7 @@ pub struct StackForm {
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
     pub region: String,
-    #[validate(min_length = 2)]
+    #[validate(min_length = 1)]
     #[validate(max_length = 50)]
     pub zone: Option<String>,
     #[validate(min_length = 2)]
