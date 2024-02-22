@@ -69,11 +69,11 @@ async fn body_into_form(body: Bytes) -> Result<StackForm, Error> {
             tracing::debug!("Validating form ...");
 
             if !form.validate().is_ok() {
-                let errors = form.validate().unwrap_err();
-                let err_msg = format!("Invalid data received {:?}", &errors.to_string());
+                let errors = form.validate().unwrap_err().to_string();
+                let err_msg = format!("Invalid data received {:?}", &errors);
                 tracing::debug!(err_msg);
 
-                return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+                return Err(JsonResponse::<models::Stack>::build().form_error(errors));
             }
 
             Ok(form)
