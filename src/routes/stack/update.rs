@@ -41,7 +41,7 @@ pub async fn update(
         return Err(JsonResponse::<models::Stack>::build().bad_request("Can not access docker image"));
     }
 
-    let body: Value = serde_json::to_value::<forms::stack::Stack>(form.into_inner())
+    let body: Value = serde_json::to_value::<forms::stack::Stack>(form_inner)
         .map_err(|err| 
             JsonResponse::<models::Stack>::build().bad_request(format!("{err}"))
         )?; 
