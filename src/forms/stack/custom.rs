@@ -68,20 +68,20 @@ impl Custom {
         let all_networks = self.networks.networks.clone().unwrap_or(vec![]);
 
         for app_type in &self.web {
-            let service = dctypes::Service::try_from((&app_type.app, &all_networks))?;
+            let service = app_type.app.try_into_service(&all_networks)?;
             services.insert(app_type.app.code.clone().to_owned(), Some(service));
         }
 
         if let Some(srvs) = &self.service {
             for app_type in srvs {
-                let service = dctypes::Service::try_from((&app_type.app, &all_networks))?;
+                let service = app_type.app.try_into_service(&all_networks)?;
                 services.insert(app_type.app.code.clone().to_owned(), Some(service));
             }
         }
 
         if let Some(features) = &self.feature {
             for app_type in features {
-                let service = dctypes::Service::try_from((&app_type.app, &all_networks))?;
+                let service = app_type.app.try_into_service(&all_networks)?;
                 services.insert(app_type.app.code.clone().to_owned(), Some(service));
             }
         }

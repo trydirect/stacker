@@ -60,34 +60,3 @@ impl Into<dctypes::NetworkSettings> for Network {
         }
     }
 }
-impl Into<IndexMap<String, dctypes::MapOrEmpty<dctypes::NetworkSettings>>> for stack::ComposeNetworks {
-    fn into(self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::NetworkSettings>> {
-
-        // let mut default_networks = vec![Network::default()];
-        let mut default_networks = vec![];
-
-        let networks = match self.networks {
-            None => {
-                default_networks
-            }
-            Some(mut nets) => {
-                if !nets.is_empty() {
-                    nets.append(&mut default_networks);
-                }
-                nets
-            }
-        };
-
-        let networks = networks
-            .into_iter()
-            .map(|net| {
-                (net.name.clone(), dctypes::MapOrEmpty::Map(net.into()))
-            }
-            )
-            .collect::<IndexMap<String, _>>();
-
-        tracing::debug!("networks collected {:?}", &networks);
-
-        networks
-    }
-}

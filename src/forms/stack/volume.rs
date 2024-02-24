@@ -50,11 +50,12 @@ impl TryInto<dctypes::AdvancedVolumes> for &Volume {
     }
 }
 
-impl Into<dctypes::ComposeVolume> for Volume {
+impl Into<dctypes::ComposeVolume> for &Volume {
     fn into(self) -> dctypes::ComposeVolume {
         // let's create a symlink to /var/docker/volumes in project docroot
         let mut driver_opts = IndexMap::default();
-        let host_path = self.host_path.unwrap();
+        let host_path = self.host_path.clone().unwrap_or_else(String::default);
+        // @todo check if host_path is required argument
         driver_opts.insert(String::from("type"), Some(dctypes::SingleValue::String("none".to_string())));
         driver_opts.insert(String::from("o"), Some(dctypes::SingleValue::String("bind".to_string())));
         // @todo move to config stack docroot on host

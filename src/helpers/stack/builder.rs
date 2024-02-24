@@ -31,8 +31,8 @@ impl DcBuilder {
 
 // <<<<<<< HEAD
         let apps = forms::stack::Stack::try_from(&self.stack)?; 
-        let  services = apps.custom.services()?;
-        let  named_volumes = apps.custom.named_volumes()?;
+        let services = apps.custom.services()?;
+        let named_volumes = apps.custom.named_volumes()?;
 
         // let all_networks = &apps.custom.networks.networks.clone().unwrap_or(vec![]);
         let networks = apps.custom.networks.clone();

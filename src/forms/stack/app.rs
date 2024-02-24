@@ -5,7 +5,7 @@ use serde_json::Value;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 use crate::forms::stack::network::Network;
-use crate::forms::stack::replace_id_with_name;
+use crate::forms::stack::{DockerImage, replace_id_with_name};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct App {
@@ -95,35 +95,21 @@ impl App {
         tracing::debug!("Named volumes: {:?}", named_volumes);
         named_volumes
     }
-}
 
-impl AsRef<forms::stack::DockerImage> for App {
-    fn as_ref(&self) -> &forms::stack::DockerImage {
-        &self.docker_image
-    }
-}
 
-impl TryFrom<&App> for dctypes::Service {
-    type Error = String;
-
-    fn try_from(args:(&App, Vec<Network>)) -> Result<Self, Self::Error> {
-        let (app, all_networks) = args;
+    pub(crate) fn try_into_service(&self, all_networks: &Vec<Network>) -> Result<dctypes::Service, String> {
 
         let mut service = dctypes::Service {
-            image: Some(app.docker_image.to_string()),
+            image: Some(self.docker_image.to_string()),
             ..Default::default()
         };
 
-        let networks = dctypes::Networks::try_from(&app.network).unwrap_or_default();
+        let networks = dctypes::Networks::try_from(&self.network).unwrap_or_default();
 
-        // @todo refactoring all_networks and
-        // let networks = replace_id_with_name(service_networks, all_networks);
-        // service.networks = Networks::Simple(networks);
-
-        let networks = replace_id_with_name(networks, &all_networks);
+        let networks = replace_id_with_name(networks, all_networks);
         service.networks = dctypes::Networks::Simple(networks);
 
-        let ports: Vec<dctypes::Port> = match &app.ports {
+        let ports: Vec<dctypes::Port> = match &self.ports {
             Some(ports) => {
                 let mut collector = vec![];
                 for port in ports {
@@ -134,7 +120,7 @@ impl TryFrom<&App> for dctypes::Service {
             None => vec![]
         };
 
-        let volumes: Vec<dctypes::Volumes> = match &app.volumes {
+        let volumes: Vec<dctypes::Volumes> = match &self.volumes {
             Some(volumes) => {
                 let mut collector = vec![];
                 for volume in volumes {
@@ -147,7 +133,7 @@ impl TryFrom<&App> for dctypes::Service {
         };
 
         let mut envs = IndexMap::new();
-        for item in app.environment.environment.clone().unwrap_or_default() {
+        for item in self.environment.environment.clone().unwrap_or_default() {
             let items = item
                 .into_iter()
                 .map(|(k, v)| (k, Some(dctypes::SingleValue::String(v.clone()))))
@@ -156,12 +142,17 @@ impl TryFrom<&App> for dctypes::Service {
             envs.extend(items);
         }
 
-        service.networks = networks;
         service.ports = dctypes::Ports::Long(ports);
         service.restart = Some("always".to_owned());
         service.volumes = volumes;
         service.environment = dctypes::Environment::KvPair(envs);
 
         Ok(service)
+    }
+}
+
+impl AsRef<forms::stack::DockerImage> for App {
+    fn as_ref(&self) -> &forms::stack::DockerImage {
+        &self.docker_image
     }
 }

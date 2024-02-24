@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
+use crate::forms::stack;
 use crate::forms::stack::network::Network;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,3 +39,4 @@ impl Into<IndexMap<String, dctypes::MapOrEmpty<dctypes::NetworkSettings>>> for C
         networks
     }
 }
+

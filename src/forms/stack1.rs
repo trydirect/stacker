@@ -4,7 +4,6 @@ use serde_valid::Validate;
 use std::fmt;
 use indexmap::IndexMap;
 use regex::Regex;
-use crate::helpers::dockerhub::DockerHub;
 use crate::helpers::stack::dctypes::SingleValue;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -102,19 +101,6 @@ impl fmt::Display for DockerImage {
 }
 
 
-impl DockerImage {
-    #[tracing::instrument(name = "is_active")]
-    pub async fn is_active(&self) -> Result<bool, String> {
-        DockerHub::from(self).is_active().await
-    }
-}
-
-
-impl AsRef<DockerImage> for App {
-    fn as_ref(&self) -> &DockerImage {
-        &self.docker_image
-    }
-}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct StackForm {
