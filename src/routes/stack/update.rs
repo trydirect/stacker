@@ -24,7 +24,7 @@ pub async fn update(
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
             Some(stack) => Ok(stack),
-            None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
+            None => Err(JsonResponse::<models::Stack>::build().not_found("Object not found")),
         })?;
 
     let stack_name = form.custom.custom_stack_code.clone();
@@ -32,7 +32,7 @@ pub async fn update(
     let user_id = user.id.clone();
 
     if let Err(errors) = form.validate() {
-        return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+        return Err(JsonResponse::<models::Stack>::build().form_error(errors.unwrap_err().to_string()));
     }
 
     let form_inner = form.into_inner();

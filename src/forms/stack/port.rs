@@ -1,11 +1,17 @@
 use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
+use serde_valid::Validate;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Port {
+    #[validate(custom(|v| validate_non_empty(v)))]
     pub host_port: Option<String>,
-    pub container_port: Option<String>,
+    #[validate(pattern = r"^\d{2,6}+$")]
+    pub container_port: String,
+    #[validate(enumerate("tcp", "udp"))]
+    pub protocol: Option<String>,
 }
+
 
 // impl Default for Port{
 //     fn default() -> Self {
