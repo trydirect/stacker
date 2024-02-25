@@ -21,3 +21,38 @@ impl TryFrom<&ServiceNetworks> for dctypes::Networks {
         Ok(dctypes::Networks::Simple(nets.into()))
     }
 }
+
+// IndexMap
+//
+// impl Into<IndexMap<String, MapOrEmpty<NetworkSettings>>> for stack::ComposeNetworks {
+//     fn into(self) -> IndexMap<String, MapOrEmpty<NetworkSettings>> {
+//
+//         // let mut default_networks = vec![Network::default()];
+//         let mut default_networks = vec![];
+//
+//         let networks = match self.networks {
+//             None => {
+//                 default_networks
+//             }
+//             Some(mut nets) => {
+//                 if !nets.is_empty() {
+//                     nets.append(&mut default_networks);
+//                 }
+//                 nets
+//             }
+//         };
+//
+//         let networks = networks
+//             .into_iter()
+//             .map(|net| {
+//                 (net.name.clone(), MapOrEmpty::Map(net.into()))
+//             }
+//             )
+//             .collect::<IndexMap<String, _>>();
+//
+//         tracing::debug!("networks collected {:?}", &networks);
+//
+//         networks
+//     }
+// }
+
