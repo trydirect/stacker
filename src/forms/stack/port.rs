@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
+use regex::Regex;
 use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -11,6 +12,27 @@ pub struct Port {
     #[validate(enumerate("tcp", "udp"))]
     pub protocol: Option<String>,
 }
+
+fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation::Error> {
+    if v.is_none() {
+        return Ok(());
+    }
+
+    if let Some(value) = v {
+        if value.is_empty() {
+            return Ok(());
+        }
+
+        let re = Regex::new(r"^\d{2,6}$").unwrap();
+
+        if !re.is_match(value.as_str()) {
+            return Err(serde_valid::validation::Error::Custom("Port is not valid.".to_owned()));
+        }
+    }
+
+    Ok(())
+}
+
 
 
 // impl Default for Port{
