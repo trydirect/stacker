@@ -50,11 +50,10 @@ fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation:
 impl TryInto<dctypes::Port> for &Port {
     type Error = String;
     fn try_into(self) -> Result<dctypes::Port, Self::Error> {
-        let cp = self
-            .container_port
-            .as_ref()
-            .map_or(Ok(0u16), |s| s.parse::<u16>())
-            .map_err(|_| "Could not parse container port".to_string())?;
+        let cp = self.container_port
+            .clone()
+            .parse::<u16>()
+            .map_err(|err| "Could not parse container port".to_string() )?;
 
         let hp = match self.host_port.clone() {
             Some(hp) => {
