@@ -17,18 +17,16 @@ pub async fn item(
     /// Get stack apps of logged user only
     let (id,) = path.into_inner();
 
-    let stack = db::stack::fetch(pg_pool.get_ref(), id)
+    db::stack::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
             Some(stack) if stack.user_id != user.id => {
                 Err(JsonResponse::<models::Stack>::build().not_found("not found"))
             }
-            Some(stack) => Ok(stack),
+            Some(stack) => Ok(JsonResponse::build().set_item(Some(stack)).ok("OK")),
             None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
-        })?;
-
-    Ok(JsonResponse::build().set_item(Some(stack)).ok("OK"))
+        })
 }
 
 #[tracing::instrument(name = "Get user's stack list.")]
@@ -38,7 +36,7 @@ pub async fn list(
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// This is admin endpoint, used by a m2m app, client app is confidential
+    /// This is admin endpoint, used by a client app, client app is confidential
     /// it should return stacks by user id
     /// in order to pass validation at external deployment service
     let user_id = path.into_inner().0;

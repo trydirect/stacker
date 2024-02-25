@@ -20,6 +20,14 @@ pub async fn bearer_guard( req: ServiceRequest, credentials: BearerAuth) -> Resu
         return Err((JsonResponse::<i32>::build().unauthorized("user already logged"), req));
     }
 
+    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+        subject: String::from("alice"),
+        domain: None,
+    };
+    if req.extensions_mut().insert(accesscontrol_vals).is_some() {
+        return Err((JsonResponse::<i32>::build().unauthorized("sth wrong with access control"), req));
+    }
+
     Ok(req)
 }
 
