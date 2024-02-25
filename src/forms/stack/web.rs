@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+use serde_valid::Validate;
 use crate::forms::stack::*;
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Web {
     #[serde(flatten)]
     pub app: App,
