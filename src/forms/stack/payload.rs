@@ -35,7 +35,7 @@ pub struct Payload {
     pub stack_code: String,
     #[serde(rename = "selected_plan")]
     pub selected_plan: String,
-    pub custom: Custom,
+    pub custom: forms::stack::Custom,
     pub docker_compose: Option<Vec<u8>>,
 }
 

@@ -39,8 +39,8 @@ pub async fn add(
         .map_err(|err| JsonResponse::<models::Stack>::build().bad_request(err))?;
     stack_data.user_token = Some(user.id.clone());
     stack_data.user_email = Some(user.email.clone());
-    let compressed = fc.unwrap_or("".to_string());
-    stack_data.docker_compose = Some(compress(compressed.as_str()));
+    // let compressed = fc.unwrap_or("".to_string());
+    stack_data.docker_compose = Some(compress(fc.as_str()));
 
     mq_manager
         .publish_and_confirm(
