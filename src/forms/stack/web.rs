@@ -7,5 +7,4 @@ pub struct Web {
     #[serde(flatten)]
     pub app: App,
     pub custom: Option<bool>,
-    pub main: bool,
 }
