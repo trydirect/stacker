@@ -132,14 +132,15 @@ impl App {
         };
 
         let mut envs = IndexMap::new();
-        for item in self.environment.environment.clone().unwrap_or_default() {
+        for item in self.environment.environment.clone() {
             let items = item
                 .into_iter()
-                .map(|(k, v)| (k, Some(dctypes::SingleValue::String(v.clone()))))
+                .map(|env_var| (env_var.key, Some(dctypes::SingleValue::String(env_var.value.clone()))))
                 .collect::<IndexMap<_, _>>();
 
             envs.extend(items);
         }
+
 
         service.ports = dctypes::Ports::Long(ports);
         service.restart = Some("always".to_owned());
