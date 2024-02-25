@@ -32,7 +32,7 @@ pub async fn update(
     let user_id = user.id.clone();
 
     if let Err(errors) = form.validate() {
-        return Err(JsonResponse::<models::Stack>::build().form_error(errors.unwrap_err().to_string()));
+        return Err(JsonResponse::<models::Stack>::build().form_error(errors.to_string()));
     }
 
     let form_inner = form.into_inner();
