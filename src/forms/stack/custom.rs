@@ -8,8 +8,11 @@ use crate::forms::stack::Network;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Custom {
+    #[validate]
     pub web: Vec<forms::stack::Web>,
+    #[validate]
     pub feature: Option<Vec<forms::stack::Feature>>,
+    #[validate]
     pub service: Option<Vec<forms::stack::Service>>,
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]

@@ -8,6 +8,8 @@ use actix_web::{post, web, web::Data, Responder, Result};
 use lapin::publisher_confirm::Confirmation;
 use sqlx::PgPool;
 use std::sync::Arc;
+use crate::helpers::compressor::compress;
+
 
 #[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
 #[post("/{id}/deploy")]
@@ -29,7 +31,7 @@ pub async fn add(
 
     let id = stack.id.clone();
     let dc = DcBuilder::new(stack);
-    dc.build().map_err(|err| {
+    let fc = dc.build().map_err(|err| {
         JsonResponse::<models::Stack>::build().internal_server_error(err)
     })?;
 
@@ -37,6 +39,8 @@ pub async fn add(
         .map_err(|err| JsonResponse::<models::Stack>::build().bad_request(err))?;
     stack_data.user_token = Some(user.id.clone());
     stack_data.user_email = Some(user.email.clone());
+    let compressed = fc.unwrap_or("".to_string());
+    stack_data.docker_compose = Some(compress(compressed.as_str()));
 
     mq_manager
         .publish_and_confirm(

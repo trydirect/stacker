@@ -14,7 +14,7 @@ pub struct App {
     #[validate(max_length = 255)]
     pub etag: Option<String>,
     #[serde(rename = "_id")]
-    pub id: u32,
+    pub id: String,
     #[serde(rename = "_created")]
     pub created: Option<String>,
     #[serde(rename = "_updated")]
@@ -34,8 +34,10 @@ pub struct App {
     pub default: Option<bool>,
     pub versions: Option<Vec<forms::stack::Version>>,
     #[serde(flatten)]
-    pub docker_image: forms::stack::DockerImage,
+    #[validate]
+    pub docker_image: DockerImage,
     #[serde(flatten)]
+    #[validate]
     pub requirements: forms::stack::Requirements,
     #[validate(minimum = 1)]
     pub popularity: Option<u32>,
@@ -59,18 +61,15 @@ pub struct App {
     pub repo_dir: Option<String>,
     pub url_app: Option<String>,
     pub url_git: Option<String>,
-    pub restart: Option<String>,
+    #[validate(enumerate("always", "no", "unless-stopped", "on-failure"))]
+    pub restart: String,
     pub volumes: Option<Vec<forms::stack::Volume>>,
     #[serde(flatten)]
     pub environment: forms::stack::Environment,
     #[serde(flatten)]
     pub network: forms::stack::ServiceNetworks,
-    // #[serde(flatten)]
-    // pub ports: Ports,
-    #[serde(rename(deserialize = "sharedPorts"))]
-    #[serde(rename(serialize = "shared_ports"))]
-    #[serde(alias = "shared_ports")]
-    pub ports: Option<Vec<forms::stack::Port>>,
+    #[validate]
+    pub shared_ports: Option<Vec<forms::stack::Port>>,
 }
 
 impl App {
@@ -109,7 +108,7 @@ impl App {
         let networks = replace_id_with_name(networks, all_networks);
         service.networks = dctypes::Networks::Simple(networks);
 
-        let ports: Vec<dctypes::Port> = match &self.ports {
+        let ports: Vec<dctypes::Port> = match &self.shared_ports {
             Some(ports) => {
                 let mut collector = vec![];
                 for port in ports {
