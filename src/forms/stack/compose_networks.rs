@@ -1,37 +1,37 @@
 use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
+use crate::forms::stack;
+use crate::forms::stack::network::Network;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComposeNetworks {
-    pub networks: Option<Vec<String>>,
+    pub networks: Option<Vec<Network>>,
 }
 
 impl Into<IndexMap<String, dctypes::MapOrEmpty<dctypes::NetworkSettings>>> for ComposeNetworks {
     fn into(self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::NetworkSettings>> {
-        let mut networks = vec!["default_network".to_string()];
-        if self.networks.is_some() {
-            networks.append(&mut self.networks.unwrap());
-        }
+        // let mut default_networks = vec![Network::default()];
+        let mut default_networks = vec![];
+
+        let networks = match self.networks {
+            None => {
+                default_networks
+            }
+            Some(mut nets) => {
+                if !nets.is_empty() {
+                    nets.append(&mut default_networks);
+                }
+                nets
+            }
+        };
+
         let networks = networks
             .into_iter()
             .map(|net| {
-                (
-                    net,
-                    dctypes::MapOrEmpty::Map(dctypes::NetworkSettings {
-                        attachable: false,
-                        driver: None,
-                        driver_opts: Default::default(),
-                        enable_ipv6: false,
-                        internal: false,
-                        // external: None,
-                        external: Some(dctypes::ComposeNetwork::Bool(true)),
-                        ipam: None,
-                        labels: Default::default(),
-                        name: Some("default".to_string()),
-                    }),
-                )
-            })
+                (net.name.clone(), dctypes::MapOrEmpty::Map(net.into()))
+            }
+            )
             .collect::<IndexMap<String, _>>();
 
         tracing::debug!("networks collected {:?}", &networks);
@@ -39,3 +39,4 @@ impl Into<IndexMap<String, dctypes::MapOrEmpty<dctypes::NetworkSettings>>> for C
         networks
     }
 }
+

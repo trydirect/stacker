@@ -59,3 +59,36 @@ impl TryFrom<&models::Stack> for Stack {
         serde_json::from_value::<Stack>(stack.body.clone()).map_err(|err| format!("{:?}", err))
     }
 }
+
+impl Stack {
+    pub async fn is_readable_docker_image(&self) -> Result<bool, String> {
+        let mut is_active = true;
+        for app in &self.custom.web {
+            if !app.app.docker_image.is_active().await? {
+                is_active = false;
+                break;
+            }
+        }
+
+        // temporarily disabled
+        // if let Some(service) = &self.custom.service {
+        //     for app in service {
+        //         if !app.app.docker_image.is_active().await? {
+        //             is_active = false;
+        //             break;
+        //         }
+        //     }
+        // }
+        //
+        // if let Some(features) = &self.custom.feature {
+        //     for app in features {
+        //         if !app.app.docker_image.is_active().await? {
+        //             is_active = false;
+        //             break;
+        //         }
+        //     }
+        // }
+        Ok(is_active)
+    }
+}
+

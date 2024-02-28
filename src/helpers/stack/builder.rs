@@ -3,6 +3,8 @@ use docker_compose_types as dctypes;
 use crate::models;
 use serde_yaml;
 use crate::helpers::stack::*;
+use tracing::Value;
+
 
 /// A builder for constructing docker compose.
 #[derive(Clone, Debug)]
@@ -10,6 +12,7 @@ pub struct DcBuilder {
     config: Config,
     pub(crate) stack: models::Stack,
 }
+
 
 impl DcBuilder {
     pub fn new(stack: models::Stack) -> Self {
@@ -26,10 +29,11 @@ impl DcBuilder {
             ..Default::default()
         };
 
-        let apps = forms::stack::Stack::try_from(&self.stack)?; 
-        let  services = apps.custom.services()?;
-        let  named_volumes = apps.custom.named_volumes()?;
+        let apps = forms::stack::Stack::try_from(&self.stack)?;
+        let services = apps.custom.services()?;
+        let named_volumes = apps.custom.named_volumes()?;
 
+        // let all_networks = &apps.custom.networks.networks.clone().unwrap_or(vec![]);
         let networks = apps.custom.networks.clone();
         compose_content.networks = dctypes::ComposeNetworks(networks.into());
 

@@ -25,7 +25,7 @@ pub async fn add(
     let form = body_into_form(body).await?;
     let stack_name = form.custom.custom_stack_code.clone();
 
-    check_if_stack_exists(pg_pool.get_ref(), &stack_name).await?;
+    stack_exists(pg_pool.get_ref(), &stack_name).await?;
 
     let body: Value = serde_json::to_value::<forms::stack::Stack>(form)
         .or(serde_json::to_value::<forms::stack::Stack>(forms::stack::Stack::default()))
@@ -40,8 +40,9 @@ pub async fn add(
         })
 }
 
-async fn check_if_stack_exists(pg_pool: &PgPool, stack_name: &String) -> Result<(), Error> {
-    db::stack::fetch_one_by_name(pg_pool, stack_name)
+
+async fn stack_exists(pool: &PgPool, stack_name: &String) -> Result<(), Error> {
+    db::stack::fetch_one_by_name(pool, stack_name)
         .await
         .map_err(|_| {
             JsonResponse::<models::Stack>::build().internal_server_error("Internal Server Error")
@@ -65,10 +66,11 @@ async fn body_into_form(body: Bytes) -> Result<forms::stack::Stack, Error> {
         })
         .and_then(|form: forms::stack::Stack| {
             if !form.validate().is_ok() {
-                let errors = form.validate().unwrap_err();
-                let err_msg = format!("Invalid data received {:?}", &errors.to_string());
+                let errors = form.validate().unwrap_err().to_string();
+                let err_msg = format!("Invalid data received {:?}", &errors);
                 tracing::debug!(err_msg);
-                return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+
+                return Err(JsonResponse::<models::Stack>::build().form_error(errors));
             }
 
             Ok(form)
