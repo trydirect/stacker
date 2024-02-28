@@ -23,6 +23,8 @@ mod icon_light;
 mod icon_dark;
 mod version;
 
+mod network_driver;
+
 pub use app::*;
 pub use custom::*;
 pub use form::*;
@@ -40,6 +42,7 @@ pub use network::*;
 pub use environment::*;
 pub use service_networks::*;
 pub use compose_networks::*;
+pub use network_driver::*;
 pub use web::*;
 pub use feature::*;
 pub use service::*;

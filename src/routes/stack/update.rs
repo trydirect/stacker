@@ -24,7 +24,7 @@ pub async fn update(
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
             Some(stack) => Ok(stack),
-            None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
+            None => Err(JsonResponse::<models::Stack>::build().not_found("Object not found")),
         })?;
 
     let stack_name = form.custom.custom_stack_code.clone();
@@ -32,10 +32,16 @@ pub async fn update(
     let user_id = user.id.clone();
 
     if let Err(errors) = form.validate() {
-        return Err(JsonResponse::<models::Stack>::build().bad_request(errors.to_string()));
+        return Err(JsonResponse::<models::Stack>::build().form_error(errors.to_string()));
     }
 
-    let body: Value = serde_json::to_value::<forms::stack::Stack>(form.into_inner())
+    let form_inner = form.into_inner();
+
+    if !form_inner.is_readable_docker_image().await.is_ok() {
+        return Err(JsonResponse::<models::Stack>::build().bad_request("Can not access docker image"));
+    }
+
+    let body: Value = serde_json::to_value::<forms::stack::Stack>(form_inner)
         .map_err(|err| 
             JsonResponse::<models::Stack>::build().bad_request(format!("{err}"))
         )?; 

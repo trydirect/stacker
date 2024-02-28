@@ -1,14 +1,17 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use serde_valid::Validate;
 use crate::forms;
 use indexmap::IndexMap;
 use docker_compose_types as dctypes;
+use crate::forms::stack::Network;
+use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Custom {
+    #[validate]
     pub web: Vec<forms::stack::Web>,
+    #[validate]
     pub feature: Option<Vec<forms::stack::Feature>>,
+    #[validate]
     pub service: Option<Vec<forms::stack::Service>>,
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
@@ -31,25 +34,56 @@ pub struct Custom {
     pub networks: forms::stack::ComposeNetworks, // all networks
 }
 
+
+fn matches_network_by_id(id: &String, networks: &Vec<Network>) -> Option<String> {
+
+    for n in networks.into_iter() {
+        if id == &n.id {
+            tracing::debug!("matches:  {:?}", n.name);
+            return Some(n.name.clone());
+        }
+    }
+    None
+}
+
+pub fn replace_id_with_name(service_networks: dctypes::Networks, all_networks: &Vec<Network>) -> Vec<String> {
+
+    match service_networks {
+        dctypes::Networks::Simple(nets) => {
+            nets
+                .iter()
+                .map(|id| {
+                    if let Some(name) = matches_network_by_id(&id, all_networks) {
+                        name
+                    } else { "".to_string() }
+                })
+                .collect::<Vec<String>>()
+        },
+        _ => vec![]
+    }
+}
+
 impl Custom {
     pub fn services(&self) -> Result<IndexMap<String, Option<dctypes::Service>>, String> {
         let mut services = IndexMap::new();
 
+        let all_networks = self.networks.networks.clone().unwrap_or(vec![]);
+
         for app_type in &self.web {
-            let service = dctypes::Service::try_from(&app_type.app)?;
+            let service = app_type.app.try_into_service(&all_networks)?;
             services.insert(app_type.app.code.clone().to_owned(), Some(service));
         }
 
         if let Some(srvs) = &self.service {
             for app_type in srvs {
-                let service = dctypes::Service::try_from(&app_type.app)?;
+                let service = app_type.app.try_into_service(&all_networks)?;
                 services.insert(app_type.app.code.clone().to_owned(), Some(service));
             }
         }
 
         if let Some(features) = &self.feature {
             for app_type in features {
-                let service = dctypes::Service::try_from(&app_type.app)?;
+                let service = app_type.app.try_into_service(&all_networks)?;
                 services.insert(app_type.app.code.clone().to_owned(), Some(service));
             }
         }
