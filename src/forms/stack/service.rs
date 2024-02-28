@@ -10,4 +10,5 @@ pub struct Service {
     // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
     pub(crate) app: App,
+    pub custom: Option<bool>,
 }
