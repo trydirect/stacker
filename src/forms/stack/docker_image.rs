@@ -24,21 +24,20 @@ pub struct DockerImage {
 
 impl fmt::Display for DockerImage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let tag = "latest";
+        let dh_image = self.dockerhub_image.as_ref().map(String::as_str).unwrap_or("");
+        let dh_nmspc = self.dockerhub_user.as_ref().map(String::as_str).unwrap_or("");
+        let dh_name = self.dockerhub_name.as_ref().map(String::as_str).unwrap_or("");
 
-        let dim = self.dockerhub_image.clone().unwrap_or("".to_string());
         write!(
             f,
-            "{}/{}:{}",
-            self.dockerhub_user
-                .clone()
-                .unwrap_or("trydirect".to_string())
-                .clone(),
-            self.dockerhub_name.clone().unwrap_or(dim),
-            tag
+            "{}{}{}",
+            if !dh_nmspc.is_empty() { format!("{}/", dh_nmspc) } else { String::new() },
+            if !dh_name.is_empty() { dh_name } else { dh_image },
+            if !dh_name.contains(":") && dh_image.is_empty() { ":latest".to_string() } else { String::new() },
         )
     }
 }
+
 impl DockerImage {
     #[tracing::instrument(name = "is_active")]
     pub async fn is_active(&self) -> Result<bool, String> {
