@@ -1,19 +1,18 @@
+use crate::forms::stack::DockerImage;
 use reqwest::RequestBuilder;
 use serde_derive::{Deserialize, Serialize};
-use serde_valid::Validate;
 use serde_json::Value;
-use crate::forms::stack::DockerImage;
-
+use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerHubToken {
-    pub token: Option<String>
+    pub token: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerHubCreds<'a> {
     pub(crate) username: &'a str,
-    pub(crate) password: &'a str
+    pub(crate) password: &'a str,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -48,14 +47,14 @@ struct Tag {
     tag_last_pulled: Option<String>,
     tag_last_pushed: Option<String>,
     tag_status: String,
-    v2: bool
+    v2: bool,
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 struct TagResult {
     pub count: Option<i64>,
     next: Option<Value>,
     previous: Option<Value>,
-    results: Vec<Tag>
+    results: Vec<Tag>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -92,7 +91,6 @@ pub struct DockerHub<'a> {
 }
 
 impl<'a> DockerHub<'a> {
-
     pub async fn login(&'a self) -> Result<DockerHubToken, String> {
         let endpoint = "https://hub.docker.com/v2/users/login";
 
@@ -128,9 +126,10 @@ impl<'a> DockerHub<'a> {
                 tracing::debug!("Get public image repositories response {:?}", repositories);
                 if repositories.count.unwrap_or(0) > 0 {
                     // let's find at least one active tag
-                    let active = repositories.results
+                    let active = repositories
+                        .results
                         .into_iter()
-                        .any(|mut repo| repo.status == 1 );
+                        .any(|repo| repo.status == 1);
                     active
                 } else {
                     false
@@ -139,9 +138,10 @@ impl<'a> DockerHub<'a> {
     }
 
     pub async fn lookup_private_repo(&self) -> Result<bool, String> {
-        let url = format!("https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
-                          &self.creds.username,
-                          &self.repos);
+        let url = format!(
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
+            &self.creds.username, &self.repos
+        );
         tracing::debug!("Validate image {:?}", url);
         let client = reqwest::Client::new()
             .get(url)
@@ -161,9 +161,10 @@ impl<'a> DockerHub<'a> {
                 tracing::debug!("Validate private image response {:?}", tags);
                 if tags.count.unwrap_or(0) > 0 {
                     // let's find at least one active tag
-                    let active = tags.results
+                    let active = tags
+                        .results
                         .into_iter()
-                        .any(|tag| tag.tag_status.contains("active") );
+                        .any(|tag| tag.tag_status.contains("active"));
                     active
                 } else {
                     false
@@ -171,63 +172,51 @@ impl<'a> DockerHub<'a> {
             })
     }
     pub async fn is_active(&'a self) -> Result<bool, String> {
-
         // if namespace/user is not set change endpoint and return a different response
         if self.creds.username.is_empty() {
             match self.lookup_public_repo().await {
-               Ok(result) => Ok(result),
-               Err(_e) => Ok(false)
+                Ok(result) => Ok(result),
+                Err(_e) => Ok(false),
             }
-        } else{
+        } else {
             match self.lookup_private_repo().await {
                 Ok(result) => Ok(result),
-                Err(_e) => Ok(false)
+                Err(_e) => Ok(false),
             }
         }
     }
 
     pub async fn set_token(&self, mut client: RequestBuilder) -> Result<RequestBuilder, String> {
-
         if self.creds.password.is_empty() {
             tracing::debug!("Password is empty. Image should be public");
             return Ok(client);
-        } else{
-
+        } else {
         }
         tracing::debug!("Password is set. Login..");
         let token = self.login().await?;
 
         match token.token {
-            None => {
-                Ok(client)
-            },
-            Some(token) => {
-                Ok(client.bearer_auth(token))
-            }
+            None => Ok(client),
+            Some(token) => Ok(client.bearer_auth(token)),
         }
     }
 }
 
-impl<'a> From <&'a DockerImage> for DockerHub<'a> {
-
+impl<'a> From<&'a DockerImage> for DockerHub<'a> {
     fn from(image: &'a DockerImage) -> Self {
         let username = match image.dockerhub_user {
-            Some(ref username) => {
-                username
-            },
-            None => ""
+            Some(ref username) => username,
+            None => "",
         };
         let password = match image.dockerhub_password {
-            Some(ref password) => {
-                password
-            },
-            None => ""
+            Some(ref password) => password,
+            None => "",
         };
 
         DockerHub {
             creds: DockerHubCreds {
                 username: username,
-                password: password
+                password: password,
             },
             repos: image.dockerhub_name.clone().unwrap_or("".to_string()),
             image: format!("{}", image),
