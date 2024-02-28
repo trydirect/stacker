@@ -10,4 +10,5 @@ pub struct Feature {
     // pub shared_ports: Option<Vec<Port>>,
     #[serde(flatten)]
     pub app: App,
+    pub custom: Option<bool>,
 }
