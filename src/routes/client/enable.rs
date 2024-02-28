@@ -1,6 +1,6 @@
 use crate::configuration::Settings;
 use crate::db;
-use crate::helpers::client;
+use crate::helpers;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{put, web, Responder, Result};
@@ -16,6 +16,7 @@ pub async fn enable_handler(
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
+    println!("user.id {}", user.id);
     //todo the owner
     //todo add admin endpoint
     let client_id = path.0;
@@ -28,7 +29,7 @@ pub async fn enable_handler(
         return Err(JsonResponse::<models::Client>::build().bad_request("client is already active"));
     }
 
-    client.secret = client::generate_secret(pg_pool.get_ref(), 255)
+    client.secret = helpers::client::generate_secret(pg_pool.get_ref(), 255)
         .await
         .map(|secret| Some(secret))
         .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))?;
