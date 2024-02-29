@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct Server {
-    pub id: i32,
     pub user_id: String,
     pub cloud_id: i32,
     pub project_id: i32,
@@ -14,8 +13,6 @@ pub struct Server {
     pub server: String,
     pub os: String,
     pub disk_type: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 impl Into<models::Server> for Server {

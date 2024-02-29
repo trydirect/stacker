@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct Cloud {
-    pub id: i32,
     pub user_id: String,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
@@ -14,8 +13,6 @@ pub struct Cloud {
     pub cloud_key: Option<String>,
     pub cloud_secret: Option<String>,
     pub save_token: Option<bool>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 impl Into<models::Cloud> for Cloud {

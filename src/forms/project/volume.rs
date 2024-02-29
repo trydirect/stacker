@@ -4,8 +4,8 @@ use indexmap::IndexMap;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volume {
-    pub(crate) host_path: Option<String>,
-    pub(crate) container_path: Option<String>,
+    pub host_path: Option<String>,
+    pub container_path: Option<String>,
 }
 
 impl Volume {

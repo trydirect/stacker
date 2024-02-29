@@ -29,14 +29,6 @@ pub async fn add(
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
     }
 
-    let server = db::server::fetch(pg_pool.get_ref(), form.id)
-        .await
-        .map_err(|_msg| JsonResponse::<models::Server>::build().internal_server_error(_msg))?
-        .ok_or_else(|| JsonResponse::<models::Server>::build().not_found("not found"))?
-        ;
-
-    tracing::debug!("Server record is found ? {:?}", server);
-
     let mut server: models::Server = form.into_inner().into();
     server.user_id = user.id.clone();
 
