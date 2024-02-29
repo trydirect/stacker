@@ -29,14 +29,6 @@ pub async fn add(
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
     }
 
-    let cloud = db::cloud::fetch(pg_pool.get_ref(), form.id)
-        .await
-        .map_err(|_msg| JsonResponse::<models::Cloud>::build().internal_server_error(_msg))?
-        .ok_or_else(|| JsonResponse::<models::Cloud>::build().not_found("not found"))?
-        ;
-
-    tracing::debug!("Cloud record is found ? {:?}", cloud);
-
     let mut cloud: models::Cloud = form.into_inner().into();
     cloud.user_id = user.id.clone();
 
