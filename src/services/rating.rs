@@ -1,6 +1,6 @@
-use crate::models::rating::Rating;
-use tracing::Instrument;
-use tracing_subscriber::fmt::format;
+// use crate::models::rating::Rating;
+// use tracing::Instrument;
+// use tracing_subscriber::fmt::format;
 
 // impl Rating {
     // pub async fn filter_by(query_string: &str, pool: PgPool) -> Result<()> {

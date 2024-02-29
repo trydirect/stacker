@@ -66,18 +66,38 @@ pub async fn run(
                     .service(crate::routes::rating::list_handler),
             )
             .service(
-                web::scope("/stack")
+                web::scope("/project")
                     .wrap(HttpAuthentication::bearer(
                         middleware::trydirect::bearer_guard,
                     ))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::stack::deploy::add)
-                    .service(crate::routes::stack::compose::add)
-                    .service(crate::routes::stack::compose::admin)
-                    .service(crate::routes::stack::get::item)
-                    .service(crate::routes::stack::get::list)
-                    .service(crate::routes::stack::add::add)
-                    .service(crate::routes::stack::update::update),
+                    .service(crate::routes::project::deploy::add)
+                    .service(crate::routes::project::compose::add)
+                    .service(crate::routes::project::compose::admin)
+                    .service(crate::routes::project::get::item)
+                    .service(crate::routes::project::get::list)
+                    .service(crate::routes::project::add::add)
+                    .service(crate::routes::project::update::update),
+            )
+            .service(
+                web::scope("/cloud")
+                    .wrap(HttpAuthentication::bearer(
+                        middleware::trydirect::bearer_guard,
+                    ))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::cloud::get::item)
+                    .service(crate::routes::cloud::get::list)
+                    .service(crate::routes::cloud::add::add)
+            )
+            .service(
+                web::scope("/server")
+                    .wrap(HttpAuthentication::bearer(
+                        middleware::trydirect::bearer_guard,
+                    ))
+                    .wrap(Cors::permissive())
+                    .service(crate::routes::server::get::item)
+                    .service(crate::routes::server::get::list)
+                    .service(crate::routes::server::add::add)
             )
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())

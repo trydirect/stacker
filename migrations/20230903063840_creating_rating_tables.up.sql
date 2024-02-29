@@ -3,7 +3,7 @@
 CREATE TYPE rate_category AS ENUM (
     'application',
     'cloud',      
-    'stack',
+    'project',
     'deploymentSpeed',
     'documentation',
     'design',
