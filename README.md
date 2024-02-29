@@ -2,7 +2,7 @@
 
 
 Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
-source apps and user's custom applications docker containers. Users can build their own stack of applications, and 
+source apps and user's custom applications docker containers. Users can build their own project of applications, and 
 deploy the final result to their favorite clouds using TryDirect API.
 
 Application development will include:
@@ -36,9 +36,9 @@ Stacker (API) - Serves API clients
 Authentication made through TryDirect OAuth, here we have only client 
 Database (Read only)
 Logging/Tracing (Files) / Quickwit for future 
-/stack (WebUI, as a result we have a JSON)
-/stack/deploy -> sends deploy command to TryDirect Install service 
-/stack/deploy/status - get installation progress (rabbitmq client),
+/project (WebUI, as a result we have a JSON)
+/project/deploy -> sends deploy command to TryDirect Install service 
+/project/deploy/status - get installation progress (rabbitmq client),
 
 #### TODO 
 Find out how to get user's token for queue
@@ -76,7 +76,7 @@ sqlx migrate revert
 
 #### Deploy 
 ```
-curl -X POST -H "Content-Type: application/json" -d @custom-stack-payload-2.json http://127.0.0.1:8000/stack    
+curl -X POST -H "Content-Type: application/json" -d @custom-stack-payload-2.json http://127.0.0.1:8000/project    
 ```
 
 

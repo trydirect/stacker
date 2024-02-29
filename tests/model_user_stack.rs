@@ -1,13 +1,13 @@
-use stacker::forms::stack::StackForm;
-use stacker::forms::stack::DockerImage;
-use stacker::forms::stack::App;
+use stacker::forms::project::ProjectForm;
+use stacker::forms::project::DockerImage;
+use stacker::forms::project::App;
 use std::fs;
 use std::collections::HashMap;
 
 //  Unit Test
 
 // #[test]
-// fn test_deserialize_user_stack_web() {
+// fn test_deserialize_project_web() {
 //
 //     let body_str = fs::read_to_string("./tests/web-item.json").unwrap();
 //     // let form:serde_json::Value = serde_json::from_str(&body_str).unwrap();
@@ -19,17 +19,17 @@ use std::collections::HashMap;
 //     //     }
 //     //     Err(_err) => {
 //     //         let msg = format!("Invalid data. {:?}", _err);
-//     //         return JsonResponse::<StackForm>::build().bad_request(msg);
+//     //         return JsonResponse::<ProjectForm>::build().bad_request(msg);
 //     //     }
 //     // };
 //     //
 //     // assert_eq!(result, 12);
 // }
 #[test]
-fn test_deserialize_user_stack() {
+fn test_deserialize_project() {
 
-    let body_str = fs::read_to_string("./tests/custom-stack-payload-11.json").unwrap();
-    let form = serde_json::from_str::<StackForm>(&body_str).unwrap();
+    let body_str = fs::read_to_string("./tests/custom-project-payload-11.json").unwrap();
+    let form = serde_json::from_str::<ProjectForm>(&body_str).unwrap();
     println!("{:?}", form);
     // @todo assert required data
 
@@ -39,7 +39,7 @@ fn test_deserialize_user_stack() {
     //     }
     //     Err(_err) => {
     //         let msg = format!("Invalid data. {:?}", _err);
-    //         return JsonResponse::<StackForm>::build().bad_request(msg);
+    //         return JsonResponse::<ProjectForm>::build().bad_request(msg);
     //     }
     // };
     //
