@@ -28,7 +28,6 @@ pub struct Payload {
     #[serde(flatten)]
     pub cloud: models::Cloud,
     pub stack_code: String,
-    pub selected_plan: String,
     pub custom: forms::project::Custom,
     pub docker_compose: Option<Vec<u8>>,
 }

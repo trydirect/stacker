@@ -143,52 +143,44 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
     })
 }
 
-pub async fn delete(pool: &PgPool, id: i32) -> Result<Option<PgRow>, String> {
+pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     tracing::info!("Delete project {}", id);
-    let mut tx = pool.begin().await
-    .map(|result| result)
-    .map_err(|err| {
-        tracing::error!("Failed to execute query: {:?}", err);
-        "".to_string()
-    }).unwrap();
+    let mut tx = match pool.begin().await {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::error!("Failed to begin transaction: {:?}", err);
+            return Err("".to_string());
+        }
+    };
 
-    // delete records from deployment
-    // delete records from server
-    sqlx::query("DELETE FROM deployment where project_id=?")
+    // Combine delete queries into a single query
+    let delete_query = "
+        DELETE FROM deployment WHERE project_id = $1;
+        DELETE FROM server WHERE project_id = $1;
+        DELETE FROM project WHERE id = $1;
+    ";
+
+    match sqlx::query(delete_query)
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut tx)
         .await
-        .map(|result| result)
         .map_err(|err| {
-            tracing::error!("Failed to execute query: {:?}", err);
-            "".to_string()
-        }).unwrap();
+            println!("{:?}", err)
+        })
+    {
+        Ok(_) => {
+            tx.commit().await.map_err(|err| {
+                tracing::error!("Failed to commit transaction: {:?}", err);
+                false
+            });
+            Ok(true)
+        }
+        Err(err) => {
+            tx.rollback().await.map_err(|err| println!("{:?}", err));
+            Ok(false)
+        }
+    }
+    // Ok(true)
 
-    sqlx::query("DELETE FROM server where project_id=?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map(|result| result)
-        .map_err(|err| {
-            tracing::error!("Failed to execute query: {:?}", err);
-            "".to_string()
-        }).unwrap();
-
-    sqlx::query("DELETE FROM project where id=?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map(|result| result)
-        .map_err(|err| {
-            tracing::error!("Failed to execute query: {:?}", err);
-            "".to_string()
-        }).unwrap();
-
-    tx.commit().await;
-
-    // tracing::error!("Failed to delete project, error: {:?}", e);
-    // Err("Could not fetch data".to_string())
-
-    Ok(None)
 }
 

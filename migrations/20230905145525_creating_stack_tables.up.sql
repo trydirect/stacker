@@ -2,7 +2,7 @@ CREATE TABLE project (
     id serial4 NOT NULL,
     stack_id uuid NOT NULL,
     user_id VARCHAR(50) NOT NULL,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT,
     body JSON NOT NULL,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,

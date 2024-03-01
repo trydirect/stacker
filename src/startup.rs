@@ -76,8 +76,9 @@ pub async fn run(
                     .service(crate::routes::project::compose::admin)
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::get::list)
-                    .service(crate::routes::project::add::add)
-                    .service(crate::routes::project::update::update),
+                    .service(crate::routes::project::add::item)
+                    .service(crate::routes::project::update::item)
+                    .service(crate::routes::project::delete::item),
             )
             .service(
                 web::scope("/cloud")

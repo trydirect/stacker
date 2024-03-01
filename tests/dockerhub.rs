@@ -1,11 +1,13 @@
 // use std::fs;
 // use std::collections::HashMap;
 use std::env;
+use docker_compose_types::{ComposeVolume, SingleValue};
+
 mod common;
 use stacker::forms::project::DockerImage;
-use stacker::helpers::project::dctypes::{ComposeVolume, SingleValue};
+// use stacker::helpers::project::dctypes::{ComposeVolume, SingleValue};
 use serde_yaml;
-use stacker::forms::Volume;
+use stacker::forms::project::Volume;
 
 const DOCKER_USERNAME: &str = "trydirect";
 const DOCKER_PASSWORD: &str = "***************";

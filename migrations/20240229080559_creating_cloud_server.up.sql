@@ -14,7 +14,7 @@ CREATE TABLE server (
        updated_at timestamptz NOT NULL,
        CONSTRAINT user_server_pkey PRIMARY KEY (id),
        CONSTRAINT fk_server FOREIGN KEY(cloud_id) REFERENCES cloud(id),
-       CONSTRAINT fk_server_project FOREIGN KEY(project_id) REFERENCES project(id)
+       CONSTRAINT fk_server_project FOREIGN KEY(project_id) REFERENCES project(id)  ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE INDEX idx_server_user_id ON server(user_id);
