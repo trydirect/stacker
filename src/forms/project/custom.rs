@@ -13,9 +13,6 @@ pub struct Custom {
     pub feature: Option<Vec<forms::project::Feature>>,
     #[validate]
     pub service: Option<Vec<forms::project::Service>>,
-    #[validate(minimum = 0)]
-    #[validate(maximum = 10)]
-    pub servers_count: u32,
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     pub custom_stack_code: String,

@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 #[tracing::instrument(name = "Update project.")]
 #[post("/{id}")]
-pub async fn update(
+pub async fn item(
     path: web::Path<(i32,)>,
     form: web::Json<forms::project::ProjectForm>,
     user: web::ReqData<Arc<models::User>>,

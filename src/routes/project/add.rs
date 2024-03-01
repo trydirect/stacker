@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 #[tracing::instrument(name = "Add project.")]
 #[post("")]
-pub async fn add(
+pub async fn item(
     body: Bytes,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: Data<PgPool>,
@@ -24,8 +24,6 @@ pub async fn add(
     // @todo ACL
     let form = body_into_form(body).await?;
     let project_name = form.custom.custom_stack_code.clone();
-
-    project_exists(pg_pool.get_ref(), &project_name).await?;
 
     let body: Value = serde_json::to_value::<forms::project::ProjectForm>(form)
         .or(serde_json::to_value::<forms::project::ProjectForm>(forms::project::ProjectForm::default()))
@@ -40,19 +38,6 @@ pub async fn add(
         })
 }
 
-
-async fn project_exists(pool: &PgPool, project_name: &String) -> Result<(), Error> {
-    db::project::fetch_one_by_name(pool, project_name)
-        .await
-        .map_err(|_| {
-            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
-        })
-        .and_then(|project| match project {
-            Some(_) => Err(JsonResponse::<models::Project>::build()
-                .conflict("Project with that name already exists")),
-            None => Ok(()),
-        })
-}
 
 async fn body_into_form(body: Bytes) -> Result<forms::project::ProjectForm, Error> {
     let body_bytes = actix_web::body::to_bytes(body).await.unwrap();

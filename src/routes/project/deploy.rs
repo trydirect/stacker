@@ -42,8 +42,36 @@ pub async fn add(
     // let compressed = fc.unwrap_or("".to_string());
     project_data.docker_compose = Some(compress(fc.as_str()));
 
-    // project_data.cloud =
-    // project_data.server =
+    if let Some(cloud_id) = dc.project.cloud_id {
+        project_data.cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
+            Ok(cloud) => {
+                match cloud {
+                    Some(cloud) => cloud,
+                    None => {
+                        return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
+            }
+        };
+
+        project_data.server = match db::server::fetch_by_project(pg_pool.get_ref(), dc.project.id.clone()).await {
+            Ok(server) => {
+                // for now we support only one type of servers
+                // if let Some(server) = server.into_iter().nth(0) {
+                //     server
+                // }
+                server.into_iter().nth(0).unwrap() // @todo refactoring is required
+            }
+            Err(err) => {
+                return Err(JsonResponse::<models::Project>::build().not_found("No servers configured"));
+            }
+        }
+    } else {
+        return Err(JsonResponse::<models::Project>::build().not_found("No cloud provider configured"));
+    }
 
     let project_id = dc.project.id.clone();
     let json_request = dc.project.body.clone();

@@ -25,9 +25,6 @@ pub struct ProjectForm {
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
     pub form_app: Option<Vec<String>>,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub selected_plan: String,
     pub custom: forms::project::Custom,
 }
 
@@ -49,24 +46,23 @@ impl ProjectForm {
             }
         }
 
-        // temporarily disabled
-        // if let Some(service) = &self.custom.service {
-        //     for app in service {
-        //         if !app.app.docker_image.is_active().await? {
-        //             is_active = false;
-        //             break;
-        //         }
-        //     }
-        // }
-        //
-        // if let Some(features) = &self.custom.feature {
-        //     for app in features {
-        //         if !app.app.docker_image.is_active().await? {
-        //             is_active = false;
-        //             break;
-        //         }
-        //     }
-        // }
+        if let Some(service) = &self.custom.service {
+            for app in service {
+                if !app.app.docker_image.is_active().await? {
+                    is_active = false;
+                    break;
+                }
+            }
+        }
+
+        if let Some(features) = &self.custom.feature {
+            for app in features {
+                if !app.app.docker_image.is_active().await? {
+                    is_active = false;
+                    break;
+                }
+            }
+        }
         Ok(is_active)
     }
 }
