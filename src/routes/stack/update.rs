@@ -27,11 +27,15 @@ pub async fn update(
             None => Err(JsonResponse::<models::Stack>::build().not_found("Object not found")),
         })?;
 
+    if stack.user_id != user.id {
+        return Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner"));
+    }
+
     let stack_name = form.custom.custom_stack_code.clone();
     tracing::debug!("form data: {:?}", form);
     let user_id = user.id.clone();
 
-    if let Err(errors) = form.validate() {
+    if let Err(errors) = form.validate() { 
         return Err(JsonResponse::<models::Stack>::build().form_error(errors.to_string()));
     }
 
