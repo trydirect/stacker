@@ -26,7 +26,7 @@ pub async fn enable_handler(
         return Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner"));
     }
 
-    enable_client(pg_pool, client).await
+    enable_client(pg_pool.get_ref(), client).await
 }
 
 #[tracing::instrument(name = "Admin enable client.")]
@@ -43,20 +43,20 @@ pub async fn admin_enable_handler(
         .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))?
         .ok_or_else(|| JsonResponse::<models::Client>::build().not_found("not found"))?;
 
-    enable_client(pg_pool, client).await
+    enable_client(pg_pool.get_ref(), client).await
 }
 
-async fn enable_client(pg_pool: web::Data<PgPool>, mut client: models::Client) -> Result<impl Responder> {
+async fn enable_client(pg_pool: &PgPool, mut client: models::Client) -> Result<impl Responder> {
     if client.secret.is_some() {
         return Err(JsonResponse::<models::Client>::build().bad_request("client is already active"));
     }
 
-    client.secret = helpers::client::generate_secret(pg_pool.get_ref(), 255)
+    client.secret = helpers::client::generate_secret(pg_pool, 255)
         .await
         .map(|secret| Some(secret))
         .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))?;
 
-    db::client::update(pg_pool.get_ref(), client)
+    db::client::update(pg_pool, client)
         .await
         .map(|client| JsonResponse::build().set_item(client).ok("success"))
         .map_err(|err| JsonResponse::<models::Client>::build().bad_request(err))
