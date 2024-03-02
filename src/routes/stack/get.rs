@@ -29,6 +29,25 @@ pub async fn item(
         })
 }
 
+#[tracing::instrument(name = "Get logged user stack.")]
+#[get("/{id}")]
+pub async fn admin_item(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    /// Get stack apps of logged user only
+    let (id,) = path.into_inner();
+
+    db::stack::fetch(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
+        .and_then(|stack| match stack {
+            Some(stack) => Ok(JsonResponse::build().set_item(Some(stack)).ok("OK")),
+            None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
+        })
+}
+
 #[tracing::instrument(name = "Get user's stack list.")]
 #[get("/user/{id}")]
 pub async fn list(
