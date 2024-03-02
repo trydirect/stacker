@@ -44,6 +44,8 @@ pub async fn run(
             .service(
                 web::scope("/admin/client")
                     .service(routes::client::admin_enable_handler)
+                    .service(routes::client::admin_update_handler)
+                    .service(routes::client::admin_disable_handler),
             )
             .service(
                 web::scope("/test").service(routes::test::deploy::handler),
