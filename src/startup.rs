@@ -72,6 +72,7 @@ pub async fn run(
             .service(
                 web::scope("/admin/stack")
                     .service(routes::stack::get::admin_item)
+                    .service(routes::stack::get::admin_list)
             )
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())

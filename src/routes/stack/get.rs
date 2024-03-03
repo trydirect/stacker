@@ -7,7 +7,22 @@ use std::convert::From;
 use std::sync::Arc;
 use tracing::Instrument;
 
-#[tracing::instrument(name = "Get logged user stack.")]
+#[tracing::instrument(name = "User get user's stack list.")]
+#[get("")]
+pub async fn list(
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    /// This is admin endpoint, used by a client app, client app is confidential
+    /// it should return stacks by user id
+    /// in order to pass validation at external deployment service
+    db::stack::fetch_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
+        .map(|stacks| JsonResponse::build().set_list(stacks).ok("OK"))
+}
+
+#[tracing::instrument(name = "User get logged user stack.")]
 #[get("/{id}")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
@@ -29,7 +44,7 @@ pub async fn item(
         })
 }
 
-#[tracing::instrument(name = "Get logged user stack.")]
+#[tracing::instrument(name = "Admin get logged user stack.")]
 #[get("/{id}")]
 pub async fn admin_item(
     user: web::ReqData<Arc<models::User>>,
@@ -48,10 +63,10 @@ pub async fn admin_item(
         })
 }
 
-#[tracing::instrument(name = "Get user's stack list.")]
+#[tracing::instrument(name = "User get user's stack list.")]
 #[get("/user/{id}")]
-pub async fn list(
-    user: web::ReqData<Arc<models::User>>,
+pub async fn admin_list(
+    admin: web::ReqData<Arc<models::User>>,
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
