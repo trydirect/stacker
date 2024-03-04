@@ -24,7 +24,7 @@ impl Into<models::Cloud> for Cloud {
         cloud.cloud_key = self.cloud_key;
         cloud.cloud_secret = self.cloud_secret;
         cloud.save_token = self.save_token;
-        cloud.created_at = Utc::now();
+        // cloud.created_at = Utc::now();
         cloud.updated_at = Utc::now();
 
         cloud
