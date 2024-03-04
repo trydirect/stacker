@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
-use crate::db;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Project {
@@ -13,19 +12,21 @@ pub struct Project {
     pub name: String,
     // pub body: sqlx::types::Json<String>,
     pub body: Value, //json type
+    pub request_json: Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl Project {
-    pub fn new(user_id: String, name: String, body: Value) -> Self {
+    pub fn new(user_id: String, name: String, body: Value, request_json: Value) -> Self {
         Self {
             id: 0,
             stack_id: Uuid::new_v4(),
             cloud_id: None,
-            user_id: user_id,
-            name: name,
-            body: body,
+            user_id,
+            name,
+            body,
+            request_json,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
