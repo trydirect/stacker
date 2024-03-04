@@ -1,6 +1,5 @@
 use crate::models;
 use sqlx::PgPool;
-use sqlx::postgres::PgRow;
 use tracing::Instrument;
 
 pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Project>, String> {
@@ -79,8 +78,8 @@ pub async fn insert(pool: &PgPool, mut project: models::Project) -> Result<model
     let query_span = tracing::info_span!("Saving new project into the database");
     sqlx::query!(
         r#"
-        INSERT INTO project (stack_id, user_id, name, body, created_at, updated_at, cloud_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO project (stack_id, user_id, name, body, created_at, updated_at, cloud_id, request_json)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id;
         "#,
         project.stack_id,
@@ -90,6 +89,7 @@ pub async fn insert(pool: &PgPool, mut project: models::Project) -> Result<model
         project.created_at,
         project.updated_at,
         project.cloud_id,
+        project.request_json,
     )
     .fetch_one(pool)
     .instrument(query_span)
@@ -116,7 +116,8 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
             cloud_id=$4,
             name=$5,
             body=$6,
-            created_at=$7,
+            request_json=$7,
+            created_at=$8,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
@@ -127,6 +128,7 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
         project.cloud_id,
         project.name,
         project.body,
+        project.request_json,
         project.created_at,
     )
     .fetch_one(pool)
@@ -143,6 +145,7 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
     })
 }
 
+#[tracing::instrument(name = "Delete user's project.")]
 pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     tracing::info!("Delete project {}", id);
     let mut tx = match pool.begin().await {
@@ -155,8 +158,8 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
 
     // Combine delete queries into a single query
     let delete_query = "
-        DELETE FROM deployment WHERE project_id = $1;
-        DELETE FROM server WHERE project_id = $1;
+        --DELETE FROM deployment WHERE project_id = $1; // on delete cascade
+        --DELETE FROM server WHERE project_id = $1; // on delete cascade
         DELETE FROM project WHERE id = $1;
     ";
 
@@ -179,8 +182,7 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
             tx.rollback().await.map_err(|err| println!("{:?}", err));
             Ok(false)
         }
+        // todo, when empty commit()
     }
-    // Ok(true)
-
 }
 

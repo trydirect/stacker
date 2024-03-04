@@ -118,3 +118,39 @@ pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
             "".to_string()
         })
 }
+
+#[tracing::instrument(name = "Delete cloud of a user.")]
+pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
+    tracing::info!("Delete cloud {}", id);
+    let mut tx = match pool.begin().await {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::error!("Failed to begin transaction: {:?}", err);
+            return Err("".to_string());
+        }
+    };
+
+    let delete_query = " DELETE FROM cloud WHERE id = $1; ";
+
+    match sqlx::query(delete_query)
+        .bind(id)
+        .execute(&mut tx)
+        .await
+        .map_err(|err| {
+            println!("{:?}", err)
+        })
+    {
+        Ok(_) => {
+            tx.commit().await.map_err(|err| {
+                tracing::error!("Failed to commit transaction: {:?}", err);
+                false
+            });
+            Ok(true)
+        }
+        Err(err) => {
+            tx.rollback().await.map_err(|err| println!("{:?}", err));
+            Ok(false)
+        }
+    }
+
+}

@@ -25,7 +25,7 @@ pub struct ProjectForm {
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
     pub form_app: Option<Vec<String>>,
-    pub custom: forms::project::Custom,
+    pub custom: forms::project::Custom
 }
 
 impl TryFrom<&models::Project> for ProjectForm {

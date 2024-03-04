@@ -3,6 +3,7 @@ use crate::models;
 use actix_web::{delete, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
+use futures_util::FutureExt;
 use tracing::Instrument;
 use crate::db;
 use crate::models::Project;
@@ -17,32 +18,34 @@ pub async fn item(
     /// Get project apps of logged user only
     let (id,) = path.into_inner();
 
-    let project = db::project::fetch(pg_pool.get_ref(), id).await
+    let project = db::project::fetch(pg_pool.get_ref(), id)
+        .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
-        .map(|project| { project }).unwrap();
-    //
-    //         match project {
-    //             Some(project) if project.user_id != user.id => {
-    //                 Err(JsonResponse::<models::Project>::build().not_found("not found"))
-    //             }
-    //             Some(project) => {
-    //
-    //                     match db::project::delete(pg_pool.get_ref(), id)
-    //                         .await
-    //                         .map_err(|e| println!("{:?}", e))
-    //                     {
-    //                         Ok(true) => {
-    //                             Ok(JsonResponse::build().set_item(Some(project)).ok("Deleted"))
-    //                         }
-    //                         _ => {
-    //                             Err(JsonResponse::<models::Project>::build().bad_request("Could not delete"))
-    //                         }
-    //                     }
-    //             },
-    //             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
-    //         }
-    //     })
+        .and_then(|project| {
+            match project {
+                Some(project) if project.user_id != user.id => {
+                    Err(JsonResponse::<models::Project>::build().bad_request("Delete is forbidden"))
+                }
+                Some(project) => {
+                    Ok(project)
+                },
+                None => Err(JsonResponse::<models::Project>::build().not_found(""))
+            }
+        })?;
 
+    db::project::delete(pg_pool.get_ref(), project.id)
+        .await
+        .map_err(|err| JsonResponse::<Project>::build().internal_server_error(err))
+        .and_then(|result| {
+            match result
+            {
+                true => {
+                    Ok(JsonResponse::<Project>::build().ok("Deleted"))
+                }
+                _ => {
+                    Err(JsonResponse::<Project>::build().bad_request("Could not delete"))
+                }
+            }
+        })
 
-    Ok(JsonResponse::<Project>::build().ok("Deleted"))
 }
