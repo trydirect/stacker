@@ -92,7 +92,8 @@ pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
             cloud_token=$4,
             cloud_key=$5,
             cloud_secret=$6,
-            created_at=$7,
+            save_token=$7,
+            created_at=$8,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
@@ -103,6 +104,7 @@ pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         cloud.cloud_token,
         cloud.cloud_key,
         cloud.cloud_secret,
+        cloud.save_token,
         cloud.created_at,
     )
         .fetch_one(pool)

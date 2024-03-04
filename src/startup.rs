@@ -89,6 +89,7 @@ pub async fn run(
                     .service(crate::routes::cloud::get::item)
                     .service(crate::routes::cloud::get::list)
                     .service(crate::routes::cloud::add::add)
+                    .service(crate::routes::cloud::delete::item),
             )
             .service(
                 web::scope("/server")
@@ -99,6 +100,7 @@ pub async fn run(
                     .service(crate::routes::server::get::item)
                     .service(crate::routes::server::get::list)
                     .service(crate::routes::server::add::add)
+                    .service(crate::routes::server::delete::item),
             )
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())

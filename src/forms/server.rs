@@ -21,10 +21,11 @@ impl Into<models::Server> for Server {
         server.user_id = self.user_id;
         server.cloud_id = self.cloud_id;
         server.project_id = self.project_id;
-        server.region = String::from("");
-        server.zone = Some(String::from(""));
-        server.server = String::from("");
-        server.os = String::from("");
+        server.disk_type = self.disk_type;
+        server.region = self.region;
+        server.server = self.server;
+        server.zone = self.zone;
+        server.os = self.os;
         server.created_at = Utc::now();
         server.updated_at = Utc::now();
 
