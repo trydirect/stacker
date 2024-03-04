@@ -20,9 +20,10 @@ impl Into<models::Cloud> for Cloud {
         let mut cloud = models::Cloud::default();
         cloud.user_id = self.user_id;
         cloud.provider = self.provider;
-        cloud.cloud_token = Some(String::from(""));
-        cloud.cloud_key = Some(String::from(""));
-        cloud.cloud_secret = Some(String::from(""));
+        cloud.cloud_token = self.cloud_token;
+        cloud.cloud_key = self.cloud_key;
+        cloud.cloud_secret = self.cloud_secret;
+        cloud.save_token = self.save_token;
         cloud.created_at = Utc::now();
         cloud.updated_at = Utc::now();
 
