@@ -25,6 +25,7 @@ pub async fn add(
         .await
         .map_err(|err| JsonResponse::<models::Stack>::build().internal_server_error(err))
         .and_then(|stack| match stack {
+            Some(stack) if stack.user_id != user.id => Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner")),
             Some(stack) => Ok(stack),
             None => Err(JsonResponse::<models::Stack>::build().not_found("not found")),
         })?;
