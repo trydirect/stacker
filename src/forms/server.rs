@@ -2,7 +2,7 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 use chrono::{DateTime, Utc};
-
+use crate::db;
 #[derive(Serialize, Deserialize, Debug, Validate)]
 pub struct Server {
     pub user_id: String,

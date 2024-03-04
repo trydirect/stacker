@@ -44,6 +44,7 @@ pub async fn item(
         body,
         request_json
     );
+
     db::project::insert(pg_pool.get_ref(), project)
         .await
         .map(|project| JsonResponse::build().set_item(project).ok("Ok"))

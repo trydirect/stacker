@@ -23,18 +23,19 @@ pub async fn item(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
+            Some(project) if project.user_id != user.id => {
+                Err(JsonResponse::<models::Project>::build().bad_request("Project not found"))
+            }
             Some(project) => Ok(project),
-            None => Err(JsonResponse::<models::Project>::build().not_found("Object not found")),
+            None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
 
-    let project_name = form.custom.custom_stack_code.clone();
     tracing::debug!("form data: {:?}", form);
-    let user_id = user.id.clone();
-
     if let Err(errors) = form.validate() {
         return Err(JsonResponse::<models::Project>::build().form_error(errors.to_string()));
     }
 
+    let project_name = form.custom.custom_stack_code.clone();
     let form_inner = form.into_inner();
 
     if !form_inner.is_readable_docker_image().await.is_ok() {
@@ -44,10 +45,8 @@ pub async fn item(
     let body: Value = serde_json::to_value::<forms::project::ProjectForm>(form_inner)
         .map_err(|err| 
             JsonResponse::<models::Project>::build().bad_request(format!("{err}"))
-        )?; 
+        )?;
 
-    project.stack_id = Uuid::new_v4();
-    project.user_id = user_id;
     project.name = project_name;
     project.body = body;
 
