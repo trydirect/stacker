@@ -57,7 +57,7 @@ pub async fn insert(pool: &PgPool, mut deployment: models::Deployment) -> Result
 //         .instrument(query_span)
 //         .await
 //         .map(|result|{
-//             tracing::info!("Deployment {} have been saved to database", deployment.id);
+//             tracing::info!("Deployment {} has been saved to database", deployment.id);
 //             deployment.updated_at = result.updated_at;
 //             deployment
 //         })

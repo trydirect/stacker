@@ -135,7 +135,7 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
     .instrument(query_span)
     .await
     .map(|result|{
-        tracing::info!("Project {} have been saved to database", project.id);
+        tracing::info!("Project {} has been saved to database", project.id);
         project.updated_at = result.updated_at;
         project
     })
