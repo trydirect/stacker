@@ -19,7 +19,7 @@ pub async fn update(pool: &PgPool, client: models::Client) -> Result<models::Cli
     .instrument(query_span)
     .await
     .map(|_|{
-        tracing::info!("Client {} have been saved to database", client.id);
+        tracing::info!("Client {} has been saved to the database", client.id);
         client
     })
     .map_err(|err| {

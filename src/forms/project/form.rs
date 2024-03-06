@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
-use std::collections::HashMap;
-use std::fmt;
+use actix_web::Error;
+use actix_web::web::Bytes;
 use crate::models;
 use crate::forms;
+use crate::helpers::JsonResponse;
+use std::str;
 
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -67,3 +69,25 @@ impl ProjectForm {
     }
 }
 
+pub(crate) async fn body_into_form(body: Bytes) -> actix_web::Result<forms::project::ProjectForm, Error> {
+    let body_bytes = actix_web::body::to_bytes(body).await.unwrap();
+    let body_str = str::from_utf8(&body_bytes)
+        .map_err(|err| JsonResponse::<forms::project::ProjectForm>::build().internal_server_error(err.to_string()))?;
+    let deserializer = &mut serde_json::Deserializer::from_str(body_str);
+    serde_path_to_error::deserialize(deserializer)
+        .map_err(|err| {
+            let msg = format!("{}:{:?}", err.path().to_string(), err);
+            JsonResponse::<forms::project::ProjectForm>::build().bad_request(msg)
+        })
+        .and_then(|mut form: forms::project::ProjectForm| {
+            if !form.validate().is_ok() {
+                let errors = form.validate().unwrap_err().to_string();
+                let err_msg = format!("Invalid data received {:?}", &errors);
+                tracing::debug!(err_msg);
+
+                return Err(JsonResponse::<models::Project>::build().form_error(errors));
+            }
+
+            Ok(form)
+        })
+}
