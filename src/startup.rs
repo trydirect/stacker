@@ -4,8 +4,13 @@ use crate::routes;
 use actix_cors::Cors;
 use actix_web::dev::Server;
 use actix_web::{
-    web::{self},
-    App, HttpServer,
+    error,
+    web,
+    App,
+    HttpServer,
+    HttpResponse,
+    FromRequest,
+    rt,
 };
 use crate::middleware;
 use sqlx::{Pool, Postgres};
@@ -24,6 +29,26 @@ pub async fn run(
     let mq_manager = web::Data::new(mq_manager);
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
+    let json_cfg = web::JsonConfig::default()
+        .error_handler(|err, req| {
+            let bytes = web::Bytes::from_request(req, &mut actix_web::dev::Payload::None);
+            let rt = rt::Runtime::new().unwrap();
+            let handle = rt.spawn(async move {
+                let bytes: web::Bytes = bytes.await.unwrap();
+            });
+
+            rt.block_on(handle).unwrap(); //todo 1. get the result of bytes. 
+                                          //todo 2. transform line, column into index
+                                          //todo 3. transform index in the start of json till the
+                                          //error occured
+
+            match err {
+                error::JsonPayloadError::Deserialize(ref err) => println!("deserialize {err:?} {err}"),
+                _ => println!("sth else {err:?}")
+            }
+
+            error::InternalError::from_response(err, HttpResponse::Conflict().into()).into()
+        });
 
     let server = HttpServer::new(move || {
         App::new()
@@ -74,6 +99,7 @@ pub async fn run(
                     .service(routes::stack::get::admin_item)
                     .service(routes::stack::get::admin_list)
             )
+            .app_data(json_cfg.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(settings.clone())
