@@ -29,27 +29,6 @@ pub async fn run(
     let mq_manager = web::Data::new(mq_manager);
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
-    let json_cfg = web::JsonConfig::default()
-        .error_handler(|err, req| {
-            let bytes = web::Bytes::from_request(req, &mut actix_web::dev::Payload::None);
-            let rt = rt::Runtime::new().unwrap();
-            let handle = rt.spawn(async move {
-                let bytes: web::Bytes = bytes.await.unwrap();
-            });
-
-            rt.block_on(handle).unwrap(); //todo 1. get the result of bytes. 
-                                          //todo 2. transform line, column into index
-                                          //todo 3. transform index in the start of json till the
-                                          //error occured
-
-            match err {
-                error::JsonPayloadError::Deserialize(ref err) => println!("deserialize {err:?} {err}"),
-                _ => println!("sth else {err:?}")
-            }
-
-            error::InternalError::from_response(err, HttpResponse::Conflict().into()).into()
-        });
-
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
@@ -73,10 +52,9 @@ pub async fn run(
                     .service(routes::client::admin_disable_handler),
             )
             .service(
-                web::scope("/test").service(routes::test::deploy::handler),
-            )
-            .service(
-                web::scope("/pen/1").service(routes::test::casbin::handler),
+                web::scope("/test")
+                    .service(routes::test::deploy::handler)
+                    .service(routes::test::json_explain::handler),
             )
             .service(
                 web::scope("/rating")
@@ -99,7 +77,6 @@ pub async fn run(
                     .service(routes::stack::get::admin_item)
                     .service(routes::stack::get::admin_list)
             )
-            .app_data(json_cfg.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(settings.clone())
@@ -108,4 +85,28 @@ pub async fn run(
     .run();
 
     Ok(server)
+}
+
+fn line_column_to_index(u8slice: &[u8], line: usize, column: usize) -> usize {
+    let mut l = 1;
+    let mut c = 0;
+    let mut i = 0;
+    for ch in u8slice {
+        i += 1;
+        match ch {
+            b'\n' => {
+                l += 1;
+                c = 0;
+            }
+            _ => {
+                c += 1;
+            }
+        }
+
+        if line == l && c == column {
+            break;
+        }
+    }
+
+    return i;
 }
