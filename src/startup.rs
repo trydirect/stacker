@@ -2,8 +2,9 @@ use crate::configuration::Settings;
 use crate::helpers;
 use crate::routes;
 use actix_cors::Cors;
-use actix_web::dev::Server;
 use actix_web::{
+    dev::Server,
+    http,
     error,
     web,
     App,
@@ -29,6 +30,14 @@ pub async fn run(
     let mq_manager = web::Data::new(mq_manager);
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
+    let json_config = web::JsonConfig::default()
+        .error_handler(|err, req| {
+            let msg: String = match err {
+                 error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
+                 _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)
+            };
+            error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
+        });
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
@@ -77,6 +86,7 @@ pub async fn run(
                     .service(routes::stack::get::admin_item)
                     .service(routes::stack::get::admin_list)
             )
+            .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(settings.clone())
