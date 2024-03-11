@@ -12,6 +12,10 @@ enum Commands {
         #[command(subcommand)]
         command: AppClientCommands,
     },
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommands,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -22,8 +26,17 @@ enum AppClientCommands {
     },
 }
 
-//todo add documentation about how to add a new command
-//todo the helper from console should have a nicer display
+#[derive(Debug, Subcommand)]
+enum DebugCommands {
+    Json {
+        #[arg(long)]
+        line: usize,
+        #[arg(long)]
+        column: usize,
+        #[arg(long)]
+        payload: String,
+    },
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -36,6 +49,11 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(
                 stacker::console::commands::appclient::NewCommand::new(user_id),
+            )),
+        },
+        Commands::Debug { command } => match command {
+            DebugCommands::Json { line, column, payload } => Ok(Box::new(
+                stacker::console::commands::debug::JsonCommand::new(line, column, payload),
             )),
         },
         _ => Err("command does not match".to_string()),
