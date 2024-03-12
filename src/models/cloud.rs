@@ -5,6 +5,7 @@ use serde_derive::{Deserialize, Serialize};
 pub struct Cloud {
     pub id: i32,
     pub user_id: String,
+    pub project_id: Option<i32>,
     pub provider: String,
     pub cloud_token: Option<String>,
     pub cloud_key: Option<String>,

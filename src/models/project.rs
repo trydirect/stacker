@@ -6,7 +6,6 @@ use uuid::Uuid;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Project {
     pub id: i32,         // id - is a unique identifier for the app project
-    pub cloud_id: Option<i32>,   // cloud assigned to a project
     pub stack_id: Uuid,  // external project ID
     pub user_id: String, // external unique identifier for the user
     pub name: String,
@@ -22,7 +21,6 @@ impl Project {
         Self {
             id: 0,
             stack_id: Uuid::new_v4(),
-            cloud_id: None,
             user_id,
             name,
             body,

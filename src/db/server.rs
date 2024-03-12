@@ -101,6 +101,15 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
             server
         })
         .map_err(|e| {
+
+            // match err {
+            // sqlx::error::ErrorKind::ForeignKeyViolation => {
+            //     return JsonResponse::<models::Server>::build().bad_request("");
+            // }
+            //     _ => {
+            //         return JsonResponse::<models::Server>::build().internal_server_error("Failed to insert");
+            //     }
+            // })
             tracing::error!("Failed to execute query: {:?}", e);
             "Failed to insert".to_string()
         })
@@ -121,7 +130,6 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
             server=$7,
             os=$8,
             disk_type=$9,
-            created_at=$10,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
@@ -135,7 +143,6 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
         server.server,
         server.os,
         server.disk_type,
-        server.created_at,
     )
         .fetch_one(pool)
         .instrument(query_span)
@@ -173,14 +180,14 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         })
     {
         Ok(_) => {
-            tx.commit().await.map_err(|err| {
+            let _ = tx.commit().await.map_err(|err| {
                 tracing::error!("Failed to commit transaction: {:?}", err);
                 false
             });
             Ok(true)
         }
         Err(err) => {
-            tx.rollback().await.map_err(|err| println!("{:?}", err));
+            let _ = tx.rollback().await.map_err(|err| println!("{:?}", err));
             Ok(false)
         }
     }
