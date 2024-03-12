@@ -30,9 +30,12 @@ impl DcBuilder {
         };
 
         let apps = forms::project::ProjectForm::try_from(&self.project)?;
+        tracing::debug!("apps {:?}", &apps);
         let services = apps.custom.services()?;
+        tracing::debug!("services {:?}", &services);
         let named_volumes = apps.custom.named_volumes()?;
 
+        tracing::debug!("named volumes {:?}", &named_volumes);
         // let all_networks = &apps.custom.networks.networks.clone().unwrap_or(vec![]);
         let networks = apps.custom.networks.clone();
         compose_content.networks = dctypes::ComposeNetworks(networks.into());
@@ -41,7 +44,6 @@ impl DcBuilder {
             compose_content.volumes = dctypes::TopLevelVolumes(named_volumes);
         }
 
-        tracing::debug!("services {:?}", &services);
         compose_content.services = dctypes::Services(services);
 
         let fname = format!("./files/{}.yml", self.project.stack_id);

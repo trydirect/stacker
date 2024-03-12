@@ -48,6 +48,7 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         r#"
         INSERT INTO cloud (
         user_id,
+        project_id,
         provider,
         cloud_token,
         cloud_key,
@@ -55,10 +56,11 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         save_token,
         created_at,
         updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id;
         "#,
         cloud.user_id,
+        cloud.project_id,
         cloud.provider,
         cloud.cloud_token,
         cloud.cloud_key,
@@ -88,24 +90,24 @@ pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         UPDATE cloud
         SET
             user_id=$2,
-            provider=$3,
-            cloud_token=$4,
-            cloud_key=$5,
-            cloud_secret=$6,
-            save_token=$7,
-            created_at=$8,
+            project_id=$3,
+            provider=$4,
+            cloud_token=$5,
+            cloud_key=$6,
+            cloud_secret=$7,
+            save_token=$8,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
         "#,
         cloud.id,
         cloud.user_id,
+        cloud.project_id,
         cloud.provider,
         cloud.cloud_token,
         cloud.cloud_key,
         cloud.cloud_secret,
-        cloud.save_token,
-        cloud.created_at,
+        cloud.save_token
     )
         .fetch_one(pool)
         .instrument(query_span)
@@ -143,14 +145,14 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         })
     {
         Ok(_) => {
-            tx.commit().await.map_err(|err| {
+            let _ = tx.commit().await.map_err(|err| {
                 tracing::error!("Failed to commit transaction: {:?}", err);
                 false
             });
             Ok(true)
         }
         Err(err) => {
-            tx.rollback().await.map_err(|err| println!("{:?}", err));
+            let _ = tx.rollback().await.map_err(|err| println!("{:?}", err));
             Ok(false)
         }
     }

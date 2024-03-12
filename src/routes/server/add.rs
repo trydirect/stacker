@@ -68,10 +68,6 @@ pub async fn add(
             .ok("success"))
         .map_err(|err|
             match err {
-                // sqlx::error::DatabaseError::kind()
-                // sqlx::error::ErrorKind::ForeignKeyViolation => {
-                //     return JsonResponse::<models::Server>::build().bad_request("");
-                // }
                 _ => {
                     return JsonResponse::<models::Server>::build().internal_server_error("Failed to insert");
                 }

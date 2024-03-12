@@ -71,7 +71,7 @@ pub async fn run(
                         middleware::trydirect::bearer_guard,
                     ))
                     .wrap(Cors::permissive())
-                    .service(crate::routes::project::deploy::add)
+                    .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::compose::admin)
                     .service(crate::routes::project::get::item)

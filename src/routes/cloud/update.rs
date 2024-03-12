@@ -36,8 +36,6 @@ pub async fn item(
     let mut cloud:models::Cloud = form.into_inner().into();
     cloud.id = cloud_row.id;
     cloud.user_id = user.id.clone();
-    // exclude
-    // cloud.created_at
 
     tracing::debug!("Updating cloud {:?}", cloud);
 
