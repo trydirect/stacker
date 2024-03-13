@@ -17,7 +17,8 @@ impl JsonCommand {
 
 impl crate::console::commands::CallableTrait for JsonCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("line={} column={} payload={}", self.line, self.column, self.payload);
+        let payload = std::fs::read_to_string(&self.payload)?;
+        println!("line={} column={} payload={}", self.line, self.column, payload);
         Ok(())
     }
 }
