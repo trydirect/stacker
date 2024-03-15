@@ -63,7 +63,6 @@ pub async fn run(
             .service(
                 web::scope("/test")
                     .service(routes::test::deploy::handler)
-                    .service(routes::test::json_explain::handler),
             )
             .service(
                 web::scope("/rating")
