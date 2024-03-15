@@ -12,6 +12,10 @@ enum Commands {
         #[command(subcommand)]
         command: AppClientCommands,
     },
+    MQ {
+        #[command(subcommand)]
+        command: AppMqCommands,
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -19,6 +23,12 @@ enum AppClientCommands {
     New {
         #[arg(long)]
         user_id: i32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AppMqCommands {
+    Listen {
     },
 }
 
@@ -36,6 +46,11 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(
                 stacker::console::commands::appclient::NewCommand::new(user_id),
+            )),
+        },
+        Commands::MQ { command} => match command {
+            AppMqCommands::Listen {} => Ok(Box::new(
+                stacker::console::commands::mq::ListenCommand::new(),
             )),
         },
         _ => Err("command does not match".to_string()),

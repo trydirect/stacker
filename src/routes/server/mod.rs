@@ -1,7 +1,7 @@
 pub mod add;
 pub(crate) mod get;
 pub(crate) mod delete;
-mod update;
+pub(crate) mod update;
 
 pub use get::*;
 pub use add::*;

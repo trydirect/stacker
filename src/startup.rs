@@ -100,8 +100,8 @@ pub async fn run(
                     .wrap(Cors::permissive())
                     .service(crate::routes::server::get::item)
                     .service(crate::routes::server::get::list)
-                    .service(crate::routes::server::add::add)
-                    // .service(crate::routes::server::update::item)
+                    // .service(crate::routes::server::add::add)
+                    .service(crate::routes::server::update::item)
                     .service(crate::routes::server::delete::item),
             )
             .app_data(pg_pool.clone())

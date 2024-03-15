@@ -7,7 +7,7 @@ use serde_json::Value;
 pub struct Deployment {
     pub id: i32,         // id - is a unique identifier for the app project
     pub project_id: i32,  // external project ID
-    pub deleted: bool,
+    pub deleted: Option<bool>,
     pub status: String,
     pub body: Value, //json type
     pub created_at: DateTime<Utc>,
@@ -19,7 +19,7 @@ impl Deployment {
         Self {
             id: 0,
             project_id,
-            deleted: false,
+            deleted: Some(false),
             status,
             body,
             created_at: Utc::now(),

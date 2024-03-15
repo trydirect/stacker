@@ -11,22 +11,6 @@ use std::str;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct ProjectForm {
-    // #[validate(min_length=2)]
-    // #[validate(max_length=255)]
-    #[serde(rename = "commonDomain")]
-    pub common_domain: Option<String>,
-    pub domain_list: Option<forms::project::DomainList>,
-    #[validate(min_length = 2)]
-    #[validate(max_length = 255)]
-    pub stack_code: Option<String>,
-    #[validate(min_length = 3)]
-    #[validate(max_length = 50)]
-    pub ssl: String,
-    pub vars: Option<Vec<forms::project::Var>>,
-    pub integrated_features: Option<Vec<Value>>,
-    pub extended_features: Option<Vec<Value>>,
-    pub subscriptions: Option<Vec<String>>,
-    pub form_app: Option<Vec<String>>,
     pub custom: forms::project::Custom
 }
 

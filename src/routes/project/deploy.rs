@@ -7,13 +7,125 @@ use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
+use serde_valid::Validate;
 use crate::helpers::compressor::compress;
 
 
 
-#[tracing::instrument(name = "Deploy for every user. Admin endpoint")]
-#[post("/{id}/deploy/{cloud_id}")]
+#[tracing::instrument(name = "Deploy for every user")]
+#[post("/{id}/deploy")]
 pub async fn item(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    form: web::Json<forms::project::Deploy>,
+    pg_pool: Data<PgPool>,
+    mq_manager: Data<MqManager>,
+    sets: Data<Settings>,
+) -> Result<impl Responder> {
+    let id = path.0;
+    tracing::debug!("User {:?} is deploying project: {}", user, id);
+
+    if !form.validate().is_ok() {
+        let errors = form.validate().unwrap_err().to_string();
+        let err_msg = format!("Invalid form data received {:?}", &errors);
+        tracing::debug!(err_msg);
+
+        return Err(JsonResponse::<models::Project>::build().form_error(errors));
+    }
+
+    // Validate project
+    let project = db::project::fetch(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .and_then(|project| match project {
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+        })?;
+
+    // Build compose
+    let id = project.id.clone();
+    let dc = DcBuilder::new(project);
+    let fc = dc.build().map_err(|err| {
+        JsonResponse::<models::Project>::build().internal_server_error(err)
+    })?;
+
+
+    // Save cloud credentials if requested
+    let mut cloud_creds: models::Cloud = form.cloud.clone().into();
+    cloud_creds.project_id = Some(id.clone());
+    cloud_creds.user_id = user.id.clone();
+
+    if let Some(save_token) = cloud_creds.save_token {
+        if save_token {
+            db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
+                .await
+                .map(|cloud| cloud)
+                .map_err(|_| {
+                    JsonResponse::<models::Cloud>::build().internal_server_error("Internal Server Error")
+                })?;
+        }
+    }
+
+    // Save server type and region
+    let mut server: models::Server = form.server.clone().into();
+    server.user_id = user.id.clone();
+    server.project_id = id.clone();
+    let server = db::server::insert(pg_pool.get_ref(), server)
+        .await
+        .map(|server| server)
+        .map_err(|_| {
+            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+        })?;
+
+    // Build Payload for the 3-d party service through RabbitMQ
+    let mut payload = forms::project::Payload::try_from(&dc.project)
+        .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
+
+    payload.server = Some(server.into());
+    payload.cloud  = Some(cloud_creds.into());
+    payload.stack  = form.stack.clone().into();
+    payload.user_token = Some(user.id.clone());
+    payload.user_email = Some(user.email.clone());
+    payload.docker_compose = Some(compress(fc.as_str()));
+
+    // Store deployment attempts into deployment table in db
+    let project_id = dc.project.id.clone();
+    let json_request = dc.project.body.clone();
+    let deployment = models::Deployment::new(
+        project_id,
+        String::from("pending"),
+        json_request
+    );
+
+    let result = db::deployment::insert(pg_pool.get_ref(), deployment)
+        .await
+        .map(|deployment| deployment)
+        .map_err(|_| {
+            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
+        });
+
+    tracing::debug!("Save deployment result: {:?}", result);
+    tracing::debug!("Send project data <<<<<<<<<<<>>>>>>>>>>>>>>>>{:?}", payload);
+
+    // Send Payload
+    mq_manager
+        .publish(
+            "install".to_string(),
+            "install.start.tfa.all.all".to_string(),
+            &payload,
+        )
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .map(|_| {
+            JsonResponse::<models::Project>::build()
+                .set_id(id)
+                .ok("Success")
+        })
+
+}
+#[tracing::instrument(name = "Deploy, when cloud token is saved")]
+#[post("/{id}/deploy/{cloud_id}")]
+pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
@@ -30,7 +142,7 @@ pub async fn item(
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
             Some(project) => Ok(project),
-            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+            None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
 
     let id = project.id.clone();
