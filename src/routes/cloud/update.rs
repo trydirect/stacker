@@ -18,7 +18,7 @@ pub async fn item(
 ) -> Result<impl Responder> {
 
     let id = path.0;
-    let mut cloud_row = db::cloud::fetch(pg_pool.get_ref(), id)
+    let cloud_row = db::cloud::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Cloud>::build().internal_server_error(err))
         .and_then(|cloud| match cloud {

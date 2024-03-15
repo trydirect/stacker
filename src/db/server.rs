@@ -70,7 +70,6 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         r#"
         INSERT INTO server (
         user_id,
-        cloud_id,
         project_id,
         region,
         zone,
@@ -79,11 +78,10 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         disk_type,
         created_at,
         updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id;
         "#,
         server.user_id,
-        server.cloud_id,
         server.project_id,
         server.region,
         server.zone,
@@ -123,20 +121,18 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
         UPDATE server
         SET
             user_id=$2,
-            cloud_id=$3,
-            project_id=$4,
-            region=$5,
-            zone=$6,
-            server=$7,
-            os=$8,
-            disk_type=$9,
+            project_id=$3,
+            region=$4,
+            zone=$5,
+            server=$6,
+            os=$7,
+            disk_type=$8,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
         "#,
         server.id,
         server.user_id,
-        server.cloud_id,
         server.project_id,
         server.region,
         server.zone,

@@ -6,7 +6,6 @@ use serde_valid::Validate;
 pub struct Server {
     pub id: i32,
     pub user_id: String,
-    pub cloud_id: i32,
     pub project_id: i32,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]

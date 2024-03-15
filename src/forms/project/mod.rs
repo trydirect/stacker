@@ -24,6 +24,7 @@ mod icon_dark;
 mod version;
 
 mod network_driver;
+mod deploy;
 
 pub use app::*;
 pub use custom::*;
@@ -50,3 +51,4 @@ pub use icon::*;
 pub use icon_light::*;
 pub use icon_dark::*;
 pub use version::*;
+pub use deploy::*;

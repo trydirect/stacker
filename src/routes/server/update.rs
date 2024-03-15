@@ -35,7 +35,6 @@ pub async fn item(
 
     let mut server:models::Server = form.into_inner().into();
     server.id = server_row.id;
-    server.cloud_id = server_row.cloud_id;
     server.project_id = server_row.project_id;
     server.user_id = user.id.clone();
     // exclude

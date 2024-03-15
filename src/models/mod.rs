@@ -5,7 +5,7 @@ mod rules;
 pub mod rating;
 pub mod project;
 pub mod user;
-mod deployment;
+pub(crate) mod deployment;
 mod cloud;
 mod server;
 
