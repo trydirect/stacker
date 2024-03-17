@@ -9,6 +9,7 @@ use db::deployment;
 use crate::{db, helpers};
 use crate::helpers::mq_manager;
 use crate::helpers::mq_manager::MqManager;
+use futures_lite::stream::StreamExt;
 
 pub struct ListenCommand {
 }
@@ -39,7 +40,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                 .await?;
 
 
-            let consumer = consumer_channel
+            let mut consumer = consumer_channel
                 .basic_consume(
                     "install_progress",
                     "console_listener",
@@ -53,10 +54,10 @@ impl crate::console::commands::CallableTrait for ListenCommand {
 
             tracing::info!("will consume");
             // if let Ok(consumer) = consumer {
-            //     while let Some(delivery) = consumer.next().await {
-            //         let delivery = delivery.expect("error in consumer");
-            //         delivery.ack(BasicAckOptions::default()).await.expect("ack");
-            //     }
+                while let Some(delivery) = consumer.next().await {
+                    let delivery = delivery.expect("error in consumer");
+                    delivery.ack(BasicAckOptions::default()).await.expect("ack");
+                }
             // }
 
             // while let Some(delivery) = consumer.next().await {

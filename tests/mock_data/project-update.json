@@ -1,6 +1,7 @@
 {
+  "id": 1,
   "stack_id": "9239ea1d-8306-4493-aae1-fcc00de76241",
   "user_id": "hy181TZa4DaabUZWklsrxw",
   "name": "sample",
-  "body": "{}"
+  "body": "{\"key\": \"val\"}"
 }

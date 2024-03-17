@@ -1,13 +1,13 @@
 {
   "user_id": "hy181TZa4DaabUZWklsrxw",
-  "cloud_id": 3,
+  "project_id":1,
+  "cloud_id": 1,
   "region": "fra-1",
   "zone": "a",
   "server": "server-1",
   "os": "3408230498203948234",
   "disk_type": "samples",
   "created_at": "",
-  "updated_at": "",
-  "project_id":4
+  "updated_at": ""
 }
 
