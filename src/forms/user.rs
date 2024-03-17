@@ -10,6 +10,8 @@ pub struct UserForm {
     pub user: User,
 }
 
+//todo deref for UserForm. userForm.id, userForm.first_name
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
