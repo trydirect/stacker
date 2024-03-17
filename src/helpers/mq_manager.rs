@@ -117,8 +117,8 @@ impl MqManager {
                 ExchangeKind::Topic,
                 ExchangeDeclareOptions {
                     passive: false,
-                    durable: false,
-                    auto_delete: true,
+                    durable: true,
+                    auto_delete: false,
                     internal: false,
                     nowait: false,
                 },
