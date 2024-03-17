@@ -15,14 +15,14 @@ pub struct Cloud {
     pub save_token: Option<bool>,
 }
 
-impl Into<models::Cloud> for Cloud {
+impl Into<models::Cloud> for &Cloud {
     fn into(self) -> models::Cloud {
         let mut cloud = models::Cloud::default();
-        cloud.provider = self.provider;
-        cloud.cloud_token = self.cloud_token;
-        cloud.cloud_key = self.cloud_key;
-        cloud.cloud_secret = self.cloud_secret;
-        cloud.save_token = self.save_token;
+        cloud.provider = self.provider.clone();
+        cloud.cloud_token = self.cloud_token.clone();
+        cloud.cloud_key = self.cloud_key.clone();
+        cloud.cloud_secret = self.cloud_secret.clone();
+        cloud.save_token = self.save_token.clone();
 
         cloud
     }

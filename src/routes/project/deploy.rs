@@ -43,7 +43,7 @@ pub async fn item(
         })?;
 
     // Build compose
-    let id = project.id.clone();
+    let id = project.id;
     let dc = DcBuilder::new(project);
     let fc = dc.build().map_err(|err| {
         JsonResponse::<models::Project>::build().internal_server_error(err)
@@ -51,25 +51,23 @@ pub async fn item(
 
 
     // Save cloud credentials if requested
-    let mut cloud_creds: models::Cloud = form.cloud.clone().into();
-    cloud_creds.project_id = Some(id.clone());
+    let mut cloud_creds: models::Cloud = (&form.cloud).into();
+    cloud_creds.project_id = Some(id);
     cloud_creds.user_id = user.id.clone();
 
-    if let Some(save_token) = cloud_creds.save_token {
-        if save_token {
-            db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
-                .await
-                .map(|cloud| cloud)
-                .map_err(|_| {
-                    JsonResponse::<models::Cloud>::build().internal_server_error("Internal Server Error")
-                })?;
-        }
+    if Some(true) == cloud_creds.save_token {
+        db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
+            .await
+            .map(|cloud| cloud)
+            .map_err(|_| {
+                JsonResponse::<models::Cloud>::build().internal_server_error("Internal Server Error")
+            })?;
     }
 
     // Save server type and region
-    let mut server: models::Server = form.server.clone().into();
+    let mut server: models::Server = (&form.server).into();
     server.user_id = user.id.clone();
-    server.project_id = id.clone();
+    server.project_id = id;
     let server = db::server::insert(pg_pool.get_ref(), server)
         .await
         .map(|server| server)
@@ -89,10 +87,9 @@ pub async fn item(
     payload.docker_compose = Some(compress(fc.as_str()));
 
     // Store deployment attempts into deployment table in db
-    let project_id = dc.project.id.clone();
     let json_request = dc.project.body.clone();
     let deployment = models::Deployment::new(
-        project_id,
+        dc.project.id,
         String::from("pending"),
         json_request
     );
@@ -189,10 +186,9 @@ pub async fn saved_item(
     payload.docker_compose = Some(compress(fc.as_str()));
 
 
-    let project_id = dc.project.id.clone();
     let json_request = dc.project.body.clone();
     let deployment = models::Deployment::new(
-        project_id,
+        dc.project.id,
         String::from("pending"),
         json_request
     );
