@@ -49,7 +49,6 @@ pub async fn item(
         JsonResponse::<models::Project>::build().internal_server_error(err)
     })?;
 
-
     // Save cloud credentials if requested
     let mut cloud_creds: models::Cloud = (&form.cloud).into();
     cloud_creds.project_id = Some(id);
