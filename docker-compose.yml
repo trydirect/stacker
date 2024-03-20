@@ -29,6 +29,22 @@ services:
 #      stackerdb:
 #        condition: service_healthy
 
+  stacker_queue:
+    image: trydirect/stacker:0.0.7
+    container_name: stacker_queue
+    restart: always
+    volumes:
+      - ./configuration.yaml:/app/configuration.yaml
+      - ./.env:/app/.env
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+    env_file:
+      - ./.env
+    depends_on:
+      stackerdb:
+        condition: service_healthy
+    entrypoint: /app/console mq listen
 
 #  stackerdb:
 #    container_name: stackerdb
