@@ -111,7 +111,7 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let mut client = self.set_token(client).await?;
+        let client = self.set_token(client).await?;
         client
             .send()
             .await
@@ -146,7 +146,7 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let mut client = self.set_token(client).await?;
+        let client = self.set_token(client).await?;
         client
             .send()
             .await
@@ -186,7 +186,7 @@ impl<'a> DockerHub<'a> {
         }
     }
 
-    pub async fn set_token(&self, mut client: RequestBuilder) -> Result<RequestBuilder, String> {
+    pub async fn set_token(&self, client: RequestBuilder) -> Result<RequestBuilder, String> {
         if self.creds.password.is_empty() {
             tracing::debug!("Password is empty. Image should be public");
             return Ok(client);

@@ -167,14 +167,14 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         })
     {
         Ok(_) => {
-            tx.commit().await.map_err(|err| {
+            let _ = tx.commit().await.map_err(|err| {
                 tracing::error!("Failed to commit transaction: {:?}", err);
                 false
             });
             Ok(true)
         }
         Err(err) => {
-            tx.rollback().await.map_err(|err| println!("{:?}", err));
+            let _ = tx.rollback().await.map_err(|err| println!("{:?}", err));
             Ok(false)
         }
         // todo, when empty commit()

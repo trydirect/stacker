@@ -156,7 +156,7 @@ pub async fn saved_item(
                 }
             }
         }
-        Err(e) => {
+        Err(_e) => {
             return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
         }
     };
@@ -169,7 +169,7 @@ pub async fn saved_item(
             // }
             server.into_iter().nth(0).unwrap() // @todo refactoring is required
         }
-        Err(err) => {
+        Err(_e) => {
             return Err(JsonResponse::<models::Project>::build().not_found("No servers configured"));
         }
     };
