@@ -4,6 +4,7 @@ use lapin::{options::*, publisher_confirm::{Confirmation, PublisherConfirm}, Bas
 use lapin::types::AMQPType::ShortString;
 use lapin::types::{AMQPValue, FieldTable};
 use serde::ser::Serialize;
+use serde_valid::validation::error::Format::Default;
 
 #[derive(Debug)]
 pub struct MqManager {
@@ -127,10 +128,22 @@ impl MqManager {
             .await
             .expect("Exchange declare failed");
 
+        let mut args = FieldTable::default();
+        args.insert("x-expires".into(), AMQPValue::LongUInt(180000));
+
         let queue = channel.queue_declare(
-            routing_key,
-            QueueDeclareOptions::default(),
-            Default::default(),
+            // "install_progress_all",
+            "#",
+            // "install_progress_hy181TZa4DaabUZWklsrxw",
+            QueueDeclareOptions {
+                passive: false,
+                durable: false,
+                exclusive: false,
+                auto_delete: true,
+                nowait: false,
+            },
+            // FieldTable::default(),
+            args,
         )
         .await
         .expect("Queue declare failed");

@@ -7,6 +7,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
+use std::ops::Deref;
 
 #[tracing::instrument(name = "Update cloud.")]
 #[put("/{id}")]
@@ -33,7 +34,7 @@ pub async fn item(
         return Err(JsonResponse::<models::Cloud>::build().form_error(errors.to_string()));
     }
 
-    let mut cloud:models::Cloud = form.into_inner().into();
+    let mut cloud:models::Cloud = form.deref().into();
     cloud.id = cloud_row.id;
     cloud.user_id = user.id.clone();
 

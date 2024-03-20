@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
@@ -29,7 +30,7 @@ pub async fn add(
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
     }
 
-    let mut cloud: models::Cloud = form.into_inner().into();
+    let mut cloud: models::Cloud = form.deref().into();
     cloud.user_id = user.id.clone();
 
     db::cloud::insert(pg_pool.get_ref(), cloud)
