@@ -19,7 +19,7 @@ pub async fn item(
 ) -> Result<impl Responder> {
 
     let id = path.0;
-    let mut server_row = db::server::fetch(pg_pool.get_ref(), id)
+    let server_row = db::server::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Server>::build().internal_server_error(err))
         .and_then(|server| match server {

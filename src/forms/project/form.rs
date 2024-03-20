@@ -63,7 +63,7 @@ pub(crate) async fn body_into_form(body: Bytes) -> actix_web::Result<forms::proj
             let msg = format!("{}:{:?}", err.path().to_string(), err);
             JsonResponse::<forms::project::ProjectForm>::build().bad_request(msg)
         })
-        .and_then(|mut form: forms::project::ProjectForm| {
+        .and_then(|form: forms::project::ProjectForm| {
             if !form.validate().is_ok() {
                 let errors = form.validate().unwrap_err().to_string();
                 let err_msg = format!("Invalid data received {:?}", &errors);
