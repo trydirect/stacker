@@ -7,6 +7,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
+use std::ops::Deref;
 
 #[tracing::instrument(name = "Update server.")]
 #[put("/{id}")]
@@ -33,7 +34,7 @@ pub async fn item(
         return Err(JsonResponse::<models::Server>::build().form_error(errors.to_string()));
     }
 
-    let mut server:models::Server = form.into_inner().into();
+    let mut server:models::Server = form.deref().into();
     server.id = server_row.id;
     server.project_id = server_row.project_id;
     server.user_id = user.id.clone();

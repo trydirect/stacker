@@ -2,6 +2,32 @@ use crate::models;
 use sqlx::PgPool;
 use tracing::Instrument;
 
+
+pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Deployment>, String> {
+    tracing::info!("Fetch deployment {}", id);
+    sqlx::query_as!(
+        models::Deployment,
+        r#"
+        SELECT
+            *
+        FROM deployment
+        WHERE id=$1
+        LIMIT 1
+        "#,
+        id
+    )
+        .fetch_one(pool)
+        .await
+        .map(|deployment| Some(deployment))
+        .or_else(|err| match err {
+            sqlx::Error::RowNotFound => Ok(None),
+            e => {
+                tracing::error!("Failed to fetch deployment, error: {:?}", e);
+                Err("Could not fetch data".to_string())
+            }
+        })
+}
+
 pub async fn insert(pool: &PgPool, mut deployment: models::Deployment) -> Result<models::Deployment, String> {
     let query_span = tracing::info_span!("Saving new deployment into the database");
     sqlx::query!(

@@ -7,7 +7,6 @@ use actix_web::{
     App, HttpServer,
 };
 use crate::middleware;
-use actix_web_httpauth::middleware::HttpAuthentication;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;

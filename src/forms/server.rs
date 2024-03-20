@@ -14,14 +14,14 @@ pub struct Server {
     pub disk_type: Option<String>,
 }
 
-impl Into<models::Server> for Server {
+impl Into<models::Server> for &Server {
     fn into(self) -> models::Server {
         let mut server = models::Server::default();
-        server.disk_type = self.disk_type;
-        server.region = self.region;
-        server.server = self.server;
-        server.zone = self.zone;
-        server.os = self.os;
+        server.disk_type = self.disk_type.clone();
+        server.region = self.region.clone();
+        server.server = self.server.clone();
+        server.zone = self.zone.clone();
+        server.os = self.os.clone();
         server.created_at = Utc::now();
         server.updated_at = Utc::now();
 
