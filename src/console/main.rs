@@ -16,6 +16,10 @@ enum Commands {
         #[command(subcommand)]
         command: DebugCommands,
     },
+    MQ {
+        #[command(subcommand)]
+        command: AppMqCommands,
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -38,6 +42,12 @@ enum DebugCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum AppMqCommands {
+    Listen {
+    },
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -54,6 +64,11 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
         Commands::Debug { command } => match command {
             DebugCommands::Json { line, column, payload } => Ok(Box::new(
                 stacker::console::commands::debug::JsonCommand::new(line, column, payload),
+            )),
+        },
+        Commands::MQ { command} => match command {
+            AppMqCommands::Listen {} => Ok(Box::new(
+                stacker::console::commands::mq::ListenCommand::new(),
             )),
         },
         _ => Err("command does not match".to_string()),

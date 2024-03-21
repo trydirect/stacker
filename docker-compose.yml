@@ -8,13 +8,14 @@ volumes:
 services:
 
   stacker:
-    image: trydirect/stacker:0.0.6
+    image: trydirect/stacker:0.0.7
     build: .
     container_name: stacker
     restart: always
     volumes:
       - ./files:/app/files
       - ./docker/local/configuration.yaml:/app/configuration.yaml
+      - ./access_control.conf:/app/access_control.conf
       - ./migrations:/app/migrations
       - ./docker/local/.env:/app/.env
     ports:

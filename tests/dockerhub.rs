@@ -1,18 +1,20 @@
 // use std::fs;
 // use std::collections::HashMap;
 use std::env;
+use docker_compose_types::{ComposeVolume, SingleValue};
+
 mod common;
-use stacker::forms::stack::DockerImage;
-use stacker::helpers::stack::dctypes::{ComposeVolume, SingleValue};
+use stacker::forms::project::DockerImage;
+// use stacker::helpers::project::dctypes::{ComposeVolume, SingleValue};
 use serde_yaml;
-use stacker::forms::Volume;
+use stacker::forms::project::Volume;
 
 const DOCKER_USERNAME: &str = "trydirect";
 const DOCKER_PASSWORD: &str = "***************";
 //  Unit Test
 
 // #[test]
-// fn test_deserialize_user_stack_web() {
+// fn test_deserialize_project_web() {
 //
 //     let body_str = fs::read_to_string("./tests/web-item.json").unwrap();
 //     // let form:serde_json::Value = serde_json::from_str(&body_str).unwrap();
@@ -24,17 +26,17 @@ const DOCKER_PASSWORD: &str = "***************";
 //     //     }
 //     //     Err(_err) => {
 //     //         let msg = format!("Invalid data. {:?}", _err);
-//     //         return JsonResponse::<StackForm>::build().bad_request(msg);
+//     //         return JsonResponse::<ProjectForm>::build().bad_request(msg);
 //     //     }
 //     // };
 //     //
 //     // assert_eq!(result, 12);
 // }
 // #[test]
-// fn test_deserialize_user_stack() {
+// fn test_deserialize_project() {
 //
-//     let body_str = fs::read_to_string("./tests/custom-stack-payload-11.json").unwrap();
-//     let form = serde_json::from_str::<StackForm>(&body_str).unwrap();
+//     let body_str = fs::read_to_string("./tests/custom-project-payload-11.json").unwrap();
+//     let form = serde_json::from_str::<ProjectForm>(&body_str).unwrap();
 //     println!("{:?}", form);
 //     // @todo assert required data
 //
@@ -44,7 +46,7 @@ const DOCKER_PASSWORD: &str = "***************";
 //     //     }
 //     //     Err(_err) => {
 //     //         let msg = format!("Invalid data. {:?}", _err);
-//     //         return JsonResponse::<StackForm>::build().bad_request(msg);
+//     //         return JsonResponse::<ProjectForm>::build().bad_request(msg);
 //     //     }
 //     // };
 //     //
@@ -122,6 +124,6 @@ async fn test_docker_named_volume() {
     println!("ComposeVolume: {:?}", cv);
     println!("{:?}", cv.driver_opts);
     assert_eq!(Some("flask-data".to_string()), cv.name);
-    assert_eq!(&Some(SingleValue::String("/root/stack/flask-data".to_string())), cv.driver_opts.get("device").unwrap());
+    assert_eq!(&Some(SingleValue::String("/root/project/flask-data".to_string())), cv.driver_opts.get("device").unwrap());
     assert_eq!(&Some(SingleValue::String("none".to_string())), cv.driver_opts.get("type").unwrap());
 }

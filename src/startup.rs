@@ -71,20 +71,38 @@ pub async fn run(
                     .service(routes::rating::list_handler),
             )
             .service(
-                web::scope("/stack")
-                    .service(routes::stack::deploy::add)
-                    .service(routes::stack::compose::add)
-                    .service(routes::stack::compose::admin)
-                    .service(routes::stack::get::item)
-                    .service(routes::stack::get::list)
-                    .service(routes::stack::add::add)
-                    .service(routes::stack::update::update),
+                web::scope("/project")
+                    .service(crate::routes::project::deploy::item)
+                    .service(crate::routes::project::compose::add)
+                    .service(crate::routes::project::compose::admin)
+                    .service(crate::routes::project::get::item)
+                    .service(crate::routes::project::get::list)
+                    .service(crate::routes::project::add::item)
+                    .service(crate::routes::project::update::item)
+                    .service(crate::routes::project::delete::item),
             )
             .service(
-                web::scope("/admin/stack")
-                    .service(routes::stack::get::admin_item)
-                    .service(routes::stack::get::admin_list)
+                web::scope("/cloud")
+                    .service(crate::routes::cloud::get::item)
+                    .service(crate::routes::cloud::get::list)
+                    .service(crate::routes::cloud::add::add)
+                    .service(crate::routes::cloud::update::item)
+                    .service(crate::routes::cloud::delete::item),
             )
+            .service(
+                web::scope("/server")
+                    .service(crate::routes::server::get::item)
+                    .service(crate::routes::server::get::list)
+                    // .service(crate::routes::server::add::add)
+                    .service(crate::routes::server::update::item)
+                    .service(crate::routes::server::delete::item),
+            )
+            // @todo stack renamed to project
+            // .service(
+            //     web::scope("/admin/project")
+            //         .service(routes::project::get::admin_item)
+            //         .service(routes::project::get::admin_list)
+            // )
             .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
@@ -94,28 +112,4 @@ pub async fn run(
     .run();
 
     Ok(server)
-}
-
-fn line_column_to_index(u8slice: &[u8], line: usize, column: usize) -> usize {
-    let mut l = 1;
-    let mut c = 0;
-    let mut i = 0;
-    for ch in u8slice {
-        i += 1;
-        match ch {
-            b'\n' => {
-                l += 1;
-                c = 0;
-            }
-            _ => {
-                c += 1;
-            }
-        }
-
-        if line == l && c == column {
-            break;
-        }
-    }
-
-    return i;
 }

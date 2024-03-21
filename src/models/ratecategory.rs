@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum RateCategory {
     Application, // app, feature, extension
     Cloud,       // is user satisfied working with this cloud
-    Stack,       // app stack
+    Project,       // app project
     DeploymentSpeed,
     Documentation,
     Design,
