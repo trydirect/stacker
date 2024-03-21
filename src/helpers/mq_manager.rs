@@ -1,10 +1,7 @@
-use actix_web::web;
 use deadpool_lapin::{Config, CreatePoolError, Object, Pool, Runtime};
-use lapin::{options::*, publisher_confirm::{Confirmation, PublisherConfirm}, BasicProperties, Channel, ExchangeKind, Queue};
-use lapin::types::AMQPType::ShortString;
+use lapin::{options::*, publisher_confirm::{Confirmation, PublisherConfirm}, BasicProperties, Channel, ExchangeKind};
 use lapin::types::{AMQPValue, FieldTable};
 use serde::ser::Serialize;
-use serde_valid::validation::error::Format::Default;
 
 #[derive(Debug)]
 pub struct MqManager {

@@ -31,8 +31,13 @@ impl Deployment {
 impl Default for Deployment {
     fn default() -> Self {
         Deployment {
+            id: 0,
+            project_id: 0,
+            deleted: None,
             status: "pending".to_string(),
-            ..Default::default()
+            body: Default::default(),
+            created_at: Default::default(),
+            updated_at: Default::default(),
         }
     }
 }

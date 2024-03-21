@@ -3,8 +3,6 @@ use crate::models;
 use actix_web::{delete, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use futures_util::FutureExt;
-use tracing::Instrument;
 use crate::db;
 use crate::models::Cloud;
 
@@ -15,7 +13,7 @@ pub async fn item(
     path: web::Path<(i32,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// Get cloud apps of logged user only
+    // Get cloud apps of logged user only
     let (id,) = path.into_inner();
 
     let cloud = db::cloud::fetch(pg_pool.get_ref(), id)

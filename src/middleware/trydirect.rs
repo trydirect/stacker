@@ -1,7 +1,6 @@
 use crate::{models, configuration::Settings, forms::user::UserForm, helpers::JsonResponse};
 use actix_web::{web, dev::ServiceRequest, Error, HttpMessage};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
-use futures::future::{FutureExt};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::sync::Arc;
 

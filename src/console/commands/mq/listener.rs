@@ -2,25 +2,24 @@ use crate::configuration::get_configuration;
 use actix_web::rt;
 use actix_web::web;
 use chrono::Utc;
-use lapin::{Channel, Queue};
 use lapin::options::{BasicAckOptions, BasicConsumeOptions};
 use lapin::types::FieldTable;
 use sqlx::PgPool;
 use db::deployment;
-use crate::{db, forms, helpers};
-use crate::helpers::{JsonResponse, mq_manager};
+use crate::db;
 use crate::helpers::mq_manager::MqManager;
 use futures_lite::stream::StreamExt;
 use serde_derive::{Deserialize, Serialize};
-use crate::forms::project::ProjectForm;
+// use crate::forms::project::ProjectForm;
 
 pub struct ListenCommand {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ProgressMessage {
-    alert: i32,
     id: String,
+    deploy_id: Option<String>,
+    alert: i32,
     message: String,
     status: String,
     progress: String
@@ -74,17 +73,19 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                     Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
                 };
 
+                println!("incoming data {:?}", s);
+                let statuses = vec!["complete", "paused", "failed"];
                 match serde_json::from_str::<ProgressMessage>(&s) {
                     Ok(msg) => {
-                        println!("message {:?}", msg);
+                        println!("message {:?}", s);
                         // println!("id {:?}", msg.id);
                         // println!("status {:?}", msg.status);
-                        delivery.ack(BasicAckOptions::default()).await.expect("ack");
 
-                        if msg.status == "complete" {
-                            let id = msg.id
+                        if statuses.contains(&(msg.status.as_str())) {
+                            println!("Process on complete status");
+                            let id = msg.deploy_id.unwrap()
                                 .parse::<i32>()
-                                .map_err(|err| "Could not parse deployment id".to_string() )?;
+                                .map_err(|_err| "Could not parse deployment id".to_string() )?;
 
                             match crate::db::deployment::fetch(
                                 db_pool.get_ref(), id
@@ -101,8 +102,10 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                             }
                         }
                     }
-                    Err(err) => { tracing::debug!("Invalid message format")}
+                    Err(_err) => { tracing::debug!("Invalid message format {:?}", _err)}
                 }
+
+                delivery.ack(BasicAckOptions::default()).await.expect("ack");
             }
 
             Ok(())
