@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use serde_valid::Validate;
 use actix_web::Error;
 use actix_web::web::Bytes;

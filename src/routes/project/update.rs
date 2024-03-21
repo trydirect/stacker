@@ -9,7 +9,6 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 use actix_web::web::Bytes;
-use tracing::Instrument;
 use std::str;
 
 #[tracing::instrument(name = "Update project.")]

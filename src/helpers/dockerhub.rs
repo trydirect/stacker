@@ -116,12 +116,12 @@ impl<'a> DockerHub<'a> {
             .send()
             .await
             .map_err(|err| {
-                tracing::debug!("Error response {:?}", err);
+                tracing::debug!("🟥Error response {:?}", err);
                 format!("{}", err)
             })?
             .json::<RepoResults>()
             .await
-            .map_err(|err| format!("Error on getting results:: {}", err))
+            .map_err(|err| format!("🟥Error on getting results:: {}", err))
             .map(|repositories| {
                 tracing::debug!("Get public image repositories response {:?}", repositories);
                 if repositories.count.unwrap_or(0) > 0 {
@@ -130,6 +130,7 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|repo| repo.status == 1);
+                    tracing::debug!("✅ Image is active");
                     active
                 } else {
                     false
@@ -150,11 +151,11 @@ impl<'a> DockerHub<'a> {
         client
             .send()
             .await
-            .map_err(|err| format!("{}", err))?
+            .map_err(|err| format!("🟥{}", err))?
             .json::<TagResult>()
             .await
             .map_err(|err| {
-                tracing::debug!("Error response {:?}", err);
+                tracing::debug!("🟥Error response {:?}", err);
                 format!("{}", err)
             })
             .map(|tags| {
@@ -165,6 +166,7 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|tag| tag.tag_status.contains("active"));
+                    tracing::debug!("✅ Image is active");
                     active
                 } else {
                     false
