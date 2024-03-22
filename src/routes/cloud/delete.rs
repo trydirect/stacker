@@ -27,7 +27,7 @@ pub async fn item(
                 Some(cloud) => {
                     Ok(cloud)
                 },
-                None => Err(JsonResponse::<models::Cloud>::build().not_found(""))
+                None => Err(JsonResponse::<models::Cloud>::build().not_found("not found"))
             }
         })?;
 

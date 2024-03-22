@@ -23,19 +23,16 @@ impl TryFrom<&models::Project> for ProjectForm {
 
 impl ProjectForm {
     pub async fn is_readable_docker_image(&self) -> Result<bool, String> {
-        let mut is_active = true;
         for app in &self.custom.web {
             if !app.app.docker_image.is_active().await? {
-                is_active = false;
-                break;
+                return Ok(false);
             }
         }
 
         if let Some(service) = &self.custom.service {
             for app in service {
                 if !app.app.docker_image.is_active().await? {
-                    is_active = false;
-                    break;
+                    return Ok(false);
                 }
             }
         }
@@ -43,12 +40,11 @@ impl ProjectForm {
         if let Some(features) = &self.custom.feature {
             for app in features {
                 if !app.app.docker_image.is_active().await? {
-                    is_active = false;
-                    break;
+                    return Ok(false);
                 }
             }
         }
-        Ok(is_active)
+        Ok(true)
     }
 }
 
