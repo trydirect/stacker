@@ -31,7 +31,7 @@ pub async fn run(
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
     let json_config = web::JsonConfig::default()
-        .error_handler(|err, req| {
+        .error_handler(|err, req| { //todo
             let msg: String = match err {
                  error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
                  _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)
@@ -78,7 +78,7 @@ pub async fn run(
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::get::list)
                     .service(crate::routes::project::add::item)
-                    .service(crate::routes::project::update::item)
+                    //.service(crate::routes::project::update::item) todo
                     .service(crate::routes::project::delete::item),
             )
             .service(
