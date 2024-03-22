@@ -43,8 +43,9 @@ impl crate::console::commands::CallableTrait for ListenCommand {
 
             println!("Declare exchange");
             let mq_manager = MqManager::try_new(settings.amqp.connection_string())?;
-            // let queue_name = "stacker_listener";
-            let queue_name = "install_progress_m383emvfP9zQKs8lkgSU_Q";
+            let queue_name = "stacker_listener";
+            // let queue_name = "install_progress_m383emvfP9zQKs8lkgSU_Q";
+            // let queue_name = "install_progress_hy181TZa4DaabUZWklsrxw";
             let consumer_channel= mq_manager
                 .consume(
                     "install_progress",

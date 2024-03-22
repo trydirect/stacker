@@ -137,6 +137,7 @@ pub async fn saved_item(
     //let cloud_id = Some(1);
     tracing::debug!("User {:?} is deploying project: {} to cloud: {} ", user, id, cloud_id);
 
+    // Validate project
     let project = db::project::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
@@ -145,7 +146,8 @@ pub async fn saved_item(
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
 
-    let id = project.id.clone();
+    // Build compose
+    let id = project.id;
     let dc = DcBuilder::new(project);
     let fc = dc.build().map_err(|err| {
         JsonResponse::<models::Project>::build().internal_server_error(err)
@@ -181,6 +183,7 @@ pub async fn saved_item(
     // let mut payload = forms::project::Payload::default();
     let mut payload = forms::project::Payload::try_from(&dc.project)
         .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
+
     payload.server = Some(server.into());
     payload.cloud  = Some(cloud.into());
     payload.user_token = Some(user.id.clone());
@@ -188,7 +191,7 @@ pub async fn saved_item(
     // let compressed = fc.unwrap_or("".to_string());
     payload.docker_compose = Some(compress(fc.as_str()));
 
-
+    // Store deployment attempts into deployment table in db
     let json_request = dc.project.body.clone();
     let deployment = models::Deployment::new(
         dc.project.id,
@@ -209,6 +212,7 @@ pub async fn saved_item(
     tracing::debug!("Save deployment result: {:?}", result);
     tracing::debug!("Send project data <<<<<<<<<<<>>>>>>>>>>>>>>>>{:?}", payload);
 
+    // Send Payload
     mq_manager
         .publish(
             "install".to_string(),
