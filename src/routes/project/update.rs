@@ -12,6 +12,7 @@ use actix_web::web::Bytes;
 use tracing::Instrument;
 use std::str;
 
+/*
 #[tracing::instrument(name = "Update project.")]
 #[put("/{id}")]
 pub async fn item(
@@ -74,3 +75,4 @@ pub async fn item(
             JsonResponse::<models::Project>::build().internal_server_error("")
         })
 }
+*/
