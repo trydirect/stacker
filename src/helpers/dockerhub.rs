@@ -133,6 +133,7 @@ impl<'a> DockerHub<'a> {
                     tracing::debug!("✅ Image is active");
                     active
                 } else {
+                    tracing::debug!("🟥 Image tag is not active");
                     false
                 }
             })
@@ -169,6 +170,7 @@ impl<'a> DockerHub<'a> {
                     tracing::debug!("✅ Image is active");
                     active
                 } else {
+                    tracing::debug!("🟥 Image tag is not active");
                     false
                 }
             })

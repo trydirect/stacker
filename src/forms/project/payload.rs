@@ -8,6 +8,7 @@ use serde_valid::Validate;
 #[serde(rename_all = "snake_case")]
 pub struct Payload {
     pub(crate) id: Option<i32>,
+    pub(crate) project_id: Option<i32>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
     #[serde(flatten)]
@@ -30,7 +31,7 @@ impl TryFrom<&models::Project> for Payload {
                 format!("{:?}", err)
             })?;
 
-        project_data.id = Some(project.id.clone());
+        project_data.project_id = Some(project.id);
 
         Ok(project_data)
     }

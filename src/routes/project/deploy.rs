@@ -95,7 +95,11 @@ pub async fn item(
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
-        .map(|deployment| deployment)
+        .map(|deployment| {
+            payload.id = Some(deployment.id);
+            deployment
+        }
+        )
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
         });
@@ -194,7 +198,10 @@ pub async fn saved_item(
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
-        .map(|deployment| deployment)
+        .map(|deployment| {
+            payload.id = Some(deployment.id);
+            deployment
+        })
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
         });
