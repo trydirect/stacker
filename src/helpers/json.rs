@@ -1,7 +1,9 @@
 use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized};
 use actix_web::web::Json;
-use actix_web::Error;
+use actix_web::Error as ActixError;
 use serde_derive::Serialize;
+use std::error::Error as StdError;
+use std::convert::From;
 
 #[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
@@ -70,33 +72,33 @@ where
     pub(crate) fn bad_request<I: Into<String>>(
         self,
         msg: I,
-    ) -> Error {
+    ) -> ActixError {
         ErrorBadRequest(self.set_msg(msg).to_string())
     }
 
-    pub(crate) fn form_error(self, msg: String) -> Error {
+    pub(crate) fn form_error(self, msg: String) -> ActixError {
         ErrorBadRequest(msg)
     }
 
-    pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> Error {
+    pub(crate) fn not_found<I: Into<String>>(self, msg: I) -> ActixError {
         ErrorNotFound(self.set_msg(msg).to_string())
     }
 
     pub(crate) fn internal_server_error<I: Into<String>>(
         self,
         msg: I,
-    ) -> Error {
+    ) -> ActixError {
         ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
     pub(crate) fn unauthorized<I: Into<String>>(
         self,
         msg: I,
-    ) -> Error {
+    ) -> ActixError {
         ErrorUnauthorized(self.set_msg(msg).to_string())
     }
  
-    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
+    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> ActixError {
         ErrorConflict(self.set_msg(msg).to_string())
     }
 }
@@ -107,5 +109,11 @@ where
 {
     pub fn build() -> JsonResponseBuilder<T> {
         JsonResponseBuilder::default()
+    }
+}
+
+impl JsonResponse<String> {
+    pub fn err_bad_request<E: StdError>(e: E) -> ActixError {
+        JsonResponse::<String>::build().bad_request( e.to_string())
     }
 }
