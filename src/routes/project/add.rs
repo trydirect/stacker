@@ -1,10 +1,10 @@
 use crate::db;
-use crate::forms;
+use crate::forms::project::ProjectForm;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{
     post, web,
-    web::{Bytes, Data},
+    web::{Data},
     Responder, Result,
 };
 use serde_json::Value;
@@ -20,7 +20,7 @@ pub async fn item(
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
     // @todo ACL
-    let form: forms::project::ProjectForm= serde_json::from_value(request_json.clone())
+    let form: ProjectForm= serde_json::from_value(request_json.clone())
         .map_err(JsonResponse::err_bad_request)?;
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
@@ -28,8 +28,8 @@ pub async fn item(
     }
 
     let project_name = form.custom.custom_stack_code.clone();
-    let body: Value = serde_json::to_value::<forms::project::ProjectForm>(form)
-        .or(serde_json::to_value::<forms::project::ProjectForm>(forms::project::ProjectForm::default()))
+    let body: Value = serde_json::to_value::<ProjectForm>(form)
+        .or(serde_json::to_value::<ProjectForm>(ProjectForm::default()))
         .unwrap();
 
     let project = models::Project::new(
