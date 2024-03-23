@@ -55,12 +55,6 @@ pub async fn run(
                     .service(routes::client::disable_handler),
             )
             .service(
-                web::scope("/admin/client")
-                    .service(routes::client::admin_enable_handler)
-                    .service(routes::client::admin_update_handler)
-                    .service(routes::client::admin_disable_handler),
-            )
-            .service(
                 web::scope("/test")
                     .service(routes::test::deploy::handler)
             )
@@ -84,7 +78,13 @@ pub async fn run(
                 web::scope("/admin")
                     .service(
                         web::scope("/project")
-                            .service(crate::routes::project::get::list)
+                            .service(crate::routes::project::get::admin_list)
+                    )
+                    .service(
+                        web::scope("/client")
+                            .service(routes::client::admin_enable_handler)
+                            .service(routes::client::admin_update_handler)
+                            .service(routes::client::admin_disable_handler),
                     )
             )
             .service(
@@ -103,12 +103,6 @@ pub async fn run(
                     .service(crate::routes::server::update::item)
                     .service(crate::routes::server::delete::item),
             )
-            // @todo stack renamed to project
-            // .service(
-            //     web::scope("/admin/project")
-            //         .service(routes::project::get::admin_item)
-            //         .service(routes::project::get::admin_list)
-            // )
             .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
