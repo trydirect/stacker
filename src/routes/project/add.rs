@@ -21,10 +21,10 @@ pub async fn item(
 ) -> Result<impl Responder> {
     // @todo ACL
     let form: ProjectForm= serde_json::from_value(request_json.clone())
-        .map_err(JsonResponse::err_bad_request)?;
+        .map_err(|err| JsonResponse::bad_request(err.to_string()))?;
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
-        return Err(JsonResponse::err_bad_request(errors));
+        return Err(JsonResponse::bad_request(errors.to_string()));
     }
 
     let project_name = form.custom.custom_stack_code.clone();
@@ -43,6 +43,6 @@ pub async fn item(
         .await
         .map(|project| JsonResponse::build().set_item(project).ok("Ok"))
         .map_err(|_| {
-            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
+            JsonResponse::internal_server_error("Internal Server Error")
         })
 }
