@@ -78,7 +78,7 @@ pub async fn run(
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::get::list)
                     .service(crate::routes::project::add::item)
-                    //.service(crate::routes::project::update::item) todo
+                    .service(crate::routes::project::update::item) 
                     .service(crate::routes::project::delete::item),
             )
             .service(
