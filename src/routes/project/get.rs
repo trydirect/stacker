@@ -29,7 +29,7 @@ pub async fn item(
 
 #[tracing::instrument(name = "Get user's project list.")]
 #[get("/user/{id}")]
-pub async fn list(
+pub async fn admin_list(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
