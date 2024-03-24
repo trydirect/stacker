@@ -1,13 +1,19 @@
 use crate::configuration::Settings;
 use crate::helpers;
+use crate::routes;
 use actix_cors::Cors;
-use actix_web::dev::Server;
 use actix_web::{
-    web::{self},
-    App, HttpServer,
+    dev::Server,
+    http,
+    error,
+    web,
+    App,
+    HttpServer,
+    HttpResponse,
+    FromRequest,
+    rt,
 };
 use crate::middleware;
-use actix_web_httpauth::middleware::HttpAuthentication;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;
@@ -23,70 +29,67 @@ pub async fn run(
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
 
-    let access_control_manager = middleware::access_manager::try_new(settings.database.connection_string()).await?;
-
+    let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
+    let json_config = web::JsonConfig::default()
+        .error_handler(|err, req| { //todo
+            let msg: String = match err {
+                 error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
+                 _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)
+            };
+            error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
+        });
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .service(web::scope("/health_check").service(crate::routes::health_check))
+            .wrap(authorization.clone()) 
+            .wrap(middleware::authentication::Manager::new())
+            .wrap(Cors::permissive())
+            .service(
+                web::scope("/health_check").service(routes::health_check)
+            )
             .service(
                 web::scope("/client")
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-                    .wrap(Cors::permissive())
-                    .service(crate::routes::client::add_handler)
-                    .service(crate::routes::client::update_handler)
-                    .service(crate::routes::client::enable_handler)
-                    .service(crate::routes::client::disable_handler),
+                    .service(routes::client::add_handler)
+                    .service(routes::client::update_handler)
+                    .service(routes::client::enable_handler)
+                    .service(routes::client::disable_handler),
             )
             .service(
                 web::scope("/test")
-                    .wrap(middleware::client::Guard::new())
-                    .wrap(Cors::permissive())
-                    .service(crate::routes::test::deploy::handler),
-            )
-            .service(
-                web::scope("/pen/1")
-                    .wrap(access_control_manager.clone()) 
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-                    .wrap(Cors::permissive())
-                    .service(crate::routes::test::casbin::handler),
+                    .service(routes::test::deploy::handler)
             )
             .service(
                 web::scope("/rating")
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-                    .wrap(Cors::permissive())
-                    .service(crate::routes::rating::add_handler)
-                    .service(crate::routes::rating::get_handler)
-                    .service(crate::routes::rating::list_handler),
+                    .service(routes::rating::add_handler)
+                    .service(routes::rating::get_handler)
+                    .service(routes::rating::list_handler),
             )
             .service(
                 web::scope("/project")
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-                    .wrap(Cors::permissive())
                     .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::compose::admin)
                     .service(crate::routes::project::get::item)
-                    .service(crate::routes::project::get::list)
                     .service(crate::routes::project::add::item)
-                    .service(crate::routes::project::update::item)
+                    .service(crate::routes::project::update::item) 
                     .service(crate::routes::project::delete::item),
             )
             .service(
+                web::scope("/admin")
+                    .service(
+                        web::scope("/project")
+                            .service(crate::routes::project::get::admin_list)
+                    )
+                    .service(
+                        web::scope("/client")
+                            .service(routes::client::admin_enable_handler)
+                            .service(routes::client::admin_update_handler)
+                            .service(routes::client::admin_disable_handler),
+                    )
+            )
+            .service(
                 web::scope("/cloud")
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-                    .wrap(Cors::permissive())
                     .service(crate::routes::cloud::get::item)
                     .service(crate::routes::cloud::get::list)
                     .service(crate::routes::cloud::add::add)
@@ -95,16 +98,13 @@ pub async fn run(
             )
             .service(
                 web::scope("/server")
-                    .wrap(HttpAuthentication::bearer(
-                        middleware::trydirect::bearer_guard,
-                    ))
-                    .wrap(Cors::permissive())
                     .service(crate::routes::server::get::item)
                     .service(crate::routes::server::get::list)
                     // .service(crate::routes::server::add::add)
                     .service(crate::routes::server::update::item)
                     .service(crate::routes::server::delete::item),
             )
+            .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(settings.clone())
