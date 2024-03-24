@@ -53,7 +53,7 @@ impl TryInto<dctypes::Port> for &Port {
         let cp = self.container_port
             .clone()
             .parse::<u16>()
-            .map_err(|err| "Could not parse container port".to_string() )?;
+            .map_err(|_err| "Could not parse container port".to_string() )?;
 
         let hp = match self.host_port.clone() {
             Some(hp) => {

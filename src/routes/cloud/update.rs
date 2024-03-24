@@ -2,7 +2,7 @@ use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::db;
-use actix_web::{web, web::Data, Responder, Result, post, put};
+use actix_web::{web, web::Data, Responder, Result, put};
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;

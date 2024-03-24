@@ -2,7 +2,7 @@ use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::db;
-use actix_web::{web, web::Data, Responder, Result, post, put};
+use actix_web::{web, web::Data, Responder, Result, put};
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ pub async fn item(
 ) -> Result<impl Responder> {
 
     let id = path.0;
-    let mut server_row = db::server::fetch(pg_pool.get_ref(), id)
+    let server_row = db::server::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<models::Server>::build().internal_server_error(err))
         .and_then(|server| match server {

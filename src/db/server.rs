@@ -182,7 +182,7 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
             });
             Ok(true)
         }
-        Err(err) => {
+        Err(_err) => {
             let _ = tx.rollback().await.map_err(|err| println!("{:?}", err));
             Ok(false)
         }

@@ -17,7 +17,7 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
         .await
         .map_err(|err| Error::new(ErrorKind::Other, format!("{err:?}")))?;
 
-    let mut casbin_service = CasbinService::new(m, a)
+    let casbin_service = CasbinService::new(m, a)
         .await
         .map_err(|err| Error::new(ErrorKind::Other, format!("{err:?}")))?;
 

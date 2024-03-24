@@ -4,7 +4,6 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
-use tracing::Instrument;
 
 // workflow
 // add, update, list, get(user_id), ACL,

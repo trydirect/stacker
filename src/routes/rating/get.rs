@@ -3,7 +3,6 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
-use tracing::Instrument;
 
 #[tracing::instrument(name = "Get rating.")]
 #[get("/{id}")]

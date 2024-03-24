@@ -6,7 +6,6 @@ use crate::models;
 use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
 
 #[tracing::instrument(name = "User enable client.")]
 #[put("/{id}/enable")]

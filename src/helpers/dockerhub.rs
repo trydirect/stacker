@@ -111,17 +111,17 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let mut client = self.set_token(client).await?;
+        let client = self.set_token(client).await?;
         client
             .send()
             .await
             .map_err(|err| {
-                tracing::debug!("Error response {:?}", err);
+                tracing::debug!("🟥Error response {:?}", err);
                 format!("{}", err)
             })?
             .json::<RepoResults>()
             .await
-            .map_err(|err| format!("Error on getting results:: {}", err))
+            .map_err(|err| format!("🟥Error on getting results:: {}", err))
             .map(|repositories| {
                 tracing::debug!("Get public image repositories response {:?}", repositories);
                 if repositories.count.unwrap_or(0) > 0 {
@@ -130,8 +130,10 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|repo| repo.status == 1);
+                    tracing::debug!("✅ Image is active");
                     active
                 } else {
+                    tracing::debug!("🟥 Image tag is not active");
                     false
                 }
             })
@@ -146,15 +148,15 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let mut client = self.set_token(client).await?;
+        let client = self.set_token(client).await?;
         client
             .send()
             .await
-            .map_err(|err| format!("{}", err))?
+            .map_err(|err| format!("🟥{}", err))?
             .json::<TagResult>()
             .await
             .map_err(|err| {
-                tracing::debug!("Error response {:?}", err);
+                tracing::debug!("🟥Error response {:?}", err);
                 format!("{}", err)
             })
             .map(|tags| {
@@ -165,8 +167,10 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|tag| tag.tag_status.contains("active"));
+                    tracing::debug!("✅ Image is active");
                     active
                 } else {
+                    tracing::debug!("🟥 Image tag is not active");
                     false
                 }
             })
@@ -186,7 +190,7 @@ impl<'a> DockerHub<'a> {
         }
     }
 
-    pub async fn set_token(&self, mut client: RequestBuilder) -> Result<RequestBuilder, String> {
+    pub async fn set_token(&self, client: RequestBuilder) -> Result<RequestBuilder, String> {
         if self.creds.password.is_empty() {
             tracing::debug!("Password is empty. Image should be public");
             return Ok(client);

@@ -70,7 +70,6 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
             AppMqCommands::Listen {} => Ok(Box::new(
                 stacker::console::commands::mq::ListenCommand::new(),
             )),
-        },
-        _ => Err("command does not match".to_string()),
+        }
     }
 }

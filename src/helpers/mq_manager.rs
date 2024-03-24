@@ -1,7 +1,5 @@
-use actix_web::web;
 use deadpool_lapin::{Config, CreatePoolError, Object, Pool, Runtime};
-use lapin::{options::*, publisher_confirm::{Confirmation, PublisherConfirm}, BasicProperties, Channel, ExchangeKind, Queue};
-use lapin::types::AMQPType::ShortString;
+use lapin::{options::*, publisher_confirm::{Confirmation, PublisherConfirm}, BasicProperties, Channel, ExchangeKind};
 use lapin::types::{AMQPValue, FieldTable};
 use serde::ser::Serialize;
 
@@ -104,11 +102,10 @@ impl MqManager {
     pub async fn consume(
         &self,
         exchange_name: &str,
+        queue_name: &str,
         routing_key: &str,
     ) -> Result<Channel, String> {
 
-        let mut args = FieldTable::default();
-        args.insert("x-expires".into(), AMQPValue::LongUInt(180000));
         let channel = self.create_channel().await?;
 
         channel
@@ -122,22 +119,31 @@ impl MqManager {
                     internal: false,
                     nowait: false,
                 },
-                args
+                FieldTable::default()
             )
             .await
             .expect("Exchange declare failed");
 
+        let mut args = FieldTable::default();
+        args.insert("x-expires".into(), AMQPValue::LongUInt(3600000));
+
         let queue = channel.queue_declare(
-            routing_key,
-            QueueDeclareOptions::default(),
-            Default::default(),
+            queue_name,
+            QueueDeclareOptions {
+                passive: false,
+                durable: false,
+                exclusive: false,
+                auto_delete: true,
+                nowait: false,
+            },
+            args,
         )
         .await
         .expect("Queue declare failed");
 
         let _ = channel
             .queue_bind(
-                queue.name().as_str(),
+                queue_name,
                 exchange_name,
                 routing_key,
                 QueueBindOptions::default(),
