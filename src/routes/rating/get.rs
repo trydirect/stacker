@@ -5,11 +5,6 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use tracing::Instrument;
 
-// workflow
-// add, update, list, get(user_id), ACL,
-// ACL - access to func for a user
-// ACL - access to objects for a user
-
 #[tracing::instrument(name = "Get rating.")]
 #[get("/{id}")]
 pub async fn get_handler(

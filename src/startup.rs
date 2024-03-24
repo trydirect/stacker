@@ -2,10 +2,16 @@ use crate::configuration::Settings;
 use crate::helpers;
 use crate::routes;
 use actix_cors::Cors;
-use actix_web::dev::Server;
 use actix_web::{
-    web::{self},
-    App, HttpServer,
+    dev::Server,
+    http,
+    error,
+    web,
+    App,
+    HttpServer,
+    HttpResponse,
+    FromRequest,
+    rt,
 };
 use crate::middleware;
 use sqlx::{Pool, Postgres};
@@ -24,7 +30,14 @@ pub async fn run(
     let mq_manager = web::Data::new(mq_manager);
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
-
+    let json_config = web::JsonConfig::default()
+        .error_handler(|err, req| { //todo
+            let msg: String = match err {
+                 error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
+                 _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)
+            };
+            error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
+        });
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
@@ -42,16 +55,8 @@ pub async fn run(
                     .service(routes::client::disable_handler),
             )
             .service(
-                web::scope("/admin/client")
-                    .service(routes::client::admin_enable_handler)
-                    .service(routes::client::admin_update_handler)
-                    .service(routes::client::admin_disable_handler),
-            )
-            .service(
-                web::scope("/test").service(routes::test::deploy::handler),
-            )
-            .service(
-                web::scope("/pen/1").service(routes::test::casbin::handler),
+                web::scope("/test")
+                    .service(routes::test::deploy::handler)
             )
             .service(
                 web::scope("/rating")
@@ -65,10 +70,22 @@ pub async fn run(
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::compose::admin)
                     .service(crate::routes::project::get::item)
-                    .service(crate::routes::project::get::list)
                     .service(crate::routes::project::add::item)
-                    .service(crate::routes::project::update::item)
+                    .service(crate::routes::project::update::item) 
                     .service(crate::routes::project::delete::item),
+            )
+            .service(
+                web::scope("/admin")
+                    .service(
+                        web::scope("/project")
+                            .service(crate::routes::project::get::admin_list)
+                    )
+                    .service(
+                        web::scope("/client")
+                            .service(routes::client::admin_enable_handler)
+                            .service(routes::client::admin_update_handler)
+                            .service(routes::client::admin_disable_handler),
+                    )
             )
             .service(
                 web::scope("/cloud")
@@ -86,12 +103,7 @@ pub async fn run(
                     .service(crate::routes::server::update::item)
                     .service(crate::routes::server::delete::item),
             )
-            // @todo stack renamed to project
-            // .service(
-            //     web::scope("/admin/project")
-            //         .service(routes::project::get::admin_item)
-            //         .service(routes::project::get::admin_list)
-            // )
+            .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(settings.clone())
