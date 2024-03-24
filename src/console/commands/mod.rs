@@ -1,4 +1,5 @@
 pub mod appclient;
+pub mod debug;
 mod callable;
 pub mod mq;
 
