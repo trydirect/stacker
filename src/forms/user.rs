@@ -1,7 +1,6 @@
 use serde_derive::{Serialize, Deserialize};
 use serde_json::Value;
 use serde_valid::{Validate};
-use tracing_subscriber::fmt::format;
 use crate::models::user::User as UserModel;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -143,7 +143,7 @@ impl App {
 
 
         service.ports = dctypes::Ports::Long(ports);
-        service.restart = Some("always".to_owned());
+        service.restart = Some(self.restart.clone());
         service.volumes = volumes;
         service.environment = dctypes::Environment::KvPair(envs);
 

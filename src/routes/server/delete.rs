@@ -3,7 +3,6 @@ use crate::models;
 use actix_web::{delete, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
 use crate::db;
 use crate::models::Server;
 
@@ -14,7 +13,7 @@ pub async fn item(
     path: web::Path<(i32,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// Get server apps of logged user only
+    // Get server apps of logged user only
     let (id,) = path.into_inner();
 
     let server = db::server::fetch(pg_pool.get_ref(), id)
