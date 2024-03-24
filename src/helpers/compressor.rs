@@ -11,10 +11,3 @@ pub fn compress(input: &str) -> Vec<u8> {
     drop(compressor);
     compressed
 }
-
-pub fn decompress(input: &[u8]) -> String {
-    let mut decompressed = String::new();
-    let mut decompressor = Decompressor::new(input, 4096);
-    decompressor.read_to_string(&mut decompressed).unwrap();
-    decompressed
-}

@@ -1,7 +1,6 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
-use chrono::Utc;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Cloud {

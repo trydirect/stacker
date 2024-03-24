@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
-use crate::forms::project;
 use crate::forms::project::network::Network;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

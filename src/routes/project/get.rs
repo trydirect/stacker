@@ -4,7 +4,6 @@ use crate::models;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
 
 #[tracing::instrument(name = "Get logged user project.")]
 #[get("/{id}")]
@@ -13,6 +12,7 @@ pub async fn item(
     path: web::Path<(i32,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    // Get project apps of logged user only
     let id = path.0;
 
     db::project::fetch(pg_pool.get_ref(), id)
@@ -34,9 +34,9 @@ pub async fn admin_list(
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// This is admin endpoint, used by a client app, client app is confidential
-    /// it should return projects by user id
-    /// in order to pass validation at external deployment service
+    // This is admin endpoint, used by a client app, client app is confidential
+    // it should return projects by user id
+    // in order to pass validation at external deployment service
     let user_id = path.into_inner().0;
 
     db::project::fetch_by_user(pg_pool.get_ref(), &user_id)

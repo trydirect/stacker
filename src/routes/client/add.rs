@@ -6,7 +6,6 @@ use crate::models;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
 
 #[tracing::instrument(name = "Add client.")]
 #[post("")]
