@@ -33,7 +33,6 @@ thiserror = "1.0"
 serde_valid = "0.18.0"
 serde_json = { version = "1.0.111", features = [] }
 serde_derive = "1.0.195"
-actix-web-httpauth = "0.8.1"
 actix-cors = "0.6.4"
 tracing-actix-web = "0.7.7"
 regex = "1.10.2"
@@ -44,8 +43,7 @@ tokio-stream = "0.1.14"
 actix-http = "3.4.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
-#sqlx-adapter = { version = "0.4.2", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
-sqlx-adapter = { git="https://github.com/smart--petea/sqlx-adapter.git", branch="dirty-master", default-features = false, features = ["postgres"]}
+sqlx-adapter = { version = "1.0.0", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
 
 # dctypes
 derive_builder = "0.12.0"

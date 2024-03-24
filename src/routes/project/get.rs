@@ -13,23 +13,23 @@ pub async fn item(
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     // Get project apps of logged user only
-    let (id,) = path.into_inner();
+    let id = path.0;
 
     db::project::fetch(pg_pool.get_ref(), id)
         .await
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .map_err(|err| JsonResponse::internal_server_error(err.to_string()))
         .and_then(|project| match project {
             Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().not_found("not found"))
+                Err(JsonResponse::not_found("not found"))
             }
             Some(project) => Ok(JsonResponse::build().set_item(Some(project)).ok("OK")),
-            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+            None => Err(JsonResponse::not_found("not found")),
         })
 }
 
 #[tracing::instrument(name = "Get user's project list.")]
 #[get("/user/{id}")]
-pub async fn list(
+pub async fn admin_list(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
@@ -41,6 +41,6 @@ pub async fn list(
 
     db::project::fetch_by_user(pg_pool.get_ref(), &user_id)
         .await
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .map_err(|err| JsonResponse::internal_server_error(err))
         .map(|projects| JsonResponse::build().set_list(projects).ok("OK"))
 }

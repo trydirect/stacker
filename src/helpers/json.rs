@@ -2,6 +2,7 @@ use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError,
 use actix_web::web::Json;
 use actix_web::Error;
 use serde_derive::Serialize;
+use std::convert::From;
 
 #[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
@@ -107,5 +108,19 @@ where
 {
     pub fn build() -> JsonResponseBuilder<T> {
         JsonResponseBuilder::default()
+    }
+}
+
+impl JsonResponse<String> {
+    pub fn bad_request<I: Into<String>>(msg: I) -> Error {
+        JsonResponse::<String>::build().bad_request( msg.into())
+    }
+
+    pub fn internal_server_error<I: Into<String>>(msg: I) -> Error {
+        JsonResponse::<String>::build().internal_server_error( msg.into())
+    }
+
+    pub fn not_found<I: Into<String>>(msg: I) -> Error {
+        JsonResponse::<String>::build().not_found(msg.into())
     }
 }

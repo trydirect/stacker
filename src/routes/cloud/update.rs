@@ -6,6 +6,7 @@ use actix_web::{web, web::Data, Responder, Result, put};
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
+use tracing::Instrument;
 use std::ops::Deref;
 
 #[tracing::instrument(name = "Update cloud.")]
