@@ -12,6 +12,10 @@ enum Commands {
         #[command(subcommand)]
         command: AppClientCommands,
     },
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommands,
+    },
     MQ {
         #[command(subcommand)]
         command: AppMqCommands,
@@ -27,13 +31,22 @@ enum AppClientCommands {
 }
 
 #[derive(Debug, Subcommand)]
+enum DebugCommands {
+    Json {
+        #[arg(long)]
+        line: usize,
+        #[arg(long)]
+        column: usize,
+        #[arg(long)]
+        payload: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AppMqCommands {
     Listen {
     },
 }
-
-//todo add documentation about how to add a new command
-//todo the helper from console should have a nicer display
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -46,6 +59,11 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(
                 stacker::console::commands::appclient::NewCommand::new(user_id),
+            )),
+        },
+        Commands::Debug { command } => match command {
+            DebugCommands::Json { line, column, payload } => Ok(Box::new(
+                stacker::console::commands::debug::JsonCommand::new(line, column, payload),
             )),
         },
         Commands::MQ { command} => match command {
