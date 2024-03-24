@@ -5,7 +5,6 @@ use crate::{configuration::Settings, helpers::JsonResponse};
 use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
 
 #[tracing::instrument(name = "User update client.")]
 #[put("/{id}")]

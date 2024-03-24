@@ -34,9 +34,14 @@ impl Project {
 impl Default for Project {
     fn default() -> Self {
         Project {
+            id: 0,
+            stack_id: Default::default(),
             user_id: "".to_string(),
             name: "".to_string(),
-            ..Default::default()
+            body: Default::default(),
+            request_json: Default::default(),
+            created_at: Default::default(),
+            updated_at: Default::default(),
         }
     }
 }

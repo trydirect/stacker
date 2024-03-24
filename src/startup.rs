@@ -67,6 +67,7 @@ pub async fn run(
             .service(
                 web::scope("/project")
                     .service(crate::routes::project::deploy::item)
+                    .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::compose::admin)
                     .service(crate::routes::project::get::item)

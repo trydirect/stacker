@@ -40,7 +40,7 @@ pub async fn admin(
     path: web::Path<(i32,)>,
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
-    ///  Admin function for generating compose file for specified user
+    //  Admin function for generating compose file for specified user
     let id = path.0;
     let project = db::project::fetch(pg_pool.get_ref(), id)
         .await

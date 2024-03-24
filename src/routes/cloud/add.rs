@@ -5,7 +5,6 @@ use crate::models;
 use crate::db;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
-use tracing::Instrument;
 use std::sync::Arc;
 use serde_valid::Validate;
 

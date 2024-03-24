@@ -2,14 +2,13 @@ use crate::forms;
 use docker_compose_types as dctypes;
 use crate::models;
 use serde_yaml;
-use crate::helpers::project::*;
-use tracing::Value;
+// use crate::helpers::project::*;
 
 
 /// A builder for constructing docker compose.
 #[derive(Clone, Debug)]
 pub struct DcBuilder {
-    config: Config,
+    // config: Config,
     pub(crate) project: models::Project,
 }
 
@@ -17,7 +16,7 @@ pub struct DcBuilder {
 impl DcBuilder {
     pub fn new(project: models::Project) -> Self {
         DcBuilder {
-            config: Config::default(),
+            // config: Config::default(),
             project,
         }
     }
