@@ -44,7 +44,7 @@ enum DebugCommands {
         #[arg(long)]
         action: String,
         #[arg(long)]
-        method: String,
+        path: String,
         #[arg(long)]
         subject: String,
     },
@@ -73,8 +73,8 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
             DebugCommands::Json { line, column, payload } => Ok(Box::new(
                 stacker::console::commands::debug::JsonCommand::new(line, column, payload),
             )),
-            DebugCommands::Casbin { action, method, subject } => Ok(Box::new(
-                stacker::console::commands::debug::CasbinCommand::new(action, method, subject),
+            DebugCommands::Casbin { action, path, subject } => Ok(Box::new(
+                stacker::console::commands::debug::CasbinCommand::new(action, path, subject),
             )),
         },
         Commands::MQ { command} => match command {
