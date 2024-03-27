@@ -17,7 +17,7 @@ use crate::helpers::compressor::compress;
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    form: web::Json<forms::project::Deploy>,
+    mut form: web::Json<forms::project::Deploy>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
@@ -49,10 +49,10 @@ pub async fn item(
         JsonResponse::<models::Project>::build().internal_server_error(err)
     })?;
 
+    form.cloud.user_id = Some(user.id.clone());
+    form.cloud.project_id = Some(id);
     // Save cloud credentials if requested
     let mut cloud_creds: models::Cloud = (&form.cloud).into();
-    cloud_creds.project_id = Some(id);
-    cloud_creds.user_id = user.id.clone();
 
     if Some(true) == cloud_creds.save_token {
         db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
@@ -105,7 +105,7 @@ pub async fn item(
         });
 
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<<<<<<<<<>>>>>>>>>>>>>>>>{:?}", payload);
+    tracing::debug!("Send project data <<<>>>{:?}", payload);
 
     // Send Payload
     mq_manager
@@ -134,7 +134,7 @@ pub async fn saved_item(
 ) -> Result<impl Responder> {
     let id = path.0;
     let cloud_id = path.1;
-    //let cloud_id = Some(1);
+
     tracing::debug!("User {:?} is deploying project: {} to cloud: {} ", user, id, cloud_id);
 
     // Validate project
@@ -173,7 +173,7 @@ pub async fn saved_item(
             // if let Some(server) = server.into_iter().nth(0) {
             //     server
             // }
-            server.into_iter().nth(0).unwrap() // @todo refactoring is required
+            server.into_iter().nth(0).unwrap() //@todo refactoring is required for multiple types
         }
         Err(_e) => {
             return Err(JsonResponse::<models::Project>::build().not_found("No servers configured"));
@@ -210,7 +210,7 @@ pub async fn saved_item(
         });
 
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<<<<<<<<<>>>>>>>>>>>>>>>>{:?}", payload);
+    tracing::debug!("Send project data <<<>>>{:?}", payload);
 
     // Send Payload
     mq_manager

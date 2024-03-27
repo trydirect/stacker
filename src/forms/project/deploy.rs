@@ -11,7 +11,9 @@ pub struct Deploy {
     #[validate]
     pub(crate) server: Server,
     #[validate]
-    pub(crate) cloud: Cloud
+    pub(crate) cloud: Cloud,
+    // pub user_id: Option<String>,
+    // pub project_id: Option<i32>
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]

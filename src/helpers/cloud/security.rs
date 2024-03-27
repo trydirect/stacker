@@ -27,7 +27,11 @@ impl Secret {
     }
     #[tracing::instrument(name = "Secret::connect_storage")]
     fn connect_storage() -> Connection {
-        match redis::Client::open("redis://127.0.0.1/"){
+
+        let storage_url = std::env::var("REDIS_URL")
+            .or_default("redis://127.0.0.1/".to_string());
+
+        match redis::Client::open(storage_url){
             Ok(client) => {
                 match client.get_connection() {
                     Ok(connection) => connection,
