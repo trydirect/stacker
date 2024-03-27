@@ -25,7 +25,7 @@ pub async fn item(
                     Err(JsonResponse::not_found("record not found"))
                 },
                 Some(cloud) => {
-                    let cloud = Cloud::decode_model(cloud);
+                    let cloud = Cloud::decode_model(cloud, false);
                     Ok(JsonResponse::build().set_item(Some(cloud)).ok("OK"))
                 },
                 None => Err(JsonResponse::not_found("record not found")),
