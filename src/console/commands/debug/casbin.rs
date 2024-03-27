@@ -1,7 +1,8 @@
 use crate::configuration::get_configuration;
 use actix_web::{rt, post, web, HttpResponse, Result, http::header::ContentType};
 use crate::middleware;
-use actix_casbin_auth::casbin::CoreApi;
+//use actix_casbin_auth::casbin::CoreApi;
+use casbin::CoreApi;
 use sqlx::PgPool;
 
 pub struct CasbinCommand {
@@ -27,10 +28,14 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
             let settings = web::Data::new(settings);
             let db_pool = web::Data::new(db_pool);
 
+
             let mut authorizationService = middleware::authorization::try_new(settings.database.connection_string()).await?;
             let casbin_enforcer = authorizationService.get_enforcer();
             let mut lock = casbin_enforcer.write().await;
-            match lock.enforce_mut(vec![self.subject.clone(), self.path.clone(), self.action.clone()]) {
+            let policies = lock.get_model().get_model().get("p").unwrap().get("p").unwrap().get_policy();
+            println!("{}", policies.len());
+
+            match lock.enforce_mut(vec!["".to_string(), self.subject.clone(), self.path.clone(), self.action.clone()]) {
                 Ok(true) => println!("TRUE"),
                 Ok(false) => println!("FALSE"),
                 Err(err) => {

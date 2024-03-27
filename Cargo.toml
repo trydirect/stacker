@@ -58,6 +58,7 @@ deadpool-lapin = "0.11.0"
 docker-compose-types = "0.7.0"
 #actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
 actix-casbin-auth = { git = "https://github.com/smart--petea/actix-casbin-auth.git", branch = "dirty-master"}
+casbin = "2.2.0"
 
 [dependencies.sqlx]
 version = "0.6.3"
