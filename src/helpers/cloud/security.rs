@@ -29,7 +29,7 @@ impl Secret {
     fn connect_storage() -> Connection {
 
         let storage_url = std::env::var("REDIS_URL")
-            .or_default("redis://127.0.0.1/".to_string());
+            .unwrap_or("redis://127.0.0.1/".to_string());
 
         match redis::Client::open(storage_url){
             Ok(client) => {
