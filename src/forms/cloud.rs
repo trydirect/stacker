@@ -127,6 +127,20 @@ impl std::fmt::Debug for Cloud {
     }
 }
 
+fn encrypt_field(
+    secret: &mut Secret,
+    field_name: &str,
+    value: Option<String>,
+) -> Option<String> {
+    if let Some(val) = value {
+        secret.field = field_name.to_owned();
+        if let Ok(encrypted) = secret.encrypt(val) {
+            return Some(Secret::b64_encode(&encrypted));
+        }
+    }
+    None
+}
+
 impl Into<models::Cloud> for &Cloud {
     fn into(self) -> models::Cloud {
         let mut cloud = models::Cloud::default();
@@ -138,25 +152,9 @@ impl Into<models::Cloud> for &Cloud {
         secret.user_id = self.user_id.clone().unwrap();
         secret.project_id = self.project_id.unwrap();
 
-        if let Some(val) = self.cloud_token.clone() {
-            secret.field = "cloud_token".to_owned();
-            if let Ok(encrypted) = secret.encrypt(val) {
-                cloud.cloud_token = Some(Secret::b64_encode(&encrypted));
-            };
-        }
-        if let Some(val) = self.cloud_key.clone() {
-            secret.field = "cloud_key".to_owned();
-            if let Ok(encrypted) = secret.encrypt(val) {
-                // cloud.cloud_token = Some(encrypted.data.iter().map(|&c| c as char).collect::<String>())
-                cloud.cloud_key = Some(Secret::b64_encode(&encrypted));
-            };
-        }
-        if let Some(val) = self.cloud_secret.clone() {
-            secret.field = "cloud_secret".to_owned();
-            if let Ok(encrypted) = secret.encrypt(val) {
-                cloud.cloud_secret = Some(Secret::b64_encode(&encrypted))
-            };
-        }
+        cloud.cloud_token = encrypt_field(&mut secret, "cloud_token", self.cloud_token.clone());
+        cloud.cloud_key = encrypt_field(&mut secret, "cloud_key", self.cloud_key.clone());
+        cloud.cloud_secret = encrypt_field(&mut secret, "cloud_secret", self.cloud_secret.clone());
         cloud.save_token = self.save_token.clone();
 
         cloud
