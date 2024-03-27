@@ -70,6 +70,7 @@ pub async fn run(
                     .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::compose::add)
+                    .service(crate::routes::project::get::list)
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item) 
