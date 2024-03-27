@@ -1,9 +1,8 @@
 {
-  "user_id": "hy181TZa4DaabUZWklsrxw",
   "project_id": 1,
   "provider": "htz",
   "cloud_token": "cloud_token_here",
-  "cloud_key": "cloud_token_here",
+  "cloud_key": "cloud_key_here",
   "cloud_secret": "cloud_secret_here",
   "save_token": true
 }

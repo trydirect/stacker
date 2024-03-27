@@ -8,6 +8,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
 use std::ops::Deref;
+use chrono::Utc;
 
 #[tracing::instrument(name = "Update cloud.")]
 #[put("/{id}")]
@@ -37,6 +38,7 @@ pub async fn item(
     let mut cloud:models::Cloud = form.deref().into();
     cloud.id = cloud_row.id;
     cloud.user_id = user.id.clone();
+    // cloud.updated_at = Utc::now();
 
     tracing::debug!("Updating cloud {:?}", cloud);
 

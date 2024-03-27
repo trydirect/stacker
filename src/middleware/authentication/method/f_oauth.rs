@@ -20,7 +20,7 @@ fn try_extract_token(authentication: String) -> Result<String, String> {
     Ok(token.unwrap().into())
 }
 
-#[tracing::instrument(name = "try authenticate via bearer")]
+#[tracing::instrument(name = "Authenticate with bearer token")]
 pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
     let authentication = get_header::<String>(&req, "authorization")?;
     if authentication.is_none() {
@@ -33,7 +33,8 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
         .await
         .map_err(|err| format!("{err}"))?;
 
-    let accesscontrol_vals = actix_casbin_auth::CasbinVals {
+    // println!("user ================== {}", user.id.clone());
+    let acl_vals = actix_casbin_auth::CasbinVals {
         subject: user.id.clone(),
         domain: None,
     };
@@ -42,8 +43,8 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
         return Err("user already logged".to_string());
     }
 
-    if req.extensions_mut().insert(accesscontrol_vals).is_some() {
-        return Err("sth wrong with access control".to_string());
+    if req.extensions_mut().insert(acl_vals).is_some() {
+        return Err("Something wrong with access control".to_string());
     }
 
     Ok(true)
@@ -58,7 +59,7 @@ async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String>
         .header(ACCEPT, "application/json")
         .send()
         .await
-        .map_err(|_err| "no resp from auth server".to_string())?;
+        .map_err(|_err| "No response from OAuth server".to_string())?;
 
     if !resp.status().is_success() {
         return Err("401 Unauthorized".to_string());
