@@ -3630,6 +3630,7 @@ dependencies = [
  "actix-http",
  "actix-web",
  "brotli",
+ "casbin",
  "chrono",
  "clap",
  "config",
