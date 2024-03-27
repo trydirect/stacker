@@ -56,15 +56,39 @@ impl Cloud {
     }
 
     // @todo should be refactored, may be moved to cloud.into() or Secret::from()
-    pub(crate) fn decode_model(mut cloud: models::Cloud) -> models::Cloud {
+    pub(crate) fn decode_model(mut cloud: models::Cloud, reveal:bool) -> models::Cloud {
 
         let encrypted_value = cloud.cloud_token.clone().unwrap();
         let mut secret = Secret::new();
         secret.user_id = cloud.user_id.clone();
         secret.project_id = cloud.project_id.clone().unwrap();
+
         secret.field = "cloud_token".to_string();
         let cloud_token = Cloud::decode(&mut secret, encrypted_value);
-        cloud.cloud_token = Some(hide_parts(cloud_token));
+        if reveal {
+            cloud.cloud_token = Some(cloud_token);
+        } else {
+            cloud.cloud_token = Some(hide_parts(cloud_token));
+        }
+
+        secret.field = "cloud_secret".to_string();
+        let encrypted_value = cloud.cloud_secret.clone().unwrap();
+        let cloud_secret = Cloud::decode(&mut secret, encrypted_value);
+        if reveal {
+            cloud.cloud_secret = Some(cloud_secret);
+        } else {
+            cloud.cloud_secret = Some(hide_parts(cloud_secret));
+        }
+
+        secret.field = "cloud_key".to_string();
+        let encrypted_value = cloud.cloud_key.clone().unwrap();
+        let cloud_key = Cloud::decode(&mut secret, encrypted_value);
+        if reveal {
+            cloud.cloud_key = Some(cloud_key);
+        } else {
+            cloud.cloud_key = Some(hide_parts(cloud_key));
+        }
+
         cloud
     }
 }
@@ -141,14 +165,29 @@ impl Into<models::Cloud> for &Cloud {
 }
 
 
+// on deploy
 impl Into<Cloud> for models::Cloud {
     fn into(self) -> Cloud {
         let mut form = Cloud::default();
         form.project_id = self.project_id;
         form.provider = self.provider;
-        form.cloud_token = self.cloud_token;
-        form.cloud_key = self.cloud_key;
-        form.cloud_secret = self.cloud_secret;
+
+        let mut secret = Secret::new();
+        secret.user_id = self.user_id.clone();
+        secret.project_id = self.project_id.clone().unwrap();
+
+        secret.field = "cloud_token".to_string();
+        let cloud_token = Cloud::decode(&mut secret, self.cloud_token.unwrap());
+        form.cloud_token = Some(cloud_token);
+
+        secret.field = "cloud_key".to_string();
+        let cloud_key = Cloud::decode(&mut secret, self.cloud_key.unwrap());
+        form.cloud_token = Some(cloud_key);
+
+        secret.field = "cloud_secret".to_string();
+        let cloud_secret = Cloud::decode(&mut secret, self.cloud_secret.unwrap());
+        form.cloud_secret = Some(cloud_secret);
+
         form.save_token = self.save_token;
 
         form
