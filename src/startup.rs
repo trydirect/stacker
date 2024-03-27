@@ -17,6 +17,7 @@ use crate::middleware;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;
+use redis::Commands;
 
 pub async fn run(
     listener: TcpListener,
@@ -41,7 +42,7 @@ pub async fn run(
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .wrap(authorization.clone()) 
+            // .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Cors::permissive())
             .service(
@@ -69,7 +70,6 @@ pub async fn run(
                     .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::compose::add)
-                    .service(crate::routes::project::compose::admin)
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item) 
@@ -80,6 +80,7 @@ pub async fn run(
                     .service(
                         web::scope("/project")
                             .service(crate::routes::project::get::admin_list)
+                            .service(crate::routes::project::compose::admin)
                     )
                     .service(
                         web::scope("/client")

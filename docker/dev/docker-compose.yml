@@ -4,6 +4,9 @@ volumes:
   stackerdb:
     driver: local
 
+  redis-data:
+    driver: local
+
 networks:
   backend:
     driver: bridge
@@ -75,3 +78,23 @@ services:
       - ./postgresql.conf:/etc/postgresql/postgresql.conf
     networks:
       - backend
+
+  redis:
+    container_name: stackerredis
+    image: redis:latest
+    restart: always
+    ports:
+      - 6379
+    volumes:
+      - redis-data:/data
+    #        - ./redis/rc.local:/etc/rc.local
+    #        - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    sysctls:
+      net.core.somaxconn: 1024
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        tag: "container_{{.Name}}"
+
+

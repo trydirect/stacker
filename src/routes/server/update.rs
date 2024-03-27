@@ -38,8 +38,6 @@ pub async fn item(
     server.id = server_row.id;
     server.project_id = server_row.project_id;
     server.user_id = user.id.clone();
-    // exclude
-    // server.created_at
 
     tracing::debug!("Updating server {:?}", server);
 
