@@ -15,30 +15,18 @@ pub struct Cloud {
     pub updated_at: DateTime<Utc>,
 }
 
-
+fn mask_string(s: Option<&String>) -> String {
+    match s {
+        Some(val) => val.chars().take(4).collect::<String>() + "****",
+        None => "".to_string(),
+    }
+}
 
 impl std::fmt::Display for Cloud {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let cloud_key: String = match self.cloud_key.as_ref() {
-            Some(val) =>
-                {
-                    val.chars().take(4).collect::<String>() + "****"
-                },
-            None => "".to_string(),
-        };
-        let cloud_token: String = match self.cloud_token.as_ref() {
-            Some(val) => {
-                val.chars().take(4).collect::<String>() + "****"
-            },
-            None => "".to_string(),
-        };
-
-        let cloud_secret: String = match self.cloud_secret.as_ref() {
-            Some(val) => {
-                val.chars().take(4).collect::<String>() + "****"
-            }
-            None => "".to_string(),
-        };
+        let cloud_key = mask_string(self.cloud_key.as_ref());
+        let cloud_token = mask_string(self.cloud_token.as_ref());
+        let cloud_secret = mask_string(self.cloud_secret.as_ref());
 
         write!(f, "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {} project_id: {:?}",
                self.provider,
