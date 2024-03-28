@@ -33,6 +33,10 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
             let casbin_enforcer = authorizationService.get_enforcer();
             let mut lock = casbin_enforcer.write().await;
             let policies = lock.get_model().get_model().get("p").unwrap().get("p").unwrap().get_policy();
+            for policy in policies {
+                println!("{policy:?}");
+            }
+
             println!("{}", policies.len());
 
             match lock.enforce_mut(vec!["".to_string(), self.subject.clone(), self.path.clone(), self.action.clone()]) {
