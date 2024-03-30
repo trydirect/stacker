@@ -42,7 +42,7 @@ pub async fn run(
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            // .wrap(authorization.clone())
+            .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Cors::permissive())
             .service(

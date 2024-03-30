@@ -84,12 +84,12 @@ impl Secret {
     #[tracing::instrument(name = "encrypt.")]
     pub fn encrypt(&self, token: String) -> Result<Vec<u8>, String> {
 
-        // let sec_key = std::env::var("SECURITY_KEY")
-        //     .expect("SECURITY_KEY environment variable is not set")
-        //     .as_bytes();
-        let sec_key = "SECURITY_KEY_SHOULD_BE_OF_LEN_32".as_bytes();
+        let sec_key = std::env::var("SECURITY_KEY")
+            .expect("SECURITY_KEY environment variable is not set")
+            .clone();
+
         // let key = Aes256Gcm::generate_key(OsRng);
-        let key: &Key::<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&sec_key);
+        let key: &Key::<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&sec_key.as_bytes());
         // eprintln!("encrypt key {key:?}");
         // eprintln!("encrypt: from slice key {key:?}");
         let cipher = Aes256Gcm::new(&key);
@@ -113,11 +113,10 @@ impl Secret {
 
     #[tracing::instrument(name = "decrypt.")]
     pub fn decrypt(&mut self, encrypted_data: Vec<u8>) -> Result<String, String> {
-        let sec_key = "SECURITY_KEY_SHOULD_BE_OF_LEN_32".as_bytes();
-        // let sec_key = std::env::var("SECURITY_KEY")
-        //     .expect("SECURITY_KEY environment variable is not set")
-        //     .as_bytes();
-        let key: &Key::<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&sec_key);
+        let sec_key = std::env::var("SECURITY_KEY")
+            .expect("SECURITY_KEY environment variable is not set")
+            .clone();
+        let key: &Key::<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&sec_key.as_bytes());
         // eprintln!("decrypt: Key str {key:?}");
         let rkey = format!("{}_{}_{}", self.user_id, self.project_id, self.field);
         eprintln!("decrypt: Key str {rkey:?}");
