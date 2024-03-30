@@ -2,7 +2,7 @@ use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 use crate::forms;
-use crate::forms::{Cloud, Server};
+use crate::forms::{CloudForm, Server};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Deploy {
@@ -11,9 +11,7 @@ pub struct Deploy {
     #[validate]
     pub(crate) server: Server,
     #[validate]
-    pub(crate) cloud: Cloud,
-    // pub user_id: Option<String>,
-    // pub project_id: Option<i32>
+    pub(crate) cloud: CloudForm,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]

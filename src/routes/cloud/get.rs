@@ -4,7 +4,7 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
-use crate::forms::Cloud;
+use crate::forms::CloudForm;
 use tracing::Instrument;
 
 #[tracing::instrument(name = "Get cloud credentials.")]
@@ -25,7 +25,7 @@ pub async fn item(
                     Err(JsonResponse::not_found("record not found"))
                 },
                 Some(cloud) => {
-                    let cloud = Cloud::decode_model(cloud, false);
+                    let cloud = CloudForm::decode_model(cloud, false);
                     Ok(JsonResponse::build().set_item(Some(cloud)).ok("OK"))
                 },
                 None => Err(JsonResponse::not_found("record not found")),
@@ -43,6 +43,16 @@ pub async fn list(
 ) -> Result<impl Responder> {
     db::cloud::fetch_by_user(pg_pool.get_ref(), user.id.as_ref())
         .await
-        .map(|clouds| JsonResponse::build().set_list(clouds).ok("OK"))
+        .map(|clouds| {
+
+            let clouds = clouds
+                .into_iter()
+                .map(|cloud| CloudForm::decode_model(cloud, false) )
+                // .map_err(|e| tracing::error!("Failed to decode cloud, {:?}", e))
+                .collect();
+
+            JsonResponse::build().set_list(clouds).ok("OK")
+
+        })
         .map_err(|_err| JsonResponse::<models::Cloud>::build().internal_server_error(""))
 }

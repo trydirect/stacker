@@ -12,7 +12,7 @@ pub struct Payload {
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
     #[serde(flatten)]
-    pub cloud: Option<forms::Cloud>,
+    pub cloud: Option<forms::CloudForm>,
     #[serde(flatten)]
     pub server: Option<forms::Server>,
     #[serde(flatten)]
