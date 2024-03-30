@@ -29,6 +29,18 @@ impl Into<models::Server> for &Server {
     }
 }
 
+// impl From<Server> for models::Server {
+//     fn from(self, value: Server) -> &mut Self {
+//         self.disk_type = value.disk_type.clone();
+//         self.region = value.region.clone();
+//         self.server = value.server.clone();
+//         self.zone = value.zone.clone();
+//         self.os = value.os.clone();
+//         self.updated_at = Utc::now();
+//         self
+//     }
+// }
+
 impl Into<Server> for models::Server {
 
     fn into(self) -> Server {

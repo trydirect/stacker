@@ -55,8 +55,9 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         cloud_secret,
         save_token,
         created_at,
-        updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc', NOW() at time zone 'utc')
         RETURNING id;
         "#,
         cloud.user_id,
@@ -65,9 +66,7 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         cloud.cloud_token,
         cloud.cloud_key,
         cloud.cloud_secret,
-        cloud.save_token,
-        cloud.created_at,
-        cloud.updated_at,
+        cloud.save_token
     )
     .fetch_one(pool)
     .instrument(query_span)

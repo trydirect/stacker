@@ -15,7 +15,7 @@ use tracing::Instrument;
 #[post("")]
 pub async fn add(
     user: web::ReqData<Arc<models::User>>,
-    mut form: web::Json<forms::cloud::Cloud>,
+    mut form: web::Json<forms::cloud::CloudForm>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
 
@@ -28,9 +28,7 @@ pub async fn add(
     }
 
     form.user_id = Some(user.id.clone());
-    let mut cloud: models::Cloud = form.deref().into();
-    cloud.created_at = Utc::now();
-    cloud.updated_at = Utc::now();
+    let cloud: models::Cloud = form.deref().into();
 
     db::cloud::insert(pg_pool.get_ref(), cloud)
         .await
