@@ -197,6 +197,7 @@ pub async fn saved_item(
                 },
                 None => {
                     // Create new server
+                    // form.update_with(server.into());
                     let mut server: models::Server = (&form.server).into();
                     server.user_id = user.id.clone();
                     server.project_id = id;

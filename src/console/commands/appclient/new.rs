@@ -31,6 +31,7 @@ impl crate::console::commands::CallableTrait for NewCommand {
                 last_name: "last_name".to_string(),
                 email: "email".to_string(),
                 email_confirmed: true,
+                role: "role".to_string()
             };
             crate::routes::client::add_handler_inner(&user.id, settings, db_pool).await?;
 
