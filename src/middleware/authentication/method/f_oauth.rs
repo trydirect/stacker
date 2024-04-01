@@ -14,7 +14,8 @@ fn try_extract_token(authentication: String) -> Result<String, String> {
     }
     let token = authentication_parts.next();
     if token.is_none() {
-        return Err("Empty bearer token".to_string());
+        tracing::error!("Bearer token is missing");
+        return Err("Authentication required".to_string());
     }
 
     Ok(token.unwrap().into())
@@ -33,9 +34,9 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
         .await
         .map_err(|err| format!("{err}"))?;
 
-    // println!("user ================== {}", user.id.clone());
+    // control access using user role
     let acl_vals = actix_casbin_auth::CasbinVals {
-        subject: user.id.clone(),
+        subject: user.role.clone(),
         domain: None,
     };
 

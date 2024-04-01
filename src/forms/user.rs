@@ -56,6 +56,7 @@ pub struct User {
     pub deployments_left: Value,
     #[serde(rename = "suspension_hints")]
     pub suspension_hints: Option<SuspensionHints>,
+    pub role: String
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -137,6 +138,7 @@ impl TryInto<UserModel> for UserForm {
             last_name: self.user.last_name.unwrap_or("Noname".to_string()),
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
+            role: self.user.role
         })
     }
 
