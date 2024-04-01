@@ -13,6 +13,7 @@ fn hide_parts(value: String) -> String {
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct CloudForm {
     pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<i32>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
@@ -63,7 +64,7 @@ impl CloudForm {
 
         let mut secret = Secret::new();
         secret.user_id = cloud.user_id.clone();
-        secret.project_id = cloud.project_id.clone().unwrap();
+        secret.provider = cloud.provider.clone();
         cloud.cloud_token = CloudForm::decrypt_field(&mut secret, "cloud_token", cloud.cloud_token.clone(), reveal);
         cloud.cloud_secret = CloudForm::decrypt_field(&mut secret, "cloud_secret", cloud.cloud_secret.clone(), reveal);
         cloud.cloud_key = CloudForm::decrypt_field(&mut secret, "cloud_key", cloud.cloud_key.clone(), reveal);
@@ -126,12 +127,11 @@ impl Into<models::Cloud> for &CloudForm {
         let mut cloud = models::Cloud::default();
         cloud.provider = self.provider.clone();
         cloud.user_id = self.user_id.clone().unwrap();
-        cloud.project_id = self.project_id;
 
         if Some(true) == self.save_token {
             let mut secret = Secret::new();
             secret.user_id = self.user_id.clone().unwrap();
-            secret.project_id = self.project_id.unwrap();
+            secret.provider = self.provider.clone();
 
             cloud.cloud_token = encrypt_field(&mut secret, "cloud_token", self.cloud_token.clone());
             cloud.cloud_key = encrypt_field(&mut secret, "cloud_key", self.cloud_key.clone());
@@ -155,13 +155,12 @@ impl Into<CloudForm> for models::Cloud {
     #[tracing::instrument(name = "Into<CloudForm> for models::Cloud .")]
     fn into(self) -> CloudForm {
         let mut form = CloudForm::default();
-        form.project_id = self.project_id;
-        form.provider = self.provider;
+        form.provider = self.provider.clone();
 
         if Some(true) == self.save_token {
             let mut secret = Secret::new();
             secret.user_id = self.user_id.clone();
-            secret.project_id = self.project_id.unwrap();
+            secret.provider = self.provider;
             secret.field = "cloud_token".to_string();
 
             let value = match self.cloud_token {

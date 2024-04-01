@@ -5,7 +5,6 @@ use serde_derive::{Deserialize, Serialize};
 pub struct Cloud {
     pub id: i32,
     pub user_id: String,
-    pub project_id: Option<i32>,
     pub provider: String,
     pub cloud_token: Option<String>,
     pub cloud_key: Option<String>,
@@ -28,19 +27,17 @@ impl std::fmt::Display for Cloud {
         let cloud_token = mask_string(self.cloud_token.as_ref());
         let cloud_secret = mask_string(self.cloud_secret.as_ref());
 
-        write!(f, "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {} project_id: {:?}",
+        write!(f, "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {}",
                self.provider,
                cloud_key,
                cloud_token,
                cloud_secret,
-               self.project_id
         )
     }
 }
 
 impl Cloud {
     pub fn new(user_id: String,
-               project_id: Option<i32>,
                provider: String,
                cloud_token: Option<String>,
                cloud_key: Option<String>,
@@ -50,7 +47,6 @@ impl Cloud {
         Self {
             id: 0,
             user_id,
-            project_id,
             provider,
             cloud_token,
             cloud_key,
@@ -68,7 +64,6 @@ impl Default for Cloud {
             id: 0,
             provider: "".to_string(),
             user_id: "".to_string(),
-            project_id: Default::default(),
             cloud_key: Default::default(),
             cloud_token: Default::default(),
             cloud_secret: Default::default(),

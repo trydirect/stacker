@@ -4,7 +4,7 @@ use serde_valid::Validate;
 use chrono::{Utc};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-pub struct Server {
+pub struct ServerForm {
     // pub cloud_id: i32,
     // pub project_id: i32,
     pub region: String,
@@ -14,7 +14,7 @@ pub struct Server {
     pub disk_type: Option<String>,
 }
 
-impl Into<models::Server> for &Server {
+impl Into<models::Server> for &ServerForm {
     fn into(self) -> models::Server {
         let mut server = models::Server::default();
         server.disk_type = self.disk_type.clone();
@@ -29,22 +29,10 @@ impl Into<models::Server> for &Server {
     }
 }
 
-// impl From<Server> for models::Server {
-//     fn from(self, value: Server) -> &mut Self {
-//         self.disk_type = value.disk_type.clone();
-//         self.region = value.region.clone();
-//         self.server = value.server.clone();
-//         self.zone = value.zone.clone();
-//         self.os = value.os.clone();
-//         self.updated_at = Utc::now();
-//         self
-//     }
-// }
+impl Into<ServerForm> for models::Server {
 
-impl Into<Server> for models::Server {
-
-    fn into(self) -> Server {
-        let mut form = Server::default();
+    fn into(self) -> ServerForm {
+        let mut form = ServerForm::default();
         // form.cloud_id = self.cloud_id;
         // form.project_id = self.project_id;
         form.disk_type = self.disk_type;

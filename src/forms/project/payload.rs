@@ -14,7 +14,7 @@ pub struct Payload {
     #[serde(flatten)]
     pub cloud: Option<forms::CloudForm>,
     #[serde(flatten)]
-    pub server: Option<forms::Server>,
+    pub server: Option<forms::ServerForm>,
     #[serde(flatten)]
     pub stack: forms::project::Stack,
     pub custom: forms::project::Custom,
