@@ -35,6 +35,7 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
         .map_err(|err| format!("{err}"))?;
 
     // control access using user role
+    tracing::debug!("ACL check for role: {}", user.role.clone());
     let acl_vals = actix_casbin_auth::CasbinVals {
         subject: user.role.clone(),
         domain: None,

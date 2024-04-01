@@ -9,7 +9,7 @@ use tracing::Instrument;
 #[derive(Debug, Default, PartialEq, Clone)]
 pub(crate) struct Secret {
     pub(crate) user_id: String,
-    pub(crate) project_id: i32,
+    pub(crate) provider: String,
     pub(crate) field: String, // cloud_token/cloud_key/cloud_secret
     pub(crate) nonce: Vec<u8>,
 }
@@ -20,7 +20,7 @@ impl Secret {
 
         Secret {
             user_id: "".to_string(),
-            project_id: 0,
+            provider: "".to_string(),
             field: "".to_string(),
             nonce: vec![],
         }
@@ -45,7 +45,7 @@ impl Secret {
     #[tracing::instrument(name = "Secret::save")]
     fn save(&self, value: &[u8]) -> &Self {
         let mut conn = Secret::connect_storage();
-        let key = format!("{}_{}_{}", self.user_id, self.project_id, self.field);
+        let key = format!("{}_{}_{}", self.user_id, self.provider, self.field);
         tracing::debug!("Saving into storage..");
         let _: () = match conn.set(key, value) {
             Ok(s) => s,
@@ -118,7 +118,7 @@ impl Secret {
             .clone();
         let key: &Key::<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&sec_key.as_bytes());
         // eprintln!("decrypt: Key str {key:?}");
-        let rkey = format!("{}_{}_{}", self.user_id, self.project_id, self.field);
+        let rkey = format!("{}_{}_{}", self.user_id, self.provider, self.field);
         eprintln!("decrypt: Key str {rkey:?}");
         self.get(rkey);
         // eprintln!("decrypt: nonce b64:decoded {nonce:?}");

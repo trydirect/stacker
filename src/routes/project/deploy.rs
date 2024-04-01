@@ -168,7 +168,9 @@ pub async fn saved_item(
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
         Ok(cloud) => {
             match cloud {
-                Some(cloud) => cloud,
+                Some(mut cloud) => {
+                    cloud
+                },
                 None => {
                     return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
                 }

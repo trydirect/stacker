@@ -24,7 +24,7 @@ impl crate::console::commands::CallableTrait for NewCommand {
             let settings = web::Data::new(settings);
             let db_pool = web::Data::new(db_pool);
 
-            //todo get user from trydirect
+            //todo get user from TryDirect
             let user = crate::models::user::User {
                 id: format!("{}", self.user_id),
                 first_name: "first_name".to_string(),
