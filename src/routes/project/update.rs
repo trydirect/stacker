@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use crate::forms::project::ProjectForm;
+use crate::forms::project::{ProjectForm, DockerImageReadResult};
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::db;
@@ -41,10 +41,14 @@ pub async fn item(
 
     let project_name = form.custom.custom_stack_code.clone();
 
-    if Ok(false) == form.is_readable_docker_image().await {
-        return Err(JsonResponse::<models::Project>::build()
-            .bad_request("Can not access docker image"));
+    if let Ok(result) = form.is_readable_docker_image().await {
+        if false == result.readable {
+            return Err(JsonResponse::<DockerImageReadResult>::build()
+                .set_item(result)
+                .bad_request("Can not access docker image"));
+        }
     }
+
 
     let body: Value = serde_json::to_value::<ProjectForm>(form)
         .or(serde_json::to_value::<ProjectForm>(ProjectForm::default()))

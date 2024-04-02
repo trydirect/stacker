@@ -2,7 +2,6 @@ use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError,
 use actix_web::web::Json;
 use actix_web::Error;
 use serde_derive::Serialize;
-use std::convert::From;
 
 #[derive(Serialize)]
 pub(crate) struct JsonResponse<T> {
@@ -90,16 +89,17 @@ where
         ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
-    pub(crate) fn unauthorized<I: Into<String>>(
-        self,
-        msg: I,
-    ) -> Error {
-        ErrorUnauthorized(self.set_msg(msg).to_string())
-    }
- 
-    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
-        ErrorConflict(self.set_msg(msg).to_string())
-    }
+    // not used
+    // pub(crate) fn unauthorized<I: Into<String>>(
+    //     self,
+    //     msg: I,
+    // ) -> Error {
+    //     ErrorUnauthorized(self.set_msg(msg).to_string())
+    // }
+    //
+    // pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
+    //     ErrorConflict(self.set_msg(msg).to_string())
+    // }
 }
 
 impl<T> JsonResponse<T>

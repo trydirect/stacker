@@ -1,5 +1,4 @@
-use crate::configuration::get_configuration;
-use actix_web::{rt, post, web, HttpResponse, Result, http::header::ContentType};
+use actix_web::{Result};
 
 pub struct JsonCommand {
     line: usize,

@@ -7,7 +7,7 @@ use redis::{Commands, Connection};
 use tracing::Instrument;
 
 #[derive(Debug, Default, PartialEq, Clone)]
-pub(crate) struct Secret {
+pub struct Secret {
     pub(crate) user_id: String,
     pub(crate) provider: String,
     pub(crate) field: String, // cloud_token/cloud_key/cloud_secret

@@ -9,15 +9,11 @@ use actix_web::{
     web,
     App,
     HttpServer,
-    HttpResponse,
-    FromRequest,
-    rt,
 };
 use crate::middleware;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;
-use redis::Commands;
 
 pub async fn run(
     listener: TcpListener,
@@ -32,7 +28,7 @@ pub async fn run(
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
     let json_config = web::JsonConfig::default()
-        .error_handler(|err, req| { //todo
+        .error_handler(|err, _req| { //todo
             let msg: String = match err {
                  error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
                  _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)

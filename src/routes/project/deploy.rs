@@ -130,7 +130,7 @@ pub async fn item(
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
-    mut form: web::Json<forms::project::Deploy>,
+    form: web::Json<forms::project::Deploy>,
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
@@ -168,7 +168,7 @@ pub async fn saved_item(
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
         Ok(cloud) => {
             match cloud {
-                Some(mut cloud) => {
+                Some(cloud) => {
                     cloud
                 },
                 None => {
