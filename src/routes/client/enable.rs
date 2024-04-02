@@ -16,7 +16,7 @@ pub async fn enable_handler(
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
     let client_id = path.0;
-    let mut client = db::client::fetch(pg_pool.get_ref(), client_id)
+    let client = db::client::fetch(pg_pool.get_ref(), client_id)
         .await
         .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))?
         .ok_or_else(|| JsonResponse::<models::Client>::build().not_found("not found"))?;
@@ -37,7 +37,7 @@ pub async fn admin_enable_handler(
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
     let client_id = path.0;
-    let mut client = db::client::fetch(pg_pool.get_ref(), client_id)
+    let client = db::client::fetch(pg_pool.get_ref(), client_id)
         .await
         .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))?
         .ok_or_else(|| JsonResponse::<models::Client>::build().not_found("not found"))?;
