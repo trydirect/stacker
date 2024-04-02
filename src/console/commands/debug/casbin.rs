@@ -39,7 +39,7 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
 
             println!("{}", policies.len());
 
-            match lock.enforce_mut(vec!["".to_string(), self.subject.clone(), self.path.clone(), self.action.clone()]) {
+            match lock.enforce_mut(vec![self.subject.clone(), self.path.clone(), self.action.clone()]) {
                 Ok(true) => println!("TRUE"),
                 Ok(false) => println!("FALSE"),
                 Err(err) => {
