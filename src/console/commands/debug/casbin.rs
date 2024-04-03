@@ -31,14 +31,14 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
 
             let mut authorizationService = middleware::authorization::try_new(settings.database.connection_string()).await?;
             let casbin_enforcer = authorizationService.get_enforcer();
+
             let mut lock = casbin_enforcer.write().await;
             let policies = lock.get_model().get_model().get("p").unwrap().get("p").unwrap().get_policy();
-            for policy in policies {
-                println!("{policy:?}");
+            for (pos, policy) in policies.iter().enumerate() {
+                println!("{pos}: {policy:?}");
             }
 
-            println!("{}", policies.len());
-
+            lock.enable_log(true);
             match lock.enforce_mut(vec![self.subject.clone(), self.path.clone(), self.action.clone()]) {
                 Ok(true) => println!("TRUE"),
                 Ok(false) => println!("FALSE"),

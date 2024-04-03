@@ -88,4 +88,4 @@ http://localhost:8000/test/deploy
 
 
 Test casbin rule
-cargo r --bin console debug casbin --path "/project/:id" --action "POST" --subject "hy181TZa4DaabUZWklsrxw"
+cargo r --bin console --features=explain debug casbin --path /client --action POST --subject admin_petru
