@@ -14,6 +14,7 @@ name = "server"
 [[bin]]
 path = "src/console/main.rs"
 name = "console"
+required-features = ["explain"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -58,6 +59,7 @@ deadpool-lapin = "0.11.0"
 docker-compose-types = "0.7.0"
 #actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
 actix-casbin-auth = { git = "https://github.com/smart--petea/actix-casbin-auth.git", branch = "dirty-master"}
+casbin = "2.2.0"
 
 [dependencies.sqlx]
 version = "0.6.3"
@@ -74,6 +76,7 @@ features = [
 [features]
 default = ["indexmap"]
 indexmap = ["dep:indexmap"]
+explain = ["actix-casbin-auth/explain", "actix-casbin-auth/logging"]
 
 [dev-dependencies]
 glob = "0.3"
