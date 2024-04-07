@@ -38,15 +38,11 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
                 println!("{pos}: {policy:?}");
             }
 
-            lock.enable_log(true);
-            match lock.enforce_mut(vec![self.subject.clone(), self.path.clone(), self.action.clone()]) {
-                Ok(true) => println!("TRUE"),
-                Ok(false) => println!("FALSE"),
-                Err(err) => {
-                    println!("err {err:?}");
-                }
+            #[cfg(feature = "explain")]
+            {
+                lock.enable_log(true);
             }
-            drop(lock);
+            lock.enforce_mut(vec![self.subject.clone(), self.path.clone(), self.action.clone()]); 
 
             Ok(())
         })

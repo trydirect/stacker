@@ -88,4 +88,6 @@ http://localhost:8000/test/deploy
 
 
 Test casbin rule
+```
 cargo r --bin console --features=explain debug casbin --path /client --action POST --subject admin_petru
+```
