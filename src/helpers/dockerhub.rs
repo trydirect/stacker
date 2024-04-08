@@ -114,6 +114,7 @@ pub struct OfficialRepoResult {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
 pub struct DockerHub<'a> {
     pub(crate) creds: DockerHubCreds<'a>,
+    #[validate(pattern = r"^[^:]+(:[^:]*)?$")]
     pub(crate) repos: String,
     pub(crate) image: String,
     pub(crate) tag: Option<String>,
@@ -260,20 +261,22 @@ impl<'a> DockerHub<'a> {
     pub async fn is_active(&'a mut self) -> Result<bool, String> {
         // if namespace/user is not set change endpoint and return a different response
 
-        // let repo = self.repos.clone();
-        // if self.repos.contains(':') {
-        //         let _repo = repo.split(':')
-        //         .collect::<Vec<&str>>();
-        //     self.repos = _repo.first().expect("split error").to_string();
-        //     self.tag = Some(_repo.last().expect("split error").to_string());
-        // }
-
-        // let n = self.repos.split(':').collect::<Vec<&str>>();
-        // if let Some(name: &str) == n.first() {
-        //     self.repos = name.to_string();
-        // }
-        // if let Some(name: &str) == n.last() {
-        //     self.tag = name.to_string();
+        // let n = self.repos
+        //     .split(':')
+        //     .map(|x| x.to_string())
+        //     .collect::<Vec<String>>();
+        //
+        // match n.len() {
+        //     1 => {
+        //         self.repos = n.first().unwrap().into();
+        //     }
+        //     2 => {
+        //         self.repos = n.first().unwrap().to_string();
+        //         self.tag = n.last().map(|s| s.to_string());
+        //     }
+        //     _ => {
+        //         return Err(format!("Wrong format of repository name"));
+        //     }
         // }
 
         if self.creds.username.is_empty() {
@@ -319,8 +322,12 @@ impl<'a> DockerHub<'a> {
     }
 }
 
-impl<'a> From<&'a DockerImage> for DockerHub<'a> {
-    fn from(image: &'a DockerImage) -> Self {
+
+impl<'a> TryFrom<&'a DockerImage> for DockerHub<'a> {
+    type Error = String;
+
+    fn try_from(image: &'a DockerImage) -> Result<Self, Self::Error> {
+
         let username = match image.dockerhub_user {
             Some(ref username) => username,
             None => "",
@@ -331,24 +338,45 @@ impl<'a> From<&'a DockerImage> for DockerHub<'a> {
         };
 
         let name = image.dockerhub_name.clone().unwrap_or("".to_string());
-        let mut tag = "".to_string();
+        let n = name
+            .split(':')
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>();
 
-        if name.contains(':') {
-            let parts = name
-                .split(':')
-                .collect::<Vec<&str>>();
-            let name = parts.first().expect("Could not split").to_string();
-            tag = parts.last().expect("Could not split").to_string();
-        }
+        let (name, tag) = match n.len() {
+            1 => {
+                (
+                    n.first().unwrap().into(),
+                    Some("".to_string())
+                )
+            }
+            2 => {
+                (
+                    n.first().unwrap().to_string(),
+                    n.last().map(|s| s.to_string())
+                )
+            }
+            _ => {
+                return Err(format!("Wrong format of repository name"));
+            }
+        };
 
-        DockerHub {
+        let hub = DockerHub {
             creds: DockerHubCreds {
                 username: username,
                 password: password,
             },
             repos: name,
             image: format!("{}", image),
-            tag: Some(tag),
+            tag: tag,
+        };
+
+        if hub.validate().is_ok() {
+           Ok(hub)
+        } else {
+            let errors = hub.validate().unwrap_err();
+            tracing::debug!("DockerHub image properties are not valid {:?}", errors);
+            return Err(format!("{:?}", errors));
         }
     }
 }
