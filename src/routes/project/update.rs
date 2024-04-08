@@ -34,6 +34,7 @@ pub async fn item(
     // @todo ACL
     let form: ProjectForm= serde_json::from_value(request_json.clone())
         .map_err(|err| JsonResponse::bad_request(err.to_string()))?;
+
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err();
         return Err(JsonResponse::bad_request(errors.to_string()));
@@ -41,11 +42,25 @@ pub async fn item(
 
     let project_name = form.custom.custom_stack_code.clone();
 
-    if let Ok(result) = form.is_readable_docker_image().await {
-        if false == result.readable {
+    // if let Ok(result) = form.is_readable_docker_image().await {
+    //     if false == result.readable {
+    //         return Err(JsonResponse::<DockerImageReadResult>::build()
+    //             .set_item(result)
+    //             .bad_request("Can not access docker image"));
+    //     }
+    // }
+
+    match form.is_readable_docker_image().await {
+        Ok(result) => {
+            if false == result.readable {
+                return Err(JsonResponse::<DockerImageReadResult>::build()
+                           .set_item(result)
+                           .bad_request("Can not access docker image"));
+            }
+        }
+        Err(e) => {
             return Err(JsonResponse::<DockerImageReadResult>::build()
-                .set_item(result)
-                .bad_request("Can not access docker image"));
+                .bad_request(e));
         }
     }
 
