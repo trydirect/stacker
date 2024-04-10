@@ -32,23 +32,24 @@ struct Image {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 struct Tag {
-    content_type: String,
-    creator: i64,
-    digest: Option<String>,
-    full_size: i64,
-    id: i64,
-    images: Vec<Image>,
-    last_updated: String,
-    last_updater: i64,
-    last_updater_username: String,
-    media_type: String,
-    name: String,
-    repository: i64,
-    tag_last_pulled: Option<String>,
-    tag_last_pushed: Option<String>,
-    tag_status: String,
-    v2: bool,
+    pub content_type: String,
+    pub creator: i64,
+    pub digest: Option<String>,
+    pub full_size: i64,
+    pub id: i64,
+    pub images: Vec<Image>,
+    pub last_updated: String,
+    pub last_updater: i64,
+    pub last_updater_username: String,
+    pub media_type: String,
+    pub name: String,
+    pub repository: i64,
+    pub tag_last_pulled: Option<String>,
+    pub tag_last_pushed: Option<String>,
+    pub tag_status: String,
+    pub v2: bool,
 }
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 struct TagResult {
     pub count: Option<i64>,
@@ -70,7 +71,7 @@ pub struct OfficialRepoResults {
     pub count: Option<i64>,
     pub next: Option<Value>,
     pub previous: Option<Value>,
-    pub results: Vec<OfficialRepoResult>,
+    pub results: Vec<Tag>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,29 +93,11 @@ pub struct RepoResult {
 }
 
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OfficialRepoResult {
-    pub images: Vec<Image>,
-    pub last_updated: String,
-    pub last_updater: i64,
-    pub content_type: String,
-    pub creator: i64,
-    pub digest: Option<String>,
-    pub full_size: i64,
-    pub id: i64,
-    pub last_updater_username: String,
-    pub media_type: String,
-    pub name: String,
-    pub repository: i64,
-    pub tag_last_pulled: Option<String>,
-    pub tag_last_pushed: Option<String>,
-    pub tag_status: String,
-    pub v2: bool,
-}
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
 pub struct DockerHub<'a> {
     pub(crate) creds: DockerHubCreds<'a>,
-    #[validate(pattern = r"^[^:]+(:[^:]*)?$")]
+    //#[validate(pattern = r"^[^:]+(:[^:]*)?$")]
+    #[validate(pattern = r"^([a-z-_0-9]+)(:[a-z-_0-9\.]+)?$")]
     pub(crate) repos: String,
     pub(crate) image: String,
     pub(crate) tag: Option<String>,
@@ -213,7 +196,7 @@ impl<'a> DockerHub<'a> {
                                 false
                             }
                         });
-                    tracing::debug!("✅ result is {:?}", result);
+                    tracing::debug!("✅ search official repos result is {:?}", result);
                     result
                 } else {
                     tracing::debug!("🟥 Image tag is not active");
@@ -357,7 +340,7 @@ impl<'a> TryFrom<&'a DockerImage> for DockerHub<'a> {
                 )
             }
             _ => {
-                return Err(format!("Wrong format of repository name"));
+                return Err("Wrong format of repository name".to_owned());
             }
         };
 
@@ -371,12 +354,12 @@ impl<'a> TryFrom<&'a DockerImage> for DockerHub<'a> {
             tag: tag,
         };
 
-        if hub.validate().is_ok() {
-           Ok(hub)
-        } else {
-            let errors = hub.validate().unwrap_err();
-            tracing::debug!("DockerHub image properties are not valid {:?}", errors);
-            return Err(format!("{:?}", errors));
+        if let Err(errors) = hub.validate() {
+            let msg = "DockerHub image properties are not valid. Please verify repository name";
+            tracing::debug!("{:?} {:?}", msg, errors);
+            return Err(format!("{:?}", msg));
         }
+
+       Ok(hub)
     }
 }
