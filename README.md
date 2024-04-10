@@ -1,7 +1,5 @@
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-# Stacker
-
-<br><br><br><br>
+<br>
 <div align="center">
 <img width="300" src="https://repository-images.githubusercontent.com/448846514/3468f301-0ba6-4b61-9bf1-164c06c06b08"> 
  </div>
