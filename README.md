@@ -3,7 +3,7 @@
 
 <br><br><br><br>
 <div align="center">
-<img width="300" src="https://raw.githubusercontent.com/trydirect/stacker/assets/logo/stacker.png"> 
+<img width="300" src="https://repository-images.githubusercontent.com/448846514/3468f301-0ba6-4b61-9bf1-164c06c06b08"> 
  </div>
 
 Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
