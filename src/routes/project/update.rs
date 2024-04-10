@@ -42,14 +42,6 @@ pub async fn item(
 
     let project_name = form.custom.custom_stack_code.clone();
 
-    // if let Ok(result) = form.is_readable_docker_image().await {
-    //     if false == result.readable {
-    //         return Err(JsonResponse::<DockerImageReadResult>::build()
-    //             .set_item(result)
-    //             .bad_request("Can not access docker image"));
-    //     }
-    // }
-
     match form.is_readable_docker_image().await {
         Ok(result) => {
             if false == result.readable {
