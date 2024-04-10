@@ -1,5 +1,5 @@
+<a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
 # Stacker
-
 
 Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
 source apps and user's custom applications docker containers. Users can build their own stack of applications, and 
