@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[post("")]
 pub async fn add_handler(
     user: web::ReqData<Arc<models::User>>,
-    form: web::Json<forms::Rating>,
+    form: web::Json<forms::rating::Add>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let _product = db::product::fetch_by_obj(pg_pool.get_ref(), form.obj_id)
