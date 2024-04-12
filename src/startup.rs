@@ -60,9 +60,10 @@ pub async fn run(
             )
             .service(
                 web::scope("/rating")
-                    .service(routes::rating::user_add_handler)
                     .service(routes::rating::anonymous_get_handler)
                     .service(routes::rating::anonymous_list_handler)
+                    .service(routes::rating::user_add_handler)
+                    .service(routes::rating::user_delete_handler)
                     .service(routes::rating::user_edit_handler),
             )
             .service(
