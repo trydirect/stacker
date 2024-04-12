@@ -16,8 +16,8 @@ pub async fn anonymous_get_handler(
         .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
         .and_then(|rating| {
             match rating {
-                Some(rating) => { Ok(rating) },
-                None => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
+                Some(rating) if rating.hidden == Some(false) => { Ok(rating) },
+                _ => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
             }
         })?;
 

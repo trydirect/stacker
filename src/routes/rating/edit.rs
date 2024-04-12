@@ -30,9 +30,8 @@ pub async fn user_edit_handler(
         .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
         .and_then(|rating| {
             match rating {
-                Some(rating) if rating.user_id != user.id => Err(JsonResponse::<models::Rating>::build().not_found("not found")),
-                Some(rating) =>  Ok(rating),
-                None => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
+                Some(rating) if rating.user_id == user.id=>  Ok(rating),
+                _ => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
             }
         })?;
 
