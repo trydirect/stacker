@@ -55,3 +55,15 @@ pub async fn admin_get_handler(
 
     Ok(JsonResponse::build().set_item(rating).ok("OK"))
 }
+
+#[tracing::instrument(name = "Admin get the list of ratings.")]
+#[get("")]
+pub async fn admin_list_handler(
+    path: web::Path<()>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::rating::fetch_all(pg_pool.get_ref())
+        .await
+        .map(|ratings| JsonResponse::build().set_list(ratings).ok("OK"))
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+}
