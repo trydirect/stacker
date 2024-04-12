@@ -79,6 +79,10 @@ pub async fn run(
             .service(
                 web::scope("/admin")
                     .service(
+                        web::scope("/rating")
+                            .service(routes::rating::admin_get_handler)
+                    )
+                    .service(
                         web::scope("/project")
                             .service(crate::routes::project::get::admin_list)
                     )
