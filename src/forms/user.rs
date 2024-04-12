@@ -129,9 +129,6 @@ pub struct SuspensionHints {
 impl TryInto<UserModel> for UserForm {
     type Error = String;
     fn try_into(self) -> Result<UserModel, Self::Error> {
-        // let id = self.id.parse::<i32>().map_err(
-        //     |msg| { format!("{:?}", msg) }
-        // )?;
         Ok(UserModel {
             id: self.user.id,
             first_name: self.user.first_name.unwrap_or("Noname".to_string()),
