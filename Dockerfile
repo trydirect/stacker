@@ -31,11 +31,6 @@ COPY ./src ./src
 #RUN sqlx migrate run
 #RUN cargo sqlx prepare -- --bin stacker
 
-# rebuild app with project source
-#RUN rm -rf ./target/release/deps/server*; \
-#    apt-get install --no-install-recommends -y libssl-dev; \
-#    cargo build --release
-
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
     cargo build --bin=console && cargo build --release
 

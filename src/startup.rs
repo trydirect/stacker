@@ -9,9 +9,6 @@ use actix_web::{
     web,
     App,
     HttpServer,
-    HttpResponse,
-    FromRequest,
-    rt,
 };
 use crate::middleware;
 use sqlx::{Pool, Postgres};
@@ -31,7 +28,7 @@ pub async fn run(
 
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
     let json_config = web::JsonConfig::default()
-        .error_handler(|err, req| { //todo
+        .error_handler(|err, _req| { //todo
             let msg: String = match err {
                  error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
                  _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)
@@ -41,7 +38,7 @@ pub async fn run(
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
-            .wrap(authorization.clone()) 
+            .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Cors::permissive())
             .service(
@@ -69,7 +66,7 @@ pub async fn run(
                     .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::compose::add)
-                    .service(crate::routes::project::compose::admin)
+                    .service(crate::routes::project::get::list)
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item) 
@@ -80,6 +77,7 @@ pub async fn run(
                     .service(
                         web::scope("/project")
                             .service(crate::routes::project::get::admin_list)
+                            .service(crate::routes::project::compose::admin)
                     )
                     .service(
                         web::scope("/client")

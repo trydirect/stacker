@@ -24,13 +24,14 @@ impl crate::console::commands::CallableTrait for NewCommand {
             let settings = web::Data::new(settings);
             let db_pool = web::Data::new(db_pool);
 
-            //todo get user from trydirect
+            //todo get user from TryDirect
             let user = crate::models::user::User {
                 id: format!("{}", self.user_id),
                 first_name: "first_name".to_string(),
                 last_name: "last_name".to_string(),
                 email: "email".to_string(),
                 email_confirmed: true,
+                role: "role".to_string()
             };
             crate::routes::client::add_handler_inner(&user.id, settings, db_pool).await?;
 

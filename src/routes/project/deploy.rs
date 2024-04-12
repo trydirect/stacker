@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use serde_valid::Validate;
 use crate::helpers::compressor::compress;
+use chrono::{Utc};
 
 
 
@@ -17,7 +18,7 @@ use crate::helpers::compressor::compress;
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
-    form: web::Json<forms::project::Deploy>,
+    mut form: web::Json<forms::project::Deploy>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
@@ -49,10 +50,12 @@ pub async fn item(
         JsonResponse::<models::Project>::build().internal_server_error(err)
     })?;
 
+    form.cloud.user_id = Some(user.id.clone());
+    form.cloud.project_id = Some(id);
     // Save cloud credentials if requested
-    let mut cloud_creds: models::Cloud = (&form.cloud).into();
-    cloud_creds.project_id = Some(id);
-    cloud_creds.user_id = user.id.clone();
+    let cloud_creds: models::Cloud = (&form.cloud).into();
+
+    // let cloud_creds = forms::Cloud::decode_model(cloud_creds, false);
 
     if Some(true) == cloud_creds.save_token {
         db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
@@ -105,7 +108,7 @@ pub async fn item(
         });
 
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<<<<<<<<<>>>>>>>>>>>>>>>>{:?}", payload);
+    tracing::debug!("Send project data <<<>>>{:?}", payload);
 
     // Send Payload
     mq_manager
@@ -127,6 +130,7 @@ pub async fn item(
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
+    form: web::Json<forms::project::Deploy>,
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
@@ -134,8 +138,16 @@ pub async fn saved_item(
 ) -> Result<impl Responder> {
     let id = path.0;
     let cloud_id = path.1;
-    //let cloud_id = Some(1);
+
     tracing::debug!("User {:?} is deploying project: {} to cloud: {} ", user, id, cloud_id);
+
+    if !form.validate().is_ok() {
+        let errors = form.validate().unwrap_err().to_string();
+        let err_msg = format!("Invalid form data received {:?}", &errors);
+        tracing::debug!(err_msg);
+
+        return Err(JsonResponse::<models::Project>::build().form_error(errors));
+    }
 
     // Validate project
     let project = db::project::fetch(pg_pool.get_ref(), id)
@@ -156,7 +168,9 @@ pub async fn saved_item(
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
         Ok(cloud) => {
             match cloud {
-                Some(cloud) => cloud,
+                Some(cloud) => {
+                    cloud
+                },
                 None => {
                     return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
                 }
@@ -169,26 +183,57 @@ pub async fn saved_item(
 
     let server = match db::server::fetch_by_project(pg_pool.get_ref(), dc.project.id.clone()).await {
         Ok(server) => {
-            // for now we support only one type of servers
-            // if let Some(server) = server.into_iter().nth(0) {
-            //     server
-            // }
-            server.into_iter().nth(0).unwrap() // @todo refactoring is required
+            // currently we support only one type of servers
+            //@todo multiple server types support
+            match server.into_iter().nth(0) {
+                Some(mut server) =>  {
+                    // new updates
+                    server.disk_type = form.server.disk_type.clone();
+                    server.region = form.server.region.clone();
+                    server.server = form.server.server.clone();
+                    server.zone = form.server.zone.clone();
+                    server.os = form.server.os.clone();
+                    server.user_id = user.id.clone();
+                    server.project_id = id;
+                    server
+                },
+                None => {
+                    // Create new server
+                    // form.update_with(server.into());
+                    let mut server: models::Server = (&form.server).into();
+                    server.user_id = user.id.clone();
+                    server.project_id = id;
+                    db::server::insert(pg_pool.get_ref(), server)
+                        .await
+                        .map(|server| server)
+                        .map_err(|_| {
+                            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+                        })?
+                }
+            }
         }
         Err(_e) => {
             return Err(JsonResponse::<models::Project>::build().not_found("No servers configured"));
         }
     };
 
+    let server = db::server::update(pg_pool.get_ref(), server)
+        .await
+        .map(|server| server)
+        .map_err(|_| {
+            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+        })?;
+
+    // Building Payload for the 3-d party service through RabbitMQ
     // let mut payload = forms::project::Payload::default();
     let mut payload = forms::project::Payload::try_from(&dc.project)
         .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
 
     payload.server = Some(server.into());
     payload.cloud  = Some(cloud.into());
+    payload.stack  = form.stack.clone().into();
     payload.user_token = Some(user.id.clone());
     payload.user_email = Some(user.email.clone());
-    // let compressed = fc.unwrap_or("".to_string());
     payload.docker_compose = Some(compress(fc.as_str()));
 
     // Store deployment attempts into deployment table in db
@@ -210,7 +255,7 @@ pub async fn saved_item(
         });
 
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<<<<<<<<<>>>>>>>>>>>>>>>>{:?}", payload);
+    tracing::debug!("Send project data <<<>>>{:?}", payload);
 
     // Send Payload
     mq_manager
@@ -228,3 +273,6 @@ pub async fn saved_item(
         })
 
 }
+
+
+
