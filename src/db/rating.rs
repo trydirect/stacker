@@ -131,3 +131,31 @@ pub async fn insert(pool: &PgPool, mut rating: models::Rating) -> Result<models:
         "Failed to insert".to_string()
     })
 }
+
+pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rating, String> {
+    let query_span = tracing::info_span!("Updating rating into the database");
+    sqlx::query!(
+        r#"
+        UPDATE rating
+        SET 
+            comment=$1,
+            rate=$2,
+            updated_at=NOW() at time zone 'utc'
+        WHERE id = $3
+        "#,
+        rating.comment,
+        rating.rate,
+        rating.id
+    )
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map(|_|{
+        tracing::info!("Rating {} has been saved to the database", rating.id);
+        rating
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
+}
