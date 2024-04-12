@@ -16,7 +16,9 @@ pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
             rate,
             created_at,
             updated_at
-        FROM rating"#
+        FROM rating
+        ORDER BY id DESC
+        "#
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -156,6 +158,34 @@ pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rat
     })
     .map_err(|err| {
         tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
+}
+
+pub async fn fetch_all_visible(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
+    let query_span = tracing::info_span!("Fetch all ratings.");
+    sqlx::query_as!(
+        models::Rating,
+        r#"SELECT 
+            id,
+            user_id,
+            obj_id,
+            category as "category: _",
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at
+        FROM rating
+        WHERE hidden = false 
+        ORDER BY id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to execute fetch query: {:?}", e);
         "".to_string()
     })
 }

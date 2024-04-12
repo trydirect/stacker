@@ -14,7 +14,7 @@ use serde_valid::Validate;
 
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
-pub async fn add_handler(
+pub async fn user_add_handler(
     user: web::ReqData<Arc<models::User>>,
     form: web::Json<forms::rating::Add>,
     pg_pool: web::Data<PgPool>,
