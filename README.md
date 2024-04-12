@@ -85,3 +85,9 @@ curl -X POST http://localhost:8000/client  --header 'Content-Type: application/j
 
 test client deploy
 http://localhost:8000/test/deploy
+
+
+Test casbin rule
+```
+cargo r --bin console --features=explain debug casbin --path /client --action POST --subject admin_petru
+```
