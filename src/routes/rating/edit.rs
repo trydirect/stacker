@@ -25,7 +25,7 @@ pub async fn user_edit_handler(
     }
 
     let rate_id = path.0;
-    let rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
+    let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
         .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
         .and_then(|rating| {
@@ -36,8 +36,17 @@ pub async fn user_edit_handler(
             }
         })?;
 
-    //todo add update_model function to form
-    //todo add the db saving of the model
+    form.into_inner().update(&mut rating);
 
-    Ok(JsonResponse::build().set_item(rating).ok("OK"))
+    db::rating::update(pg_pool.get_ref(), rating)
+        .await
+        .map(|rating| {
+            JsonResponse::<models::Rating>::build()
+                .set_item(rating)
+                .ok("success")
+        })
+        .map_err(|err| {
+            tracing::error!("Failed to execute query: {:?}", err);
+            JsonResponse::<models::Rating>::build().internal_server_error("Rating not update")
+        })
 }
