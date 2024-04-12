@@ -25,7 +25,7 @@ pub struct User {
     pub email: String,
     #[serde(rename = "email_confirmed")]
     pub email_confirmed: bool,
-    pub social: bool,
+    pub social: Option<bool>,
     pub website: Option<String>,
     pub currency: Value,
     pub phone: Option<String>,
