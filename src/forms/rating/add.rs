@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 
 #[derive(Serialize, Deserialize, Debug, Validate)]
-pub struct Rating {
+pub struct AddRating {
     pub obj_id: i32,                    // product external id
     pub category: models::RateCategory, // rating of product | rating of service etc
     #[validate(max_length = 1000)]
@@ -13,7 +13,7 @@ pub struct Rating {
     pub rate: i32, //
 }
 
-impl Into<models::Rating> for Rating {
+impl Into<models::Rating> for AddRating {
     fn into(self) -> models::Rating {
         let mut rating = models::Rating::default();
         rating.obj_id = self.obj_id;

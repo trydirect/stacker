@@ -5,6 +5,7 @@ use crate::db;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
+use serde_valid::Validate;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -13,11 +14,15 @@ use std::sync::Arc;
 
 #[tracing::instrument(name = "Add rating.")]
 #[post("")]
-pub async fn add_handler(
+pub async fn user_add_handler(
     user: web::ReqData<Arc<models::User>>,
-    form: web::Json<forms::Rating>,
+    form: web::Json<forms::rating::Add>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    if let Err(errors) = form.validate() {
+        return Err(JsonResponse::<models::Rating>::build().form_error(errors.to_string()));
+    }
+
     let _product = db::product::fetch_by_obj(pg_pool.get_ref(), form.obj_id)
         .await
         .map_err(|_msg| JsonResponse::<models::Rating>::build().internal_server_error(_msg))?

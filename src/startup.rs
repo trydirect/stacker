@@ -57,9 +57,11 @@ pub async fn run(
             )
             .service(
                 web::scope("/rating")
-                    .service(routes::rating::add_handler)
-                    .service(routes::rating::get_handler)
-                    .service(routes::rating::list_handler),
+                    .service(routes::rating::anonymous_get_handler)
+                    .service(routes::rating::anonymous_list_handler)
+                    .service(routes::rating::user_add_handler)
+                    .service(routes::rating::user_delete_handler)
+                    .service(routes::rating::user_edit_handler),
             )
             .service(
                 web::scope("/project")
@@ -74,6 +76,13 @@ pub async fn run(
             )
             .service(
                 web::scope("/admin")
+                    .service(
+                        web::scope("/rating")
+                            .service(routes::rating::admin_get_handler)
+                            .service(routes::rating::admin_list_handler)
+                            .service(routes::rating::admin_edit_handler)
+                            .service(routes::rating::admin_delete_handler)
+                    )
                     .service(
                         web::scope("/project")
                             .service(crate::routes::project::get::admin_list)

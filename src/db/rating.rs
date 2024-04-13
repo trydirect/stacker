@@ -16,7 +16,9 @@ pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
             rate,
             created_at,
             updated_at
-        FROM rating"#
+        FROM rating
+        ORDER BY id DESC
+        "#
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -129,5 +131,85 @@ pub async fn insert(pool: &PgPool, mut rating: models::Rating) -> Result<models:
     .map_err(|e| {
         tracing::error!("Failed to execute query: {:?}", e);
         "Failed to insert".to_string()
+    })
+}
+
+pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rating, String> {
+    let query_span = tracing::info_span!("Updating rating into the database");
+    sqlx::query!(
+        r#"
+        UPDATE rating
+        SET 
+            comment=$1,
+            rate=$2,
+            hidden=$3,
+            updated_at=NOW() at time zone 'utc'
+        WHERE id = $4
+        "#,
+        rating.comment,
+        rating.rate,
+        rating.hidden,
+        rating.id
+    )
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map(|_|{
+        tracing::info!("Rating {} has been saved to the database", rating.id);
+        rating
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
+}
+
+pub async fn fetch_all_visible(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
+    let query_span = tracing::info_span!("Fetch all ratings.");
+    sqlx::query_as!(
+        models::Rating,
+        r#"SELECT 
+            id,
+            user_id,
+            obj_id,
+            category as "category: _",
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at
+        FROM rating
+        WHERE hidden = false 
+        ORDER BY id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to execute fetch query: {:?}", e);
+        "".to_string()
+    })
+}
+
+pub async fn delete(pool: &PgPool, rating: models::Rating) -> Result<(), String> {
+    let query_span = tracing::info_span!("Deleting rating from the database");
+    sqlx::query!(
+        r#"
+        DELETE FROM rating
+        WHERE id = $1
+        "#,
+        rating.id
+    )
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map(|_|{
+        tracing::info!("Rating {} has been deleted from the database", rating.id);
+        ()
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
     })
 }
