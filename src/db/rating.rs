@@ -142,11 +142,13 @@ pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rat
         SET 
             comment=$1,
             rate=$2,
+            hidden=$3,
             updated_at=NOW() at time zone 'utc'
-        WHERE id = $3
+        WHERE id = $4
         "#,
         rating.comment,
         rating.rate,
+        rating.hidden,
         rating.id
     )
     .execute(pool)
