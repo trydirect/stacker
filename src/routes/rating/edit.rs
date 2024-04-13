@@ -49,3 +49,40 @@ pub async fn user_edit_handler(
             JsonResponse::<models::Rating>::build().internal_server_error("Rating not update")
         })
 }
+
+#[tracing::instrument(name = "Admin edit rating.")]
+#[put("/{id}")]
+pub async fn admin_edit_handler(
+    path: web::Path<(i32,)>,
+    form: web::Json<forms::rating::AdminEdit>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    if let Err(errors) = form.validate() {
+        return Err(JsonResponse::<models::Rating>::build().form_error(errors.to_string()));
+    }
+
+    let rate_id = path.0;
+    let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
+        .await
+        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .and_then(|rating| {
+            match rating {
+                Some(rating) =>  Ok(rating),
+                _ => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
+            }
+        })?;
+
+    form.into_inner().update(&mut rating);
+
+    db::rating::update(pg_pool.get_ref(), rating)
+        .await
+        .map(|rating| {
+            JsonResponse::<models::Rating>::build()
+                .set_item(rating)
+                .ok("success")
+        })
+        .map_err(|err| {
+            tracing::error!("Failed to execute query: {:?}", err);
+            JsonResponse::<models::Rating>::build().internal_server_error("Rating not update")
+        })
+}
