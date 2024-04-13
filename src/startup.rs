@@ -84,6 +84,7 @@ pub async fn run(
                             .service(routes::rating::admin_get_handler)
                             .service(routes::rating::admin_list_handler)
                             .service(routes::rating::admin_edit_handler)
+                            .service(routes::rating::admin_delete_handler)
                     )
                     .service(
                         web::scope("/project")

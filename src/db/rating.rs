@@ -191,3 +191,25 @@ pub async fn fetch_all_visible(pool: &PgPool) -> Result<Vec<models::Rating>, Str
         "".to_string()
     })
 }
+
+pub async fn delete(pool: &PgPool, rating: models::Rating) -> Result<(), String> {
+    let query_span = tracing::info_span!("Deleting rating from the database");
+    sqlx::query!(
+        r#"
+        DELETE FROM rating
+        WHERE id = $1
+        "#,
+        rating.id
+    )
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map(|_|{
+        tracing::info!("Rating {} has been deleted from the database", rating.id);
+        ()
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
+}
