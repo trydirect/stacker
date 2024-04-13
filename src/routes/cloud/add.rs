@@ -6,18 +6,16 @@ use crate::db;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
+use chrono::Utc;
 use serde_valid::Validate;
+use tracing::Instrument;
 
-// workflow
-// add, update, list, get(user_id), ACL,
-// ACL - access to func for a user
-// ACL - access to objects for a user
 
 #[tracing::instrument(name = "Add cloud.")]
 #[post("")]
 pub async fn add(
     user: web::ReqData<Arc<models::User>>,
-    form: web::Json<forms::cloud::Cloud>,
+    mut form: web::Json<forms::cloud::CloudForm>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
 
@@ -29,8 +27,8 @@ pub async fn add(
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
     }
 
-    let mut cloud: models::Cloud = form.deref().into();
-    cloud.user_id = user.id.clone();
+    form.user_id = Some(user.id.clone());
+    let cloud: models::Cloud = form.deref().into();
 
     db::cloud::insert(pg_pool.get_ref(), cloud)
         .await

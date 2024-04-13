@@ -4,31 +4,34 @@ use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
+use crate::forms::CloudForm;
+use tracing::Instrument;
 
-// workflow
-// add, update, list, get(user_id), ACL,
-// ACL - access to func for a user
-// ACL - access to objects for a user
-
-#[tracing::instrument(name = "Get cloud.")]
+#[tracing::instrument(name = "Get cloud credentials.")]
 #[get("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
+    user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let id = path.0;
-    let cloud = db::cloud::fetch(pg_pool.get_ref(), id)
+    db::cloud::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|_err| JsonResponse::<models::Cloud>::build()
             .internal_server_error(""))
         .and_then(|cloud| {
             match cloud {
-                Some(cloud) => { Ok(cloud) },
-                None => Err(JsonResponse::<models::Cloud>::build().not_found("object not found"))
+                Some(cloud) if cloud.user_id != user.id => {
+                    Err(JsonResponse::not_found("record not found"))
+                },
+                Some(cloud) => {
+                    let cloud = CloudForm::decode_model(cloud, false);
+                    Ok(JsonResponse::build().set_item(Some(cloud)).ok("OK"))
+                },
+                None => Err(JsonResponse::not_found("record not found")),
             }
-        })?;
+        })
 
-    Ok(JsonResponse::build().set_item(cloud).ok("OK"))
 }
 
 #[tracing::instrument(name = "Get all clouds.")]
@@ -40,6 +43,16 @@ pub async fn list(
 ) -> Result<impl Responder> {
     db::cloud::fetch_by_user(pg_pool.get_ref(), user.id.as_ref())
         .await
-        .map(|clouds| JsonResponse::build().set_list(clouds).ok("OK"))
+        .map(|clouds| {
+
+            let clouds = clouds
+                .into_iter()
+                .map(|cloud| CloudForm::decode_model(cloud, false) )
+                // .map_err(|e| tracing::error!("Failed to decode cloud, {:?}", e))
+                .collect();
+
+            JsonResponse::build().set_list(clouds).ok("OK")
+
+        })
         .map_err(|_err| JsonResponse::<models::Cloud>::build().internal_server_error(""))
 }

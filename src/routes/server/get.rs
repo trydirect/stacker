@@ -15,21 +15,24 @@ use sqlx::PgPool;
 #[get("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
+    user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let id = path.0;
-    let server = db::server::fetch(pg_pool.get_ref(), id)
+    db::server::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|_err| JsonResponse::<models::Server>::build()
             .internal_server_error(""))
         .and_then(|server| {
             match server {
-                Some(server) => { Ok(server) },
-                None => Err(JsonResponse::<models::Server>::build().not_found("object not found"))
+                Some(project) if project.user_id != user.id => {
+                    Err(JsonResponse::not_found("not found"))
+                },
+                Some(server) => Ok(JsonResponse::build().set_item(Some(server)).ok("OK")),
+                None => Err(JsonResponse::not_found("not found")),
             }
-        })?;
+        })
 
-    Ok(JsonResponse::build().set_item(server).ok("OK"))
 }
 
 #[tracing::instrument(name = "Get all servers.")]

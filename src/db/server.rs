@@ -78,7 +78,7 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         disk_type,
         created_at,
         updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc',NOW() at time zone 'utc')
         RETURNING id;
         "#,
         server.user_id,
@@ -87,9 +87,7 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         server.zone,
         server.server,
         server.os,
-        server.disk_type,
-        server.created_at,
-        server.updated_at,
+        server.disk_type
     )
         .fetch_one(pool)
         .instrument(query_span)

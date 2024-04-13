@@ -27,6 +27,21 @@ pub async fn item(
         })
 }
 
+
+#[tracing::instrument(name = "Get project list.")]
+#[get("")]
+pub async fn list(
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::project::fetch_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|err| JsonResponse::internal_server_error(err))
+        .map(|projects| JsonResponse::build().set_list(projects).ok("OK"))
+}
+
+
+//admin's endpoint
 #[tracing::instrument(name = "Get user's project list.")]
 #[get("/user/{id}")]
 pub async fn admin_list(

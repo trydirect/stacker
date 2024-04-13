@@ -1,5 +1,5 @@
-use brotli::{CompressorWriter, Decompressor};
-use std::io::{Read, Write};
+use brotli::{CompressorWriter};
+use std::io::{Write};
 
 pub fn compress(input: &str) -> Vec<u8> {
     let mut compressed = Vec::new();

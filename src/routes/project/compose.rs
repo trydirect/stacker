@@ -7,7 +7,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 #[tracing::instrument(name = "User's generate docker-compose.")]
-#[get("/{id}")]
+#[get("/{id}/compose")]
 pub async fn add(
     user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,

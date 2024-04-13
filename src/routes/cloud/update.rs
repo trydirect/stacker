@@ -13,7 +13,7 @@ use std::ops::Deref;
 #[put("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
-    form: web::Json<forms::cloud::Cloud>,
+    form: web::Json<forms::cloud::CloudForm>,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
