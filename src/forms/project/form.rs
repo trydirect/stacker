@@ -18,18 +18,31 @@ impl TryFrom<&models::Project> for ProjectForm {
     }
 }
 
+
+#[derive(Serialize, Default)]
+pub struct DockerImageReadResult {
+   pub(crate) id: String,
+   pub(crate) readable: bool
+}
+
 impl ProjectForm {
-    pub async fn is_readable_docker_image(&self) -> Result<bool, String> {
+    pub async fn is_readable_docker_image(&self) -> Result<DockerImageReadResult, String> {
         for app in &self.custom.web {
             if !app.app.docker_image.is_active().await? {
-                return Ok(false);
+                return Ok(DockerImageReadResult{
+                    id: app.app.id.clone(),
+                    readable: false
+                });
             }
         }
 
         if let Some(service) = &self.custom.service {
             for app in service {
                 if !app.app.docker_image.is_active().await? {
-                    return Ok(false);
+                    return Ok(DockerImageReadResult{
+                        id: app.app.id.clone(),
+                        readable: false
+                    });
                 }
             }
         }
@@ -37,10 +50,16 @@ impl ProjectForm {
         if let Some(features) = &self.custom.feature {
             for app in features {
                 if !app.app.docker_image.is_active().await? {
-                    return Ok(false);
+                    return Ok(DockerImageReadResult{
+                        id: app.app.id.clone(),
+                        readable: false
+                    });
                 }
             }
         }
-        Ok(true)
+        Ok(DockerImageReadResult{
+            id: "".to_owned(),
+            readable: true
+        })
     }
 }

@@ -127,7 +127,7 @@ impl MqManager {
         let mut args = FieldTable::default();
         args.insert("x-expires".into(), AMQPValue::LongUInt(3600000));
 
-        let queue = channel.queue_declare(
+        let _queue = channel.queue_declare(
             queue_name,
             QueueDeclareOptions {
                 passive: false,

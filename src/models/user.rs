@@ -6,7 +6,6 @@ pub struct User {
     pub first_name: String,
     pub last_name: String,
     pub email: String,
+    pub role: String,
     pub email_confirmed: bool,
-    // pub phone: Option<String>,
-    // pub website: Option<String>,
 }
