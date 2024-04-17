@@ -1,7 +1,6 @@
 use crate::configuration::get_configuration;
 use actix_web::{rt, post, web, HttpResponse, Result, http::header::ContentType};
 use crate::middleware;
-//use actix_casbin_auth::casbin::CoreApi;
 use casbin::CoreApi;
 use sqlx::PgPool;
 
