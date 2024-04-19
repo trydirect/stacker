@@ -241,7 +241,7 @@ impl<'a> DockerHub<'a> {
                 }
             })
     }
-    pub async fn is_active(&'a mut self) -> Result<bool, String> {
+    pub async fn is_active(&'a self) -> Result<bool, String> {
         // if namespace/user is not set change endpoint and return a different response
 
         // let n = self.repos
