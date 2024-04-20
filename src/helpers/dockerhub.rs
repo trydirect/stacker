@@ -206,10 +206,15 @@ impl<'a> DockerHub<'a> {
     }
 
     pub async fn lookup_private_repo(&'a self) -> Result<bool, String> {
+        if self.creds.username.is_empty() {
+            return Ok(false);
+        }
+
         let url = format!(
             "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
             &self.creds.username, &self.repos
         );
+
         tracing::debug!("Validate image {:?}", url);
         let client = reqwest::Client::new()
             .get(url)
@@ -262,30 +267,23 @@ impl<'a> DockerHub<'a> {
         //     }
         // }
 
-        if self.creds.username.is_empty() {
+        tokio::select! {
+            Ok(true) = self.lookup_official_repos() => {
+                    tracing::debug!("official: true");
+                    return Ok(true);
+                }
 
-            if Ok(true) == self.lookup_official_repos().await {
-                tracing::debug!("official: true");
-                return Ok(true);
-            } else {
-                tracing::debug!("official: false");
-            };
-
-            if Ok(true) == self.lookup_public_repos().await {
+            Ok(true) = self.lookup_public_repos() => {
                 tracing::debug!("public: true");
                 return Ok(true);
-            };
+            }
 
-            Ok(false)
-
-        } else {
-
-            if Ok(true) == self.lookup_private_repo().await {
+            Ok(true) = self.lookup_private_repo() => {
                 tracing::debug!("private: true");
                 return Ok(true);
-            };
+            }
 
-            Ok(false)
+            else => { return Ok(false); }
         }
     }
 
