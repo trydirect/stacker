@@ -6,7 +6,7 @@ use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerHubToken {
-    pub token: Option<String>,
+    pub token: String,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -104,9 +104,16 @@ pub struct DockerHub<'a> {
 }
 
 impl<'a> DockerHub<'a> {
-    pub async fn login(&'a self) -> Result<DockerHubToken, String> {
-        let endpoint = "https://hub.docker.com/v2/users/login";
+    pub async fn login(&'a self) -> Result<String, String> {
+        if self.creds.password.is_empty() {
+            return Err("Password is empty".to_string());
+        }
 
+        if self.creds.username.is_empty() {
+            return Err("Username is empty".to_string());
+        }
+
+        let endpoint = "https://hub.docker.com/v2/users/login";
         reqwest::Client::new()
             .post(endpoint)
             .json(&self.creds)
@@ -115,6 +122,7 @@ impl<'a> DockerHub<'a> {
             .map_err(|err| format!("{:?}", err))?
             .json::<DockerHubToken>()
             .await
+            .map(|dockerHubToken| dockerHubToken.token)
             .map_err(|err| format!("{:?}", err))
     }
 
@@ -125,7 +133,7 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(&url)
             .header("Accept", "application/json");
-        let client = self.set_token(client).await?;
+        let client = self.set_token(client).await;
         client
             .send()
             .await
@@ -169,7 +177,7 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let client = self.set_token(client).await?;
+        let client = self.set_token(client).await;
         client
             .send()
             .await
@@ -219,7 +227,7 @@ impl<'a> DockerHub<'a> {
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let client = self.set_token(client).await?;
+        let client = self.set_token(client).await;
         client
             .send()
             .await
@@ -287,18 +295,13 @@ impl<'a> DockerHub<'a> {
         }
     }
 
-    pub async fn set_token(&'a self, client: RequestBuilder) -> Result<RequestBuilder, String> {
-        if self.creds.password.is_empty() {
-            tracing::debug!("Password is empty. Image should be public");
-            return Ok(client);
-        } else {
-        }
-        tracing::debug!("Password is set. Login..");
-        let token = self.login().await?;
-
-        match token.token {
-            None => Ok(client),
-            Some(token) => Ok(client.bearer_auth(token)),
+    pub async fn set_token(&'a self, client: RequestBuilder) -> RequestBuilder {
+        match self.login().await  {
+            Ok(token) => client.bearer_auth(token),
+            Err(msg) => {
+                tracing::debug!("set_token: {msg:?}");
+                client
+            }
         }
     }
 }
