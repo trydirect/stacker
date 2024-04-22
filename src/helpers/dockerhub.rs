@@ -104,6 +104,8 @@ pub struct DockerHub<'a> {
 }
 
 impl<'a> DockerHub<'a> {
+
+    #[tracing::instrument(name = "Dockerhub login.")]
     pub async fn login(&'a self) -> Result<String, String> {
         if self.creds.password.is_empty() {
             return Err("Password is empty".to_string());
@@ -113,9 +115,9 @@ impl<'a> DockerHub<'a> {
             return Err("Username is empty".to_string());
         }
 
-        let endpoint = "https://hub.docker.com/v2/users/login";
+        let url = "https://hub.docker.com/v2/users/login";
         reqwest::Client::new()
-            .post(endpoint)
+            .post(url)
             .json(&self.creds)
             .send()
             .await
@@ -126,16 +128,14 @@ impl<'a> DockerHub<'a> {
             .map_err(|err| format!("{:?}", err))
     }
 
+    #[tracing::instrument(name = "Lookup public repos")]
     pub async fn lookup_public_repos(&'a self) -> Result<bool, String> {
-
         let url = format!("https://hub.docker.com/v2/repositories/{}", self.repos);
-        tracing::debug!("Validate public repository {:?}", &url);
         let client = reqwest::Client::new()
             .get(&url)
             .header("Accept", "application/json");
-        let client = self.set_token(client).await;
-        client
-            .send()
+
+        client.send()
             .await
             .map_err(|err| {
                 let msg = format!("🟥Error response {:?}", err);
@@ -157,29 +157,23 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|repo| repo.status == Some(1));
-                    tracing::debug!("✅ Image is active. url: {:?}", &url);
+                    tracing::debug!("✅ Public mage is active. url: {:?}", &url);
                     active
                 } else {
-                    tracing::debug!("🟥 Image tag is not active, url: {:?}", &url);
+                    tracing::debug!("🟥 Public image tag is not active, url: {:?}", &url);
                     false
                 }
             })
     }
 
+    #[tracing::instrument(name = "Lookup official repos")]
     pub async fn lookup_official_repos(&'a self) -> Result<bool, String> {
-        // search in official library repositories
         let url = format!("https://hub.docker.com/v2/repositories/library/{}/tags", self.repos);
-        return self.lookup(&url).await;
-    }
-
-    pub async fn lookup(&'a self, url: &String) -> Result<bool, String> {
-        tracing::debug!("Search official repos {:?}", url);
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let client = self.set_token(client).await;
-        client
-            .send()
+
+        client.send()
             .await
             .map_err(|err| format!("🟥{}", err))?
             .json::<OfficialRepoResults>()
@@ -198,37 +192,35 @@ impl<'a> DockerHub<'a> {
                         .any(|tag| {
                             tracing::debug!("official: {:?}", tag);
                             if "active".to_string() == tag.tag_status {
-                                tracing::debug!("✅ Image is active");
                                 true
                             } else {
                                 false
                             }
                         });
-                    tracing::debug!("✅ search official repos result is {:?}", result);
+                    tracing::debug!("✅ Official mage is active. url: {:?}", result);
                     result
                 } else {
-                    tracing::debug!("🟥 Image tag is not active");
+                    tracing::debug!("🟥 Official image tag is not active");
                     false
                 }
             })
     }
 
+    #[tracing::instrument(name = "Lookup private repos")]
     pub async fn lookup_private_repo(&'a self) -> Result<bool, String> {
-        if self.creds.username.is_empty() {
-            return Ok(false);
-        }
+        let token = self.login().await?;
 
         let url = format!(
             "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
             &self.creds.username, &self.repos
         );
 
-        tracing::debug!("Validate image {:?}", url);
+        tracing::debug!("Search private repos {:?}", url);
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
-        let client = self.set_token(client).await;
-        client
+
+        client.bearer_auth(token)
             .send()
             .await
             .map_err(|err| format!("🟥{}", err))?
@@ -246,7 +238,6 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|tag| tag.tag_status.contains("active"));
-                    tracing::debug!("✅ Image is active");
                     return active;
                 } else {
                     tracing::debug!("🟥 Image tag is not active");
@@ -254,6 +245,7 @@ impl<'a> DockerHub<'a> {
                 }
             })
     }
+
     pub async fn is_active(&'a self) -> Result<bool, String> {
         // if namespace/user is not set change endpoint and return a different response
 
@@ -292,16 +284,6 @@ impl<'a> DockerHub<'a> {
             }
 
             else => { return Ok(false); }
-        }
-    }
-
-    pub async fn set_token(&'a self, client: RequestBuilder) -> RequestBuilder {
-        match self.login().await  {
-            Ok(token) => client.bearer_auth(token),
-            Err(msg) => {
-                tracing::debug!("set_token: {msg:?}");
-                client
-            }
         }
     }
 }
