@@ -120,7 +120,7 @@ async fn test_docker_named_volume() {
         container_path: Some("/var/www/flaskdata".to_owned()),
     };
 
-    let cv:ComposeVolume = volume.into();
+    let cv:ComposeVolume = (&volume).into();
     println!("ComposeVolume: {:?}", cv);
     println!("{:?}", cv.driver_opts);
     assert_eq!(Some("flask-data".to_string()), cv.name);
