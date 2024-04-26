@@ -1,6 +1,7 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::views;
 use actix_web::{delete, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -15,11 +16,11 @@ pub async fn user_delete_handler(
     let rate_id = path.0;
     let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
-        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .map_err(|_err| JsonResponse::<views::rating::User>::build().internal_server_error(""))
         .and_then(|rating| {
             match rating {
                 Some(rating) if rating.user_id == user.id && rating.hidden == Some(false) =>  Ok(rating),
-                _ => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
+                _ => Err(JsonResponse::<views::rating::User>::build().not_found("not found"))
             }
         })?;
 
@@ -28,11 +29,11 @@ pub async fn user_delete_handler(
     db::rating::update(pg_pool.get_ref(), rating)
         .await
         .map(|rating| {
-            JsonResponse::<models::Rating>::build().ok("success")
+            JsonResponse::<views::rating::User>::build().ok("success")
         })
         .map_err(|err| {
             tracing::error!("Failed to execute query: {:?}", err);
-            JsonResponse::<models::Rating>::build().internal_server_error("Rating not update")
+            JsonResponse::<views::rating::User>::build().internal_server_error("Rating not update")
         })
 }
 
@@ -46,21 +47,21 @@ pub async fn admin_delete_handler(
     let rate_id = path.0;
     let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
-        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .map_err(|_err| JsonResponse::<views::rating::Admin>::build().internal_server_error(""))
         .and_then(|rating| {
             match rating {
                 Some(rating) =>  Ok(rating),
-                _ => Err(JsonResponse::<models::Rating>::build().not_found("not found"))
+                _ => Err(JsonResponse::<views::rating::Admin>::build().not_found("not found"))
             }
         })?;
 
     db::rating::delete(pg_pool.get_ref(), rating)
         .await
         .map(|_| {
-            JsonResponse::<models::Rating>::build().ok("success")
+            JsonResponse::<views::rating::Admin>::build().ok("success")
         })
         .map_err(|err| {
             tracing::error!("Failed to execute query: {:?}", err);
-            JsonResponse::<models::Rating>::build().internal_server_error("Rating not deleted")
+            JsonResponse::<views::rating::Admin>::build().internal_server_error("Rating not deleted")
         })
 }
