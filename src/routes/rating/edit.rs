@@ -22,7 +22,7 @@ pub async fn user_edit_handler(
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     if let Err(errors) = form.validate() {
-        return Err(JsonResponse::<models::Rating>::build().form_error(errors.to_string()));
+        return Err(JsonResponse::<views::rating::User>::build().form_error(errors.to_string()));
     }
 
     let rate_id = path.0;
@@ -59,7 +59,7 @@ pub async fn admin_edit_handler(
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     if let Err(errors) = form.validate() {
-        return Err(JsonResponse::<models::Rating>::build().form_error(errors.to_string()));
+        return Err(JsonResponse::<views::rating::Admin>::build().form_error(errors.to_string()));
     }
 
     let rate_id = path.0;

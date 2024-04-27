@@ -32,11 +32,18 @@ pub async fn anonymous_list_handler(
     path: web::Path<()>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    //todo
     db::rating::fetch_all_visible(pg_pool.get_ref())
         .await
-        .map(|ratings| JsonResponse::build().set_list(ratings).ok("OK"))
-        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .map(|ratings| {
+            let ratings = ratings
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<views::rating::Anonymous>>()
+                ;
+
+            JsonResponse::build().set_list(ratings).ok("OK")
+        })
+        .map_err(|_err| JsonResponse::<views::rating::Anonymous>::build().internal_server_error(""))
 }
 
 #[tracing::instrument(name = "Admin get rating.")]
@@ -67,6 +74,14 @@ pub async fn admin_list_handler(
 ) -> Result<impl Responder> {
     db::rating::fetch_all(pg_pool.get_ref())
         .await
-        .map(|ratings| JsonResponse::build().set_list(ratings).ok("OK"))
-        .map_err(|_err| JsonResponse::<models::Rating>::build().internal_server_error(""))
+        .map(|ratings| {
+            let ratings = ratings
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<views::rating::Admin>>()
+                ;
+
+            JsonResponse::build().set_list(ratings).ok("OK")
+        })
+        .map_err(|_err| JsonResponse::<views::rating::Admin>::build().internal_server_error(""))
 }
