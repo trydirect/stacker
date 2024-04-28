@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize};
 use crate::models;
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Default)]
 pub struct Rating {
     pub id: i32,
     pub user_id: String, // external user_id, 100, taken using token (middleware?)
