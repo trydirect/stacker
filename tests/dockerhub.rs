@@ -10,7 +10,7 @@ use serde_yaml;
 use stacker::forms::project::Volume;
 
 const DOCKER_USERNAME: &str = "trydirect";
-const DOCKER_PASSWORD: &str = "***************";
+const DOCKER_PASSWORD: &str = "**********";
 //  Unit Test
 
 // #[test]
@@ -105,12 +105,26 @@ async fn test_docker_non_existent_repo() {
 
     common::spawn_app().await; // server
     let di = DockerImage {
-        dockerhub_user: Some(String::from("trydirect")),
-        dockerhub_name: Some(String::from("nonexistent")),
-        dockerhub_image: None,
+        dockerhub_user: Some(String::from("trydirect")), //namespace
+        dockerhub_name: Some(String::from("nonexistent")), //repo
+        dockerhub_image: None, // namesps/reponame:tag full docker image string
         dockerhub_password: Some(String::from(""))
     };
+    println!("{}", di.is_active().await.unwrap());
     assert_eq!(di.is_active().await.unwrap(), false);
+}
+
+#[tokio::test]
+async fn test_docker_non_existent_repo_empty_namespace() {
+
+    common::spawn_app().await; // server
+    let di = DockerImage {
+        dockerhub_user: Some(String::from("")), //namespace
+        dockerhub_name: Some(String::from("nonexistent")), //repo
+        dockerhub_image: None, // namesps/reponame:tag full docker image string
+        dockerhub_password: Some(String::from(""))
+    };
+    assert_eq!(di.is_active().await.unwrap(), true);
 }
 
 #[tokio::test]

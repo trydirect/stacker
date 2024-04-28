@@ -130,6 +130,9 @@ impl<'a> DockerHub<'a> {
 
     #[tracing::instrument(name = "Lookup public repos")]
     pub async fn lookup_public_repos(&'a self) -> Result<bool, String> {
+        if !self.creds.username.is_empty() {
+            return Ok(false);
+        }
         let url = format!("https://hub.docker.com/v2/repositories/{}", self.repos);
         let client = reqwest::Client::new()
             .get(&url)
@@ -157,7 +160,7 @@ impl<'a> DockerHub<'a> {
                         .results
                         .into_iter()
                         .any(|repo| repo.status == Some(1));
-                    tracing::debug!("✅ Public mage is active. url: {:?}", &url);
+                    tracing::debug!("✅ Public image is active. url: {:?}", &url);
                     active
                 } else {
                     tracing::debug!("🟥 Public image tag is not active, url: {:?}", &url);
@@ -270,16 +273,19 @@ impl<'a> DockerHub<'a> {
         tokio::select! {
             Ok(true) = self.lookup_official_repos() => {
                     tracing::debug!("official: true");
+                    println!("official: true");
                     return Ok(true);
                 }
 
-            Ok(true) = self.lookup_public_repos() => {
+            Ok(true) = self.lookup_public_repos()  => {
                 tracing::debug!("public: true");
+                println!("public: true");
                 return Ok(true);
             }
 
             Ok(true) = self.lookup_private_repo() => {
                 tracing::debug!("private: true");
+                println!("private: true");
                 return Ok(true);
             }
 
