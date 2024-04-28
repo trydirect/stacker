@@ -57,8 +57,7 @@ brotli = "3.4.0"
 serde_path_to_error = "0.1.14"
 deadpool-lapin = "0.11.0"
 docker-compose-types = "0.7.0"
-#actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
-actix-casbin-auth = { git = "https://github.com/smart--petea/actix-casbin-auth.git", branch = "dirty-master"}
+actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
 casbin = "2.2.0"
 aes-gcm = "0.10.3"
 base64 = "0.22.0"

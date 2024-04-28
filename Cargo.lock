@@ -4,8 +4,8 @@ version = 3
 
 [[package]]
 name = "actix-casbin-auth"
-version = "1.0.0"
-source = "git+https://github.com/smart--petea/actix-casbin-auth.git?branch=dirty-master#bbc6d08900521c684c46bab59c4b92394ca5bd57"
+version = "1.1.0"
+source = "git+https://github.com/casbin-rs/actix-casbin-auth.git#66662102a92fe1ae80ad427e07c1879cbdf65f4f"
 dependencies = [
  "actix-service",
  "actix-web",
