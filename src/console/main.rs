@@ -48,6 +48,10 @@ enum DebugCommands {
         #[arg(long)]
         subject: String,
     },
+    Dockerhub {
+        #[arg(long)]
+        json: String,
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -75,6 +79,9 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
             )),
             DebugCommands::Casbin { action, path, subject } => Ok(Box::new(
                 stacker::console::commands::debug::CasbinCommand::new(action, path, subject),
+            )),
+            DebugCommands::Dockerhub { json } => Ok(Box::new(
+                stacker::console::commands::debug::DockerhubCommand::new(json),
             )),
         },
         Commands::MQ { command} => match command {
