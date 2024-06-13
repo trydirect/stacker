@@ -11,7 +11,7 @@ volumes:
 services:
 
   stacker:
-    image: trydirect/stacker:0.0.8
+    image: trydirect/stacker:0.0.9
     build: .
     container_name: stacker
     restart: always
