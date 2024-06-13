@@ -32,7 +32,7 @@ COPY ./src ./src
 #RUN cargo sqlx prepare -- --bin stacker
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
-    cargo build --bin=console && cargo build --release
+    cargo build --bin=console --features="explain" && cargo build --release --features="explain"
 
 #RUN ls -la /app/target/release/ >&2
 
