@@ -1,5 +1,8 @@
-# Stacker
-
+<a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
+<br>
+<div align="center">
+<img width="300" src="https://repository-images.githubusercontent.com/448846514/3468f301-0ba6-4b61-9bf1-164c06c06b08"> 
+ </div>
 
 Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
 source apps and user's custom applications docker containers. Users can build their own project of applications, and 
@@ -79,9 +82,11 @@ sqlx migrate revert
 curl -X POST -H "Content-Type: application/json" -d @custom-stack-payload-2.json http://127.0.0.1:8000/project    
 ```
 
-
 #### Create API Client
+```
 curl -X POST http://localhost:8000/client  --header 'Content-Type: application/json' -H "Authorization: Bearer $TD_BEARER"
+```
+
 
 test client deploy
 http://localhost:8000/test/deploy
