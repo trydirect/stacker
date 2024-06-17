@@ -125,7 +125,7 @@ impl<'a> DockerHub<'a> {
             .json::<DockerHubToken>()
             .await
             .map(|dockerHubToken| dockerHubToken.token)
-            .map_err(|err| format!("{:?}", err))
+            .map_err(|err| format!("🟥 {:?}", err))
     }
 
     #[tracing::instrument(name = "Lookup public repos")]
@@ -155,11 +155,13 @@ impl<'a> DockerHub<'a> {
             .map(|repositories| {
                 tracing::debug!("Get public image repo {:?} response {:?}", &url, repositories);
                 if repositories.count.unwrap_or(0) > 0 {
-                    // let's find at least one active tag
+                    // let's find at least one active repo
                     let active = repositories
                         .results
                         .into_iter()
-                        .any(|repo| repo.status == Some(1));
+                        .any(|repo| {
+                            repo.status == Some(1)
+                        } );
                     tracing::debug!("✅ Public image is active. url: {:?}", &url);
                     active
                 } else {
@@ -194,7 +196,7 @@ impl<'a> DockerHub<'a> {
                         .into_iter()
                         .any(|tag| {
                             tracing::debug!("official: {:?}", tag);
-                            if "active".to_string() == tag.tag_status {
+                            if "active".to_string() == tag.tag_status  && tag.name.eq(self.tag.as_deref().unwrap_or("latest")) {
                                 true
                             } else {
                                 false
@@ -209,6 +211,50 @@ impl<'a> DockerHub<'a> {
             })
     }
 
+    #[tracing::instrument(name = "Lookup vendor's public repos")]
+    pub async fn lookup_vendor_public_repos(&'a self) -> Result<bool, String> {
+
+        let url = format!(
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
+            &self.creds.username, &self.repos
+        );
+
+        tracing::debug!("Search vendor's public repos {:?}", url);
+        let client = reqwest::Client::new()
+            .get(url)
+            .header("Accept", "application/json");
+
+        client
+            .send()
+            .await
+            .map_err(|err| format!("🟥{}", err))?
+            .json::<TagResult>()
+            .await
+            .map_err(|err| {
+                tracing::debug!("🟥Error response {:?}", err);
+                format!("{}", err)
+            })
+            .map(|tags| {
+                tracing::debug!("Validate vendor's public image response {:?}", tags);
+                if tags.count.unwrap_or(0) > 0 {
+                    // let's find at least one active tag
+                    let t = match self.tag.clone() {
+                        Some(s) if !s.is_empty() => s,
+                        _ => String::from("latest"),
+                    };
+                    tracing::debug!("🟥 🟥 🟥 t={:?}", t);
+
+                    let active = tags
+                        .results
+                        .into_iter()
+                        .any(|tag| tag.tag_status.contains("active") && tag.name.eq(&t));
+                    return active;
+                } else {
+                    tracing::debug!("🟥 Image tag is not active");
+                    false
+                }
+            })
+    }
     #[tracing::instrument(name = "Lookup private repos")]
     pub async fn lookup_private_repo(&'a self) -> Result<bool, String> {
         let token = self.login().await?;
@@ -237,10 +283,15 @@ impl<'a> DockerHub<'a> {
                 tracing::debug!("Validate private image response {:?}", tags);
                 if tags.count.unwrap_or(0) > 0 {
                     // let's find at least one active tag
+                    let t = match self.tag.clone() {
+                        Some(s) if !s.is_empty() => s,
+                        _ => String::from("latest")
+                    };
+
                     let active = tags
                         .results
                         .into_iter()
-                        .any(|tag| tag.tag_status.contains("active"));
+                        .any(|tag| tag.tag_status.contains("active") && tag.name.eq(&t));
                     return active;
                 } else {
                     tracing::debug!("🟥 Image tag is not active");
@@ -278,6 +329,12 @@ impl<'a> DockerHub<'a> {
                 }
 
             Ok(true) = self.lookup_public_repos()  => {
+                tracing::debug!("public: true");
+                println!("public: true");
+                return Ok(true);
+            }
+
+            Ok(true) = self.lookup_vendor_public_repos()  => {
                 tracing::debug!("public: true");
                 println!("public: true");
                 return Ok(true);

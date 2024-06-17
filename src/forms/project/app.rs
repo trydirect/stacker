@@ -63,7 +63,7 @@ pub struct App {
     pub url_git: Option<String>,
     #[validate(enumerate("always", "no", "unless-stopped", "on-failure"))]
     pub restart: String,
-    pub command: String,
+    pub command: Option<String>,
     pub volumes: Option<Vec<forms::project::Volume>>,
     #[serde(flatten)]
     pub environment: forms::project::Environment,
@@ -145,7 +145,11 @@ impl App {
 
         service.ports = dctypes::Ports::Long(ports);
         service.restart = Some(self.restart.clone());
-        service.command = Some(dctypes::Command::Simple(self.command.clone()));
+        if let Some(cmd) = self.command.as_deref() {
+            if !cmd.is_empty() {
+                service.command = Some(dctypes::Command::Simple(cmd.to_owned()));
+            }
+        }
         service.volumes = volumes;
         service.environment = dctypes::Environment::KvPair(envs);
 
