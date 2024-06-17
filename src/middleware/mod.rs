@@ -1,2 +1,2 @@
-pub mod client;
-pub mod trydirect;
+pub mod authentication;
+pub mod authorization;

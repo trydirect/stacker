@@ -1,5 +1,17 @@
 -- Add up migration script here
 
+CREATE TYPE rate_category AS ENUM (
+    'application',
+    'cloud',      
+    'project',
+    'deploymentSpeed',
+    'documentation',
+    'design',
+    'techSupport',
+    'price',
+    'memoryUsage'
+);
+
 CREATE TABLE product (
     id integer NOT NULL, PRIMARY KEY(id),
     obj_id integer NOT NULL,
@@ -12,7 +24,7 @@ CREATE TABLE rating (
     id serial,
     user_id VARCHAR(50) NOT NULL,
     obj_id integer NOT NULL,
-    category VARCHAR(255) NOT NULL,
+    category rate_category NOT NULL,
     comment TEXT DEFAULT NULL,
     hidden BOOLEAN DEFAULT FALSE,
     rate INTEGER,

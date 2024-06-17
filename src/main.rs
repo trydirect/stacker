@@ -11,7 +11,7 @@ async fn main() -> std::io::Result<()> {
 
     let settings = get_configuration().expect("Failed to read configuration.");
 
-    let db_pool = PgPool::connect(&settings.database.connection_string())
+    let pg_pool = PgPool::connect(&settings.database.connection_string())
         .await
         .expect("Failed to connect to database.");
 
@@ -20,5 +20,5 @@ async fn main() -> std::io::Result<()> {
     let listener =
         TcpListener::bind(address).expect(&format!("failed to bind to {}", settings.app_port));
 
-    run(listener, db_pool, settings).await?.await
+    run(listener, pg_pool, settings).await?.await
 }

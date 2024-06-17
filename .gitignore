@@ -1,3 +1,7 @@
 target
-.idea
+.idea/
 files
+access_control.conf
+configuration.yaml
+configuration.yaml.backup
+configuration.yaml.orig
