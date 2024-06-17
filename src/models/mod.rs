@@ -1,8 +1,21 @@
 mod client;
+mod product;
+mod ratecategory;
+mod rules;
 pub mod rating;
-pub mod stack;
+pub mod project;
 pub mod user;
+pub(crate) mod deployment;
+mod cloud;
+mod server;
 
 pub use client::*;
 pub use rating::*;
-pub use stack::*;
+pub use project::*;
+pub use user::*;
+pub use product::*;
+pub use ratecategory::*;
+pub use rules::*;
+pub use deployment::*;
+pub use cloud::*;
+pub use server::*;

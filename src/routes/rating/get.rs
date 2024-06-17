@@ -1,71 +1,87 @@
+use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::views;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
-use tracing::Instrument;
+use std::convert::Into;
 
-// workflow
-// add, update, list, get(user_id), ACL,
-// ACL - access to func for a user
-// ACL - access to objects for a user
-
-#[tracing::instrument(name = "Get rating.")]
+#[tracing::instrument(name = "Anonymouse get rating.")]
 #[get("/{id}")]
-pub async fn get_handler(
+pub async fn anonymous_get_handler(
     path: web::Path<(i32,)>,
-    pool: web::Data<PgPool>,
+    pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// Get rating of any user
     let rate_id = path.0;
-    let query_span = tracing::info_span!("Search for rate id={}.", rate_id);
-    match sqlx::query_as!(
-        models::Rating,
-        r"SELECT * FROM rating WHERE id=$1 LIMIT 1",
-        rate_id
-    )
-    .fetch_one(pool.get_ref())
-    .instrument(query_span)
-    .await
-    {
-        Ok(rating) => {
-            tracing::info!("rating found: {:?}", rating.id);
-            return JsonResponse::build().set_item(Some(rating)).ok("OK");
-        }
-        Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().err("Not Found");
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().err("Internal Server Error");
-        }
-    }
+    let rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
+        .await
+        .map_err(|_err| JsonResponse::<views::rating::Anonymous>::build().internal_server_error(""))
+        .and_then(|rating| {
+            match rating {
+                Some(rating) if rating.hidden == Some(false) => { Ok(rating) },
+                _ => Err(JsonResponse::<views::rating::Anonymous>::build().not_found("not found"))
+            }
+        })?;
+
+    Ok(JsonResponse::build().set_item(Into::<views::rating::Anonymous>::into(rating)).ok("OK"))
 }
 
-#[tracing::instrument(name = "Get all ratings.")]
+#[tracing::instrument(name = "Anonymous get all ratings.")]
 #[get("")]
-pub async fn list_handler(
+pub async fn anonymous_list_handler(
     path: web::Path<()>,
-    pool: web::Data<PgPool>,
+    pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    /// Get ratings of all users
-
-    let query_span = tracing::info_span!("Get all rates.");
-    // let category = path.0;
-    match sqlx::query_as!(models::Rating, r"SELECT * FROM rating")
-        .fetch_all(pool.get_ref())
-        .instrument(query_span)
+    db::rating::fetch_all_visible(pg_pool.get_ref())
         .await
-    {
-        Ok(rating) => {
-            tracing::info!("Ratings found: {:?}", rating.len());
-            return JsonResponse::build().set_list(rating).ok("OK".to_owned());
-        }
-        Err(sqlx::Error::RowNotFound) => {
-            return JsonResponse::build().not_found("Not Found".to_owned());
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch rating, error: {:?}", e);
-            return JsonResponse::build().internal_error("Internal Server Error".to_owned());
-        }
-    }
+        .map(|ratings| {
+            let ratings = ratings
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<views::rating::Anonymous>>()
+                ;
+
+            JsonResponse::build().set_list(ratings).ok("OK")
+        })
+        .map_err(|_err| JsonResponse::<views::rating::Anonymous>::build().internal_server_error(""))
+}
+
+#[tracing::instrument(name = "Admin get rating.")]
+#[get("/{id}")]
+pub async fn admin_get_handler(
+    path: web::Path<(i32,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let rate_id = path.0;
+    let rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
+        .await
+        .map_err(|_err| JsonResponse::<views::rating::Admin>::build().internal_server_error(""))
+        .and_then(|rating| {
+            match rating {
+                Some(rating) => { Ok(rating) },
+                _ => Err(JsonResponse::<views::rating::Admin>::build().not_found("not found"))
+            }
+        })?;
+
+    Ok(JsonResponse::build().set_item(Into::<views::rating::Admin>::into(rating)).ok("OK"))
+}
+
+#[tracing::instrument(name = "Admin get the list of ratings.")]
+#[get("")]
+pub async fn admin_list_handler(
+    path: web::Path<()>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::rating::fetch_all(pg_pool.get_ref())
+        .await
+        .map(|ratings| {
+            let ratings = ratings
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<views::rating::Admin>>()
+                ;
+
+            JsonResponse::build().set_list(ratings).ok("OK")
+        })
+        .map_err(|_err| JsonResponse::<views::rating::Admin>::build().internal_server_error(""))
 }

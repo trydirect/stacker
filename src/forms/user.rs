@@ -1,7 +1,6 @@
 use serde_derive::{Serialize, Deserialize};
 use serde_json::Value;
 use serde_valid::{Validate};
-use tracing_subscriber::fmt::format;
 use crate::models::user::User as UserModel;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -9,6 +8,8 @@ use crate::models::user::User as UserModel;
 pub struct UserForm {
     pub user: User,
 }
+
+//todo deref for UserForm. userForm.id, userForm.first_name
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +25,7 @@ pub struct User {
     pub email: String,
     #[serde(rename = "email_confirmed")]
     pub email_confirmed: bool,
-    pub social: bool,
+    pub social: Option<bool>,
     pub website: Option<String>,
     pub currency: Value,
     pub phone: Option<String>,
@@ -55,6 +56,7 @@ pub struct User {
     pub deployments_left: Value,
     #[serde(rename = "suspension_hints")]
     pub suspension_hints: Option<SuspensionHints>,
+    pub role: String
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -127,15 +129,13 @@ pub struct SuspensionHints {
 impl TryInto<UserModel> for UserForm {
     type Error = String;
     fn try_into(self) -> Result<UserModel, Self::Error> {
-        // let id = self.id.parse::<i32>().map_err(
-        //     |msg| { format!("{:?}", msg) }
-        // )?;
         Ok(UserModel {
             id: self.user.id,
             first_name: self.user.first_name.unwrap_or("Noname".to_string()),
             last_name: self.user.last_name.unwrap_or("Noname".to_string()),
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
+            role: self.user.role
         })
     }
 
