@@ -179,7 +179,7 @@ impl<'a> DockerHub<'a> {
             _ => String::from("latest"),
         };
         let url = format!(
-            "https://hub.docker.com/v2/repositories/library/{}/tags?name={}",
+            "https://hub.docker.com/v2/repositories/library/{}/tags?name={}&page_size=100",
             self.repos, t
         );
         let client = reqwest::Client::new()
@@ -226,7 +226,7 @@ impl<'a> DockerHub<'a> {
         };
         // get exact tag name
         let url = format!(
-            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}",
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}&page_size=100",
             &self.creds.username, &self.repos, &t
         );
 
@@ -275,7 +275,7 @@ impl<'a> DockerHub<'a> {
         };
 
         let url = format!(
-            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}",
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}&page_size=100",
             &self.creds.username, &self.repos, t
         );
 
