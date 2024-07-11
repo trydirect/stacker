@@ -5,10 +5,10 @@ use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct ServerForm {
-    pub region: String,
+    pub region: Option<String>,
     pub zone: Option<String>,
-    pub server: String,
-    pub os: String,
+    pub server: Option<String>,
+    pub os: Option<String>,
     pub disk_type: Option<String>,
     pub srv_ip: Option<String>,
     pub ssh_port: Option<i32>,
