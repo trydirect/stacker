@@ -1,17 +1,15 @@
 use crate::configuration::Settings;
 use crate::db;
 use crate::forms;
+use crate::helpers::compressor::compress;
 use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
+use chrono::Utc;
+use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
-use serde_valid::Validate;
-use crate::helpers::compressor::compress;
-use chrono::{Utc};
-
-
 
 #[tracing::instrument(name = "Deploy for every user")]
 #[post("/{id}/deploy")]
@@ -46,9 +44,9 @@ pub async fn item(
     // Build compose
     let id = project.id;
     let dc = DcBuilder::new(project);
-    let fc = dc.build().map_err(|err| {
-        JsonResponse::<models::Project>::build().internal_server_error(err)
-    })?;
+    let fc = dc
+        .build()
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     form.cloud.user_id = Some(user.id.clone());
     form.cloud.project_id = Some(id);
@@ -62,7 +60,8 @@ pub async fn item(
             .await
             .map(|cloud| cloud)
             .map_err(|_| {
-                JsonResponse::<models::Cloud>::build().internal_server_error("Internal Server Error")
+                JsonResponse::<models::Cloud>::build()
+                    .internal_server_error("Internal Server Error")
             })?;
     }
 
@@ -82,27 +81,22 @@ pub async fn item(
         .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
 
     payload.server = Some(server.into());
-    payload.cloud  = Some(cloud_creds.into());
-    payload.stack  = form.stack.clone().into();
+    payload.cloud = Some(cloud_creds.into());
+    payload.stack = form.stack.clone().into();
     payload.user_token = Some(user.id.clone());
     payload.user_email = Some(user.email.clone());
     payload.docker_compose = Some(compress(fc.as_str()));
 
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.body.clone();
-    let deployment = models::Deployment::new(
-        dc.project.id,
-        String::from("pending"),
-        json_request
-    );
+    let deployment = models::Deployment::new(dc.project.id, String::from("pending"), json_request);
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
         .map(|deployment| {
             payload.id = Some(deployment.id);
             deployment
-        }
-        )
+        })
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
         });
@@ -110,11 +104,24 @@ pub async fn item(
     tracing::debug!("Save deployment result: {:?}", result);
     tracing::debug!("Send project data <<<>>>{:?}", payload);
 
+    let provider = payload.cloud
+        .as_ref()
+        .map(|form| if form.provider.contains("own") {
+            "own"
+        } else {
+            "tfa"
+        })
+        .unwrap_or("tfa")
+        .to_string();
+
+    let routing_key = format!("install.start.{}.all.all", provider);
+    tracing::debug!("Route: {:?}", routing_key);
+
     // Send Payload
     mq_manager
         .publish(
             "install".to_string(),
-            "install.start.tfa.all.all".to_string(),
+            routing_key,
             &payload,
         )
         .await
@@ -124,7 +131,6 @@ pub async fn item(
                 .set_id(id)
                 .ok("Success")
         })
-
 }
 #[tracing::instrument(name = "Deploy, when cloud token is saved")]
 #[post("/{id}/deploy/{cloud_id}")]
@@ -139,7 +145,12 @@ pub async fn saved_item(
     let id = path.0;
     let cloud_id = path.1;
 
-    tracing::debug!("User {:?} is deploying project: {} to cloud: {} ", user, id, cloud_id);
+    tracing::debug!(
+        "User {:?} is deploying project: {} to cloud: {} ",
+        user,
+        id,
+        cloud_id
+    );
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
@@ -161,32 +172,31 @@ pub async fn saved_item(
     // Build compose
     let id = project.id;
     let dc = DcBuilder::new(project);
-    let fc = dc.build().map_err(|err| {
-        JsonResponse::<models::Project>::build().internal_server_error(err)
-    })?;
+    let fc = dc
+        .build()
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
-        Ok(cloud) => {
-            match cloud {
-                Some(cloud) => {
-                    cloud
-                },
-                None => {
-                    return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
-                }
+        Ok(cloud) => match cloud {
+            Some(cloud) => cloud,
+            None => {
+                return Err(
+                    JsonResponse::<models::Project>::build().not_found("No cloud configured")
+                );
             }
-        }
+        },
         Err(_e) => {
             return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
         }
     };
 
-    let server = match db::server::fetch_by_project(pg_pool.get_ref(), dc.project.id.clone()).await {
+    let server = match db::server::fetch_by_project(pg_pool.get_ref(), dc.project.id.clone()).await
+    {
         Ok(server) => {
             // currently we support only one type of servers
             //@todo multiple server types support
             match server.into_iter().nth(0) {
-                Some(mut server) =>  {
+                Some(mut server) => {
                     // new updates
                     server.disk_type = form.server.disk_type.clone();
                     server.region = form.server.region.clone();
@@ -196,7 +206,7 @@ pub async fn saved_item(
                     server.user_id = user.id.clone();
                     server.project_id = id;
                     server
-                },
+                }
                 None => {
                     // Create new server
                     // form.update_with(server.into());
@@ -207,7 +217,8 @@ pub async fn saved_item(
                         .await
                         .map(|server| server)
                         .map_err(|_| {
-                            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+                            JsonResponse::<models::Server>::build()
+                                .internal_server_error("Internal Server Error")
                         })?
                 }
             }
@@ -230,19 +241,15 @@ pub async fn saved_item(
         .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
 
     payload.server = Some(server.into());
-    payload.cloud  = Some(cloud.into());
-    payload.stack  = form.stack.clone().into();
+    payload.cloud = Some(cloud.into());
+    payload.stack = form.stack.clone().into();
     payload.user_token = Some(user.id.clone());
     payload.user_email = Some(user.email.clone());
     payload.docker_compose = Some(compress(fc.as_str()));
 
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.body.clone();
-    let deployment = models::Deployment::new(
-        dc.project.id,
-        String::from("pending"),
-        json_request
-    );
+    let deployment = models::Deployment::new(dc.project.id, String::from("pending"), json_request);
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
@@ -271,8 +278,4 @@ pub async fn saved_item(
                 .set_id(id)
                 .ok("Success")
         })
-
 }
-
-
-
