@@ -9,6 +9,7 @@ jobs:
 
   notifyTelegram:
     runs-on: ubuntu-latest
+    concurrency: build
     steps:
       - name: send custom message
         uses: appleboy/telegram-action@master
