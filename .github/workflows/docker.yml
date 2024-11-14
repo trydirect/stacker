@@ -11,7 +11,7 @@ on:
       - main
 
 jobs:
-  cicd-linux-docker:
+  cicd-docker:
     name: Cargo and npm build
     runs-on: ubuntu-latest
     steps:
