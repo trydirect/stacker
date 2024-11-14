@@ -16,4 +16,4 @@ jobs:
           to: ${{ secrets.TELEGRAM_TO }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
           message: |
-            "Issue ${{ github.event.action }}: \n${{ github.event.issue.html_url }}"
+            "Github actions on push: build in progress .. ${{ github.event.action }} "

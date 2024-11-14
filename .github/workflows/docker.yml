@@ -3,11 +3,12 @@ name: Docker CICD
 on:
   push:
     branches:
-      - master
+      - main
       - testing
+      - dev
   pull_request:
     branches:
-      - master
+      - main
 
 jobs:
   cicd-linux-docker:
