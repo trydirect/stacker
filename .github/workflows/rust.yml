@@ -16,6 +16,8 @@ jobs:
     environment: build
 
     steps:
+    - name: Run tests
+      run: cargo sqlx prepare
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
