@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use serde::{Serialize};
 use crate::models;
 
 #[derive(Debug, Default)]
