@@ -81,18 +81,24 @@ pub async fn run(
                             .service(routes::rating::admin_get_handler)
                             .service(routes::rating::admin_list_handler)
                             .service(routes::rating::admin_edit_handler)
-                            .service(routes::rating::admin_delete_handler)
+                            .service(routes::rating::admin_delete_handler),
                     )
                     .service(
                         web::scope("/project")
                             .service(crate::routes::project::get::admin_list)
-                            .service(crate::routes::project::compose::admin)
+                            .service(crate::routes::project::compose::admin),
                     )
                     .service(
                         web::scope("/client")
                             .service(routes::client::admin_enable_handler)
                             .service(routes::client::admin_update_handler)
                             .service(routes::client::admin_disable_handler),
+                    )
+                    .service(
+                        web::scope("/agreement")
+                            .service(routes::agreement::admin_add_handler)
+                            .service(routes::agreement::admin_update_handler)
+                            .service(routes::agreement::get_handler),
                     )
             )
             .service(
@@ -107,9 +113,14 @@ pub async fn run(
                 web::scope("/server")
                     .service(crate::routes::server::get::item)
                     .service(crate::routes::server::get::list)
-                    // .service(crate::routes::server::add::add)
                     .service(crate::routes::server::update::item)
                     .service(crate::routes::server::delete::item),
+            )
+            .service(
+                web::scope("/agreement")
+                    .service(crate::routes::agreement::user_add_handler)
+                    .service(crate::routes::agreement::get_handler)
+                    .service(crate::routes::agreement::accept_handler),
             )
             .app_data(json_config.clone())
             .app_data(pg_pool.clone())

@@ -9,9 +9,9 @@ use std::sync::Arc;
 use serde_valid::Validate;
 
 
-#[tracing::instrument(name = "Admin edit agreement.")]
+#[tracing::instrument(name = "Admin update agreement.")]
 #[put("/{id}")]
-pub async fn admin_edit_handler(
+pub async fn admin_update_handler(
     path: web::Path<(i32,)>,
     form: web::Json<forms::agreement::AdminAddAgreement>,
     pg_pool: web::Data<PgPool>,
