@@ -102,7 +102,7 @@ jobs:
       #   npm test
 
       - name: Archive production artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: dist-without-markdown
           path: |
