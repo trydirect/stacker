@@ -133,7 +133,7 @@ jobs:
   cicd-linux-docker:
     name: CICD Docker
     runs-on: ubuntu-latest
-    needs: cicd-linux-docker
+    needs: cicd-docker
     steps:
       - name: Download app archive
         uses: actions/download-artifact@v4
