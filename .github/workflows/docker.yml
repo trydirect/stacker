@@ -65,6 +65,12 @@ jobs:
         with:
           command: check
 
+      - name: Run cargo sqlx prepare
+        uses: actions-rs/cargo@v1
+        with:
+          command: sqlx prepare
+          args: --release
+
       - name: Cargo test
         if: ${{ always() }}
         uses: actions-rs/cargo@v1
