@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: true
 
 jobs:
   build:
@@ -16,14 +17,7 @@ jobs:
     environment: build
 
     steps:
-    - name: Run tests
-      run: cargo sqlx prepare
-    - uses: actions/checkout@v4
-    - name: Build
+    - name: cargo build
       run: cargo build --verbose
-      env:
-        SQLX_OFFLINE: true
-    - name: Run tests
+    - name: cargo test
       run: cargo test --verbose
-      env:
-        SQLX_OFFLINE: true
