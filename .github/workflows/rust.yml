@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: cargo sqlx prepare
+      run: cargo sqlx prepare
     - name: cargo build
       run: cargo build --verbose
     - name: cargo test 
