@@ -34,7 +34,7 @@ thiserror = "1.0"
 serde_valid = "0.18.0"
 serde_json = { version = "1.0.111", features = [] }
 serde_derive = "1.0.195"
-actix-cors = "0.6.4"
+actix-cors = "0.7.0"
 tracing-actix-web = "0.7.7"
 regex = "1.10.2"
 rand = "0.8.5"
