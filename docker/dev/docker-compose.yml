@@ -42,7 +42,7 @@ services:
 
 
   stacker_queue:
-    image: trydirect/stacker:0.0.7
+    image: trydirect/stacker:0.0.9
     container_name: stacker_queue
     restart: always
     volumes:
