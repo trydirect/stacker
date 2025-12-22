@@ -9,6 +9,8 @@ pub(crate) mod deployment;
 mod cloud;
 mod server;
 mod agreement;
+mod agent;
+mod command;
 
 pub use client::*;
 pub use rating::*;
@@ -21,3 +23,5 @@ pub use deployment::*;
 pub use cloud::*;
 pub use server::*;
 pub use agreement::*;
+pub use agent::*;
+pub use command::*;

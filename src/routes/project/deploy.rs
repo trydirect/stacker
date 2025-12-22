@@ -10,6 +10,7 @@ use chrono::Utc;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
+use uuid::Uuid;
 
 #[tracing::instrument(name = "Deploy for every user")]
 #[post("/{id}/deploy")]
@@ -89,7 +90,14 @@ pub async fn item(
 
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.body.clone();
-    let deployment = models::Deployment::new(dc.project.id, String::from("pending"), json_request);
+    let deployment_hash = format!("deployment_{}", Uuid::new_v4());
+    let deployment = models::Deployment::new(
+        dc.project.id,
+        Some(user.id.clone()),
+        deployment_hash.clone(),
+        String::from("pending"),
+        json_request,
+    );
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
@@ -249,7 +257,14 @@ pub async fn saved_item(
 
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.body.clone();
-    let deployment = models::Deployment::new(dc.project.id, String::from("pending"), json_request);
+    let deployment_hash = format!("deployment_{}", Uuid::new_v4());
+    let deployment = models::Deployment::new(
+        dc.project.id,
+        Some(user.id.clone()),
+        deployment_hash,
+        String::from("pending"),
+        json_request,
+    );
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await

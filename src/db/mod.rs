@@ -6,3 +6,5 @@ pub(crate) mod deployment;
 pub(crate) mod cloud;
 pub(crate) mod server;
 pub(crate) mod agreement;
+pub mod agent;
+pub mod command;
