@@ -2,6 +2,8 @@ pub mod client;
 pub mod health_checks;
 pub(crate) mod rating;
 pub(crate) mod test;
+pub(crate) mod agent;
+pub(crate) mod command;
 
 pub use health_checks::*;
 pub(crate) mod project;

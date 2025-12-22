@@ -15,3 +15,8 @@ amqp:
   port: 5672
   username: guest
   password: guest
+
+vault:
+  address: http://127.0.0.1:8200
+  token: your_vault_token_here
+  agent_path_prefix: agent

@@ -4,23 +4,58 @@
 <img width="300" src="https://repository-images.githubusercontent.com/448846514/3468f301-0ba6-4b61-9bf1-164c06c06b08"> 
  </div>
 
+# Stacker Project Overview
 Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
 source apps and user's custom applications docker containers. Users can build their own project of applications, and 
 deploy the final result to their favorite clouds using TryDirect API.
 
-Application development will include:
-- Web UI (Application Stack builder)
-- Command line interface
-- Back-end RESTful API, includes:
-  - [ ] Security module. 
-    - [ ] User Authorization
-  - [ ] Restful API client Application Management
-    - [ ] Application Key Management
-  - [ ] Cloud Provider Key Management 
-  - [ ] docker-compose.yml generator
-  - [ ] TryDirect API Client
-  - [ ] Rating module
-   
+## Core Purpose
+- Allows users to build projects using both open source and custom Docker containers
+- Provides deployment capabilities to various cloud platforms through TryDirect API
+- Helps manage and orchestrate Docker-based application stacks
+
+## Main Components
+
+1. **Project Structure**
+- Web UI (Stack Builder)
+- Command Line Interface
+- RESTful API Backend
+
+2. **Key Features**
+- User Authentication (via TryDirect OAuth)
+- API Client Management
+- Cloud Provider Key Management
+- Docker Compose Generation
+- Project Rating System
+- Project Deployment Management
+
+3. **Technical Architecture**
+- Written in Rust
+- Uses PostgreSQL database
+- Implements REST API endpoints
+- Includes Docker image validation
+- Supports project deployment workflows
+- Has RabbitMQ integration for deployment status updates
+
+4. **Data Models**
+The core Project model includes:
+- Unique identifiers (id, stack_id)
+- User identification
+- Project metadata (name, body, request_json)
+- Timestamps (created_at, updated_at)
+
+5. **API Endpoints**
+- `/project` - Project management
+- `/rating` - Rating system
+- `/client` - API client management
+- `/project/deploy` - Deployment handling
+- `/project/deploy/status` - Deployment status tracking
+
+The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
+
+This is a high-level overview based on the code snippets provided. The project seems to be actively developed with features being added progressively, as indicated by the TODO sections in the documentation.
+
+
 ## How to start 
 
 
@@ -68,6 +103,14 @@ sqlx migrate revert
 
 
 ## CURL examples
+
+
+#### Authentication 
+
+
+curl -X POST 
+
+
 #### Rate Product 
 
 ```
@@ -79,8 +122,9 @@ sqlx migrate revert
 
 #### Deploy 
 ```
-curl -X POST -H "Content-Type: application/json" -d @custom-stack-payload-2.json http://127.0.0.1:8000/project    
+curl -X POST -H "Content-Type: application/json" -d @tests/mock_data/custom-stack-payload.json http://127.0.0.1:8000/project -H "Authorization: Bearer $TD_BEARER"
 ```
+
 
 #### Create API Client
 ```

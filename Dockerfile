@@ -15,6 +15,7 @@ COPY ./rustfmt.toml .
 COPY ./Makefile .
 COPY ./docker/local/.env .
 COPY ./docker/local/configuration.yaml .
+COPY .sqlx  .
 
 # build this project to cache dependencies
 #RUN sqlx database create && sqlx migrate run

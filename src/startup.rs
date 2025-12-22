@@ -26,6 +26,9 @@ pub async fn run(
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
 
+    let vault_client = helpers::VaultClient::new(&settings.vault);
+    let vault_client = web::Data::new(vault_client);
+
     let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
     let json_config = web::JsonConfig::default()
         .error_handler(|err, _req| { //todo
@@ -117,6 +120,19 @@ pub async fn run(
                     .service(crate::routes::server::delete::item),
             )
             .service(
+                web::scope("/api/v1/agent")
+                    .service(routes::agent::register_handler)
+                    .service(routes::agent::wait_handler)
+                    .service(routes::agent::report_handler),
+            )
+            .service(
+                web::scope("/api/v1/commands")
+                    .service(routes::command::create_handler)
+                    .service(routes::command::list_handler)
+                    .service(routes::command::get_handler)
+                    .service(routes::command::cancel_handler),
+            )
+            .service(
                 web::scope("/agreement")
                     .service(crate::routes::agreement::user_add_handler)
                     .service(crate::routes::agreement::get_handler)
@@ -125,6 +141,7 @@ pub async fn run(
             .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
+            .app_data(vault_client.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?

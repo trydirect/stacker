@@ -1,6 +1,7 @@
-use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized};
+use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorForbidden, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized};
+use actix_web::http::StatusCode;
 use actix_web::web::Json;
-use actix_web::Error;
+use actix_web::{Error, HttpResponse};
 use serde_derive::Serialize;
 
 #[derive(Serialize)]
@@ -89,17 +90,18 @@ where
         ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
-    // not used
-    // pub(crate) fn unauthorized<I: Into<String>>(
-    //     self,
-    //     msg: I,
-    // ) -> Error {
-    //     ErrorUnauthorized(self.set_msg(msg).to_string())
-    // }
-    //
-    // pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
-    //     ErrorConflict(self.set_msg(msg).to_string())
-    // }
+    pub(crate) fn forbidden<I: Into<String>>(self, msg: I) -> Error {
+        ErrorForbidden(self.set_msg(msg).to_string())
+    }
+
+    pub(crate) fn created<I: Into<String>>(self, msg: I) -> HttpResponse {
+        HttpResponse::Created().json(self.set_msg(msg).to_json_response())
+    }
+
+    pub(crate) fn no_content(self) -> HttpResponse {
+        HttpResponse::NoContent().finish()
+    }
+
 }
 
 impl<T> JsonResponse<T>
@@ -122,5 +124,9 @@ impl JsonResponse<String> {
 
     pub fn not_found<I: Into<String>>(msg: I) -> Error {
         JsonResponse::<String>::build().not_found(msg.into())
+    }
+
+    pub fn forbidden<I: Into<String>>(msg: I) -> Error {
+        JsonResponse::<String>::build().forbidden(msg.into())
     }
 }

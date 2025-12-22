@@ -55,13 +55,13 @@ futures-lite = "2.2.0"
 clap = { version = "4.4.8", features = ["derive"] }
 brotli = "3.4.0"
 serde_path_to_error = "0.1.14"
-deadpool-lapin = "0.11.0"
+deadpool-lapin = "0.12.1"
 docker-compose-types = "0.7.0"
 actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"}
 casbin = "2.2.0"
 aes-gcm = "0.10.3"
-base64 = "0.22.0"
-redis = { version = "0.25.2", features = ["tokio-comp"] }
+base64 = "0.22.1"
+redis = { version = "0.27.5", features = ["tokio-comp"] }
 
 [dependencies.sqlx]
 version = "0.6.3"
@@ -72,7 +72,9 @@ features = [
     "tls",
     "chrono",
     "json",
-    "offline"
+    "ipnetwork",
+    "offline",
+    "macros"
 ]
 
 [features]

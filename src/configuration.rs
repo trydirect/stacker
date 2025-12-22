@@ -7,7 +7,8 @@ pub struct Settings {
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
-    pub amqp: AmqpSettings
+    pub amqp: AmqpSettings,
+    pub vault: VaultSettings
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -26,6 +27,14 @@ pub struct AmqpSettings {
     pub host: String,
     pub port: u16,
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VaultSettings {
+    pub address: String,
+    pub token: String,
+    pub agent_path_prefix: String,
+}
+
 impl DatabaseSettings {
     // Connection string: postgresql://<username>:<password>@<host>:<port>/<database_name>
     pub fn connection_string(&self) -> String {
