@@ -6,9 +6,7 @@ use crate::db;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use chrono::Utc;
 use serde_valid::Validate;
-use tracing::Instrument;
 
 
 #[tracing::instrument(name = "Add cloud.")]

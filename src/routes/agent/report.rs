@@ -65,7 +65,7 @@ pub async fn report_handler(
     )
     .await
     {
-        Ok(updated_command) => {
+        Ok(_) => {
             tracing::info!(
                 "Command {} updated to status '{}' by agent {}",
                 payload.command_id,

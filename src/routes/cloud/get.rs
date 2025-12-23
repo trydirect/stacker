@@ -5,7 +5,6 @@ use crate::models;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use crate::forms::CloudForm;
-use tracing::Instrument;
 
 #[tracing::instrument(name = "Get cloud credentials.")]
 #[get("/{id}")]

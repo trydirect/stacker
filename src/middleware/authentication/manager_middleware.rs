@@ -1,5 +1,5 @@
 use crate::middleware::authentication::*;
-use actix_web::{error::ErrorBadRequest, HttpMessage, Error, dev::{ServiceRequest, ServiceResponse, Service}};
+use actix_web::{error::ErrorBadRequest, Error, dev::{ServiceRequest, ServiceResponse, Service}};
 use crate::helpers::JsonResponse;
 use futures::{task::{Poll, Context}, future::{FutureExt, LocalBoxFuture}, lock::Mutex};
 use crate::models;

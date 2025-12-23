@@ -4,7 +4,6 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use redis::{Commands, Connection};
-use tracing::Instrument;
 
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct Secret {

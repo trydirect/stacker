@@ -25,7 +25,7 @@ impl crate::console::commands::CallableTrait for DockerhubCommand {
         rt::System::new().block_on(async {
             println!("{}", self.json);
             let dockerImage: DockerImage = serde_json::from_str(&self.json)?;
-            let mut dockerhub = DockerHub::try_from(&dockerImage)?;
+            let dockerhub = DockerHub::try_from(&dockerImage)?;
             let isActive = dockerhub.is_active().await?;
 
             println!("image is active: {isActive}");

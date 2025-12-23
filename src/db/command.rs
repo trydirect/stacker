@@ -1,4 +1,4 @@
-use crate::models::{Command, CommandPriority, CommandQueueEntry, CommandStatus};
+use crate::models::{Command, CommandPriority, CommandStatus};
 use sqlx::types::JsonValue;
 use sqlx::PgPool;
 use tracing::Instrument;

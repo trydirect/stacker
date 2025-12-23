@@ -24,11 +24,11 @@ pub async fn user_delete_handler(
             }
         })?;
 
-    rating.hidden.insert(true);
+    let _ = rating.hidden.insert(true);
 
     db::rating::update(pg_pool.get_ref(), rating)
         .await
-        .map(|rating| {
+        .map(|_rating| {
             JsonResponse::<views::rating::User>::build().ok("success")
         })
         .map_err(|err| {
@@ -45,7 +45,7 @@ pub async fn admin_delete_handler(
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let rate_id = path.0;
-    let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
+    let rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
         .map_err(|_err| JsonResponse::<views::rating::Admin>::build().internal_server_error(""))
         .and_then(|rating| {
