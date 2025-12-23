@@ -1,5 +1,5 @@
 use crate::configuration::get_configuration;
-use actix_web::{rt, post, web, HttpResponse, Result, http::header::ContentType};
+use actix_web::{rt, web, Result};
 use crate::middleware;
 use casbin::CoreApi;
 use sqlx::PgPool;
@@ -25,7 +25,7 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
                 .expect("Failed to connect to database.");
 
             let settings = web::Data::new(settings);
-            let db_pool = web::Data::new(db_pool);
+            let _db_pool = web::Data::new(db_pool);
 
 
             let mut authorizationService = middleware::authorization::try_new(settings.database.connection_string()).await?;

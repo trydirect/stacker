@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use crate::forms::project::{ProjectForm, DockerImageReadResult};
 use crate::helpers::JsonResponse;
 use crate::models;
@@ -8,8 +7,6 @@ use serde_json::Value;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
-use std::str;
 
 #[tracing::instrument(name = "Update project.")]
 #[put("/{id}")]

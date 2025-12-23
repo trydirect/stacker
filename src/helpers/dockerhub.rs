@@ -1,5 +1,4 @@
 use crate::forms::project::DockerImage;
-use reqwest::RequestBuilder;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;

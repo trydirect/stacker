@@ -32,11 +32,11 @@ async fn fetch_agent_by_id(db_pool: &PgPool, agent_id: Uuid) -> Result<models::A
 }
 
 async fn log_audit(
-    db_pool: &PgPool,
+    db_pool: PgPool,
     agent_id: Option<Uuid>,
     deployment_hash: Option<String>,
-    action: &str,
-    status: &str,
+    action: String,
+    status: String,
     details: serde_json::Value,
 ) {
     let query_span = tracing::info_span!("Logging agent audit event");
@@ -52,7 +52,7 @@ async fn log_audit(
     .bind(action)
     .bind(status)
     .bind(details)
-    .execute(db_pool)
+    .execute(&db_pool)
     .instrument(query_span)
     .await;
 
@@ -103,28 +103,27 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         .fetch_agent_token(&agent.deployment_hash)
         .await
         .map_err(|e| {
-            log_audit(
-                db_pool,
+            actix_web::rt::spawn(log_audit(
+                db_pool.clone(),
                 Some(agent_id),
                 Some(agent.deployment_hash.clone()),
-                "agent.auth_failure",
-                "token_not_found",
+                "agent.auth_failure".to_string(),
+                "token_not_found".to_string(),
                 serde_json::json!({"error": e}),
-            );
+            ));
             format!("Token not found in Vault: {}", e)
         })?;
 
     // Compare tokens
     if bearer_token != stored_token {
-        log_audit(
-            db_pool,
+        actix_web::rt::spawn(log_audit(
+            db_pool.clone(),
             Some(agent_id),
             Some(agent.deployment_hash.clone()),
-            "agent.auth_failure",
-            "token_mismatch",
+            "agent.auth_failure".to_string(),
+            "token_mismatch".to_string(),
             serde_json::json!({}),
-        )
-        .await;
+        ));
         return Err("Invalid agent token".to_string());
     }
 
@@ -157,15 +156,14 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     }
 
     // Log successful authentication
-    log_audit(
-        db_pool,
+    actix_web::rt::spawn(log_audit(
+        db_pool.clone(),
         Some(agent_id),
         Some(agent.deployment_hash.clone()),
-        "agent.auth_success",
-        "success",
+        "agent.auth_success".to_string(),
+        "success".to_string(),
         serde_json::json!({}),
-    )
-    .await;
+    ));
 
     tracing::debug!("Agent authenticated: {} ({})", agent_id, agent.deployment_hash);
 

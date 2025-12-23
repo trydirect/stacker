@@ -1,6 +1,5 @@
 use crate::db;
 use crate::helpers::JsonResponse;
-use crate::models;
 use crate::views;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;

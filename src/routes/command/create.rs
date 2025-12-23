@@ -3,7 +3,6 @@ use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 

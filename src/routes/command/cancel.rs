@@ -1,6 +1,6 @@
 use crate::db;
 use crate::helpers::JsonResponse;
-use crate::models::{Command, User};
+use crate::models::User;
 use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
