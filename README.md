@@ -41,15 +41,28 @@ deploy the final result to their favorite clouds using TryDirect API.
 The core Project model includes:
 - Unique identifiers (id, stack_id)
 - User identification
-- Project metadata (name, body, request_json)
+- Project metadata (name, metadata, request_json)
 - Timestamps (created_at, updated_at)
 
-5. **API Endpoints**
+5. **API Endpoints (user-facing)**
 - `/project` - Project management
-- `/rating` - Rating system
-- `/client` - API client management
 - `/project/deploy` - Deployment handling
 - `/project/deploy/status` - Deployment status tracking
+- `/rating` - Rating system
+- `/client` - API client management
+
+6. **Agent + Command Flow (self-hosted runner)**
+- Register agent (no auth required): `POST /api/v1/agent/register`
+  - Body: `deployment_hash`, optional `capabilities`, `system_info`
+  - Response: `agent_id`, `agent_token`
+- Agent long-poll for commands: `GET /api/v1/agent/commands/wait/:deployment_hash`
+  - Headers: `X-Agent-Id: <agent_id>`, `Authorization: Bearer <agent_token>`
+- Agent report command result: `POST /api/v1/agent/commands/report`
+  - Headers: `X-Agent-Id`, `Authorization: Bearer <agent_token>`
+  - Body: `command_id`, `deployment_hash`, `status` (`completed|failed`), `result`/`error`, optional `started_at`, required `completed_at`
+- Create command (user auth via OAuth Bearer): `POST /api/v1/commands`
+  - Body: `deployment_hash`, `command_type`, `priority` (`low|normal|high|critical`), `parameters`, optional `timeout_seconds`
+- List commands for a deployment: `GET /api/v1/commands/:deployment_hash`
 
 The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
 
