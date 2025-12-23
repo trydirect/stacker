@@ -78,14 +78,14 @@ pub async fn insert(pool: &PgPool, mut project: models::Project) -> Result<model
     let query_span = tracing::info_span!("Saving new project into the database");
     sqlx::query!(
         r#"
-        INSERT INTO project (stack_id, user_id, name, body, created_at, updated_at, request_json)
+        INSERT INTO project (stack_id, user_id, name, metadata, created_at, updated_at, request_json)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id;
         "#,
         project.stack_id,
         project.user_id,
         project.name,
-        project.body,
+        project.metadata,
         project.created_at,
         project.updated_at,
         project.request_json,
@@ -113,7 +113,7 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
             stack_id=$2,
             user_id=$3,
             name=$4,
-            body=$5,
+            metadata=$5,
             request_json=$6,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
@@ -123,7 +123,7 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
         project.stack_id,
         project.user_id,
         project.name,
-        project.body,
+        project.metadata,
         project.request_json
     )
     .fetch_one(pool)

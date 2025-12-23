@@ -54,13 +54,13 @@ pub async fn item(
     }
 
 
-    let body: Value = serde_json::to_value::<ProjectForm>(form)
+    let metadata: Value = serde_json::to_value::<ProjectForm>(form)
         .or(serde_json::to_value::<ProjectForm>(ProjectForm::default()))
         .unwrap();
 
 
     project.name = project_name;
-    project.body = body;
+    project.metadata = metadata;
     project.request_json = request_json;
 
     db::project::update(pg_pool.get_ref(), project)

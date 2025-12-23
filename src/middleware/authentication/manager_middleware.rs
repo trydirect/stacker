@@ -20,17 +20,19 @@ where
     type Future = LocalBoxFuture<'static, Result<ServiceResponse<B>, Error>>;
 
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.service
-            .try_lock()
-            .expect("Authentication ManagerMiddleware was called allready")
-            .poll_ready(ctx)
+        if let Some(mut guard) = self.service.try_lock() {
+            guard.poll_ready(ctx)
+        } else {
+            // Another request is in-flight; signal pending instead of panicking
+            Poll::Pending
+        }
     }
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let _ = method::try_oauth(&mut req).await?
-            || method::try_agent(&mut req).await?
+            let _ = method::try_agent(&mut req).await?
+            || method::try_oauth(&mut req).await?
             || method::try_hmac(&mut req).await?
             || method::anonym(&mut req)?;
 

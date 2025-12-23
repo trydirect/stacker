@@ -4,12 +4,16 @@
 INSERT INTO public.casbin_rule (ptype, v0, v1, v2, v3, v4, v5) 
 VALUES ('g', 'agent', 'group_anonymous', '', '', '', '');
 
--- Agent registration (admin and users can register agents)
+-- Agent registration (anonymous, users, and admin can register agents)
+-- This allows agents to bootstrap themselves during deployment
 INSERT INTO public.casbin_rule (ptype, v0, v1, v2, v3, v4, v5) 
-VALUES ('p', 'group_admin', '/api/v1/agent/register', 'POST', '', '', '');
+VALUES ('p', 'group_anonymous', '/api/v1/agent/register', 'POST', '', '', '');
 
 INSERT INTO public.casbin_rule (ptype, v0, v1, v2, v3, v4, v5) 
 VALUES ('p', 'group_user', '/api/v1/agent/register', 'POST', '', '', '');
+
+INSERT INTO public.casbin_rule (ptype, v0, v1, v2, v3, v4, v5) 
+VALUES ('p', 'group_admin', '/api/v1/agent/register', 'POST', '', '', '');
 
 -- Agent long-poll for commands (only agents can do this)
 INSERT INTO public.casbin_rule (ptype, v0, v1, v2, v3, v4, v5) 
