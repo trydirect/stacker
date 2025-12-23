@@ -28,14 +28,14 @@ pub async fn item(
     }
 
     let project_name = form.custom.custom_stack_code.clone();
-    let body: Value = serde_json::to_value::<ProjectForm>(form)
+    let metadata: Value = serde_json::to_value::<ProjectForm>(form)
         .or(serde_json::to_value::<ProjectForm>(ProjectForm::default()))
         .unwrap();
 
     let project = models::Project::new(
         user.id.clone(),
         project_name,
-        body,
+        metadata,
         request_json
     );
 

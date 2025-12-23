@@ -88,7 +88,7 @@ pub async fn item(
     payload.docker_compose = Some(compress(fc.as_str()));
 
     // Store deployment attempts into deployment table in db
-    let json_request = dc.project.body.clone();
+    let json_request = dc.project.metadata.clone();
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,
@@ -255,7 +255,7 @@ pub async fn saved_item(
     payload.docker_compose = Some(compress(fc.as_str()));
 
     // Store deployment attempts into deployment table in db
-    let json_request = dc.project.body.clone();
+    let json_request = dc.project.metadata.clone();
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,

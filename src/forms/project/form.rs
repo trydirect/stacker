@@ -14,7 +14,7 @@ impl TryFrom<&models::Project> for ProjectForm {
     type Error = String;
 
     fn try_from(project: &models::Project) -> Result<Self, Self::Error> {
-        serde_json::from_value::<ProjectForm>(project.body.clone()).map_err(|err| format!("{:?}", err))
+        serde_json::from_value::<ProjectForm>(project.metadata.clone()).map_err(|err| format!("{:?}", err))
     }
 }
 
