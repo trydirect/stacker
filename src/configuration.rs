@@ -35,6 +35,23 @@ pub struct VaultSettings {
     pub agent_path_prefix: String,
 }
 
+impl VaultSettings {
+    pub fn from_env() -> Result<Self, config::ConfigError> {
+        let address = std::env::var("VAULT_ADDRESS")
+            .map_err(|_| config::ConfigError::NotFound("VAULT_ADDRESS".to_string()))?;
+        let token = std::env::var("VAULT_TOKEN")
+            .map_err(|_| config::ConfigError::NotFound("VAULT_TOKEN".to_string()))?;
+        let agent_path_prefix = std::env::var("VAULT_AGENT_PATH_PREFIX")
+            .unwrap_or_else(|_| "agent".to_string());
+        
+        Ok(VaultSettings {
+            address,
+            token,
+            agent_path_prefix,
+        })
+    }
+}
+
 impl DatabaseSettings {
     // Connection string: postgresql://<username>:<password>@<host>:<port>/<database_name>
     pub fn connection_string(&self) -> String {
@@ -62,6 +79,9 @@ impl AmqpSettings {
 }
 
 pub fn get_configuration() -> Result<Settings, config::ConfigError> {
+    // Load environment variables from .env file
+    dotenvy::dotenv().ok();
+
     // Initialize our configuration reader
     let mut settings = config::Config::default();
 
@@ -71,5 +91,10 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
 
     // Try to convert the configuration values it read into
     // our Settings type
-    settings.try_deserialize()
+    let mut config: Settings = settings.try_deserialize()?;
+    
+    // Load vault settings from environment variables
+    config.vault = VaultSettings::from_env()?;
+    
+    Ok(config)
 }

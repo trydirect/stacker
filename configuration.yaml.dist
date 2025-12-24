@@ -16,7 +16,5 @@ amqp:
   username: guest
   password: guest
 
-vault:
-  address: http://127.0.0.1:8200
-  token: your_vault_token_here
-  agent_path_prefix: agent
+# Vault configuration is now loaded from .env file
+# See .env for VAULT_ADDRESS, VAULT_TOKEN, and VAULT_AGENT_PATH_PREFIX

@@ -45,6 +45,7 @@ actix-http = "3.4.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
 sqlx-adapter = { version = "1.0.0", default-features = false, features = ["postgres", "runtime-tokio-native-tls"]}
+dotenvy = "0.15"
 
 # dctypes
 derive_builder = "0.12.0"
