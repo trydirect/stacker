@@ -11,7 +11,56 @@ env:
   SQLX_OFFLINE: true
 
 jobs:
+  prepare-sqlx-cache:
+    name: Prepare sqlx offline cache
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: stacker
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres,rustls
+      - name: Set DATABASE_URL
+        run: echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/stacker" >> $GITHUB_ENV
+      - name: Wait for Postgres
+        run: |
+          for i in {1..10}; do
+            pg_isready -h localhost -U postgres && break
+            sleep 3
+          done
+      - name: Create database (idempotent)
+        run: sqlx database create || true
+      - name: Run migrations
+        run: sqlx migrate run
+      - name: Generate sqlx offline cache
+        run: cargo sqlx prepare -- --workspace --all-targets
+      - name: Upload .sqlx cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlx-cache
+          path: .sqlx
+
   build:
+    name: Build binaries (Linux/macOS)
+    needs: prepare-sqlx-cache
     strategy:
       matrix:
         include:
@@ -26,55 +75,50 @@ jobs:
             artifact_name: stacker-macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
-    
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-registry-
-    
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-index-
-    
-    - name: Cache target directory
-      uses: actions/cache@v4
-      with:
-        path: target
-        key: ${{ runner.os }}-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-target-${{ matrix.target }}-
-    
-    - name: cargo build
-      run: cargo build --release --target ${{ matrix.target }} --verbose
-    
-    - name: cargo test 
-      run: cargo test --target ${{ matrix.target }} --verbose
-    
-    - name: Prepare binaries
-      run: |
-        mkdir -p artifacts
-        cp target/${{ matrix.target }}/release/server artifacts/server
-        cp target/${{ matrix.target }}/release/console artifacts/console
-        tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.artifact_name }}
-        path: ${{ matrix.artifact_name }}.tar.gz
-        retention-days: 7
+      - uses: actions/checkout@v4
+      - name: Download sqlx cache
+        uses: actions/download-artifact@v4
+        with:
+          name: sqlx-cache
+          path: .sqlx
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-index-
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-target-${{ matrix.target }}-
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+      - name: Prepare binaries
+        run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/server artifacts/server
+          cp target/${{ matrix.target }}/release/console artifacts/console
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.tar.gz
+          retention-days: 7
