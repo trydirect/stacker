@@ -12,10 +12,69 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: stacker-linux-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: stacker-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: stacker-macos-aarch64
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+    
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-index-
+    
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-target-${{ matrix.target }}-
+    
     - name: cargo build
-      run: cargo build --verbose
+      run: cargo build --release --target ${{ matrix.target }} --verbose
+    
     - name: cargo test 
-      run: cargo test --verbose
+      run: cargo test --target ${{ matrix.target }} --verbose
+    
+    - name: Prepare binaries
+      run: |
+        mkdir -p artifacts
+        cp target/${{ matrix.target }}/release/server artifacts/server
+        cp target/${{ matrix.target }}/release/console artifacts/console
+        tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: ${{ matrix.artifact_name }}.tar.gz
+        retention-days: 7
