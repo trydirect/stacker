@@ -53,6 +53,10 @@ jobs:
         run: sqlx migrate run
       - name: Generate sqlx offline cache (sqlx 0.6)
         run: cargo sqlx prepare
+      - name: Verify sqlx-data.json was generated
+        run: |
+          ls -lh sqlx-data.json
+          head -50 sqlx-data.json
       - name: Upload sqlx-data.json
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +88,11 @@ jobs:
         with:
           name: sqlx-cache
           path: .
+      - name: Verify sqlx-data.json exists
+        run: |
+          ls -la sqlx-data.json || echo "File not found in current dir"
+          pwd
+          ls -la | head -20
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
