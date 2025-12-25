@@ -30,6 +30,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - name: Disable SQLX_OFFLINE for prepare
+        run: echo "SQLX_OFFLINE=false" >> $GITHUB_ENV
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -50,13 +52,13 @@ jobs:
         run: sqlx database create || true
       - name: Run migrations
         run: sqlx migrate run
-      - name: Generate sqlx offline cache
-        run: cargo sqlx prepare -- --workspace --all-targets
-      - name: Upload .sqlx cache
+      - name: Generate sqlx offline cache (sqlx 0.6)
+        run: cargo sqlx prepare
+      - name: Upload sqlx-data.json
         uses: actions/upload-artifact@v4
         with:
           name: sqlx-cache
-          path: .sqlx
+          path: sqlx-data.json
 
   build:
     name: Build binaries (Linux/macOS)
@@ -80,7 +82,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: sqlx-cache
-          path: .sqlx
+          path: .
+      - name: Ensure SQLX_OFFLINE enabled
+        run: echo "SQLX_OFFLINE=true" >> $GITHUB_ENV
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
