@@ -108,20 +108,24 @@ let result = json!({
 });
 agent_dispatcher::report(&pg, &vault, &deployment_hash, agent_base_url, &result).await?;
 
-// Rotate token
-agent_dispatcher::rotate_token(&pg, &vault, &deployment_hash, agent_base_url, "NEW_TOKEN").await?;
+// Rotate token (Vault-only; agent pulls latest)
+agent_dispatcher::rotate_token(&pg, &vault, &deployment_hash, "NEW_TOKEN").await?;
 ```
 
-Console token rotation (uses agent_dispatcher under the hood):
+Console token rotation (writes to Vault; agent pulls):
 ```bash
-# AGENT_BASE_URL can be provided via env or flag
-export AGENT_BASE_URL=http://agent:8080
-
-cargo run --bin console -- Agent rotate-token \ 
-  --deployment-hash <hash> \ 
+cargo run --bin console -- Agent rotate-token \
+  --deployment-hash <hash> \
   --new-token <NEW_TOKEN>
-# Optional override: --agent-base-url http://agent:8080
 ```
+
+### Configuration: Vault
+- In configuration.yaml.dist, set:
+  - vault.address: Vault URL (e.g., http://127.0.0.1:8200)
+  - vault.token: Vault access token (dev/test only)
+  - vault.agent_path_prefix: KV mount/prefix for agent tokens (e.g., agent or kv/agent)
+- Environment variable overrides (optional): VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
+- Agent tokens are stored at: {vault.agent_path_prefix}/{deployment_hash}/token
 
 The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
 

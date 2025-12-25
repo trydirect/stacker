@@ -136,3 +136,83 @@ impl VaultClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{web, App, HttpResponse, HttpServer};
+    use serde_json::Value;
+    use std::net::TcpListener;
+
+    async fn mock_store(body: web::Json<Value>) -> HttpResponse {
+        // Expect { data: { token, deployment_hash } }
+        if body["data"]["token"].is_string() && body["data"]["deployment_hash"].is_string() {
+            HttpResponse::NoContent().finish()
+        } else {
+            HttpResponse::BadRequest().finish()
+        }
+    }
+
+    async fn mock_fetch(path: web::Path<(String, String)>) -> HttpResponse {
+        let (_prefix, deployment_hash) = path.into_inner();
+        let resp = json!({
+            "data": {
+                "data": {
+                    "token": "test-token-123",
+                    "deployment_hash": deployment_hash
+                }
+            }
+        });
+        HttpResponse::Ok().json(resp)
+    }
+
+    async fn mock_delete() -> HttpResponse {
+        HttpResponse::NoContent().finish()
+    }
+
+    #[tokio::test]
+    async fn test_vault_client_store_fetch_delete() {
+        // Start mock Vault server
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().unwrap().port();
+        let address = format!("http://127.0.0.1:{}", port);
+        let prefix = "agent".to_string();
+
+        let server = HttpServer::new(|| {
+            App::new()
+                // POST /v1/{prefix}/{deployment_hash}/token
+                .route("/v1/{prefix}/{deployment_hash}/token", web::post().to(mock_store))
+                // GET /v1/{prefix}/{deployment_hash}/token
+                .route("/v1/{prefix}/{deployment_hash}/token", web::get().to(mock_fetch))
+                // DELETE /v1/{prefix}/{deployment_hash}/token
+                .route("/v1/{prefix}/{deployment_hash}/token", web::delete().to(mock_delete))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+
+        let _ = tokio::spawn(server);
+
+        // Configure client
+        let settings = VaultSettings {
+            address: address.clone(),
+            token: "dev-token".to_string(),
+            agent_path_prefix: prefix.clone(),
+        };
+        let client = VaultClient::new(&settings);
+        let dh = "dep_test_abc";
+
+        // Store
+        client
+            .store_agent_token(dh, "test-token-123")
+            .await
+            .expect("store token");
+
+        // Fetch
+        let fetched = client.fetch_agent_token(dh).await.expect("fetch token");
+        assert_eq!(fetched, "test-token-123");
+
+        // Delete
+        client.delete_agent_token(dh).await.expect("delete token");
+    }
+}
