@@ -13,9 +13,30 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: stacker_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
     - uses: actions/checkout@v4
+    - name: Install build deps
+      run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+    - name: Install sqlx-cli
+      run: cargo install sqlx-cli --no-default-features --features rustls,postgres
     - name: cargo sqlx prepare
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/stacker_test
+        SQLX_OFFLINE: "false"
       run: cargo sqlx prepare
     - name: cargo build
       run: cargo build --verbose
