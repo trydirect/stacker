@@ -10,71 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  prepare-sqlx-cache:
-    name: Prepare sqlx offline cache
-    runs-on: ubuntu-latest
-    env:
-      SQLX_OFFLINE: false
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: stacker
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-      - name: Install sqlx-cli
-        run: cargo install sqlx-cli --no-default-features --features postgres,rustls
-      - name: Set DATABASE_URL
-        run: echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/stacker" >> $GITHUB_ENV
-      - name: Wait for Postgres
-        run: |
-          for i in {1..10}; do
-            pg_isready -h localhost -U postgres && break
-            sleep 3
-          done
-      - name: Create database (idempotent)
-        run: sqlx database create || true
-      - name: Run migrations
-        run: sqlx migrate run
-      - name: Check project compiles first
-        run: cargo check --all-targets
-      - name: Generate sqlx offline cache (sqlx 0.6)
-        run: cargo sqlx prepare
-      - name: Verify .sqlx/ cache was generated
-        run: |
-          if [ ! -d ".sqlx" ]; then
-            echo "ERROR: .sqlx directory was not created"
-            exit 1
-          fi
-          echo ".sqlx directory contents:"
-          ls -lh .sqlx/ || echo "Directory empty or inaccessible"
-          echo "Query cache files:"
-          find .sqlx -type f | head -20
-      - name: Upload .sqlx cache
-        uses: actions/upload-artifact@v4
-        with:
-          name: sqlx-cache
-          path: .sqlx
-          if-no-files-found: error
-
   build:
     name: Build binaries (Linux/macOS)
-    needs: prepare-sqlx-cache
     env:
       SQLX_OFFLINE: true
     strategy:
@@ -92,11 +29,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Download sqlx cache
-        uses: actions/download-artifact@v4
-        with:
-          name: sqlx-cache
-          path: .
       - name: Verify .sqlx/ cache exists
         run: |
           ls -lh .sqlx/ || echo ".sqlx directory not found"
