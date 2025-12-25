@@ -51,17 +51,26 @@ jobs:
         run: sqlx database create || true
       - name: Run migrations
         run: sqlx migrate run
+      - name: Check project compiles first
+        run: cargo check --all-targets
       - name: Generate sqlx offline cache (sqlx 0.6)
         run: cargo sqlx prepare
       - name: Verify .sqlx/ cache was generated
         run: |
-          ls -lh .sqlx/ || echo "No .sqlx directory found"
+          if [ ! -d ".sqlx" ]; then
+            echo "ERROR: .sqlx directory was not created"
+            exit 1
+          fi
+          echo ".sqlx directory contents:"
+          ls -lh .sqlx/ || echo "Directory empty or inaccessible"
+          echo "Query cache files:"
           find .sqlx -type f | head -20
       - name: Upload .sqlx cache
         uses: actions/upload-artifact@v4
         with:
           name: sqlx-cache
           path: .sqlx
+          if-no-files-found: error
 
   build:
     name: Build binaries (Linux/macOS)
