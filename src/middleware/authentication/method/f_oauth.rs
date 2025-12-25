@@ -1,8 +1,8 @@
-use crate::middleware::authentication::get_header;
-use actix_web::{web, dev::{ServiceRequest}, HttpMessage};
 use crate::configuration::Settings;
-use crate::models;
 use crate::forms;
+use crate::middleware::authentication::get_header;
+use crate::models;
+use actix_web::{dev::ServiceRequest, web, HttpMessage};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ fn try_extract_token(authentication: String) -> Result<String, String> {
     let mut authentication_parts = authentication.splitn(2, ' ');
     match authentication_parts.next() {
         Some("Bearer") => {}
-        _ => return Err("Bearer missing scheme".to_string())
+        _ => return Err("Bearer missing scheme".to_string()),
     }
     let token = authentication_parts.next();
     if token.is_none() {
@@ -28,7 +28,7 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let token = try_extract_token(authentication.unwrap())?; 
+    let token = try_extract_token(authentication.unwrap())?;
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let user = fetch_user(settings.auth_url.as_str(), &token)
         .await
@@ -86,8 +86,7 @@ async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String>
         return Err("401 Unauthorized".to_string());
     }
 
-    resp
-        .json::<forms::UserForm>()
+    resp.json::<forms::UserForm>()
         .await
         .map_err(|_err| "can't parse the response body".to_string())?
         .try_into()

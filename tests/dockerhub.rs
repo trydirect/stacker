@@ -1,7 +1,7 @@
 // use std::fs;
 // use std::collections::HashMap;
-use std::env;
 use docker_compose_types::{ComposeVolume, SingleValue};
+use std::env;
 
 mod common;
 use stacker::forms::project::DockerImage;
@@ -59,56 +59,52 @@ const DOCKER_PASSWORD: &str = "**********";
 
 #[tokio::test]
 async fn test_docker_hub_successful_login() {
-
     common::spawn_app().await; // server
-    // let username = env::var("TEST_DOCKER_USERNAME")
-    //     .expect("username environment variable is not set");
-    //
-    // let password= env::var("TEST_DOCKER_PASSWORD")
-    //     .expect("password environment variable is not set");
+                               // let username = env::var("TEST_DOCKER_USERNAME")
+                               //     .expect("username environment variable is not set");
+                               //
+                               // let password= env::var("TEST_DOCKER_PASSWORD")
+                               //     .expect("password environment variable is not set");
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")),
         dockerhub_name: Some(String::from("nginx-waf")),
         dockerhub_image: None,
-        dockerhub_password: Some(String::from(DOCKER_PASSWORD))
+        dockerhub_password: Some(String::from(DOCKER_PASSWORD)),
     };
     assert_eq!(di.is_active().await.unwrap(), true);
 }
 
 #[tokio::test]
 async fn test_docker_private_exists() {
-
     common::spawn_app().await; // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")),
         dockerhub_name: Some(String::from("nginx-waf")),
         dockerhub_image: None,
-        dockerhub_password: Some(String::from(DOCKER_PASSWORD))
+        dockerhub_password: Some(String::from(DOCKER_PASSWORD)),
     };
     assert_eq!(di.is_active().await.unwrap(), true);
 }
 
 #[tokio::test]
 async fn test_public_repo_is_accessible() {
-
     common::spawn_app().await; // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("")),
         dockerhub_name: Some(String::from("nginx")),
         dockerhub_image: None,
-        dockerhub_password: Some(String::from(""))
+        dockerhub_password: Some(String::from("")),
     };
     assert_eq!(di.is_active().await.unwrap(), true);
 }
 #[tokio::test]
 async fn test_docker_non_existent_repo() {
-
     common::spawn_app().await; // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")), //namespace
         dockerhub_name: Some(String::from("nonexistent")), //repo
         dockerhub_image: None, // namesps/reponame:tag full docker image string
-        dockerhub_password: Some(String::from(""))
+        dockerhub_password: Some(String::from("")),
     };
     println!("{}", di.is_active().await.unwrap());
     assert_eq!(di.is_active().await.unwrap(), false);
@@ -116,13 +112,12 @@ async fn test_docker_non_existent_repo() {
 
 #[tokio::test]
 async fn test_docker_non_existent_repo_empty_namespace() {
-
     common::spawn_app().await; // server
     let di = DockerImage {
-        dockerhub_user: Some(String::from("")), //namespace
+        dockerhub_user: Some(String::from("")),            //namespace
         dockerhub_name: Some(String::from("nonexistent")), //repo
         dockerhub_image: None, // namesps/reponame:tag full docker image string
-        dockerhub_password: Some(String::from(""))
+        dockerhub_password: Some(String::from("")),
     };
     assert_eq!(di.is_active().await.unwrap(), true);
 }
@@ -134,10 +129,16 @@ async fn test_docker_named_volume() {
         container_path: Some("/var/www/flaskdata".to_owned()),
     };
 
-    let cv:ComposeVolume = (&volume).into();
+    let cv: ComposeVolume = (&volume).into();
     println!("ComposeVolume: {:?}", cv);
     println!("{:?}", cv.driver_opts);
     assert_eq!(Some("flask-data".to_string()), cv.name);
-    assert_eq!(&Some(SingleValue::String("/root/project/flask-data".to_string())), cv.driver_opts.get("device").unwrap());
-    assert_eq!(&Some(SingleValue::String("none".to_string())), cv.driver_opts.get("type").unwrap());
+    assert_eq!(
+        &Some(SingleValue::String("/root/project/flask-data".to_string())),
+        cv.driver_opts.get("device").unwrap()
+    );
+    assert_eq!(
+        &Some(SingleValue::String("none".to_string())),
+        cv.driver_opts.get("type").unwrap()
+    );
 }

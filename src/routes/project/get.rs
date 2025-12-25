@@ -27,7 +27,6 @@ pub async fn item(
         })
 }
 
-
 #[tracing::instrument(name = "Get project list.")]
 #[get("")]
 pub async fn list(
@@ -39,7 +38,6 @@ pub async fn list(
         .map_err(|err| JsonResponse::internal_server_error(err))
         .map(|projects| JsonResponse::build().set_list(projects).ok("OK"))
 }
-
 
 //admin's endpoint
 #[tracing::instrument(name = "Get user's project list.")]

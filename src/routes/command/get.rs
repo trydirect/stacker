@@ -31,7 +31,9 @@ pub async fn get_handler(
                     deployment_hash,
                     cmd.deployment_hash
                 );
-                return Err(JsonResponse::not_found("Command not found for this deployment"));
+                return Err(JsonResponse::not_found(
+                    "Command not found for this deployment",
+                ));
             }
 
             tracing::info!(

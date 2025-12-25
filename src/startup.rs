@@ -1,16 +1,9 @@
 use crate::configuration::Settings;
 use crate::helpers;
+use crate::middleware;
 use crate::routes;
 use actix_cors::Cors;
-use actix_web::{
-    dev::Server,
-    http,
-    error,
-    web,
-    App,
-    HttpServer,
-};
-use crate::middleware;
+use actix_web::{dev::Server, error, http, web, App, HttpServer};
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use tracing_actix_web::TracingLogger;
@@ -29,24 +22,28 @@ pub async fn run(
     let vault_client = helpers::VaultClient::new(&settings.vault);
     let vault_client = web::Data::new(vault_client);
 
-    let authorization = middleware::authorization::try_new(settings.database.connection_string()).await?;
-    let json_config = web::JsonConfig::default()
-        .error_handler(|err, _req| { //todo
-            let msg: String = match err {
-                 error::JsonPayloadError::Deserialize(err) => format!("{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}", err.line(), err.column(), err),
-                 _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err)
-            };
-            error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
-        });
+    let authorization =
+        middleware::authorization::try_new(settings.database.connection_string()).await?;
+    let json_config = web::JsonConfig::default().error_handler(|err, _req| {
+        //todo
+        let msg: String = match err {
+            error::JsonPayloadError::Deserialize(err) => format!(
+                "{{\"kind\":\"deserialize\",\"line\":{}, \"column\":{}, \"msg\":\"{}\"}}",
+                err.line(),
+                err.column(),
+                err
+            ),
+            _ => format!("{{\"kind\":\"other\",\"msg\":\"{}\"}}", err),
+        };
+        error::InternalError::new(msg, http::StatusCode::BAD_REQUEST).into()
+    });
     let server = HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Cors::permissive())
-            .service(
-                web::scope("/health_check").service(routes::health_check)
-            )
+            .service(web::scope("/health_check").service(routes::health_check))
             .service(
                 web::scope("/client")
                     .service(routes::client::add_handler)
@@ -54,10 +51,7 @@ pub async fn run(
                     .service(routes::client::enable_handler)
                     .service(routes::client::disable_handler),
             )
-            .service(
-                web::scope("/test")
-                    .service(routes::test::deploy::handler)
-            )
+            .service(web::scope("/test").service(routes::test::deploy::handler))
             .service(
                 web::scope("/rating")
                     .service(routes::rating::anonymous_get_handler)
@@ -74,7 +68,7 @@ pub async fn run(
                     .service(crate::routes::project::get::list)
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
-                    .service(crate::routes::project::update::item) 
+                    .service(crate::routes::project::update::item)
                     .service(crate::routes::project::delete::item),
             )
             .service(
@@ -102,7 +96,7 @@ pub async fn run(
                             .service(routes::agreement::admin_add_handler)
                             .service(routes::agreement::admin_update_handler)
                             .service(routes::agreement::get_handler),
-                    )
+                    ),
             )
             .service(
                 web::scope("/cloud")

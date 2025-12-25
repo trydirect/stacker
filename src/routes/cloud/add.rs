@@ -1,13 +1,12 @@
-use std::ops::Deref;
+use crate::db;
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::db;
 use actix_web::{post, web, Responder, Result};
-use sqlx::PgPool;
-use std::sync::Arc;
 use serde_valid::Validate;
-
+use sqlx::PgPool;
+use std::ops::Deref;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Add cloud.")]
 #[post("")]
@@ -16,7 +15,6 @@ pub async fn add(
     mut form: web::Json<forms::cloud::CloudForm>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
         let err_msg = format!("Invalid data received {:?}", &errors);
@@ -30,9 +28,8 @@ pub async fn add(
 
     db::cloud::insert(pg_pool.get_ref(), cloud)
         .await
-        .map(|cloud| JsonResponse::build()
-            .set_item(cloud)
-            .ok("success"))
-        .map_err(|_err| JsonResponse::<models::Cloud>::build()
-            .internal_server_error("Failed to insert"))
+        .map(|cloud| JsonResponse::build().set_item(cloud).ok("success"))
+        .map_err(|_err| {
+            JsonResponse::<models::Cloud>::build().internal_server_error("Failed to insert")
+        })
 }

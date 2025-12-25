@@ -31,13 +31,15 @@ pub async fn report_handler(
 ) -> Result<impl Responder> {
     // Verify agent is authorized for this deployment_hash
     if agent.deployment_hash != payload.deployment_hash {
-        return Err(helpers::JsonResponse::forbidden("Not authorized for this deployment"));
+        return Err(helpers::JsonResponse::forbidden(
+            "Not authorized for this deployment",
+        ));
     }
 
     // Validate status
     if payload.status != "completed" && payload.status != "failed" {
         return Err(helpers::JsonResponse::bad_request(
-            "Invalid status. Must be 'completed' or 'failed'"
+            "Invalid status. Must be 'completed' or 'failed'",
         ));
     }
 
@@ -50,7 +52,7 @@ pub async fn report_handler(
         "failed" => models::CommandStatus::Failed,
         _ => {
             return Err(helpers::JsonResponse::bad_request(
-                "Invalid status. Must be 'completed' or 'failed'"
+                "Invalid status. Must be 'completed' or 'failed'",
             ));
         }
     };

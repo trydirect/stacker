@@ -23,7 +23,6 @@ pub async fn get_handler(
         })
 }
 
-
 #[tracing::instrument(name = "Check if agreement signed/accepted.")]
 #[get("/accepted/{id}")]
 pub async fn accept_handler(

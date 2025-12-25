@@ -2,7 +2,6 @@ mod common;
 // test me:
 // cargo t --test agreement -- --nocapture --show-output
 
-
 // test specific function: cargo t --test agreement admin_add -- --nocapture --show-output
 // #[tokio::test]
 // async fn admin_add() {
@@ -49,7 +48,6 @@ mod common;
 // test me: cargo t --test agreement get --nocapture --show-output
 #[tokio::test]
 async fn get() {
-
     let app = common::spawn_app().await; // server
     let client = reqwest::Client::new(); // client
 
@@ -64,11 +62,9 @@ async fn get() {
     assert_eq!(Some(0), response.content_length());
 }
 
-
 // test me: cargo t --test agreement user_add -- --nocapture --show-output
 #[tokio::test]
 async fn user_add() {
-
     let app = common::spawn_app().await; // server
     let client = reqwest::Client::new(); // client
 

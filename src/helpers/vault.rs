@@ -181,11 +181,20 @@ mod tests {
         let server = HttpServer::new(|| {
             App::new()
                 // POST /v1/{prefix}/{deployment_hash}/token
-                .route("/v1/{prefix}/{deployment_hash}/token", web::post().to(mock_store))
+                .route(
+                    "/v1/{prefix}/{deployment_hash}/token",
+                    web::post().to(mock_store),
+                )
                 // GET /v1/{prefix}/{deployment_hash}/token
-                .route("/v1/{prefix}/{deployment_hash}/token", web::get().to(mock_fetch))
+                .route(
+                    "/v1/{prefix}/{deployment_hash}/token",
+                    web::get().to(mock_fetch),
+                )
                 // DELETE /v1/{prefix}/{deployment_hash}/token
-                .route("/v1/{prefix}/{deployment_hash}/token", web::delete().to(mock_delete))
+                .route(
+                    "/v1/{prefix}/{deployment_hash}/token",
+                    web::delete().to(mock_delete),
+                )
         })
         .listen(listener)
         .unwrap()

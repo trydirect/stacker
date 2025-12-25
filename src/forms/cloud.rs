@@ -1,9 +1,8 @@
+use crate::helpers::cloud::security::Secret;
 use crate::models;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
-use crate::helpers::cloud::security::Secret;
-use chrono::Utc;
-
 
 fn hide_parts(value: String) -> String {
     value.chars().into_iter().take(6).collect::<String>() + "****"
@@ -32,7 +31,7 @@ impl CloudForm {
         match secret.decrypt(b64_decoded) {
             Ok(decoded) => decoded,
             Err(_err) => {
-                tracing::error!("🟥 Could not decode {:?},{:?}",secret.field,_err);
+                tracing::error!("🟥 Could not decode {:?},{:?}", secret.field, _err);
                 // panic!("Could not decode ");
                 "".to_owned()
             }
@@ -59,14 +58,24 @@ impl CloudForm {
 
     // @todo should be refactored, may be moved to cloud.into() or Secret::from()
     #[tracing::instrument(name = "decode_model")]
-    pub fn decode_model(mut cloud: models::Cloud, reveal:bool) -> models::Cloud {
-
+    pub fn decode_model(mut cloud: models::Cloud, reveal: bool) -> models::Cloud {
         let mut secret = Secret::new();
         secret.user_id = cloud.user_id.clone();
         secret.provider = cloud.provider.clone();
-        cloud.cloud_token = CloudForm::decrypt_field(&mut secret, "cloud_token", cloud.cloud_token.clone(), reveal);
-        cloud.cloud_secret = CloudForm::decrypt_field(&mut secret, "cloud_secret", cloud.cloud_secret.clone(), reveal);
-        cloud.cloud_key = CloudForm::decrypt_field(&mut secret, "cloud_key", cloud.cloud_key.clone(), reveal);
+        cloud.cloud_token = CloudForm::decrypt_field(
+            &mut secret,
+            "cloud_token",
+            cloud.cloud_token.clone(),
+            reveal,
+        );
+        cloud.cloud_secret = CloudForm::decrypt_field(
+            &mut secret,
+            "cloud_secret",
+            cloud.cloud_secret.clone(),
+            reveal,
+        );
+        cloud.cloud_key =
+            CloudForm::decrypt_field(&mut secret, "cloud_key", cloud.cloud_key.clone(), reveal);
 
         cloud
     }
@@ -75,42 +84,31 @@ impl CloudForm {
 impl std::fmt::Debug for CloudForm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cloud_key: String = match self.cloud_key.as_ref() {
-            Some(val) =>
-                {
-                    val.chars().take(4).collect::<String>() + "****"
-                },
+            Some(val) => val.chars().take(4).collect::<String>() + "****",
             None => "".to_string(),
         };
         let cloud_token: String = match self.cloud_token.as_ref() {
             Some(val) => {
                 eprintln!("cloud token {val:?}");
                 val.chars().take(4).collect::<String>() + "****"
-            },
-            None => "".to_string(),
-        };
-
-        let cloud_secret: String = match self.cloud_secret.as_ref() {
-            Some(val) => {
-                val.chars().take(4).collect::<String>() + "****"
             }
             None => "".to_string(),
         };
 
-        write!(f, "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {} project_id: {:?}",
-               self.provider,
-               cloud_key,
-               cloud_token,
-               cloud_secret,
-               self.project_id
+        let cloud_secret: String = match self.cloud_secret.as_ref() {
+            Some(val) => val.chars().take(4).collect::<String>() + "****",
+            None => "".to_string(),
+        };
+
+        write!(
+            f,
+            "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {} project_id: {:?}",
+            self.provider, cloud_key, cloud_token, cloud_secret, self.project_id
         )
     }
 }
 
-fn encrypt_field(
-    secret: &mut Secret,
-    field_name: &str,
-    value: Option<String>,
-) -> Option<String> {
+fn encrypt_field(secret: &mut Secret, field_name: &str, value: Option<String>) -> Option<String> {
     if let Some(val) = value {
         secret.field = field_name.to_owned();
         if let Ok(encrypted) = secret.encrypt(val) {
@@ -134,7 +132,8 @@ impl Into<models::Cloud> for &CloudForm {
 
             cloud.cloud_token = encrypt_field(&mut secret, "cloud_token", self.cloud_token.clone());
             cloud.cloud_key = encrypt_field(&mut secret, "cloud_key", self.cloud_key.clone());
-            cloud.cloud_secret = encrypt_field(&mut secret, "cloud_secret", self.cloud_secret.clone());
+            cloud.cloud_secret =
+                encrypt_field(&mut secret, "cloud_secret", self.cloud_secret.clone());
         } else {
             cloud.cloud_token = self.cloud_token.clone();
             cloud.cloud_key = self.cloud_key.clone();
@@ -145,9 +144,7 @@ impl Into<models::Cloud> for &CloudForm {
         cloud.updated_at = Utc::now();
         cloud
     }
-
 }
-
 
 // on deploy
 impl Into<CloudForm> for models::Cloud {
@@ -163,9 +160,7 @@ impl Into<CloudForm> for models::Cloud {
             secret.field = "cloud_token".to_string();
 
             let value = match self.cloud_token {
-                Some(value) => {
-                    CloudForm::decode(&mut secret, value)
-                }
+                Some(value) => CloudForm::decode(&mut secret, value),
                 None => {
                     tracing::debug!("Skip {}", secret.field);
                     "".to_string()
@@ -175,9 +170,7 @@ impl Into<CloudForm> for models::Cloud {
 
             secret.field = "cloud_key".to_string();
             let value = match self.cloud_key {
-                Some(value) => {
-                    CloudForm::decode(&mut secret, value)
-                }
+                Some(value) => CloudForm::decode(&mut secret, value),
                 None => {
                     tracing::debug!("Skipp {}", secret.field);
                     "".to_string()
@@ -187,16 +180,13 @@ impl Into<CloudForm> for models::Cloud {
 
             secret.field = "cloud_secret".to_string();
             let value = match self.cloud_secret {
-                Some(value) => {
-                    CloudForm::decode(&mut secret, value)
-                }
+                Some(value) => CloudForm::decode(&mut secret, value),
                 None => {
                     tracing::debug!("Skipp {}", secret.field);
                     "".to_string()
                 }
             };
             form.cloud_secret = Some(value);
-
         } else {
             form.cloud_token = self.cloud_token;
             form.cloud_key = self.cloud_key;

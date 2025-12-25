@@ -111,12 +111,15 @@ pub async fn item(
     tracing::debug!("Save deployment result: {:?}", result);
     tracing::debug!("Send project data <<<>>>{:?}", payload);
 
-    let provider = payload.cloud
+    let provider = payload
+        .cloud
         .as_ref()
-        .map(|form| if form.provider.contains("own") {
-            "own"
-        } else {
-            "tfa"
+        .map(|form| {
+            if form.provider.contains("own") {
+                "own"
+            } else {
+                "tfa"
+            }
         })
         .unwrap_or("tfa")
         .to_string();
@@ -126,11 +129,7 @@ pub async fn item(
 
     // Send Payload
     mq_manager
-        .publish(
-            "install".to_string(),
-            routing_key,
-            &payload,
-        )
+        .publish("install".to_string(), routing_key, &payload)
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .map(|_| {

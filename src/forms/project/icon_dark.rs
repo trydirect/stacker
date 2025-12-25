@@ -4,5 +4,5 @@ use serde::{Deserialize, Serialize};
 pub struct IconDark {
     width: Option<i32>,
     height: Option<i32>,
-    image: Option<String>
+    image: Option<String>,
 }

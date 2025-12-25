@@ -18,14 +18,17 @@ async fn test_agent_command_flow() {
     // Step 1: Create a test deployment (simulating what deploy endpoint does)
     // For this test, we'll use a mock deployment_hash
     let deployment_hash = format!("test_deployment_{}", uuid::Uuid::new_v4());
-    
-    println!("Testing agent/command flow with deployment_hash: {}", deployment_hash);
+
+    println!(
+        "Testing agent/command flow with deployment_hash: {}",
+        deployment_hash
+    );
 
     // Create deployment in database (required by foreign key constraint)
     // First create a minimal project (required by deployment FK)
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())"
+         VALUES ($1, $2, $3, $4, NOW(), NOW())",
     )
     .bind(uuid::Uuid::new_v4())
     .bind("test_project_main")
@@ -34,11 +37,12 @@ async fn test_agent_command_flow() {
     .execute(&app.db_pool)
     .await
     .expect("Failed to create project");
-    
-    let project_id: i32 = sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project_main' LIMIT 1")
-        .fetch_one(&app.db_pool)
-        .await
-        .expect("Failed to get project ID");
+
+    let project_id: i32 =
+        sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project_main' LIMIT 1")
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to get project ID");
 
     sqlx::query(
         "INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, created_at, updated_at)
@@ -74,7 +78,7 @@ async fn test_agent_command_flow() {
         .expect("Failed to register agent");
 
     println!("Register response status: {}", register_response.status());
-    
+
     if !register_response.status().is_success() {
         let error_text = register_response.text().await.unwrap_or_default();
         println!("Register error: {}", error_text);
@@ -86,8 +90,11 @@ async fn test_agent_command_flow() {
         .await
         .expect("Failed to parse register response");
 
-    println!("Register result: {}", serde_json::to_string_pretty(&register_result).unwrap());
-    
+    println!(
+        "Register result: {}",
+        serde_json::to_string_pretty(&register_result).unwrap()
+    );
+
     let agent_id = register_result["item"]["agent_id"]
         .as_str()
         .expect("Missing agent_id")
@@ -121,13 +128,19 @@ async fn test_agent_command_flow() {
         .await
         .expect("Failed to create command");
 
-    println!("Create command response status: {}", create_command_response.status());
+    println!(
+        "Create command response status: {}",
+        create_command_response.status()
+    );
 
     let status = create_command_response.status();
     if !status.is_success() {
         let error_text = create_command_response.text().await.unwrap_or_default();
         println!("Create command error: {}", error_text);
-        panic!("Command creation failed with status {}: {}", status, error_text);
+        panic!(
+            "Command creation failed with status {}: {}",
+            status, error_text
+        );
     }
 
     let command_result: serde_json::Value = create_command_response
@@ -135,8 +148,11 @@ async fn test_agent_command_flow() {
         .await
         .expect("Failed to parse command response");
 
-    println!("Command created: {}", serde_json::to_string_pretty(&command_result).unwrap());
-    
+    println!(
+        "Command created: {}",
+        serde_json::to_string_pretty(&command_result).unwrap()
+    );
+
     let command_id = command_result["item"]["command_id"]
         .as_str()
         .expect("Missing command_id")
@@ -144,10 +160,13 @@ async fn test_agent_command_flow() {
 
     // Step 4: Agent polls for commands (long-polling)
     println!("\n=== Step 4: Agent Polls for Commands ===");
-    
+
     // Agent should authenticate with X-Agent-Id header and Bearer token
     let wait_response = client
-        .get(&format!("{}/api/v1/agent/commands/wait/{}", &app.address, deployment_hash))
+        .get(&format!(
+            "{}/api/v1/agent/commands/wait/{}",
+            &app.address, deployment_hash
+        ))
         .header("X-Agent-Id", &agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .timeout(Duration::from_secs(35)) // Longer than server's 30s timeout
@@ -168,18 +187,21 @@ async fn test_agent_command_flow() {
         .await
         .expect("Failed to parse wait response");
 
-    println!("Agent received command: {}", serde_json::to_string_pretty(&wait_result).unwrap());
+    println!(
+        "Agent received command: {}",
+        serde_json::to_string_pretty(&wait_result).unwrap()
+    );
 
     // Verify we received the command
     let received_command_id = wait_result["item"]["command_id"]
         .as_str()
         .expect("No command received");
-    
+
     assert_eq!(received_command_id, command_id, "Received wrong command");
 
     // Step 5: Agent reports command completion
     println!("\n=== Step 5: Agent Reports Command Result ===");
-    
+
     let report_payload = json!({
         "command_id": command_id,
         "deployment_hash": deployment_hash,
@@ -218,7 +240,10 @@ async fn test_agent_command_flow() {
         .await
         .expect("Failed to parse report response");
 
-    println!("Report result: {}", serde_json::to_string_pretty(&report_result).unwrap());
+    println!(
+        "Report result: {}",
+        serde_json::to_string_pretty(&report_result).unwrap()
+    );
 
     // Verify command was marked as completed
     // (Would need to add a GET command endpoint to verify, but check the response for now)
@@ -237,7 +262,7 @@ async fn test_agent_heartbeat() {
     // Create a minimal project first (required by deployment FK)
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())"
+         VALUES ($1, $2, $3, $4, NOW(), NOW())",
     )
     .bind(uuid::Uuid::new_v4())
     .bind("test_project")
@@ -246,12 +271,13 @@ async fn test_agent_heartbeat() {
     .execute(&app.db_pool)
     .await
     .expect("Failed to create project");
-    
+
     // Get the project ID we just created
-    let project_id: i32 = sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project' LIMIT 1")
-        .fetch_one(&app.db_pool)
-        .await
-        .expect("Failed to get project ID");
+    let project_id: i32 =
+        sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project' LIMIT 1")
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to get project ID");
 
     // Create deployment
     sqlx::query(
@@ -283,10 +309,13 @@ async fn test_agent_heartbeat() {
         .expect("Failed to register");
 
     let status = register_response.status();
-    
+
     if !status.is_success() {
         let body_text = register_response.text().await.unwrap_or_default();
-        panic!("Registration failed. Status: {}, Body: {}", status, body_text);
+        panic!(
+            "Registration failed. Status: {}, Body: {}",
+            status, body_text
+        );
     }
 
     let register_result: serde_json::Value = register_response.json().await.unwrap();
@@ -295,7 +324,10 @@ async fn test_agent_heartbeat() {
 
     // Poll for commands (this updates heartbeat)
     let wait_response = client
-        .get(&format!("{}/api/v1/agent/commands/wait/{}", &app.address, deployment_hash))
+        .get(&format!(
+            "{}/api/v1/agent/commands/wait/{}",
+            &app.address, deployment_hash
+        ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .timeout(Duration::from_secs(35))
@@ -305,7 +337,7 @@ async fn test_agent_heartbeat() {
 
     // Should succeed even if no commands (updates heartbeat and returns empty)
     println!("Heartbeat/wait status: {}", wait_response.status());
-    
+
     // Either 200 with no command or 204 is acceptable
     assert!(
         wait_response.status().is_success(),
@@ -344,7 +376,11 @@ async fn test_command_priority_ordering() {
     let agent_token = register_result["item"]["agent_token"].as_str().unwrap();
 
     // Create commands with different priorities (requires auth - will fail without it)
-    for (priority, cmd_type) in &[("low", "backup"), ("critical", "restart"), ("normal", "logs")] {
+    for (priority, cmd_type) in &[
+        ("low", "backup"),
+        ("critical", "restart"),
+        ("normal", "logs"),
+    ] {
         let cmd_payload = json!({
             "deployment_hash": deployment_hash,
                 "command_type": cmd_type,
@@ -362,7 +398,10 @@ async fn test_command_priority_ordering() {
 
     // Agent should receive critical command first
     let wait_response = client
-        .get(&format!("{}/api/v1/agent/commands/wait/{}", &app.address, deployment_hash))
+        .get(&format!(
+            "{}/api/v1/agent/commands/wait/{}",
+            &app.address, deployment_hash
+        ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .send()
@@ -372,7 +411,10 @@ async fn test_command_priority_ordering() {
     let wait_result: serde_json::Value = wait_response.json().await.unwrap();
     let received_type = wait_result["item"]["type"].as_str().unwrap();
 
-    assert_eq!(received_type, "restart", "Should receive critical priority command first");
+    assert_eq!(
+        received_type, "restart",
+        "Should receive critical priority command first"
+    );
 }
 
 /// Test authenticated command creation
@@ -386,7 +428,7 @@ async fn test_authenticated_command_creation() {
     // Create project and deployment
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())"
+         VALUES ($1, $2, $3, $4, NOW(), NOW())",
     )
     .bind(uuid::Uuid::new_v4())
     .bind("test_project_cmd")
@@ -395,11 +437,12 @@ async fn test_authenticated_command_creation() {
     .execute(&app.db_pool)
     .await
     .expect("Failed to create project");
-    
-    let project_id: i32 = sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project_cmd' LIMIT 1")
-        .fetch_one(&app.db_pool)
-        .await
-        .expect("Failed to get project ID");
+
+    let project_id: i32 =
+        sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project_cmd' LIMIT 1")
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to get project ID");
 
     sqlx::query(
         "INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, created_at, updated_at)
@@ -430,7 +473,11 @@ async fn test_authenticated_command_creation() {
         .expect("Failed to send request");
 
     println!("No auth response status: {}", response_no_auth.status());
-    assert_eq!(response_no_auth.status(), 403, "Should return 403 without authentication");
+    assert_eq!(
+        response_no_auth.status(),
+        403,
+        "Should return 403 without authentication"
+    );
 
     println!("\n=== Test 2: Command creation with authentication (should succeed) ===");
     let response_with_auth = client
@@ -443,7 +490,7 @@ async fn test_authenticated_command_creation() {
 
     let status = response_with_auth.status();
     println!("With auth response status: {}", status);
-    
+
     if !status.is_success() {
         let error_body = response_with_auth.text().await.unwrap_or_default();
         println!("Error body: {}", error_body);
@@ -451,23 +498,37 @@ async fn test_authenticated_command_creation() {
     }
 
     let result: serde_json::Value = response_with_auth.json().await.unwrap();
-    println!("Created command: {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "Created command: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 
     // Verify command was created
-    let command_id = result["item"]["command_id"].as_str().expect("Missing command_id");
+    let command_id = result["item"]["command_id"]
+        .as_str()
+        .expect("Missing command_id");
     assert!(!command_id.is_empty(), "Command ID should not be empty");
 
     println!("\n=== Test 3: List commands for deployment ===");
     let list_response = client
-        .get(&format!("{}/api/v1/commands/{}", &app.address, deployment_hash))
+        .get(&format!(
+            "{}/api/v1/commands/{}",
+            &app.address, deployment_hash
+        ))
         .header("Authorization", "Bearer test_token_authenticated")
         .send()
         .await
         .expect("Failed to list commands");
 
-    assert!(list_response.status().is_success(), "Should list commands successfully");
+    assert!(
+        list_response.status().is_success(),
+        "Should list commands successfully"
+    );
     let list_result: serde_json::Value = list_response.json().await.unwrap();
-    println!("Commands list: {}", serde_json::to_string_pretty(&list_result).unwrap());
+    println!(
+        "Commands list: {}",
+        serde_json::to_string_pretty(&list_result).unwrap()
+    );
 
     println!("\n=== Authenticated Command Creation Test Completed ===");
 }
@@ -483,7 +544,7 @@ async fn test_command_priorities_and_permissions() {
     // Create project and deployment
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())"
+         VALUES ($1, $2, $3, $4, NOW(), NOW())",
     )
     .bind(uuid::Uuid::new_v4())
     .bind("test_project_prio")
@@ -492,11 +553,12 @@ async fn test_command_priorities_and_permissions() {
     .execute(&app.db_pool)
     .await
     .expect("Failed to create project");
-    
-    let project_id: i32 = sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project_prio' LIMIT 1")
-        .fetch_one(&app.db_pool)
-        .await
-        .expect("Failed to get project ID");
+
+    let project_id: i32 =
+        sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_project_prio' LIMIT 1")
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to get project ID");
 
     sqlx::query(
         "INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, created_at, updated_at)
@@ -536,8 +598,17 @@ async fn test_command_priorities_and_permissions() {
             .await
             .expect("Failed to create command");
 
-        println!("Created {} priority command '{}': {}", priority, cmd_type, response.status());
-        assert!(response.status().is_success(), "Should create {} priority command", priority);
+        println!(
+            "Created {} priority command '{}': {}",
+            priority,
+            cmd_type,
+            response.status()
+        );
+        assert!(
+            response.status().is_success(),
+            "Should create {} priority command",
+            priority
+        );
     }
 
     // Register agent to poll for commands
@@ -562,7 +633,10 @@ async fn test_command_priorities_and_permissions() {
     // Agent polls - should receive critical priority first
     println!("\n=== Agent polling for commands (should receive critical first) ===");
     let wait_response = client
-        .get(&format!("{}/api/v1/agent/commands/wait/{}", &app.address, deployment_hash))
+        .get(&format!(
+            "{}/api/v1/agent/commands/wait/{}",
+            &app.address, deployment_hash
+        ))
         .header("X-Agent-Id", agent_id)
         .header("Authorization", format!("Bearer {}", agent_token))
         .timeout(std::time::Duration::from_secs(5))
@@ -574,12 +648,18 @@ async fn test_command_priorities_and_permissions() {
         let wait_result: serde_json::Value = wait_response.json().await.unwrap();
         if let Some(cmd_type) = wait_result["item"]["type"].as_str() {
             println!("Received command type: {}", cmd_type);
-            assert_eq!(cmd_type, "emergency_restart", "Should receive critical priority command first");
+            assert_eq!(
+                cmd_type, "emergency_restart",
+                "Should receive critical priority command first"
+            );
         } else {
             println!("No command in response (queue might be empty)");
         }
     } else {
-        println!("Wait returned non-success status: {} (might be expected if no commands)", wait_response.status());
+        println!(
+            "Wait returned non-success status: {} (might be expected if no commands)",
+            wait_response.status()
+        );
     }
 
     println!("\n=== Command Priority Test Completed ===");

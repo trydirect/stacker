@@ -1,13 +1,9 @@
 use actix_casbin_auth::{
+    casbin::{function_map::key_match2, CoreApi, DefaultModel},
     CasbinService,
-    casbin::{
-        DefaultModel,
-        CoreApi,
-        function_map::key_match2
-    }
 };
-use std::io::{Error, ErrorKind};
 use sqlx_adapter::SqlxAdapter;
+use std::io::{Error, ErrorKind};
 
 pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Error> {
     let m = DefaultModel::from_file("access_control.conf")

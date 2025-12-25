@@ -1,6 +1,6 @@
-use actix_web::{rt, Result};
-use crate::helpers::dockerhub::DockerHub;
 use crate::forms::project::DockerImage;
+use crate::helpers::dockerhub::DockerHub;
+use actix_web::{rt, Result};
 
 use tracing_subscriber::FmtSubscriber;
 
@@ -19,8 +19,8 @@ impl crate::console::commands::CallableTrait for DockerhubCommand {
         let subscriber = FmtSubscriber::builder()
             .with_max_level(tracing::Level::DEBUG)
             .finish();
-        tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("setting default subscriber failed");
 
         rt::System::new().block_on(async {
             println!("{}", self.json);

@@ -48,7 +48,10 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::P
     })
 }
 
-pub async fn fetch_one_by_name(pool: &PgPool, name: &str) -> Result<Option<models::Project>, String> {
+pub async fn fetch_one_by_name(
+    pool: &PgPool,
+    name: &str,
+) -> Result<Option<models::Project>, String> {
     let query_span = tracing::info_span!("Fetch one project by name.");
     sqlx::query_as!(
         models::Project,
@@ -74,7 +77,10 @@ pub async fn fetch_one_by_name(pool: &PgPool, name: &str) -> Result<Option<model
     })
 }
 
-pub async fn insert(pool: &PgPool, mut project: models::Project) -> Result<models::Project, String> {
+pub async fn insert(
+    pool: &PgPool,
+    mut project: models::Project,
+) -> Result<models::Project, String> {
     let query_span = tracing::info_span!("Saving new project into the database");
     sqlx::query!(
         r#"
@@ -103,7 +109,10 @@ pub async fn insert(pool: &PgPool, mut project: models::Project) -> Result<model
     })
 }
 
-pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<models::Project, String> {
+pub async fn update(
+    pool: &PgPool,
+    mut project: models::Project,
+) -> Result<models::Project, String> {
     let query_span = tracing::info_span!("Updating project");
     sqlx::query_as!(
         models::Project,
@@ -129,7 +138,7 @@ pub async fn update(pool: &PgPool, mut project: models::Project) -> Result<model
     .fetch_one(pool)
     .instrument(query_span)
     .await
-    .map(|result|{
+    .map(|result| {
         tracing::info!("Project {} has been saved to database", project.id);
         project.updated_at = result.updated_at;
         project
@@ -162,9 +171,7 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         .bind(id)
         .execute(&mut tx)
         .await
-        .map_err(|err| {
-            println!("{:?}", err)
-        })
+        .map_err(|err| println!("{:?}", err))
     {
         Ok(_) => {
             let _ = tx.commit().await.map_err(|err| {
@@ -176,8 +183,6 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         Err(_err) => {
             let _ = tx.rollback().await.map_err(|err| println!("{:?}", err));
             Ok(false)
-        }
-        // todo, when empty commit()
+        } // todo, when empty commit()
     }
 }
-

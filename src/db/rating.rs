@@ -1,5 +1,5 @@
-use sqlx::PgPool;
 use crate::models;
+use sqlx::PgPool;
 use tracing::Instrument;
 
 pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
@@ -52,13 +52,11 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Rating>, Str
     .instrument(query_span)
     .await
     .map(|rating| Some(rating))
-    .or_else(|e| {
-        match e {
-            sqlx::Error::RowNotFound => Ok(None),
-            s => {
-                tracing::error!("Failed to execute fetch query: {:?}", s);
-                Err("".to_string())
-            }
+    .or_else(|e| match e {
+        sqlx::Error::RowNotFound => Ok(None),
+        s => {
+            tracing::error!("Failed to execute fetch query: {:?}", s);
+            Err("".to_string())
         }
     })
 }
@@ -89,19 +87,17 @@ pub async fn fetch_by_obj_and_user_and_category(
         LIMIT 1"#,
         user_id,
         obj_id,
-        category as _ 
+        category as _
     )
     .fetch_one(pool)
     .instrument(query_span)
     .await
     .map(|rating| Some(rating))
-    .or_else(|e| {
-        match e {
-            sqlx::Error::RowNotFound => Ok(None),
-            s => {
-                tracing::error!("Failed to execute fetch query: {:?}", s);
-                Err("".to_string())
-            }
+    .or_else(|e| match e {
+        sqlx::Error::RowNotFound => Ok(None),
+        s => {
+            tracing::error!("Failed to execute fetch query: {:?}", s);
+            Err("".to_string())
         }
     })
 }
@@ -154,7 +150,7 @@ pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rat
     .execute(pool)
     .instrument(query_span)
     .await
-    .map(|_|{
+    .map(|_| {
         tracing::info!("Rating {} has been saved to the database", rating.id);
         rating
     })
@@ -204,7 +200,7 @@ pub async fn delete(pool: &PgPool, rating: models::Rating) -> Result<(), String>
     .execute(pool)
     .instrument(query_span)
     .await
-    .map(|_|{
+    .map(|_| {
         tracing::info!("Rating {} has been deleted from the database", rating.id);
         ()
     })

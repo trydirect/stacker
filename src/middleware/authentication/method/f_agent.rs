@@ -70,7 +70,8 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     }
 
     let agent_id_str = agent_id_header.unwrap();
-    let agent_id = Uuid::parse_str(&agent_id_str).map_err(|_| "Invalid agent ID format".to_string())?;
+    let agent_id =
+        Uuid::parse_str(&agent_id_str).map_err(|_| "Invalid agent ID format".to_string())?;
 
     // Check for Authorization header
     let auth_header = get_header::<String>(req, "authorization")?;
@@ -164,7 +165,11 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         return Err("Agent already authenticated".to_string());
     }
 
-    if req.extensions_mut().insert(Arc::new(agent.clone())).is_some() {
+    if req
+        .extensions_mut()
+        .insert(Arc::new(agent.clone()))
+        .is_some()
+    {
         return Err("Agent data already set".to_string());
     }
 
@@ -182,7 +187,11 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         serde_json::json!({}),
     ));
 
-    tracing::debug!("Agent authenticated: {} ({})", agent_id, agent.deployment_hash);
+    tracing::debug!(
+        "Agent authenticated: {} ({})",
+        agent_id,
+        agent.deployment_hash
+    );
 
     Ok(true)
 }

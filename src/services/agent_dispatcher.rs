@@ -118,5 +118,8 @@ pub async fn wait(
     let (agent_id, agent_token) = ensure_agent_credentials(pg, vault, deployment_hash).await?;
     let client = AgentClient::new(agent_base_url, agent_id, agent_token);
     tracing::info!(deployment_hash = %deployment_hash, "Agent long-poll wait");
-    client.wait(deployment_hash).await.map_err(|e| format!("HTTP error: {}", e))
+    client
+        .wait(deployment_hash)
+        .await
+        .map_err(|e| format!("HTTP error: {}", e))
 }

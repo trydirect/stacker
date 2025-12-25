@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
+use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceNetworks {
@@ -11,11 +11,9 @@ impl TryFrom<&ServiceNetworks> for dctypes::Networks {
 
     fn try_from(service_networks: &ServiceNetworks) -> Result<dctypes::Networks, Self::Error> {
         let nets = match service_networks.network.as_ref() {
-            Some(_nets) => {
-                _nets.clone()
-           }
+            Some(_nets) => _nets.clone(),
             None => {
-               vec![]
+                vec![]
             }
         };
         Ok(dctypes::Networks::Simple(nets.into()))
@@ -55,4 +53,3 @@ impl TryFrom<&ServiceNetworks> for dctypes::Networks {
 //         networks
 //     }
 // }
-

@@ -37,9 +37,9 @@ pub async fn cancel_handler(
             deployment_hash,
             command.deployment_hash
         );
-        return Err(
-            JsonResponse::not_found("Command not found for this deployment")
-        );
+        return Err(JsonResponse::not_found(
+            "Command not found for this deployment",
+        ));
     }
 
     // Check if command can be cancelled (only queued or sent commands)

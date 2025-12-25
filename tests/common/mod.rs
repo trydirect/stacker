@@ -44,7 +44,11 @@ pub async fn spawn_app() -> TestApp {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Sanity check: attempt to hit the mock auth endpoint
-    if let Ok(resp) = reqwest::Client::new().get(configuration.auth_url.clone()).send().await {
+    if let Ok(resp) = reqwest::Client::new()
+        .get(configuration.auth_url.clone())
+        .send()
+        .await
+    {
         println!("Mock auth sanity check status: {}", resp.status());
     } else {
         println!("Mock auth sanity check failed: unable to connect");
@@ -83,16 +87,16 @@ pub struct TestApp {
 #[get("")]
 async fn mock_auth() -> actix_web::Result<impl Responder> {
     println!("Mock auth endpoint called - returning test user");
-    
+
     // Return a test user with proper fields
     let mut user = forms::user::User::default();
     user.id = "test_user_id".to_string();
     user.email = "test@example.com".to_string();
     user.role = "group_user".to_string();
     user.email_confirmed = true;
-    
+
     let user_form = forms::user::UserForm { user };
-    
+
     Ok(web::Json(user_form))
 }
 
