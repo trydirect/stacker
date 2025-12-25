@@ -20,9 +20,21 @@ enum Commands {
         #[command(subcommand)]
         command: AppMqCommands,
     }
+        Agent {
+            #[command(subcommand)]
+            command: AgentCommands,
+        }
 }
 
 #[derive(Debug, Subcommand)]
+enum AgentCommands {
+    RotateToken {
+        #[arg(long)]
+        deployment_hash: String,
+        #[arg(long)]
+        new_token: String,
+    },
+}
 enum AppClientCommands {
     New {
         #[arg(long)]
@@ -88,6 +100,15 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
             AppMqCommands::Listen {} => Ok(Box::new(
                 stacker::console::commands::mq::ListenCommand::new(),
             )),
+            },
+            Commands::Agent { command } => match command {
+                AgentCommands::RotateToken { deployment_hash, new_token } => Ok(Box::new(
+                    stacker::console::commands::agent::RotateTokenCommand::new(
+                        deployment_hash,
+                        new_token,
+                    ),
+                )),
+            },
         }
     }
 }
