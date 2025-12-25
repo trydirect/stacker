@@ -1,8 +1,7 @@
+use crate::helpers::dockerhub::DockerHub;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 use std::fmt;
-use crate::helpers::dockerhub::DockerHub;
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct DockerImage {
@@ -28,19 +27,28 @@ impl fmt::Display for DockerImage {
     // dh_nmsp = trydirect dh_repo_name=postgres:v8
     // namespace/repo_name/tag
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let dh_image = self.dockerhub_image.as_ref().map(String::as_str).unwrap_or("");
-        println!("{:?}", &dh_image);
-        let dh_nmspc = self.dockerhub_user.as_ref().map(String::as_str).unwrap_or("");
-        println!("{:?}", &dh_nmspc);
-        let dh_repo_name = self.dockerhub_name.as_ref().map(String::as_str).unwrap_or("");
-        println!("{:?}", &dh_repo_name);
+        let dh_image = self.dockerhub_image.as_deref().unwrap_or("");
+        let dh_nmspc = self.dockerhub_user.as_deref().unwrap_or("");
+        let dh_repo_name = self.dockerhub_name.as_deref().unwrap_or("");
 
         write!(
             f,
             "{}{}{}",
-            if !dh_nmspc.is_empty() { format!("{}/", dh_nmspc) } else { String::new() },
-            if !dh_repo_name.is_empty() { dh_repo_name } else { dh_image },
-            if !dh_repo_name.contains(":") && dh_image.is_empty() { ":latest".to_string() } else { String::new() },
+            if !dh_nmspc.is_empty() {
+                format!("{}/", dh_nmspc)
+            } else {
+                String::new()
+            },
+            if !dh_repo_name.is_empty() {
+                dh_repo_name
+            } else {
+                dh_image
+            },
+            if !dh_repo_name.contains(":") && dh_image.is_empty() {
+                ":latest".to_string()
+            } else {
+                String::new()
+            },
         )
     }
 }
@@ -51,5 +59,3 @@ impl DockerImage {
         DockerHub::try_from(self)?.is_active().await
     }
 }
-
-

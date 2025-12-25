@@ -1,6 +1,7 @@
+pub mod agent;
 pub mod appclient;
-pub mod debug;
 mod callable;
+pub mod debug;
 pub mod mq;
 
 pub use callable::*;

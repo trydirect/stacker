@@ -2,21 +2,20 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ dev, main ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ dev, main ]
 
 env:
   CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: true
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
+    - uses: actions/checkout@v4
+    - name: cargo build
       run: cargo build --verbose
-    - name: Run tests
+    - name: cargo test 
       run: cargo test --verbose

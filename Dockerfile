@@ -15,6 +15,7 @@ COPY ./rustfmt.toml .
 COPY ./Makefile .
 COPY ./docker/local/.env .
 COPY ./docker/local/configuration.yaml .
+COPY .sqlx  .
 
 # build this project to cache dependencies
 #RUN sqlx database create && sqlx migrate run
@@ -30,6 +31,7 @@ COPY ./src ./src
 #RUN ls -la /app/ >&2
 #RUN sqlx migrate run
 #RUN cargo sqlx prepare -- --bin stacker
+ENV SQLX_OFFLINE true
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
     cargo build --bin=console --features="explain" && cargo build --release --features="explain"

@@ -1,7 +1,7 @@
 use crate::models;
-use std::convert::From;
 use chrono::{DateTime, Utc};
-use serde::{Serialize};
+use serde::Serialize;
+use std::convert::From;
 
 #[derive(Debug, Serialize, Default)]
 pub struct User {
@@ -25,7 +25,7 @@ impl From<models::Rating> for User {
             comment: rating.comment,
             rate: rating.rate,
             created_at: rating.created_at,
-            updated_at: rating.updated_at
+            updated_at: rating.updated_at,
         }
     }
 }

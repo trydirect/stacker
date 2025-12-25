@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
 use crate::forms;
-use indexmap::IndexMap;
-use docker_compose_types as dctypes;
 use crate::forms::project::Network;
+use docker_compose_types as dctypes;
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -31,9 +31,7 @@ pub struct Custom {
     pub networks: forms::project::ComposeNetworks, // all networks
 }
 
-
 fn matches_network_by_id(id: &String, networks: &Vec<Network>) -> Option<String> {
-
     for n in networks.into_iter() {
         if id == &n.id {
             tracing::debug!("matches:  {:?}", n.name);
@@ -43,20 +41,22 @@ fn matches_network_by_id(id: &String, networks: &Vec<Network>) -> Option<String>
     None
 }
 
-pub fn replace_id_with_name(service_networks: dctypes::Networks, all_networks: &Vec<Network>) -> Vec<String> {
-
+pub fn replace_id_with_name(
+    service_networks: dctypes::Networks,
+    all_networks: &Vec<Network>,
+) -> Vec<String> {
     match service_networks {
-        dctypes::Networks::Simple(nets) => {
-            nets
-                .iter()
-                .map(|id| {
-                    if let Some(name) = matches_network_by_id(&id, all_networks) {
-                        name
-                    } else { "".to_string() }
-                })
-                .collect::<Vec<String>>()
-        },
-        _ => vec![]
+        dctypes::Networks::Simple(nets) => nets
+            .iter()
+            .map(|id| {
+                if let Some(name) = matches_network_by_id(&id, all_networks) {
+                    name
+                } else {
+                    "".to_string()
+                }
+            })
+            .collect::<Vec<String>>(),
+        _ => vec![],
     }
 }
 
@@ -88,7 +88,9 @@ impl Custom {
         Ok(services)
     }
 
-    pub fn named_volumes(&self) -> Result<IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>>, String> {
+    pub fn named_volumes(
+        &self,
+    ) -> Result<IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>>, String> {
         let mut named_volumes = IndexMap::new();
 
         for app_type in &self.web {

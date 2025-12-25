@@ -1,6 +1,6 @@
+use crate::forms::project::*;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
-use crate::forms::project::*;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Service {
