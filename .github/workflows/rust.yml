@@ -8,12 +8,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SQLX_OFFLINE: true
 
 jobs:
   prepare-sqlx-cache:
     name: Prepare sqlx offline cache
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: false
     services:
       postgres:
         image: postgres:16
@@ -30,8 +31,6 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      - name: Disable SQLX_OFFLINE for prepare
-        run: echo "SQLX_OFFLINE=false" >> $GITHUB_ENV
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -63,6 +62,8 @@ jobs:
   build:
     name: Build binaries (Linux/macOS)
     needs: prepare-sqlx-cache
+    env:
+      SQLX_OFFLINE: true
     strategy:
       matrix:
         include:
@@ -83,8 +84,6 @@ jobs:
         with:
           name: sqlx-cache
           path: .
-      - name: Ensure SQLX_OFFLINE enabled
-        run: echo "SQLX_OFFLINE=true" >> $GITHUB_ENV
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
