@@ -1,6 +1,6 @@
-use actix_web::error::{ErrorBadRequest, ErrorConflict, ErrorInternalServerError, ErrorNotFound, ErrorUnauthorized};
+use actix_web::error::{ErrorBadRequest, ErrorForbidden, ErrorInternalServerError, ErrorNotFound};
 use actix_web::web::Json;
-use actix_web::Error;
+use actix_web::{Error, HttpResponse};
 use serde_derive::Serialize;
 
 #[derive(Serialize)]
@@ -67,10 +67,7 @@ where
         Json(self.set_msg(msg).to_json_response())
     }
 
-    pub(crate) fn bad_request<I: Into<String>>(
-        self,
-        msg: I,
-    ) -> Error {
+    pub(crate) fn bad_request<I: Into<String>>(self, msg: I) -> Error {
         ErrorBadRequest(self.set_msg(msg).to_string())
     }
 
@@ -82,24 +79,21 @@ where
         ErrorNotFound(self.set_msg(msg).to_string())
     }
 
-    pub(crate) fn internal_server_error<I: Into<String>>(
-        self,
-        msg: I,
-    ) -> Error {
+    pub(crate) fn internal_server_error<I: Into<String>>(self, msg: I) -> Error {
         ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
-    // not used
-    // pub(crate) fn unauthorized<I: Into<String>>(
-    //     self,
-    //     msg: I,
-    // ) -> Error {
-    //     ErrorUnauthorized(self.set_msg(msg).to_string())
-    // }
-    //
-    // pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
-    //     ErrorConflict(self.set_msg(msg).to_string())
-    // }
+    pub(crate) fn forbidden<I: Into<String>>(self, msg: I) -> Error {
+        ErrorForbidden(self.set_msg(msg).to_string())
+    }
+
+    pub(crate) fn created<I: Into<String>>(self, msg: I) -> HttpResponse {
+        HttpResponse::Created().json(self.set_msg(msg).to_json_response())
+    }
+
+    pub(crate) fn no_content(self) -> HttpResponse {
+        HttpResponse::NoContent().finish()
+    }
 }
 
 impl<T> JsonResponse<T>
@@ -113,14 +107,18 @@ where
 
 impl JsonResponse<String> {
     pub fn bad_request<I: Into<String>>(msg: I) -> Error {
-        JsonResponse::<String>::build().bad_request( msg.into())
+        JsonResponse::<String>::build().bad_request(msg.into())
     }
 
     pub fn internal_server_error<I: Into<String>>(msg: I) -> Error {
-        JsonResponse::<String>::build().internal_server_error( msg.into())
+        JsonResponse::<String>::build().internal_server_error(msg.into())
     }
 
     pub fn not_found<I: Into<String>>(msg: I) -> Error {
         JsonResponse::<String>::build().not_found(msg.into())
+    }
+
+    pub fn forbidden<I: Into<String>>(msg: I) -> Error {
+        JsonResponse::<String>::build().forbidden(msg.into())
     }
 }

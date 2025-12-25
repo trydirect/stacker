@@ -1,8 +1,16 @@
-use crate::middleware::authentication::*;
-use actix_web::{error::ErrorBadRequest, HttpMessage, Error, dev::{ServiceRequest, ServiceResponse, Service}};
 use crate::helpers::JsonResponse;
-use futures::{task::{Poll, Context}, future::{FutureExt, LocalBoxFuture}, lock::Mutex};
+use crate::middleware::authentication::*;
 use crate::models;
+use actix_web::{
+    dev::{Service, ServiceRequest, ServiceResponse},
+    error::ErrorBadRequest,
+    Error,
+};
+use futures::{
+    future::{FutureExt, LocalBoxFuture},
+    lock::Mutex,
+    task::{Context, Poll},
+};
 use std::sync::Arc;
 
 pub struct ManagerMiddleware<S> {
@@ -20,18 +28,21 @@ where
     type Future = LocalBoxFuture<'static, Result<ServiceResponse<B>, Error>>;
 
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.service
-            .try_lock()
-            .expect("Authentication ManagerMiddleware was called allready")
-            .poll_ready(ctx)
+        if let Some(mut guard) = self.service.try_lock() {
+            guard.poll_ready(ctx)
+        } else {
+            // Another request is in-flight; signal pending instead of panicking
+            Poll::Pending
+        }
     }
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
         async move {
-            let _ = method::try_oauth(&mut req).await?
-            || method::try_hmac(&mut req).await?
-            || method::anonym(&mut req)?;
+            let _ = method::try_agent(&mut req).await?
+                || method::try_oauth(&mut req).await?
+                || method::try_hmac(&mut req).await?
+                || method::anonym(&mut req)?;
 
             Ok(req)
         }
@@ -42,7 +53,9 @@ where
                     service.call(req).await
                 }
                 Err(msg) => Err(ErrorBadRequest(
-                    JsonResponse::<models::Client>::build().set_msg(msg).to_string(),
+                    JsonResponse::<models::Client>::build()
+                        .set_msg(msg)
+                        .to_string(),
                 )),
             }
         })

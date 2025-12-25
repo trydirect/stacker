@@ -7,7 +7,8 @@ pub struct Settings {
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
-    pub amqp: AmqpSettings
+    pub amqp: AmqpSettings,
+    pub vault: VaultSettings,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -26,6 +27,31 @@ pub struct AmqpSettings {
     pub host: String,
     pub port: u16,
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VaultSettings {
+    pub address: String,
+    pub token: String,
+    pub agent_path_prefix: String,
+}
+
+impl VaultSettings {
+    /// Overlay Vault settings from environment variables, if present.
+    /// If an env var is missing, keep the existing file-provided value.
+    pub fn overlay_env(self) -> Self {
+        let address = std::env::var("VAULT_ADDRESS").unwrap_or(self.address);
+        let token = std::env::var("VAULT_TOKEN").unwrap_or(self.token);
+        let agent_path_prefix =
+            std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
+
+        VaultSettings {
+            address,
+            token,
+            agent_path_prefix,
+        }
+    }
+}
+
 impl DatabaseSettings {
     // Connection string: postgresql://<username>:<password>@<host>:<port>/<database_name>
     pub fn connection_string(&self) -> String {
@@ -53,6 +79,9 @@ impl AmqpSettings {
 }
 
 pub fn get_configuration() -> Result<Settings, config::ConfigError> {
+    // Load environment variables from .env file
+    dotenvy::dotenv().ok();
+
     // Initialize our configuration reader
     let mut settings = config::Config::default();
 
@@ -60,7 +89,11 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // with the .yaml extension
     settings.merge(config::File::with_name("configuration"))?; // .json, .toml, .yaml, .yml
 
-    // Try to convert the configuration values it read into
-    // our Settings type
-    settings.try_deserialize()
+    // Try to convert the configuration values it read into our Settings type
+    let mut config: Settings = settings.try_deserialize()?;
+
+    // Overlay Vault settings with environment variables if present
+    config.vault = config.vault.overlay_env();
+
+    Ok(config)
 }

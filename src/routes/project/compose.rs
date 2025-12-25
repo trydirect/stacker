@@ -27,9 +27,7 @@ pub async fn add(
 
     DcBuilder::new(project)
         .build()
-        .map_err(|err| {
-            JsonResponse::<models::Project>::build().internal_server_error(err)
-        })
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .map(|fc| JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }
 
@@ -52,8 +50,6 @@ pub async fn admin(
 
     DcBuilder::new(project)
         .build()
-        .map_err(|err| {
-            JsonResponse::<models::Project>::build().internal_server_error(err)
-        })
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .map(|fc| JsonResponse::build().set_id(id).set_item(fc).ok("Success"))
 }

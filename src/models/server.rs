@@ -9,19 +9,28 @@ pub struct Server {
     pub project_id: i32,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
-    pub region: String,
+    pub region: Option<String>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
     pub zone: Option<String>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
-    pub server: String,
+    pub server: Option<String>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
-    pub os: String,
+    pub os: Option<String>,
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     pub disk_type: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[validate(min_length = 8)]
+    #[validate(max_length = 50)]
+    pub srv_ip: Option<String>,
+    #[validate(minimum = 20)]
+    #[validate(maximum = 65535)]
+    pub ssh_port: Option<i32>,
+    #[validate(min_length = 3)]
+    #[validate(max_length = 50)]
+    pub ssh_user: Option<String>,
 }

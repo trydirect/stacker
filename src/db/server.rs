@@ -6,18 +6,19 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Server>, Str
     tracing::info!("Fetch server {}", id);
     sqlx::query_as!(
         models::Server,
-        r#"SELECT * FROM server WHERE id=$1 LIMIT 1 "#, id
+        r#"SELECT * FROM server WHERE id=$1 LIMIT 1 "#,
+        id
     )
-        .fetch_one(pool)
-        .await
-        .map(|server| Some(server))
-        .or_else(|err| match err {
-            sqlx::Error::RowNotFound => Ok(None),
-            e => {
-                tracing::error!("Failed to fetch server, error: {:?}", e);
-                Err("Could not fetch data".to_string())
-            }
-        })
+    .fetch_one(pool)
+    .await
+    .map(|server| Some(server))
+    .or_else(|err| match err {
+        sqlx::Error::RowNotFound => Ok(None),
+        e => {
+            tracing::error!("Failed to fetch server, error: {:?}", e);
+            Err("Could not fetch data".to_string())
+        }
+    })
 }
 
 pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::Server>, String> {
@@ -32,17 +33,19 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::S
         "#,
         user_id
     )
-        .fetch_all(pool)
-        .instrument(query_span)
-        .await
-        .map_err(|err| {
-            tracing::error!("Failed to fetch server, error: {:?}", err);
-            "".to_string()
-        })
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch server, error: {:?}", err);
+        "".to_string()
+    })
 }
 
-
-pub async fn fetch_by_project(pool: &PgPool, project_id: i32) -> Result<Vec<models::Server>, String> {
+pub async fn fetch_by_project(
+    pool: &PgPool,
+    project_id: i32,
+) -> Result<Vec<models::Server>, String> {
     let query_span = tracing::info_span!("Fetch servers by project/project id.");
     sqlx::query_as!(
         models::Server,
@@ -54,15 +57,14 @@ pub async fn fetch_by_project(pool: &PgPool, project_id: i32) -> Result<Vec<mode
         "#,
         project_id
     )
-        .fetch_all(pool)
-        .instrument(query_span)
-        .await
-        .map_err(|err| {
-            tracing::error!("Failed to fetch servers, error: {:?}", err);
-            "".to_string()
-        })
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch servers, error: {:?}", err);
+        "".to_string()
+    })
 }
-
 
 pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models::Server, String> {
     let query_span = tracing::info_span!("Saving user's server data into the database");
@@ -77,8 +79,12 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         os,
         disk_type,
         created_at,
-        updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc',NOW() at time zone 'utc')
+        updated_at,
+        srv_ip,
+        ssh_user,
+        ssh_port
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc',NOW() at time zone 'utc', $8, $9, $10)
         RETURNING id;
         "#,
         server.user_id,
@@ -87,7 +93,10 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         server.zone,
         server.server,
         server.os,
-        server.disk_type
+        server.disk_type,
+        server.srv_ip,
+        server.ssh_user,
+        server.ssh_port
     )
         .fetch_one(pool)
         .instrument(query_span)
@@ -125,7 +134,10 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
             server=$6,
             os=$7,
             disk_type=$8,
-            updated_at=NOW() at time zone 'utc'
+            updated_at=NOW() at time zone 'utc',
+            srv_ip=$9,
+            ssh_user=$10,
+            ssh_port=$11
         WHERE id = $1
         RETURNING *
         "#,
@@ -137,19 +149,22 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
         server.server,
         server.os,
         server.disk_type,
+        server.srv_ip,
+        server.ssh_user,
+        server.ssh_port
     )
-        .fetch_one(pool)
-        .instrument(query_span)
-        .await
-        .map(|result|{
-            tracing::info!("Server info {} have been saved", server.id);
-            server.updated_at = result.updated_at;
-            server
-        })
-        .map_err(|err| {
-            tracing::error!("Failed to execute query: {:?}", err);
-            "".to_string()
-        })
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map(|result| {
+        tracing::info!("Server info {} have been saved", server.id);
+        server.updated_at = result.updated_at;
+        server
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
 }
 
 #[tracing::instrument(name = "Delete user's server.")]
@@ -169,9 +184,7 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         .bind(id)
         .execute(&mut tx)
         .await
-        .map_err(|err| {
-            println!("{:?}", err)
-        })
+        .map_err(|err| println!("{:?}", err))
     {
         Ok(_) => {
             let _ = tx.commit().await.map_err(|err| {
@@ -185,5 +198,4 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
             Ok(false)
         }
     }
-
 }
