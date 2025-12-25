@@ -16,5 +16,12 @@ amqp:
   username: guest
   password: guest
 
-# Vault configuration is now loaded from .env file
-# See .env for VAULT_ADDRESS, VAULT_TOKEN, and VAULT_AGENT_PATH_PREFIX
+# Vault configuration (can be overridden by environment variables)
+vault:
+  address: http://127.0.0.1:8200
+  token: change-me-dev-token
+  # KV mount/prefix for agent tokens, e.g. 'kv/agent' or 'agent'
+  agent_path_prefix: agent
+
+# Env overrides (optional):
+#   VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX

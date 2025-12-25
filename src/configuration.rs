@@ -36,19 +36,19 @@ pub struct VaultSettings {
 }
 
 impl VaultSettings {
-    pub fn from_env() -> Result<Self, config::ConfigError> {
-        let address = std::env::var("VAULT_ADDRESS")
-            .map_err(|_| config::ConfigError::NotFound("VAULT_ADDRESS".to_string()))?;
-        let token = std::env::var("VAULT_TOKEN")
-            .map_err(|_| config::ConfigError::NotFound("VAULT_TOKEN".to_string()))?;
+    /// Overlay Vault settings from environment variables, if present.
+    /// If an env var is missing, keep the existing file-provided value.
+    pub fn overlay_env(self) -> Self {
+        let address = std::env::var("VAULT_ADDRESS").unwrap_or(self.address);
+        let token = std::env::var("VAULT_TOKEN").unwrap_or(self.token);
         let agent_path_prefix = std::env::var("VAULT_AGENT_PATH_PREFIX")
-            .unwrap_or_else(|_| "agent".to_string());
-        
-        Ok(VaultSettings {
+            .unwrap_or(self.agent_path_prefix);
+
+        VaultSettings {
             address,
             token,
             agent_path_prefix,
-        })
+        }
     }
 }
 
@@ -89,12 +89,11 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // with the .yaml extension
     settings.merge(config::File::with_name("configuration"))?; // .json, .toml, .yaml, .yml
 
-    // Try to convert the configuration values it read into
-    // our Settings type
+    // Try to convert the configuration values it read into our Settings type
     let mut config: Settings = settings.try_deserialize()?;
-    
-    // Load vault settings from environment variables
-    config.vault = VaultSettings::from_env()?;
+
+    // Overlay Vault settings with environment variables if present
+    config.vault = config.vault.overlay_env();
     
     Ok(config)
 }
