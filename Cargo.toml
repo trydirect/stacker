@@ -20,7 +20,7 @@ required-features = ["explain"]
 
 [dependencies]
 actix-web = "4.3.1"
-chrono = { version = "0.4.29", features = ["serde"] }
+chrono = { version = "0.4.29", features = ["time", "serde"] }
 config = "0.13.4"
 reqwest = { version = "0.11.23", features = ["json", "blocking"] }
 serde = { version = "1.0.195", features = ["derive"] }
@@ -65,13 +65,16 @@ base64 = "0.22.1"
 redis = { version = "0.27.5", features = ["tokio-comp"] }
 
 [dependencies.sqlx]
-version = "0.8.1"
+version = "0.6.3"
 features = [
-    "runtime-tokio-rustls",
+    "runtime-actix-rustls",
     "postgres",
     "uuid",
+    "tls",
     "chrono",
     "json",
+    "ipnetwork",
+    "offline",
     "macros"
 ]
 
