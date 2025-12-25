@@ -67,10 +67,7 @@ where
         Json(self.set_msg(msg).to_json_response())
     }
 
-    pub(crate) fn bad_request<I: Into<String>>(
-        self,
-        msg: I,
-    ) -> Error {
+    pub(crate) fn bad_request<I: Into<String>>(self, msg: I) -> Error {
         ErrorBadRequest(self.set_msg(msg).to_string())
     }
 
@@ -82,10 +79,7 @@ where
         ErrorNotFound(self.set_msg(msg).to_string())
     }
 
-    pub(crate) fn internal_server_error<I: Into<String>>(
-        self,
-        msg: I,
-    ) -> Error {
+    pub(crate) fn internal_server_error<I: Into<String>>(self, msg: I) -> Error {
         ErrorInternalServerError(self.set_msg(msg).to_string())
     }
 
@@ -100,7 +94,6 @@ where
     pub(crate) fn no_content(self) -> HttpResponse {
         HttpResponse::NoContent().finish()
     }
-
 }
 
 impl<T> JsonResponse<T>
@@ -114,11 +107,11 @@ where
 
 impl JsonResponse<String> {
     pub fn bad_request<I: Into<String>>(msg: I) -> Error {
-        JsonResponse::<String>::build().bad_request( msg.into())
+        JsonResponse::<String>::build().bad_request(msg.into())
     }
 
     pub fn internal_server_error<I: Into<String>>(msg: I) -> Error {
-        JsonResponse::<String>::build().internal_server_error( msg.into())
+        JsonResponse::<String>::build().internal_server_error(msg.into())
     }
 
     pub fn not_found<I: Into<String>>(msg: I) -> Error {

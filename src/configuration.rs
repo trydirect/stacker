@@ -8,7 +8,7 @@ pub struct Settings {
     pub auth_url: String,
     pub max_clients_number: i64,
     pub amqp: AmqpSettings,
-    pub vault: VaultSettings
+    pub vault: VaultSettings,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -41,8 +41,8 @@ impl VaultSettings {
     pub fn overlay_env(self) -> Self {
         let address = std::env::var("VAULT_ADDRESS").unwrap_or(self.address);
         let token = std::env::var("VAULT_TOKEN").unwrap_or(self.token);
-        let agent_path_prefix = std::env::var("VAULT_AGENT_PATH_PREFIX")
-            .unwrap_or(self.agent_path_prefix);
+        let agent_path_prefix =
+            std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
 
         VaultSettings {
             address,
@@ -94,6 +94,6 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
 
     // Overlay Vault settings with environment variables if present
     config.vault = config.vault.overlay_env();
-    
+
     Ok(config)
 }

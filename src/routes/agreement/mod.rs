@@ -1,7 +1,7 @@
 mod add;
-mod update;
 mod get;
+mod update;
 
 pub use add::*;
-pub use update::*;
 pub use get::*;
+pub use update::*;

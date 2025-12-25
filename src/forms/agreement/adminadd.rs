@@ -1,5 +1,5 @@
-use chrono::Utc;
 use crate::models;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 
@@ -23,9 +23,8 @@ impl Into<models::Agreement> for Agreement {
 }
 
 impl Agreement {
-    pub fn update(self, item: &mut models::Agreement)
-    {
+    pub fn update(self, item: &mut models::Agreement) {
         item.name = self.name;
-        item.name= self.text;
+        item.name = self.text;
     }
 }

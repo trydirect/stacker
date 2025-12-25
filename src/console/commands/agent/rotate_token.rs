@@ -31,11 +31,11 @@ impl crate::console::commands::CallableTrait for RotateTokenCommand {
                 .expect("Failed to connect to database.");
 
             agent_dispatcher::rotate_token(&db_pool, &vault, &deployment_hash, &new_token)
-            .await
-            .map_err(|e| {
-                eprintln!("Rotate token failed: {}", e);
-                e
-            })?;
+                .await
+                .map_err(|e| {
+                    eprintln!("Rotate token failed: {}", e);
+                    e
+                })?;
 
             println!(
                 "Rotated agent token for deployment_hash {} (stored in Vault)",

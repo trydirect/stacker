@@ -1,7 +1,7 @@
 mod register;
-mod wait;
 mod report;
+mod wait;
 
 pub use register::*;
-pub use wait::*;
 pub use report::*;
+pub use wait::*;

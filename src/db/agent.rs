@@ -75,11 +75,7 @@ pub async fn fetch_by_deployment_hash(
     })
 }
 
-pub async fn update_heartbeat(
-    pool: &PgPool,
-    agent_id: Uuid,
-    status: &str,
-) -> Result<(), String> {
+pub async fn update_heartbeat(pool: &PgPool, agent_id: Uuid, status: &str) -> Result<(), String> {
     let query_span = tracing::info_span!("Updating agent heartbeat");
     sqlx::query!(
         r#"

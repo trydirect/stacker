@@ -1,6 +1,6 @@
 use crate::models;
+use serde::Serialize;
 use std::convert::From;
-use serde::{Serialize};
 
 #[derive(Debug, Serialize, Default)]
 pub struct Anonymous {

@@ -6,7 +6,8 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Cloud>, Stri
     tracing::info!("Fetch cloud {}", id);
     sqlx::query_as!(
         models::Cloud,
-        r#"SELECT * FROM cloud WHERE id=$1 LIMIT 1 "#, id
+        r#"SELECT * FROM cloud WHERE id=$1 LIMIT 1 "#,
+        id
     )
     .fetch_one(pool)
     .await
@@ -32,15 +33,14 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::C
         "#,
         user_id
     )
-        .fetch_all(pool)
-        .instrument(query_span)
-        .await
-        .map_err(|err| {
-            tracing::error!("Failed to fetch cloud, error: {:?}", err);
-            "".to_string()
-        })
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch cloud, error: {:?}", err);
+        "".to_string()
+    })
 }
-
 
 pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::Cloud, String> {
     let query_span = tracing::info_span!("Saving user's cloud data into the database");
@@ -104,18 +104,18 @@ pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         cloud.cloud_secret,
         cloud.save_token
     )
-        .fetch_one(pool)
-        .instrument(query_span)
-        .await
-        .map(|result|{
-            tracing::info!("Cloud info {} have been saved", cloud.id);
-            cloud.updated_at = result.updated_at;
-            cloud
-        })
-        .map_err(|err| {
-            tracing::error!("Failed to execute query: {:?}", err);
-            "".to_string()
-        })
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map(|result| {
+        tracing::info!("Cloud info {} have been saved", cloud.id);
+        cloud.updated_at = result.updated_at;
+        cloud
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to execute query: {:?}", err);
+        "".to_string()
+    })
 }
 
 #[tracing::instrument(name = "Delete cloud of a user.")]
@@ -135,9 +135,7 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
         .bind(id)
         .execute(&mut tx)
         .await
-        .map_err(|err| {
-            println!("{:?}", err)
-        })
+        .map_err(|err| println!("{:?}", err))
     {
         Ok(_) => {
             let _ = tx.commit().await.map_err(|err| {
@@ -151,5 +149,4 @@ pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
             Ok(false)
         }
     }
-
 }

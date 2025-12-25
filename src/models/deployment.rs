@@ -5,13 +5,13 @@ use serde_json::Value;
 // Store user deployment attempts for a specific project
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Deployment {
-    pub id: i32,         // id - is a unique identifier for the app project
-    pub project_id: i32,  // external project ID
+    pub id: i32,                 // id - is a unique identifier for the app project
+    pub project_id: i32,         // external project ID
     pub deployment_hash: String, // unique hash for agent identification
     pub user_id: Option<String>, // user who created the deployment (nullable in db)
     pub deleted: Option<bool>,
     pub status: String,
-    pub metadata: Value, // renamed from 'body' to 'metadata'
+    pub metadata: Value,                     // renamed from 'body' to 'metadata'
     pub last_seen_at: Option<DateTime<Utc>>, // last heartbeat from agent
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

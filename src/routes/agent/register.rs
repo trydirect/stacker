@@ -42,9 +42,12 @@ pub async fn register_handler(
     req: HttpRequest,
 ) -> Result<impl Responder> {
     // Check if agent already exists for this deployment
-    let existing_agent = db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &payload.deployment_hash)
-        .await
-        .map_err(|err| helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err))?;
+    let existing_agent =
+        db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &payload.deployment_hash)
+            .await
+            .map_err(|err| {
+                helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+            })?;
 
     if existing_agent.is_some() {
         return Err(helpers::JsonResponse::<RegisterAgentResponse>::build()
@@ -65,7 +68,10 @@ pub async fn register_handler(
         .store_agent_token(&payload.deployment_hash, &agent_token)
         .await
     {
-        tracing::warn!("Failed to store token in Vault (continuing anyway): {:?}", err);
+        tracing::warn!(
+            "Failed to store token in Vault (continuing anyway): {:?}",
+            err
+        );
         // In production, you may want to fail here. For now, we continue to allow dev/test environments.
     }
 
@@ -94,7 +100,11 @@ pub async fn register_handler(
         "version": payload.agent_version,
         "capabilities": payload.capabilities,
     }))
-    .with_ip(req.peer_addr().map(|addr| addr.ip().to_string()).unwrap_or_default());
+    .with_ip(
+        req.peer_addr()
+            .map(|addr| addr.ip().to_string())
+            .unwrap_or_default(),
+    );
 
     let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;
 
@@ -111,5 +121,7 @@ pub async fn register_handler(
         payload.deployment_hash
     );
 
-    Ok(helpers::JsonResponse::build().set_item(Some(response)).ok("Agent registered"))
+    Ok(helpers::JsonResponse::build()
+        .set_item(Some(response))
+        .ok("Agent registered"))
 }

@@ -1,11 +1,10 @@
+use crate::db;
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::db;
 use actix_web::{put, web, Responder, Result};
-use sqlx::PgPool;
 use serde_valid::Validate;
-
+use sqlx::PgPool;
 
 #[tracing::instrument(name = "Admin update agreement.")]
 #[put("/{id}")]
@@ -22,11 +21,9 @@ pub async fn admin_update_handler(
     let mut item = db::agreement::fetch(pg_pool.get_ref(), id)
         .await
         .map_err(|_err| JsonResponse::<models::Agreement>::build().internal_server_error(""))
-        .and_then(|item| {
-            match item {
-                Some(item) =>  Ok(item),
-                _ => Err(JsonResponse::<models::Agreement>::build().not_found("not found"))
-            }
+        .and_then(|item| match item {
+            Some(item) => Ok(item),
+            _ => Err(JsonResponse::<models::Agreement>::build().not_found("not found")),
         })?;
 
     form.into_inner().update(&mut item);
@@ -40,7 +37,7 @@ pub async fn admin_update_handler(
         })
         .map_err(|err| {
             tracing::error!("Failed to execute query: {:?}", err);
-            JsonResponse::<models::Agreement>::build().internal_server_error("Agreement not updated")
+            JsonResponse::<models::Agreement>::build()
+                .internal_server_error("Agreement not updated")
         })
 }
-

@@ -1,7 +1,7 @@
 use crate::db;
 use crate::helpers::{JsonResponse, VaultClient};
-use crate::services::agent_dispatcher;
 use crate::models::{Command, CommandPriority, User};
+use crate::services::agent_dispatcher;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;

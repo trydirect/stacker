@@ -16,7 +16,9 @@ pub async fn wait_handler(
 
     // Verify agent is authorized for this deployment_hash
     if agent.deployment_hash != deployment_hash {
-        return Err(helpers::JsonResponse::forbidden("Not authorized for this deployment"));
+        return Err(helpers::JsonResponse::forbidden(
+            "Not authorized for this deployment",
+        ));
     }
 
     // Update agent heartbeat
@@ -48,22 +50,24 @@ pub async fn wait_handler(
                 );
 
                 // Update command status to 'sent'
-                let updated_command =
-                    db::command::update_status(pg_pool.get_ref(), &command.command_id, &models::CommandStatus::Sent)
-                        .await
-                        .map_err(|err| {
-                            tracing::error!("Failed to update command status: {}", err);
-                            helpers::JsonResponse::internal_server_error(err)
-                        })?;
+                let updated_command = db::command::update_status(
+                    pg_pool.get_ref(),
+                    &command.command_id,
+                    &models::CommandStatus::Sent,
+                )
+                .await
+                .map_err(|err| {
+                    tracing::error!("Failed to update command status: {}", err);
+                    helpers::JsonResponse::internal_server_error(err)
+                })?;
 
                 // Remove from queue (command now 'in-flight' to agent)
-                let _ = db::command::remove_from_queue(pg_pool.get_ref(), &command.command_id).await;
+                let _ =
+                    db::command::remove_from_queue(pg_pool.get_ref(), &command.command_id).await;
 
-                return Ok(
-                    helpers::JsonResponse::<Option<models::Command>>::build()
-                        .set_item(Some(updated_command))
-                        .ok("Command available"),
-                );
+                return Ok(helpers::JsonResponse::<Option<models::Command>>::build()
+                    .set_item(Some(updated_command))
+                    .ok("Command available"));
             }
             Ok(None) => {
                 // No command yet, continue polling
@@ -84,9 +88,7 @@ pub async fn wait_handler(
         agent.id,
         timeout_seconds
     );
-    Ok(
-        helpers::JsonResponse::<Option<models::Command>>::build()
-            .set_item(None)
-            .ok("No command available"),
-    )
+    Ok(helpers::JsonResponse::<Option<models::Command>>::build()
+        .set_item(None)
+        .ok("No command available"))
 }

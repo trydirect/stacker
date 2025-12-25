@@ -1,12 +1,11 @@
+use crate::db;
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::db;
 use actix_web::{post, web, Responder, Result};
+use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
-use serde_valid::Validate;
-
 
 #[tracing::instrument(name = "Admin add agreement.")]
 #[post("")]
@@ -46,17 +45,15 @@ pub async fn user_add_handler(
     let agreement = db::agreement::fetch(pg_pool.get_ref(), form.agrt_id)
         .await
         .map_err(|_msg| JsonResponse::<models::UserAgreement>::build().internal_server_error(_msg))?
-        .ok_or_else(|| JsonResponse::<models::UserAgreement>::build().not_found("not found"))?
-        ;
+        .ok_or_else(|| JsonResponse::<models::UserAgreement>::build().not_found("not found"))?;
 
     let user_id = user.id.as_str();
-    let user_agreement = db::agreement::fetch_by_user_and_agreement(
-        pg_pool.get_ref(),
-        user_id,
-        agreement.id
-    )
-        .await
-        .map_err(|err| JsonResponse::<models::UserAgreement>::build().internal_server_error(err))?;
+    let user_agreement =
+        db::agreement::fetch_by_user_and_agreement(pg_pool.get_ref(), user_id, agreement.id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<models::UserAgreement>::build().internal_server_error(err)
+            })?;
 
     if user_agreement.is_some() {
         return Err(JsonResponse::<models::UserAgreement>::build().bad_request("already signed"));
@@ -67,7 +64,12 @@ pub async fn user_add_handler(
 
     db::agreement::insert_by_user(pg_pool.get_ref(), item)
         .await
-        .map(|item| JsonResponse::build().set_item(Into::<models::UserAgreement>::into(item)).ok("success"))
-        .map_err(|_err| JsonResponse::<models::UserAgreement>::build()
-            .internal_server_error("Failed to insert"))
+        .map(|item| {
+            JsonResponse::build()
+                .set_item(Into::<models::UserAgreement>::into(item))
+                .ok("success")
+        })
+        .map_err(|_err| {
+            JsonResponse::<models::UserAgreement>::build().internal_server_error("Failed to insert")
+        })
 }

@@ -1,12 +1,12 @@
+use crate::db;
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::db;
-use actix_web::{web, web::Data, Responder, Result, put};
+use actix_web::{put, web, web::Data, Responder, Result};
 use serde_valid::Validate;
 use sqlx::PgPool;
-use std::sync::Arc;
 use std::ops::Deref;
+use std::sync::Arc;
 
 #[tracing::instrument(name = "Update server.")]
 #[put("/{id}")]
@@ -16,7 +16,6 @@ pub async fn item(
     user: web::ReqData<Arc<models::User>>,
     pg_pool: Data<PgPool>,
 ) -> Result<impl Responder> {
-
     let id = path.0;
     let server_row = db::server::fetch(pg_pool.get_ref(), id)
         .await
@@ -33,7 +32,7 @@ pub async fn item(
         return Err(JsonResponse::<models::Server>::build().form_error(errors.to_string()));
     }
 
-    let mut server:models::Server = form.deref().into();
+    let mut server: models::Server = form.deref().into();
     server.id = server_row.id;
     server.project_id = server_row.project_id;
     server.user_id = user.id.clone();

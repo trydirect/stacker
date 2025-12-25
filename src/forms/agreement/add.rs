@@ -1,5 +1,5 @@
-use chrono::Utc;
 use crate::models;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 

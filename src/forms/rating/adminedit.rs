@@ -8,13 +8,12 @@ pub struct AdminEditRating {
     pub comment: Option<String>, // always linked to a product
     #[validate(minimum = 0)]
     #[validate(maximum = 10)]
-    pub rate: Option<i32>, 
-    pub hidden: Option<bool>, 
+    pub rate: Option<i32>,
+    pub hidden: Option<bool>,
 }
 
 impl AdminEditRating {
-    pub fn update(self, rating: &mut models::Rating) 
-    {
+    pub fn update(self, rating: &mut models::Rating) {
         if let Some(comment) = self.comment {
             rating.comment.insert(comment);
         }

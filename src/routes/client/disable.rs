@@ -18,12 +18,12 @@ pub async fn disable_handler(
     let client = db::client::fetch(pg_pool.get_ref(), client_id)
         .await
         .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))
-        .and_then( |client| {
-            match client {
-                Some(client) if client.user_id != user.id => Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner")),
-                Some(client) => Ok(client),
-                None => Err(JsonResponse::<models::Client>::build().not_found("not found"))
+        .and_then(|client| match client {
+            Some(client) if client.user_id != user.id => {
+                Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner"))
             }
+            Some(client) => Ok(client),
+            None => Err(JsonResponse::<models::Client>::build().not_found("not found")),
         })?;
 
     disable_client(pg_pool.get_ref(), client).await
