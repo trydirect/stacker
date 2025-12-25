@@ -64,6 +64,65 @@ The core Project model includes:
   - Body: `deployment_hash`, `command_type`, `priority` (`low|normal|high|critical`), `parameters`, optional `timeout_seconds`
 - List commands for a deployment: `GET /api/v1/commands/:deployment_hash`
 
+7. **Stacker → Agent HMAC-signed POSTs (v2)**
+- All POST calls from Stacker to the agent must be signed per [STACKER_INTEGRATION_REQUIREMENTS.md](STACKER_INTEGRATION_REQUIREMENTS.md)
+- Required headers: `X-Agent-Id`, `X-Timestamp`, `X-Request-Id`, `X-Agent-Signature`
+- Signature: base64(HMAC_SHA256(AGENT_TOKEN, raw_body_bytes))
+- Helper available: `helpers::AgentClient`
+ - Base URL: set `AGENT_BASE_URL` to point Stacker at the target agent (e.g., `http://agent:8080`).
+
+Example:
+```rust
+use stacker::helpers::AgentClient;
+use serde_json::json;
+
+let client = AgentClient::new("http://agent:8080", agent_id, agent_token);
+let payload = json!({"deployment_hash": dh, "type": "restart_service", "parameters": {"service": "web"}});
+let resp = client.commands_execute(&payload).await?;
+``` 
+
+Dispatcher example (recommended wiring):
+```rust
+use stacker::services::agent_dispatcher;
+use serde_json::json;
+
+// Given: deployment_hash, agent_base_url, PgPool (pg), VaultClient (vault)
+let cmd = json!({
+  "deployment_hash": deployment_hash,
+  "type": "restart_service",
+  "parameters": { "service": "web", "graceful": true }
+});
+
+// Enqueue command for agent (signed HMAC headers handled internally)
+agent_dispatcher::enqueue(&pg, &vault, &deployment_hash, agent_base_url, &cmd).await?;
+
+// Or execute immediately
+agent_dispatcher::execute(&pg, &vault, &deployment_hash, agent_base_url, &cmd).await?;
+
+// Report result later
+let result = json!({
+  "deployment_hash": deployment_hash,
+  "command_id": "...",
+  "status": "completed",
+  "result": { "ok": true }
+});
+agent_dispatcher::report(&pg, &vault, &deployment_hash, agent_base_url, &result).await?;
+
+// Rotate token
+agent_dispatcher::rotate_token(&pg, &vault, &deployment_hash, agent_base_url, "NEW_TOKEN").await?;
+```
+
+Console token rotation (uses agent_dispatcher under the hood):
+```bash
+# AGENT_BASE_URL can be provided via env or flag
+export AGENT_BASE_URL=http://agent:8080
+
+cargo run --bin console -- Agent rotate-token \ 
+  --deployment-hash <hash> \ 
+  --new-token <NEW_TOKEN>
+# Optional override: --agent-base-url http://agent:8080
+```
+
 The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
 
 This is a high-level overview based on the code snippets provided. The project seems to be actively developed with features being added progressively, as indicated by the TODO sections in the documentation.

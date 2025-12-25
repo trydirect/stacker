@@ -1,5 +1,6 @@
 use crate::db;
-use crate::helpers::JsonResponse;
+use crate::helpers::{JsonResponse, VaultClient};
+use crate::services::agent_dispatcher;
 use crate::models::{Command, CommandPriority, User};
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
@@ -27,12 +28,13 @@ pub struct CreateCommandResponse {
     pub status: String,
 }
 
-#[tracing::instrument(name = "Create command", skip(pg_pool, user))]
+#[tracing::instrument(name = "Create command", skip(pg_pool, user, vault_client))]
 #[post("")]
 pub async fn create_handler(
     user: web::ReqData<Arc<User>>,
     req: web::Json<CreateCommandRequest>,
     pg_pool: web::Data<PgPool>,
+    vault_client: web::Data<VaultClient>,
 ) -> Result<impl Responder> {
     // Generate unique command ID
     let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
@@ -91,6 +93,45 @@ pub async fn create_handler(
         tracing::error!("Failed to add command to queue: {}", err);
         JsonResponse::<()>::build().internal_server_error(err)
     })?;
+
+    // Optional: push to agent immediately if AGENT_BASE_URL is configured
+    if let Ok(agent_base_url) = std::env::var("AGENT_BASE_URL") {
+        let payload = serde_json::json!({
+            "deployment_hash": saved_command.deployment_hash,
+            "command_id": saved_command.command_id,
+            "type": saved_command.r#type,
+            "priority": format!("{}", priority),
+            "parameters": saved_command.parameters,
+            "timeout_seconds": saved_command.timeout_seconds,
+        });
+
+        match agent_dispatcher::enqueue(
+            pg_pool.get_ref(),
+            vault_client.get_ref(),
+            &saved_command.deployment_hash,
+            &agent_base_url,
+            &payload,
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::info!(
+                    "Pushed command {} to agent at {}",
+                    saved_command.command_id,
+                    agent_base_url
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Agent push failed for command {}: {}",
+                    saved_command.command_id,
+                    err
+                );
+            }
+        }
+    } else {
+        tracing::debug!("AGENT_BASE_URL not set; skipping agent push");
+    }
 
     tracing::info!(
         "Command created: {} for deployment {}",

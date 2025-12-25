@@ -4271,6 +4271,7 @@ dependencies = [
  "deadpool-lapin",
  "derive_builder 0.12.0",
  "docker-compose-types",
+ "dotenvy",
  "futures",
  "futures-lite 2.5.0",
  "futures-util",
