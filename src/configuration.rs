@@ -82,16 +82,16 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // Load environment variables from .env file
     dotenvy::dotenv().ok();
 
-    // Prefer real config, fall back to dist sample, require at least one to exist
+    // Prefer real config, fall back to dist samples; layer multiple formats
     let settings = config::Config::builder()
-        .add_source(
-            config::File::with_name("configuration.yaml")
-                .required(false)
-        )
-        .add_source(
-            config::File::with_name("configuration.yaml.dist")
-                .required(false)
-        )
+        // Primary local config
+        .add_source(config::File::with_name("configuration.yaml").required(false))
+        .add_source(config::File::with_name("configuration.yml").required(false))
+        .add_source(config::File::with_name("configuration").required(false))
+        // Fallback samples
+        .add_source(config::File::with_name("configuration.yaml.dist").required(false))
+        .add_source(config::File::with_name("configuration.yml.dist").required(false))
+        .add_source(config::File::with_name("configuration.dist").required(false))
         .build()?;
 
     // Try to convert the configuration values it read into our Settings type
