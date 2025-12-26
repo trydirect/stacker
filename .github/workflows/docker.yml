@@ -95,11 +95,11 @@ jobs:
           command: clippy
           args: -- -D warnings
 
-      - name: Run cargo build
+      - name: Build server (release)
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --release --bin server
 
       - name: npm install, build, and test
         working-directory: ./web
@@ -122,9 +122,9 @@ jobs:
       - name: Copy app files and zip
         run: |
           mkdir -p app/stacker/dist
-          cp target/release/stacker app/stacker
-          cp -a web/dist/. app/stacker
-          cp docker/prod/Dockerfile app/Dockerfile
+          cp target/release/server app/stacker/server
+          cp -a web/dist/. app/stacker || true
+          cp Dockerfile app/Dockerfile
           cd app
           touch .env
           tar -czvf ../app.tar.gz .

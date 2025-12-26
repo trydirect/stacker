@@ -60,8 +60,11 @@ jobs:
           key: ${{ runner.os }}-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-target-${{ matrix.target }}-
-      - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }} --verbose
+      - name: Build server (release)
+        run: cargo build --release --target ${{ matrix.target }} --bin server --verbose
+
+      - name: Build console (release with features)
+        run: cargo build --release --target ${{ matrix.target }} --bin console --features explain --verbose
       - name: Prepare binaries
         run: |
           mkdir -p artifacts

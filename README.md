@@ -69,14 +69,14 @@ The core Project model includes:
 - Required headers: `X-Agent-Id`, `X-Timestamp`, `X-Request-Id`, `X-Agent-Signature`
 - Signature: base64(HMAC_SHA256(AGENT_TOKEN, raw_body_bytes))
 - Helper available: `helpers::AgentClient`
- - Base URL: set `AGENT_BASE_URL` to point Stacker at the target agent (e.g., `http://agent:8080`).
+ - Base URL: set `AGENT_BASE_URL` to point Stacker at the target agent (e.g., `http://agent:5000`).
 
 Example:
 ```rust
 use stacker::helpers::AgentClient;
 use serde_json::json;
 
-let client = AgentClient::new("http://agent:8080", agent_id, agent_token);
+let client = AgentClient::new("http://agent:5000", agent_id, agent_token);
 let payload = json!({"deployment_hash": dh, "type": "restart_service", "parameters": {"service": "web"}});
 let resp = client.commands_execute(&payload).await?;
 ``` 
