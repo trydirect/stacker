@@ -9,17 +9,21 @@ on:
     branches:
       - main
 
-env:
-  SQLX_OFFLINE: true
-
 jobs:
 
   cicd-docker:
     name: Cargo and npm build
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+
+      - name: Verify .sqlx cache exists
+        run: |
+          ls -lh .sqlx/ || echo ".sqlx directory not found"
+          find .sqlx -type f 2>/dev/null | wc -l
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -64,12 +68,6 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: check
-
-      - name: Run cargo sqlx prepare
-        uses: actions-rs/cargo@v1
-        with:
-          command: sqlx prepare
-          args: --release
 
       - name: Cargo test
         if: ${{ always() }}
