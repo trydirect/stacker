@@ -51,7 +51,7 @@ COPY --from=builder /app/target/release/server .
 COPY --from=builder /app/.env .
 COPY --from=builder /app/configuration.yaml .
 COPY --from=builder /usr/local/cargo/bin/sqlx sqlx
-COPY ./access_control.conf.dist /app
+COPY ./access_control.conf.dist ./access_control.conf
 
 EXPOSE 8000
 
