@@ -170,32 +170,13 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
 #[tracing::instrument(name = "Delete user's server.")]
 pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     tracing::info!("Delete server {}", id);
-    let mut tx = match pool.begin().await {
-        Ok(result) => result,
-        Err(err) => {
-            tracing::error!("Failed to begin transaction: {:?}", err);
-            return Err("".to_string());
-        }
-    };
-
-    let delete_query = " DELETE FROM server WHERE id = $1; ";
-
-    match sqlx::query(delete_query)
+    sqlx::query::<sqlx::Postgres>("DELETE FROM server WHERE id = $1;")
         .bind(id)
-        .execute(&mut tx)
+        .execute(pool)
         .await
-        .map_err(|err| println!("{:?}", err))
-    {
-        Ok(_) => {
-            let _ = tx.commit().await.map_err(|err| {
-                tracing::error!("Failed to commit transaction: {:?}", err);
-                false
-            });
-            Ok(true)
-        }
-        Err(_err) => {
-            let _ = tx.rollback().await.map_err(|err| println!("{:?}", err));
-            Ok(false)
-        }
-    }
+        .map(|_| true)
+        .map_err(|err| {
+            tracing::error!("Failed to delete server: {:?}", err);
+            "Failed to delete server".to_string()
+        })
 }

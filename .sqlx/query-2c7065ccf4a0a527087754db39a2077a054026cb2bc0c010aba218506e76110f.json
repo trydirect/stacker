@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM casbin_rule",
+  "query": "\n        SELECT\n            *\n        FROM project\n        WHERE user_id=$1\n        ",
   "describe": {
     "columns": [
       {
@@ -10,42 +10,44 @@
       },
       {
         "ordinal": 1,
-        "name": "ptype",
-        "type_info": "Varchar"
+        "name": "stack_id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "v0",
+        "name": "user_id",
         "type_info": "Varchar"
       },
       {
         "ordinal": 3,
-        "name": "v1",
-        "type_info": "Varchar"
+        "name": "name",
+        "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "v2",
-        "type_info": "Varchar"
+        "name": "metadata",
+        "type_info": "Json"
       },
       {
         "ordinal": 5,
-        "name": "v3",
-        "type_info": "Varchar"
+        "name": "created_at",
+        "type_info": "Timestamptz"
       },
       {
         "ordinal": 6,
-        "name": "v4",
-        "type_info": "Varchar"
+        "name": "updated_at",
+        "type_info": "Timestamptz"
       },
       {
         "ordinal": 7,
-        "name": "v5",
-        "type_info": "Varchar"
+        "name": "request_json",
+        "type_info": "Json"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       false,
@@ -58,5 +60,5 @@
       false
     ]
   },
-  "hash": "3022cb733970ae5836ab3891367b209a7e1f0974242ecd0f55e5b0098152bad5"
+  "hash": "2c7065ccf4a0a527087754db39a2077a054026cb2bc0c010aba218506e76110f"
 }
