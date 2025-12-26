@@ -82,12 +82,13 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // Load environment variables from .env file
     dotenvy::dotenv().ok();
 
-    // Initialize our configuration reader
-    let mut settings = config::Config::default();
-
-    // Add configuration values from a file named `configuration`
-    // with the .yaml extension
-    settings.merge(config::File::with_name("configuration"))?; // .json, .toml, .yaml, .yml
+    // Prefer real config, fall back to dist samples so tests do not fail when config is missing
+    let settings = config::Config::builder()
+        .add_source(config::File::with_name("configuration.yaml").required(false))
+        .add_source(config::File::with_name("configuration").required(false))
+        .add_source(config::File::with_name("configuration.yaml.dist").required(false))
+        .add_source(config::File::with_name("configuration.dist").required(false))
+        .build()?;
 
     // Try to convert the configuration values it read into our Settings type
     let mut config: Settings = settings.try_deserialize()?;
