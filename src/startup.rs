@@ -1,11 +1,13 @@
 use crate::configuration::Settings;
 use crate::helpers;
+use crate::mcp;
 use crate::middleware;
 use crate::routes;
 use actix_cors::Cors;
 use actix_web::{dev::Server, error, http, web, App, HttpServer};
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
+use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 
 pub async fn run(
@@ -21,6 +23,10 @@ pub async fn run(
 
     let vault_client = helpers::VaultClient::new(&settings.vault);
     let vault_client = web::Data::new(vault_client);
+
+    // Initialize MCP tool registry
+    let mcp_registry = Arc::new(mcp::ToolRegistry::new());
+    let mcp_registry = web::Data::new(mcp_registry);
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;
@@ -132,10 +138,15 @@ pub async fn run(
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
             )
+            .service(
+                web::resource("/mcp")
+                    .route(web::get().to(mcp::mcp_websocket))
+            )
             .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
+            .app_data(mcp_registry.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?
