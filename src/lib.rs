@@ -3,6 +3,7 @@ pub mod console;
 pub mod db;
 pub mod forms;
 pub mod helpers;
+pub mod mcp;
 mod middleware;
 pub mod models;
 pub mod routes;
