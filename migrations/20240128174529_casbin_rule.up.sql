@@ -1,5 +1,5 @@
 -- Add up migration script here
-CREATE TABLE casbin_rule (
+CREATE TABLE IF NOT EXISTS casbin_rule (
     id SERIAL PRIMARY KEY,
     ptype VARCHAR NOT NULL,
     v0 VARCHAR NOT NULL,
