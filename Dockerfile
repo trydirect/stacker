@@ -15,7 +15,7 @@ COPY ./rustfmt.toml .
 COPY ./Makefile .
 COPY ./docker/local/.env .
 COPY ./docker/local/configuration.yaml .
-COPY .sqlx  .
+COPY .sqlx .sqlx/
 
 # build this project to cache dependencies
 #RUN sqlx database create && sqlx migrate run
@@ -50,7 +50,7 @@ RUN mkdir ./files && chmod 0777 ./files
 COPY --from=builder /app/target/release/server .
 COPY --from=builder /app/.env .
 COPY --from=builder /app/configuration.yaml .
-COPY --from=builder /usr/local/cargo/bin/sqlx sqlx
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
 COPY ./access_control.conf.dist ./access_control.conf
 
 EXPOSE 8000

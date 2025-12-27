@@ -7,6 +7,9 @@ volumes:
   redis-data:
     driver: local
 
+networks:
+  stacker-network:
+    driver: bridge
 
 services:
 
@@ -15,6 +18,8 @@ services:
     build: .
     container_name: stacker
     restart: always
+    networks:
+      - stacker-network
     volumes:
       - ./files:/app/files
       - ./docker/local/configuration.yaml:/app/configuration.yaml
@@ -28,14 +33,16 @@ services:
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
-#    depends_on:
-#      stackerdb:
-#        condition: service_healthy
+    depends_on:
+      stackerdb:
+        condition: service_healthy
 
   redis:
       container_name: redis
       image: redis
       restart: always
+      networks:
+        - stacker-network
       ports:
         - 6379:6379
       volumes:
@@ -68,19 +75,21 @@ services:
 #        condition: service_healthy
 #    entrypoint: /app/console mq listen
 
-#  stackerdb:
-#    container_name: stackerdb
-#    healthcheck:
-#      test: ["CMD-SHELL", "pg_isready -U postgres"]
-#      interval: 10s
-#      timeout: 5s
-#      retries: 5
-#    image: postgres:16.0
-#    restart: always
-#    ports:
-#      - 5432:5432
-#    env_file:
-#      - ./docker/local/.env
-#    volumes:
-#      - stackerdb:/var/lib/postgresql/data
-#      - ./docker/local/postgresql.conf:/etc/postgresql/postgresql.conf
+  stackerdb:
+    container_name: stackerdb
+    networks:
+      - stacker-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    image: postgres:16.0
+    restart: always
+    ports:
+      - 5432:5432
+    env_file:
+      - ./docker/local/.env
+    volumes:
+      - stackerdb:/var/lib/postgresql/data
+      - ./docker/local/postgresql.conf:/etc/postgresql/postgresql.conf
