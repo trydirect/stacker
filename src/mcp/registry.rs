@@ -1,4 +1,5 @@
 use crate::configuration::Settings;
+use actix_web::web;
 use crate::models;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,7 +13,7 @@ use super::protocol::{Tool, ToolContent};
 pub struct ToolContext {
     pub user: Arc<models::User>,
     pub pg_pool: PgPool,
-    pub settings: Arc<Settings>,
+    pub settings: web::Data<Settings>,
 }
 
 /// Trait for tool handlers
