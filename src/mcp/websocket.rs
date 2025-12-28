@@ -61,13 +61,25 @@ impl McpWebSocket {
     }
 
     /// Handle JSON-RPC request
-    async fn handle_jsonrpc(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        match req.method.as_str() {
+    async fn handle_jsonrpc(&self, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+        // Notifications arrive without an id and must not receive a response per JSON-RPC 2.0
+        if req.id.is_none() {
+            if req.method == "notifications/initialized" {
+                tracing::info!("Ignoring notifications/initialized (notification)");
+            } else {
+                tracing::warn!("Ignoring notification without id: method={}", req.method);
+            }
+            return None;
+        }
+
+        let response = match req.method.as_str() {
             "initialize" => self.handle_initialize(req).await,
             "tools/list" => self.handle_tools_list(req).await,
             "tools/call" => self.handle_tools_call(req).await,
             _ => JsonRpcResponse::error(req.id, JsonRpcError::method_not_found(&req.method)),
-        }
+        };
+
+        Some(response)
     }
 
     /// Handle MCP initialize method
@@ -226,15 +238,17 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for McpWebSocket {
                 self.hb = Instant::now();
             }
             Ok(ws::Message::Text(text)) => {
-                tracing::debug!("Received JSON-RPC message: {}", text);
+                tracing::info!("[MCP] Received JSON-RPC message: {}", text);
 
                 let request: JsonRpcRequest = match serde_json::from_str(&text) {
                     Ok(req) => req,
                     Err(e) => {
-                        tracing::error!("Failed to parse JSON-RPC request: {}", e);
+                        tracing::error!("[MCP] Failed to parse JSON-RPC request: {}", e);
                         let error_response =
                             JsonRpcResponse::error(None, JsonRpcError::parse_error());
-                        ctx.text(serde_json::to_string(&error_response).unwrap());
+                        let response_text = serde_json::to_string(&error_response).unwrap();
+                        tracing::error!("[MCP] Sending parse error response: {}", response_text);
+                        ctx.text(response_text);
                         return;
                     }
                 };
@@ -259,8 +273,11 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for McpWebSocket {
 
                 let addr = ctx.address();
                 actix::spawn(async move {
-                    let response = fut.await;
-                    addr.do_send(SendResponse(response));
+                    if let Some(response) = fut.await {
+                        addr.do_send(SendResponse(response));
+                    } else {
+                        tracing::debug!("[MCP] Dropped response for notification (no id)");
+                    }
                 });
             }
             Ok(ws::Message::Binary(_)) => {
@@ -286,7 +303,13 @@ impl actix::Handler<SendResponse> for McpWebSocket {
 
     fn handle(&mut self, msg: SendResponse, ctx: &mut Self::Context) {
         let response_text = serde_json::to_string(&msg.0).unwrap();
-        tracing::debug!("Sending JSON-RPC response: {}", response_text);
+        tracing::info!(
+            "[MCP] Sending JSON-RPC response: id={:?}, has_result={}, has_error={}, message={}",
+            msg.0.id,
+            msg.0.result.is_some(),
+            msg.0.error.is_some(),
+            response_text
+        );
         ctx.text(response_text);
     }
 }

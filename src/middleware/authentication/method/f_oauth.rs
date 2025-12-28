@@ -52,7 +52,7 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
     Ok(true)
 }
 
-async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String> {
+pub async fn fetch_user(auth_url: &str, token: &str) -> Result<models::User, String> {
     let client = reqwest::Client::new();
     let resp = client
         .get(auth_url)
