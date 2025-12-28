@@ -26,7 +26,7 @@ pub struct McpWebSocket {
     session: McpSession,
     registry: Arc<ToolRegistry>,
     pg_pool: PgPool,
-    settings: Arc<Settings>,
+    settings: web::Data<Settings>,
     hb: Instant,
 }
 
@@ -35,7 +35,7 @@ impl McpWebSocket {
         user: Arc<models::User>,
         registry: Arc<ToolRegistry>,
         pg_pool: PgPool,
-        settings: Arc<Settings>,
+        settings: web::Data<Settings>,
     ) -> Self {
         Self {
             user,
@@ -310,7 +310,7 @@ pub async fn mcp_websocket(
         user.into_inner(),
         registry.get_ref().clone(),
         pg_pool.get_ref().clone(),
-        settings.as_ref().clone().into(),
+        settings.clone(),
     );
 
     ws::start(ws, &req, stream)
