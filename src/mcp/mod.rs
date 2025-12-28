@@ -2,6 +2,7 @@ pub mod protocol;
 pub mod registry;
 pub mod session;
 pub mod websocket;
+pub mod tools;
 #[cfg(test)]
 mod protocol_tests;
 

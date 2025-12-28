@@ -7,10 +7,6 @@ volumes:
   redis-data:
     driver: local
 
-networks:
-  stacker-network:
-    driver: bridge
-
 services:
 
   stacker:
@@ -18,8 +14,6 @@ services:
     build: .
     container_name: stacker
     restart: always
-    networks:
-      - stacker-network
     volumes:
       - ./files:/app/files
       - ./docker/local/configuration.yaml:/app/configuration.yaml
@@ -37,12 +31,11 @@ services:
       stackerdb:
         condition: service_healthy
 
+
   redis:
       container_name: redis
       image: redis
       restart: always
-      networks:
-        - stacker-network
       ports:
         - 6379:6379
       volumes:
@@ -58,27 +51,8 @@ services:
           tag: "container_{{.Name}}"
 
 
-#  stacker_queue:
-#    image: trydirect/stacker:0.0.7
-#    container_name: stacker_queue
-#    restart: always
-#    volumes:
-#      - ./configuration.yaml:/app/configuration.yaml
-#      - ./.env:/app/.env
-#    environment:
-#      - RUST_LOG=debug
-#      - RUST_BACKTRACE=1
-#    env_file:
-#      - ./.env
-#    depends_on:
-#      stackerdb:
-#        condition: service_healthy
-#    entrypoint: /app/console mq listen
-
   stackerdb:
     container_name: stackerdb
-    networks:
-      - stacker-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
