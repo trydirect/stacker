@@ -11,7 +11,9 @@ pub(crate) mod project;
 pub(crate) mod server;
 
 pub(crate) mod agreement;
+pub(crate) mod marketplace;
 
 pub use project::*;
 
 pub use agreement::*;
+pub use marketplace::*;

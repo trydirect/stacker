@@ -1,5 +1,32 @@
 # Stacker Development TODO
 
+## MCP Tool Development
+
+- [ ] **GenerateComposeTool Implementation**
+  - Currently: Tool removed during Phase 3 due to ProjectForm schema complexity
+  - Issue: Needs proper understanding of ProjectForm structure (especially `custom.web` array and nested docker_image fields)
+  - TODO: 
+    1. Inspect actual ProjectForm structure in [src/forms/project/](src/forms/project/)
+    2. Map correct field paths for docker_image (namespace, repository, tag) and port configuration
+    3. Implement Docker Compose YAML generation from project metadata
+  - Reference: Previous implementation in [src/mcp/tools/compose.rs](src/mcp/tools/compose.rs)
+  - Status: Phase 3 complete with 15 tools (9 Phase 3 tools without GenerateComposeTool)
+
+- [ ] **MCP Browser-Based Client Support (Cookie Authentication)**
+  - Currently: Backend supports Bearer token auth (works for server-side clients like wscat, CLI tools)
+  - Issue: Browser WebSocket API cannot set `Authorization` header (W3C spec limitation)
+  - Impact: Browser-based MCP UI clients cannot connect (get 403 Forbidden)
+  - TODO:
+    1. Create `src/middleware/authentication/method/f_cookie.rs` - Extract `access_token` from Cookie header
+    2. Update `src/middleware/authentication/manager_middleware.rs` - Add `try_cookie()` after `try_oauth()`
+    3. Export cookie method in `src/middleware/authentication/method/mod.rs`
+    4. Test with wscat: `wscat -c ws://localhost:8000/mcp -H "Cookie: access_token=..."`
+    5. Test with browser WebSocket connection
+  - Reference: Full implementation guide in [docs/MCP_BROWSER_AUTH.md](docs/MCP_BROWSER_AUTH.md)
+  - Priority: Medium (only needed for browser-based MCP clients)
+  - Status: Server-side clients work perfectly; browser support blocked until cookie auth added
+  - Note: Both auth methods should coexist - Bearer for servers, cookies for browsers
+
 ## Agent Registration & Security
 
 - [ ] **Agent Registration Access Control**

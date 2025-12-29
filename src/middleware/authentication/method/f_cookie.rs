@@ -1,6 +1,5 @@
 use crate::configuration::Settings;
 use crate::middleware::authentication::get_header;
-use crate::models;
 use actix_web::{dev::ServiceRequest, web, HttpMessage};
 use std::sync::Arc;
 

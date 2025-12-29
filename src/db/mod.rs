@@ -8,3 +8,4 @@ pub mod product;
 pub mod project;
 pub mod rating;
 pub(crate) mod server;
+pub mod marketplace;

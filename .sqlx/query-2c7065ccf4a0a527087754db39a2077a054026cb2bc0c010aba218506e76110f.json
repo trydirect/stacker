@@ -42,6 +42,16 @@
         "ordinal": 7,
         "name": "request_json",
         "type_info": "Json"
+      },
+      {
+        "ordinal": 8,
+        "name": "source_template_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "template_version",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -57,7 +67,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
   "hash": "2c7065ccf4a0a527087754db39a2077a054026cb2bc0c010aba218506e76110f"

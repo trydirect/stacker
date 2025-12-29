@@ -11,6 +11,7 @@ pub mod rating;
 mod rules;
 mod server;
 pub mod user;
+pub mod marketplace;
 
 pub use agent::*;
 pub use agreement::*;
@@ -25,3 +26,4 @@ pub use rating::*;
 pub use rules::*;
 pub use server::*;
 pub use user::*;
+pub use marketplace::*;
