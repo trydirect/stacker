@@ -14,6 +14,8 @@ pub struct Project {
     pub request_json: Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub source_template_id: Option<Uuid>, // marketplace template UUID
+    pub template_version: Option<String>,    // marketplace template version
 }
 
 impl Project {
@@ -27,6 +29,8 @@ impl Project {
             request_json,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            source_template_id: None,
+            template_version: None,
         }
     }
 }
@@ -42,6 +46,8 @@ impl Default for Project {
             request_json: Default::default(),
             created_at: Default::default(),
             updated_at: Default::default(),
+            source_template_id: None,
+            template_version: None,
         }
     }
 }

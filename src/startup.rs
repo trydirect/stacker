@@ -105,6 +105,27 @@ pub async fn run(
                     ),
             )
             .service(
+                web::scope("/api")
+                    .service(
+                        web::scope("/templates")
+                            .service(crate::routes::marketplace::public::list_handler)
+                            .service(crate::routes::marketplace::public::detail_handler)
+                            .service(crate::routes::marketplace::creator::create_handler)
+                            .service(crate::routes::marketplace::creator::update_handler)
+                            .service(crate::routes::marketplace::creator::submit_handler)
+                            .service(crate::routes::marketplace::creator::mine_handler),
+                    )
+                    .service(
+                        web::scope("/admin")
+                            .service(
+                                web::scope("/templates")
+                                    .service(crate::routes::marketplace::admin::list_submitted_handler)
+                                    .service(crate::routes::marketplace::admin::approve_handler)
+                                    .service(crate::routes::marketplace::admin::reject_handler),
+                            ),
+                    ),
+            )
+            .service(
                 web::scope("/cloud")
                     .service(crate::routes::cloud::get::item)
                     .service(crate::routes::cloud::get::list)

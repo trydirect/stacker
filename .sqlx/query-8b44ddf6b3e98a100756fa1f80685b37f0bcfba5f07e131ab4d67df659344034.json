@@ -1,0 +1,142 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            category_id,\n            tags,\n            tech_stack,\n            status,\n            plan_type,\n            price,\n            currency,\n            is_configurable,\n            view_count,\n            deploy_count,\n            average_rating,\n            created_at,\n            updated_at,\n            approved_at\n        FROM stack_template WHERE creator_user_id = $1 ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "creator_user_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "slug",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "short_description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "long_description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "category_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "tags",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "tech_stack",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "plan_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "price",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 13,
+        "name": "currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "is_configurable",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "view_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "deploy_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "average_rating",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 18,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 19,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 20,
+        "name": "approved_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8b44ddf6b3e98a100756fa1f80685b37f0bcfba5f07e131ab4d67df659344034"
+}
