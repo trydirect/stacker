@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            category_id,\n            tags,\n            tech_stack,\n            status,\n            plan_type,\n            price,\n            currency,\n            is_configurable,\n            view_count,\n            deploy_count,\n            average_rating,\n            created_at,\n            updated_at,\n            approved_at\n        FROM stack_template WHERE creator_user_id = $1 ORDER BY created_at DESC",
+  "query": "SELECT \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            category_id,\n            product_id,\n            tags,\n            tech_stack,\n            status,\n            is_configurable,\n            view_count,\n            deploy_count,\n            required_plan_name,\n            created_at,\n            updated_at,\n            approved_at\n        FROM stack_template WHERE status = 'submitted' ORDER BY created_at ASC",
   "describe": {
     "columns": [
       {
@@ -45,74 +45,62 @@
       },
       {
         "ordinal": 8,
+        "name": "product_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
         "name": "tags",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "tech_stack",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "status",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 11,
-        "name": "plan_type",
-        "type_info": "Varchar"
-      },
-      {
         "ordinal": 12,
-        "name": "price",
-        "type_info": "Float8"
-      },
-      {
-        "ordinal": 13,
-        "name": "currency",
-        "type_info": "Varchar"
-      },
-      {
-        "ordinal": 14,
         "name": "is_configurable",
         "type_info": "Bool"
       },
       {
-        "ordinal": 15,
+        "ordinal": 13,
         "name": "view_count",
         "type_info": "Int4"
       },
       {
-        "ordinal": 16,
+        "ordinal": 14,
         "name": "deploy_count",
         "type_info": "Int4"
       },
       {
-        "ordinal": 17,
-        "name": "average_rating",
-        "type_info": "Float4"
+        "ordinal": 15,
+        "name": "required_plan_name",
+        "type_info": "Varchar"
       },
       {
-        "ordinal": 18,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 19,
+        "ordinal": 17,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 20,
+        "ordinal": 18,
         "name": "approved_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -125,10 +113,8 @@
       true,
       true,
       true,
+      true,
       false,
-      true,
-      true,
-      true,
       true,
       true,
       true,
@@ -138,5 +124,5 @@
       true
     ]
   },
-  "hash": "8b44ddf6b3e98a100756fa1f80685b37f0bcfba5f07e131ab4d67df659344034"
+  "hash": "0a87c8c8bbe3c8d23b41d5929e6862aacd9e2b56c57668f2dc1b6e3c771ee48d"
 }

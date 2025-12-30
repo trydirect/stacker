@@ -1,4 +1,5 @@
 use crate::db;
+use crate::connectors::user_service::UserServiceConnector;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, web, Responder, Result};
@@ -66,4 +67,34 @@ pub async fn reject_handler(
     } else {
         Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"))
     }
+}
+#[tracing::instrument(name = "List available plans from User Service", skip(user_service))]
+#[get("/plans")]
+pub async fn list_plans_handler(
+    _admin: web::ReqData<Arc<models::User>>, // role enforced by Casbin
+    user_service: web::Data<Arc<dyn UserServiceConnector>>,
+) -> Result<impl Responder> {
+    user_service
+        .list_available_plans()
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch available plans: {:?}", err);
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Failed to fetch available plans from User Service")
+        })
+        .map(|plans| {
+            // Convert PlanDefinition to JSON for response
+            let plan_json: Vec<serde_json::Value> = plans
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "name": p.name,
+                        "description": p.description,
+                        "tier": p.tier,
+                        "features": p.features
+                    })
+                })
+                .collect();
+            JsonResponse::build().set_list(plan_json).ok("OK")
+        })
 }

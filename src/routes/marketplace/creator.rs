@@ -73,9 +73,6 @@ pub struct UpdateTemplateRequest {
     pub category_id: Option<i32>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
-    pub plan_type: Option<String>,
-    pub price: Option<f64>,
-    pub currency: Option<String>,
 }
 
 #[tracing::instrument(name = "Update template metadata")]
@@ -90,7 +87,7 @@ pub async fn update_handler(
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
 
     // Ownership check
-    let owner_id = sqlx::query_scalar!(
+    let owner_id: String = sqlx::query_scalar!(
         r#"SELECT creator_user_id FROM stack_template WHERE id = $1"#,
         id
     )
@@ -113,9 +110,6 @@ pub async fn update_handler(
         req.category_id,
         req.tags,
         req.tech_stack,
-        req.plan_type.as_deref(),
-        req.price,
-        req.currency.as_deref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
@@ -138,7 +132,7 @@ pub async fn submit_handler(
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
 
     // Ownership check
-    let owner_id = sqlx::query_scalar!(
+    let owner_id: String = sqlx::query_scalar!(
         r#"SELECT creator_user_id FROM stack_template WHERE id = $1"#,
         id
     )
