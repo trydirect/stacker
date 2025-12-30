@@ -1,4 +1,5 @@
 use crate::configuration::Settings;
+use crate::connectors;
 use crate::helpers;
 use crate::mcp;
 use crate::middleware;
@@ -27,6 +28,9 @@ pub async fn run(
     // Initialize MCP tool registry
     let mcp_registry = Arc::new(mcp::ToolRegistry::new());
     let mcp_registry = web::Data::new(mcp_registry);
+
+    // Initialize external service connectors (plugin pattern)
+    let user_service_connector = connectors::init_user_service(&settings.connectors);
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;
@@ -122,6 +126,10 @@ pub async fn run(
                                     .service(crate::routes::marketplace::admin::list_submitted_handler)
                                     .service(crate::routes::marketplace::admin::approve_handler)
                                     .service(crate::routes::marketplace::admin::reject_handler),
+                            )
+                            .service(
+                                web::scope("/marketplace")
+                                    .service(crate::routes::marketplace::admin::list_plans_handler),
                             ),
                     ),
             )
@@ -168,6 +176,7 @@ pub async fn run(
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
             .app_data(mcp_registry.clone())
+            .app_data(user_service_connector.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?

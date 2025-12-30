@@ -1,4 +1,5 @@
 pub mod configuration;
+pub mod connectors;
 pub mod console;
 pub mod db;
 pub mod forms;

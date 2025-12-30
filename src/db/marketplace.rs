@@ -13,16 +13,14 @@ pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&s
             short_description,
             long_description,
             category_id,
+            product_id,
             tags,
             tech_stack,
             status,
-            plan_type,
-            price,
-            currency,
             is_configurable,
             view_count,
             deploy_count,
-            average_rating,
+            required_plan_name,
             created_at,
             updated_at,
             approved_at
@@ -39,7 +37,7 @@ pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&s
 
     match sort.unwrap_or("recent") {
         "popular" => base.push_str(" ORDER BY deploy_count DESC, view_count DESC"),
-        "rating" => base.push_str(" ORDER BY average_rating DESC NULLS LAST"),
+        "rating" => base.push_str(" ORDER BY (SELECT AVG(rate) FROM rating WHERE rating.product_id = stack_template.product_id) DESC NULLS LAST"),
         _ => base.push_str(" ORDER BY approved_at DESC NULLS LAST, created_at DESC"),
     }
 
@@ -91,16 +89,14 @@ pub async fn get_by_slug_with_latest(pool: &PgPool, slug: &str) -> Result<(Stack
             short_description,
             long_description,
             category_id,
+            product_id,
             tags,
             tech_stack,
             status,
-            plan_type,
-            price,
-            currency,
             is_configurable,
             view_count,
             deploy_count,
-            average_rating,
+            required_plan_name,
             created_at,
             updated_at,
             approved_at
@@ -140,6 +136,45 @@ pub async fn get_by_slug_with_latest(pool: &PgPool, slug: &str) -> Result<(Stack
     Ok((template, version))
 }
 
+pub async fn get_by_id(pool: &PgPool, template_id: uuid::Uuid) -> Result<Option<StackTemplate>, String> {
+    let query_span = tracing::info_span!("marketplace_get_by_id", id = %template_id);
+
+    let template = sqlx::query_as!(
+        StackTemplate,
+        r#"SELECT 
+            id,
+            creator_user_id,
+            creator_name,
+            name,
+            slug,
+            short_description,
+            long_description,
+            category_id,
+            product_id,
+            tags,
+            tech_stack,
+            status,
+            is_configurable,
+            view_count,
+            deploy_count,
+            created_at,
+            updated_at,
+            approved_at,
+            required_plan_name
+        FROM stack_template WHERE id = $1"#,
+        template_id
+    )
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_by_id error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(template)
+}
+
 pub async fn create_draft(
     pool: &PgPool,
     creator_user_id: &str,
@@ -170,16 +205,14 @@ pub async fn create_draft(
             short_description,
             long_description,
             category_id,
+            product_id,
             tags,
             tech_stack,
             status,
-            plan_type,
-            price,
-            currency,
             is_configurable,
             view_count,
             deploy_count,
-            average_rating,
+            required_plan_name,
             created_at,
             updated_at,
             approved_at
@@ -244,7 +277,7 @@ pub async fn set_latest_version(pool: &PgPool, template_id: &uuid::Uuid, version
     Ok(rec)
 }
 
-pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Option<&str>, short_description: Option<&str>, long_description: Option<&str>, category_id: Option<i32>, tags: Option<serde_json::Value>, tech_stack: Option<serde_json::Value>, plan_type: Option<&str>, price: Option<f64>, currency: Option<&str>) -> Result<bool, String> {
+pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Option<&str>, short_description: Option<&str>, long_description: Option<&str>, category_id: Option<i32>, tags: Option<serde_json::Value>, tech_stack: Option<serde_json::Value>) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_update_metadata", template_id = %template_id);
 
     // Update only allowed statuses
@@ -271,10 +304,7 @@ pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Opti
             long_description = COALESCE($4, long_description),
             category_id = COALESCE($5, category_id),
             tags = COALESCE($6, tags),
-            tech_stack = COALESCE($7, tech_stack),
-            plan_type = COALESCE($8, plan_type),
-            price = COALESCE($9, price),
-            currency = COALESCE($10, currency)
+            tech_stack = COALESCE($7, tech_stack)
         WHERE id = $1::uuid"#,
         template_id,
         name,
@@ -282,10 +312,7 @@ pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Opti
         long_description,
         category_id,
         tags,
-        tech_stack,
-        plan_type,
-        price,
-        currency
+        tech_stack
     )
     .execute(pool)
     .instrument(query_span)
@@ -330,16 +357,14 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             short_description,
             long_description,
             category_id,
+            product_id,
             tags,
             tech_stack,
             status,
-            plan_type,
-            price,
-            currency,
             is_configurable,
             view_count,
             deploy_count,
-            average_rating,
+            required_plan_name,
             created_at,
             updated_at,
             approved_at
@@ -369,16 +394,14 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             short_description,
             long_description,
             category_id,
+            product_id,
             tags,
             tech_stack,
             status,
-            plan_type,
-            price,
-            currency,
             is_configurable,
             view_count,
             deploy_count,
-            average_rating,
+            required_plan_name,
             created_at,
             updated_at,
             approved_at

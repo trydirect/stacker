@@ -216,3 +216,12 @@ Test casbin rule
 ```
 cargo r --bin console --features=explain debug casbin --path /client --action POST --subject admin_petru
 ```
+
+
+
+"cargo sqlx prepare" requires setting the DATABASE_URL environment variable to a valid database URL. 
+
+## TODOs
+```
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/stacker
+```

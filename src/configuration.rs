@@ -1,4 +1,5 @@
 use serde;
+use crate::connectors::ConnectorConfig;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct Settings {
@@ -9,6 +10,8 @@ pub struct Settings {
     pub max_clients_number: i64,
     pub amqp: AmqpSettings,
     pub vault: VaultSettings,
+    #[serde(default)]
+    pub connectors: ConnectorConfig,
 }
 
 impl Default for Settings {
@@ -21,6 +24,7 @@ impl Default for Settings {
             max_clients_number: 10,
             amqp: AmqpSettings::default(),
             vault: VaultSettings::default(),
+            connectors: ConnectorConfig::default(),
         }
     }
 }

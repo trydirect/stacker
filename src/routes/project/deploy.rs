@@ -1,4 +1,5 @@
 use crate::configuration::Settings;
+use crate::connectors::user_service::UserServiceConnector;
 use crate::db;
 use crate::forms;
 use crate::helpers::compressor::compress;
@@ -11,7 +12,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[tracing::instrument(name = "Deploy for every user")]
+#[tracing::instrument(name = "Deploy for every user", skip(user_service))]
 #[post("/{id}/deploy")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
@@ -20,6 +21,7 @@ pub async fn item(
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("User {:?} is deploying project: {}", user, id);
@@ -40,6 +42,41 @@ pub async fn item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+
+    // Check marketplace template plan requirements if project was created from template
+    if let Some(template_id) = project.source_template_id {
+        if let Some(template) = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+            .await
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        {
+            // If template requires a specific plan, validate user has it
+            if let Some(required_plan) = template.required_plan_name {
+                let has_plan = user_service
+                    .user_has_plan(&user.id, &required_plan)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to validate plan: {:?}", err);
+                        JsonResponse::<models::Project>::build()
+                            .internal_server_error("Failed to validate subscription plan")
+                    })?;
+
+                if !has_plan {
+                    tracing::warn!(
+                        "User {} lacks required plan {} to deploy template {}",
+                        user.id,
+                        required_plan,
+                        template_id
+                    );
+                    return Err(JsonResponse::<models::Project>::build().forbidden(
+                        format!(
+                            "You require a '{}' subscription to deploy this template",
+                            required_plan
+                        ),
+                    ));
+                }
+            }
+        }
+    }
 
     // Build compose
     let id = project.id;
@@ -138,7 +175,7 @@ pub async fn item(
                 .ok("Success")
         })
 }
-#[tracing::instrument(name = "Deploy, when cloud token is saved")]
+#[tracing::instrument(name = "Deploy, when cloud token is saved", skip(user_service))]
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
@@ -147,6 +184,7 @@ pub async fn saved_item(
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
 ) -> Result<impl Responder> {
     let id = path.0;
     let cloud_id = path.1;
@@ -174,6 +212,41 @@ pub async fn saved_item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
+
+    // Check marketplace template plan requirements if project was created from template
+    if let Some(template_id) = project.source_template_id {
+        if let Some(template) = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+            .await
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        {
+            // If template requires a specific plan, validate user has it
+            if let Some(required_plan) = template.required_plan_name {
+                let has_plan = user_service
+                    .user_has_plan(&user.id, &required_plan)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to validate plan: {:?}", err);
+                        JsonResponse::<models::Project>::build()
+                            .internal_server_error("Failed to validate subscription plan")
+                    })?;
+
+                if !has_plan {
+                    tracing::warn!(
+                        "User {} lacks required plan {} to deploy template {}",
+                        user.id,
+                        required_plan,
+                        template_id
+                    );
+                    return Err(JsonResponse::<models::Project>::build().forbidden(
+                        format!(
+                            "You require a '{}' subscription to deploy this template",
+                            required_plan
+                        ),
+                    ));
+                }
+            }
+        }
+    }
 
     // Build compose
     let id = project.id;

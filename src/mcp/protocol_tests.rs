@@ -1,6 +1,11 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::{
+        CallToolRequest, CallToolResponse, InitializeParams, InitializeResult, JsonRpcError,
+        JsonRpcRequest, JsonRpcResponse, ServerCapabilities, ServerInfo, Tool, ToolContent,
+        ToolsCapability,
+    };
 
     #[test]
     fn test_json_rpc_request_deserialize() {

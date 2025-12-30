@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE stack_template SET \n            name = COALESCE($2, name),\n            short_description = COALESCE($3, short_description),\n            long_description = COALESCE($4, long_description),\n            category_id = COALESCE($5, category_id),\n            tags = COALESCE($6, tags),\n            tech_stack = COALESCE($7, tech_stack)\n        WHERE id = $1::uuid",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Text",
+        "Text",
+        "Int4",
+        "Jsonb",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cdb14c0aad0a5dbc45504608f820246da9fcfc2e680937b66bb8aa3e24c9dd1f"
+}
