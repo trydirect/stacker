@@ -1,11 +1,13 @@
 use crate::db;
 use crate::connectors::user_service::UserServiceConnector;
+use crate::connectors::{MarketplaceWebhookSender, WebhookSenderConfig};
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid;
+use tracing::Instrument;
 
 #[tracing::instrument(name = "List submitted templates (admin)")]
 #[get("")]
@@ -36,15 +38,52 @@ pub async fn approve_handler(
     let id = uuid::Uuid::parse_str(&path.into_inner().0)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
     let req = body.into_inner();
+    
     let updated = db::marketplace::admin_decide(pg_pool.get_ref(), &id, &admin.id, "approved", req.reason.as_deref())
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
-    if updated {
-        Ok(JsonResponse::<serde_json::Value>::build().ok("Approved"))
-    } else {
-        Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"))
+    if !updated {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
     }
+
+    // Fetch template details for webhook
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch template for webhook: {:?}", err);
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+        })?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    // Send webhook asynchronously (non-blocking)
+    // Don't fail the approval if webhook send fails - template is already approved
+    let template_clone = template.clone();
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span = tracing::info_span!("send_approval_webhook", template_id = %template_clone.id);
+                
+                if let Err(e) = sender
+                    .send_template_approved(&template_clone, &template_clone.creator_user_id)
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send template approval webhook: {:?}", e);
+                    // Log but don't block - approval already persisted
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+                // Gracefully handle missing config
+            }
+        }
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Approved"))
 }
 
 #[tracing::instrument(name = "Reject template (admin)")]
@@ -58,15 +97,41 @@ pub async fn reject_handler(
     let id = uuid::Uuid::parse_str(&path.into_inner().0)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
     let req = body.into_inner();
+    
     let updated = db::marketplace::admin_decide(pg_pool.get_ref(), &id, &admin.id, "rejected", req.reason.as_deref())
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
-    if updated {
-        Ok(JsonResponse::<serde_json::Value>::build().ok("Rejected"))
-    } else {
-        Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"))
+    if !updated {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
     }
+
+    // Send webhook asynchronously (non-blocking)
+    // Don't fail the rejection if webhook send fails - template is already rejected
+    let template_id = id.to_string();
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span = tracing::info_span!("send_rejection_webhook", template_id = %template_id);
+                
+                if let Err(e) = sender
+                    .send_template_rejected(&template_id)
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send template rejection webhook: {:?}", e);
+                    // Log but don't block - rejection already persisted
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+                // Gracefully handle missing config
+            }
+        }
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Rejected"))
 }
 #[tracing::instrument(name = "List available plans from User Service", skip(user_service))]
 #[get("/plans")]
