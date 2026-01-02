@@ -493,9 +493,11 @@ pub async fn sync_categories(
     }
 
     let mut synced_count = 0;
+    let mut error_count = 0;
 
     for category in categories {
         // Use INSERT ... ON CONFLICT DO UPDATE to upsert
+        // Handle conflicts on both id and name (both have unique constraints)
         let result = sqlx::query(
             r#"
             INSERT INTO stack_category (id, name, title, metadata)
@@ -511,18 +513,52 @@ pub async fn sync_categories(
         .bind(&category.title)
         .bind(serde_json::json!({"priority": category.priority}))
         .execute(pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to sync category {}: {:?}", category.name, e);
-            format!("Failed to sync category: {}", e)
-        })?;
+        .await;
 
-        if result.rows_affected() > 0 {
-            synced_count += 1;
+        // If conflict on id fails, try conflict on name
+        let result = match result {
+            Ok(r) => Ok(r),
+            Err(e) if e.to_string().contains("stack_category_name_key") => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO stack_category (id, name, title, metadata)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (name) DO UPDATE
+                    SET id = EXCLUDED.id,
+                        title = EXCLUDED.title,
+                        metadata = EXCLUDED.metadata
+                    "#
+                )
+                .bind(category.id)
+                .bind(&category.name)
+                .bind(&category.title)
+                .bind(serde_json::json!({"priority": category.priority}))
+                .execute(pool)
+                .await
+            }
+            Err(e) => Err(e),
+        };
+
+        match result {
+            Ok(res) if res.rows_affected() > 0 => {
+                synced_count += 1;
+            }
+            Ok(_) => {
+                tracing::debug!("Category {} already up to date", category.name);
+            }
+            Err(e) => {
+                tracing::error!("Failed to sync category {}: {:?}", category.name, e);
+                error_count += 1;
+            }
         }
     }
 
-    tracing::info!("Synced {} categories from User Service", synced_count);
+    if error_count > 0 {
+        tracing::warn!("Synced {} categories with {} errors", synced_count, error_count);
+    } else {
+        tracing::info!("Synced {} categories from User Service", synced_count);
+    }
+    
     Ok(synced_count)
 }
 
