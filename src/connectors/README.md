@@ -1,6 +1,7 @@
 # External Service Connectors
 
-This directory contains adapters for all external service integrations. **All communication with external services MUST go through connectors** - this is a core architectural rule for Stacker.
+This directory contains adapters for all external service integrations for your project.
+ **All communication with external services MUST go through connectors** - this is a core architectural rule for Stacker.
 
 ## Why Connectors?
 
@@ -526,7 +527,5 @@ req.send()
 
 ## Further Reading
 
-- [User Service API Documentation](../../docs/USER_SERVICE_API.md)
-- [Payment Service Documentation](../../docs/PAYMENT_SERVICE.md)
 - [Error Handling Patterns](../helpers/README.md)
 - [Testing Guide](../../tests/README.md)
