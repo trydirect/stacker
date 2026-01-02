@@ -26,8 +26,6 @@ pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&s
             t.approved_at
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        WHERE t.slug = $1 AND t.status = 'approved'"#,
-        LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved'"#,
     );
 
@@ -35,13 +33,13 @@ pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&s
         base.push_str(" AND c.name = $1");
     }
     if tag.is_some() {
-        base.push_str(r" AND tags \? $2");
+        base.push_str(" AND t.tags ? $2");
     }
 
     match sort.unwrap_or("recent") {
-        "popular" => base.push_str(" ORDER BY deploy_count DESC, view_count DESC"),
-        "rating" => base.push_str(" ORDER BY (SELECT AVG(rate) FROM rating WHERE rating.product_id = stack_template.product_id) DESC NULLS LAST"),
-        _ => base.push_str(" ORDER BY approved_at DESC NULLS LAST, created_at DESC"),
+        "popular" => base.push_str(" ORDER BY t.deploy_count DESC, t.view_count DESC"),
+        "rating" => base.push_str(" ORDER BY (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST"),
+        _ => base.push_str(" ORDER BY t.approved_at DESC NULLS LAST, t.created_at DESC"),
     }
 
     let query_span = tracing::info_span!("marketplace_list_approved");

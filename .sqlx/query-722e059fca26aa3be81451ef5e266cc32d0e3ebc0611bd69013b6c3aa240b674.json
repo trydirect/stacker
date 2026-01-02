@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            category_id,\n            product_id,\n            tags,\n            tech_stack,\n            status,\n            is_configurable,\n            view_count,\n            deploy_count,\n            required_plan_name,\n            created_at,\n            updated_at,\n            approved_at\n        FROM stack_template WHERE creator_user_id = $1 ORDER BY created_at DESC",
+  "query": "SELECT \n            t.id,\n            t.creator_user_id,\n            t.creator_name,\n            t.name,\n            t.slug,\n            t.short_description,\n            t.long_description,\n            c.name AS \"category_code?\",\n            t.product_id,\n            t.tags,\n            t.tech_stack,\n            t.status,\n            t.is_configurable,\n            t.view_count,\n            t.deploy_count,\n            t.created_at,\n            t.updated_at,\n            t.approved_at,\n            t.required_plan_name\n        FROM stack_template t\n        LEFT JOIN stack_category c ON t.category_id = c.id\n        WHERE t.id = $1",
   "describe": {
     "columns": [
       {
@@ -40,8 +40,8 @@
       },
       {
         "ordinal": 7,
-        "name": "category_id",
-        "type_info": "Int4"
+        "name": "category_code?",
+        "type_info": "Varchar"
       },
       {
         "ordinal": 8,
@@ -80,28 +80,28 @@
       },
       {
         "ordinal": 15,
-        "name": "required_plan_name",
-        "type_info": "Varchar"
-      },
-      {
-        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 18,
+        "ordinal": 17,
         "name": "approved_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "required_plan_name",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -112,7 +112,7 @@
       false,
       true,
       true,
-      true,
+      false,
       true,
       true,
       true,
@@ -126,5 +126,5 @@
       true
     ]
   },
-  "hash": "0612f433190f8ba51c17f57d6da2db5ba2061ba4fb0604caef24943d936ad45d"
+  "hash": "722e059fca26aa3be81451ef5e266cc32d0e3ebc0611bd69013b6c3aa240b674"
 }
