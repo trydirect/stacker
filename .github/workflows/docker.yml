@@ -23,6 +23,12 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
 
+      - name: Install OpenSSL build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
       - name: Verify .sqlx cache exists
         run: |
           ls -lh .sqlx/ || echo ".sqlx directory not found"
