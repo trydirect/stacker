@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            category_id,\n            product_id,\n            tags,\n            tech_stack,\n            status,\n            is_configurable,\n            view_count,\n            deploy_count,\n            required_plan_name,\n            created_at,\n            updated_at,\n            approved_at\n        FROM stack_template WHERE status = 'submitted' ORDER BY created_at ASC",
+  "query": "INSERT INTO stack_template (\n            creator_user_id, creator_name, name, slug,\n            short_description, long_description, category_id,\n            tags, tech_stack, status\n        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft')\n        RETURNING \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            (SELECT name FROM stack_category WHERE id = category_id) AS \"category_code?\",\n            product_id,\n            tags,\n            tech_stack,\n            status,\n            is_configurable,\n            view_count,\n            deploy_count,\n            required_plan_name,\n            created_at,\n            updated_at,\n            approved_at\n        ",
   "describe": {
     "columns": [
       {
@@ -40,8 +40,8 @@
       },
       {
         "ordinal": 7,
-        "name": "category_id",
-        "type_info": "Int4"
+        "name": "category_code?",
+        "type_info": "Varchar"
       },
       {
         "ordinal": 8,
@@ -100,7 +100,17 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb"
+      ]
     },
     "nullable": [
       false,
@@ -110,7 +120,7 @@
       false,
       true,
       true,
-      true,
+      null,
       true,
       true,
       true,
@@ -124,5 +134,5 @@
       true
     ]
   },
-  "hash": "0a87c8c8bbe3c8d23b41d5929e6862aacd9e2b56c57668f2dc1b6e3c771ee48d"
+  "hash": "4ed4ce17b28e36898d9afabb96b7043ceee664f67752c41bf06df6e51ed69362"
 }
