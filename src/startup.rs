@@ -111,6 +111,7 @@ pub async fn run(
             )
             .service(
                 web::scope("/api")
+                    .service(crate::routes::marketplace::categories::list_handler)
                     .service(
                         web::scope("/templates")
                             .service(crate::routes::marketplace::public::list_handler)
