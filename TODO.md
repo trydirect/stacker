@@ -3,6 +3,11 @@
 ## Context
 Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Service when templates are published/updated. User Service owns the `products` table for monetization, while Stacker owns `stack_template` (template definitions only).
 
+### Nginx Proxy Routing
+**Browser → Stacker** (via nginx): `https://dev.try.direct/stacker/` → `stacker:8000`
+**Stacker → User Service** (internal): `http://user:4100/marketplace/sync` (no nginx prefix)
+**Stacker → Payment Service** (internal): `http://payment:8000/` (no nginx prefix)
+
 Stacker responsibilities:
 1. **Maintain `stack_template` table** (template definitions, no pricing/monetization)
 2. **Send webhook to User Service** when template status changes (approved, updated, rejected)
@@ -11,12 +16,86 @@ Stacker responsibilities:
 
 ## Tasks
 
+### 0. Setup ACL Rules Migration (User Service)
+**File**: `migrations/setup_acl_rules.py` (in Stacker repo)
+
+**Purpose**: Automatically configure Casbin ACL rules in User Service for Stacker endpoints
+
+**Required Casbin rules** (to be inserted in User Service `casbin_rule` table):
+```python
+# Allow root/admin to manage marketplace templates via Stacker
+rules = [
+    ('p', 'root', '/templates', 'POST', '', '', ''),      # Create template
+    ('p', 'root', '/templates', 'GET', '', '', ''),       # List templates
+    ('p', 'root', '/templates/*', 'GET', '', '', ''),     # View template
+    ('p', 'root', '/templates/*', 'PUT', '', '', ''),     # Update template
+    ('p', 'root', '/templates/*', 'DELETE', '', '', ''),  # Delete template
+    ('p', 'admin', '/templates', 'POST', '', '', ''),
+    ('p', 'admin', '/templates', 'GET', '', '', ''),
+    ('p', 'admin', '/templates/*', 'GET', '', '', ''),
+    ('p', 'admin', '/templates/*', 'PUT', '', '', ''),
+    ('p', 'developer', '/templates', 'POST', '', '', ''),  # Developers can create
+    ('p', 'developer', '/templates', 'GET', '', '', ''),   # Developers can list own
+]
+```
+
+**Implementation**:
+- Run as part of Stacker setup/init
+- Connect to User Service database
+- Insert rules if not exist (idempotent)
+- **Status**: NOT STARTED
+- **Priority**: HIGH (Blocks template creation via Stack Builder)
+- **ETA**: 30 minutes
+
+### 0.5. Add Category Table Fields & Sync (Stacker)
+**File**: `migrations/add_category_fields.py` (in Stacker repo)
+
+**Purpose**: Add missing fields to Stacker's local `category` table and sync from User Service
+
+**Migration Steps**:
+1. Add `title VARCHAR(255)` column to `category` table (currently only has `id`, `name`)
+2. Add `metadata JSONB` column for flexible category data
+3. Create `UserServiceConnector.sync_categories()` method
+4. On application startup: Fetch categories from User Service `GET http://user:4100/api/1.0/category`
+5. Populate/update local `category` table:
+   - Map User Service `name` → Stacker `name` (code)
+   - Map User Service `title` → Stacker `title`
+   - Store additional data in `metadata` JSONB
+
+**Example sync**:
+```python
+# User Service category
+{"_id": 5, "name": "ai", "title": "AI Agents", "priority": 5}
+
+# Stacker local category (after sync)
+{"id": 5, "name": "ai", "title": "AI Agents", "metadata": {"priority": 5}}
+```
+
+**Status**: NOT STARTED  
+**Priority**: HIGH (Required for Stack Builder UI)  
+**ETA**: 1 hour
+
 ### 1. Create User Service Connector
 **File**: `app/<stacker-module>/connectors/user_service_connector.py` (in Stacker repo)
 
 **Required methods**:
 ```python
 class UserServiceConnector:
+    def get_categories(self) -> list:
+        """
+        GET http://user:4100/api/1.0/category
+        
+        Returns list of available categories for stack classification:
+        [
+            {"_id": 1, "name": "cms", "title": "CMS", "priority": 1},
+            {"_id": 2, "name": "ecommerce", "title": "E-commerce", "priority": 2},
+            {"_id": 5, "name": "ai", "title": "AI Agents", "priority": 5}
+        ]
+        
+        Used by: Stack Builder UI to populate category dropdown
+        """
+        pass
+    
     def get_user_profile(self, user_token: str) -> dict:
         """
         GET http://user:4100/oauth_server/api/me
@@ -89,6 +168,7 @@ class MarketplaceWebhookSender:
             "code": "ai-agent-stack-pro",
             "name": "AI Agent Stack Pro",
             "description": "Advanced AI agent deployment...",
+            "category_code": "ai",  # String code from local category.name (not ID)
             "price": 99.99,
             "billing_cycle": "one_time",  # or "monthly"
             "currency": "USD",
@@ -105,6 +185,7 @@ class MarketplaceWebhookSender:
             'code': stack_template.get('code'),
             'name': stack_template.get('name'),
             'description': stack_template.get('description'),
+            'category_code': stack_template.get('category'),  # String code (e.g., "ai", "cms")
             'price': stack_template.get('price'),
             'billing_cycle': stack_template.get('billing_cycle', 'one_time'),
             'currency': stack_template.get('currency', 'USD'),

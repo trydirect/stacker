@@ -12,7 +12,7 @@ pub struct CreateTemplateRequest {
     pub slug: String,
     pub short_description: Option<String>,
     pub long_description: Option<String>,
-    pub category_id: Option<i32>,
+    pub category_code: Option<String>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
     pub version: Option<String>,
@@ -41,7 +41,7 @@ pub async fn create_handler(
         &req.slug,
         req.short_description.as_deref(),
         req.long_description.as_deref(),
-        req.category_id,
+        req.category_code.as_deref(),
         tags,
         tech_stack,
     )
@@ -70,7 +70,7 @@ pub struct UpdateTemplateRequest {
     pub name: Option<String>,
     pub short_description: Option<String>,
     pub long_description: Option<String>,
-    pub category_id: Option<i32>,
+    pub category_code: Option<String>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
 }
@@ -107,7 +107,7 @@ pub async fn update_handler(
         req.name.as_deref(),
         req.short_description.as_deref(),
         req.long_description.as_deref(),
-        req.category_id,
+        req.category_code.as_deref(),
         req.tags,
         req.tech_stack,
     )

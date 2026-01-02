@@ -68,7 +68,7 @@ pub async fn approve_handler(
                 let span = tracing::info_span!("send_approval_webhook", template_id = %template_clone.id);
                 
                 if let Err(e) = sender
-                    .send_template_approved(&template_clone, &template_clone.creator_user_id)
+                    .send_template_approved(&template_clone, &template_clone.creator_user_id, template_clone.category_code.clone())
                     .instrument(span)
                     .await
                 {
