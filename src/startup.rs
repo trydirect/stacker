@@ -30,7 +30,8 @@ pub async fn run(
     let mcp_registry = web::Data::new(mcp_registry);
 
     // Initialize external service connectors (plugin pattern)
-    let user_service_connector = connectors::init_user_service(&settings.connectors);
+    // Connector handles category sync on startup
+    let user_service_connector = connectors::init_user_service(&settings.connectors, pg_pool.clone());
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;

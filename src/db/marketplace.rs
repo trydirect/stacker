@@ -1,35 +1,38 @@
-use crate::models::{StackTemplate, StackTemplateVersion};
+use crate::models::{StackTemplate, StackTemplateVersion, StackCategory};
 use sqlx::PgPool;
 use tracing::Instrument;
 
 pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&str>, sort: Option<&str>) -> Result<Vec<StackTemplate>, String> {
     let mut base = String::from(
         r#"SELECT 
-            id,
-            creator_user_id,
-            creator_name,
-            name,
-            slug,
-            short_description,
-            long_description,
-            category_id,
-            product_id,
-            tags,
-            tech_stack,
-            status,
-            is_configurable,
-            view_count,
-            deploy_count,
-            required_plan_name,
-            created_at,
-            updated_at,
-            approved_at
-        FROM stack_template
-        WHERE status = 'approved'"#,
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS "category_code?",
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.created_at,
+            t.updated_at,
+            t.approved_at
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.slug = $1 AND t.status = 'approved'"#,
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.status = 'approved'"#,
     );
 
     if category.is_some() {
-        base.push_str(" AND category_id = (SELECT id FROM stack_category WHERE name = $1)");
+        base.push_str(" AND c.name = $1");
     }
     if tag.is_some() {
         base.push_str(r" AND tags \? $2");
@@ -81,26 +84,28 @@ pub async fn get_by_slug_with_latest(pool: &PgPool, slug: &str) -> Result<(Stack
     let template = sqlx::query_as!(
         StackTemplate,
         r#"SELECT 
-            id,
-            creator_user_id,
-            creator_name,
-            name,
-            slug,
-            short_description,
-            long_description,
-            category_id,
-            product_id,
-            tags,
-            tech_stack,
-            status,
-            is_configurable,
-            view_count,
-            deploy_count,
-            required_plan_name,
-            created_at,
-            updated_at,
-            approved_at
-        FROM stack_template WHERE slug = $1 AND status = 'approved'"#,
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS "category_code?",
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.created_at,
+            t.updated_at,
+            t.approved_at
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.slug = $1 AND t.status = 'approved'"#,
         slug
     )
     .fetch_one(pool)
@@ -142,26 +147,28 @@ pub async fn get_by_id(pool: &PgPool, template_id: uuid::Uuid) -> Result<Option<
     let template = sqlx::query_as!(
         StackTemplate,
         r#"SELECT 
-            id,
-            creator_user_id,
-            creator_name,
-            name,
-            slug,
-            short_description,
-            long_description,
-            category_id,
-            product_id,
-            tags,
-            tech_stack,
-            status,
-            is_configurable,
-            view_count,
-            deploy_count,
-            created_at,
-            updated_at,
-            approved_at,
-            required_plan_name
-        FROM stack_template WHERE id = $1"#,
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS "category_code?",
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.created_at,
+            t.updated_at,
+            t.approved_at,
+            t.required_plan_name
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.id = $1"#,
         template_id
     )
     .fetch_optional(pool)
@@ -183,7 +190,7 @@ pub async fn create_draft(
     slug: &str,
     short_description: Option<&str>,
     long_description: Option<&str>,
-    category_id: Option<i32>,
+    category_code: Option<&str>,
     tags: serde_json::Value,
     tech_stack: serde_json::Value,
 ) -> Result<StackTemplate, String> {
@@ -195,7 +202,7 @@ pub async fn create_draft(
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
             tags, tech_stack, status
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft')
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft')
         RETURNING 
             id,
             creator_user_id,
@@ -204,7 +211,7 @@ pub async fn create_draft(
             slug,
             short_description,
             long_description,
-            category_id,
+            (SELECT name FROM stack_category WHERE id = category_id) AS "category_code?",
             product_id,
             tags,
             tech_stack,
@@ -223,7 +230,7 @@ pub async fn create_draft(
         slug,
         short_description,
         long_description,
-        category_id,
+        category_code,
         tags,
         tech_stack
     )
@@ -277,7 +284,7 @@ pub async fn set_latest_version(pool: &PgPool, template_id: &uuid::Uuid, version
     Ok(rec)
 }
 
-pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Option<&str>, short_description: Option<&str>, long_description: Option<&str>, category_id: Option<i32>, tags: Option<serde_json::Value>, tech_stack: Option<serde_json::Value>) -> Result<bool, String> {
+pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Option<&str>, short_description: Option<&str>, long_description: Option<&str>, category_code: Option<&str>, tags: Option<serde_json::Value>, tech_stack: Option<serde_json::Value>) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_update_metadata", template_id = %template_id);
 
     // Update only allowed statuses
@@ -302,7 +309,7 @@ pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Opti
             name = COALESCE($2, name),
             short_description = COALESCE($3, short_description),
             long_description = COALESCE($4, long_description),
-            category_id = COALESCE($5, category_id),
+            category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
             tags = COALESCE($6, tags),
             tech_stack = COALESCE($7, tech_stack)
         WHERE id = $1::uuid"#,
@@ -310,7 +317,7 @@ pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Opti
         name,
         short_description,
         long_description,
-        category_id,
+        category_code,
         tags,
         tech_stack
     )
@@ -349,26 +356,29 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
     sqlx::query_as!(
         StackTemplate,
         r#"SELECT 
-            id,
-            creator_user_id,
-            creator_name,
-            name,
-            slug,
-            short_description,
-            long_description,
-            category_id,
-            product_id,
-            tags,
-            tech_stack,
-            status,
-            is_configurable,
-            view_count,
-            deploy_count,
-            required_plan_name,
-            created_at,
-            updated_at,
-            approved_at
-        FROM stack_template WHERE creator_user_id = $1 ORDER BY created_at DESC"#,
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS "category_code?",
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.created_at,
+            t.updated_at,
+            t.approved_at
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.creator_user_id = $1
+        ORDER BY t.created_at DESC"#,
         user_id
     )
     .fetch_all(pool)
@@ -386,26 +396,29 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
     sqlx::query_as!(
         StackTemplate,
         r#"SELECT 
-            id,
-            creator_user_id,
-            creator_name,
-            name,
-            slug,
-            short_description,
-            long_description,
-            category_id,
-            product_id,
-            tags,
-            tech_stack,
-            status,
-            is_configurable,
-            view_count,
-            deploy_count,
-            required_plan_name,
-            created_at,
-            updated_at,
-            approved_at
-        FROM stack_template WHERE status = 'submitted' ORDER BY created_at ASC"#
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS "category_code?",
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.created_at,
+            t.updated_at,
+            t.approved_at
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.status = 'submitted'
+        ORDER BY t.created_at ASC"#
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -465,4 +478,72 @@ pub async fn admin_decide(pool: &PgPool, template_id: &uuid::Uuid, reviewer_user
     })?;
 
     Ok(true)
+}
+
+/// Sync categories from User Service to local mirror
+/// Upserts category data (id, name, title, metadata)
+pub async fn sync_categories(
+    pool: &PgPool,
+    categories: Vec<crate::connectors::CategoryInfo>,
+) -> Result<usize, String> {
+    let query_span = tracing::info_span!("sync_categories", count = categories.len());
+    let _enter = query_span.enter();
+
+    if categories.is_empty() {
+        tracing::info!("No categories to sync");
+        return Ok(0);
+    }
+
+    let mut synced_count = 0;
+
+    for category in categories {
+        // Use INSERT ... ON CONFLICT DO UPDATE to upsert
+        let result = sqlx::query(
+            r#"
+            INSERT INTO stack_category (id, name, title, metadata)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name,
+                title = EXCLUDED.title,
+                metadata = EXCLUDED.metadata
+            "#
+        )
+        .bind(category.id)
+        .bind(&category.name)
+        .bind(&category.title)
+        .bind(serde_json::json!({"priority": category.priority}))
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to sync category {}: {:?}", category.name, e);
+            format!("Failed to sync category: {}", e)
+        })?;
+
+        if result.rows_affected() > 0 {
+            synced_count += 1;
+        }
+    }
+
+    tracing::info!("Synced {} categories from User Service", synced_count);
+    Ok(synced_count)
+}
+
+/// Get all categories from local mirror
+pub async fn get_categories(pool: &PgPool) -> Result<Vec<StackCategory>, String> {
+    let query_span = tracing::info_span!("get_categories");
+
+    sqlx::query_as::<_, StackCategory>(
+        r#"
+        SELECT id, name, title, metadata
+        FROM stack_category
+        ORDER BY id
+        "#
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to fetch categories: {:?}", e);
+        "Internal Server Error".to_string()
+    })
 }

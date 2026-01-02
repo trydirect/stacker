@@ -3,6 +3,14 @@ use serde_derive::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct StackCategory {
+    pub id: i32,
+    pub name: String,
+    pub title: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
 pub struct StackTemplate {
     pub id: Uuid,
     pub creator_user_id: String,
@@ -11,7 +19,7 @@ pub struct StackTemplate {
     pub slug: String,
     pub short_description: Option<String>,
     pub long_description: Option<String>,
-    pub category_id: Option<i32>,
+    pub category_code: Option<String>,
     pub product_id: Option<i32>,
     pub tags: serde_json::Value,
     pub tech_stack: serde_json::Value,
