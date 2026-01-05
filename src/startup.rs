@@ -1,5 +1,6 @@
 use crate::configuration::Settings;
 use crate::connectors;
+use crate::health::{HealthChecker, HealthMetrics};
 use crate::helpers;
 use crate::mcp;
 use crate::middleware;
@@ -16,6 +17,9 @@ pub async fn run(
     pg_pool: Pool<Postgres>,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
+    let settings_arc = Arc::new(settings.clone());
+    let pg_pool_arc = Arc::new(pg_pool.clone());
+    
     let settings = web::Data::new(settings);
     let pg_pool = web::Data::new(pg_pool);
 
@@ -28,6 +32,13 @@ pub async fn run(
     // Initialize MCP tool registry
     let mcp_registry = Arc::new(mcp::ToolRegistry::new());
     let mcp_registry = web::Data::new(mcp_registry);
+
+    // Initialize health checker and metrics
+    let health_checker = Arc::new(HealthChecker::new(pg_pool_arc.clone(), settings_arc.clone()));
+    let health_checker = web::Data::new(health_checker);
+    
+    let health_metrics = Arc::new(HealthMetrics::new(1000));
+    let health_metrics = web::Data::new(health_metrics);
 
     // Initialize external service connectors (plugin pattern)
     // Connector handles category sync on startup
@@ -54,7 +65,13 @@ pub async fn run(
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Cors::permissive())
-            .service(web::scope("/health_check").service(routes::health_check))
+            .app_data(health_checker.clone())
+            .app_data(health_metrics.clone())
+            .service(
+                web::scope("/health_check")
+                    .service(routes::health_check)
+                    .service(routes::health_metrics)
+            )
             .service(
                 web::scope("/client")
                     .service(routes::client::add_handler)
