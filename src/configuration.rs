@@ -1,7 +1,7 @@
 use serde;
 use crate::connectors::ConnectorConfig;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
     pub app_port: u16,

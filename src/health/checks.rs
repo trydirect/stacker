@@ -29,27 +29,26 @@ impl HealthChecker {
         let uptime = self.start_time.elapsed().as_secs();
         let mut response = HealthCheckResponse::new(version, uptime);
 
-        let checks = vec![
-            ("database", self.check_database()),
-            ("rabbitmq", self.check_rabbitmq()),
-            ("dockerhub", self.check_dockerhub()),
-            ("redis", self.check_redis()),
-            ("vault", self.check_vault()),
-        ];
+        let db_check = timeout(CHECK_TIMEOUT, self.check_database());
+        let mq_check = timeout(CHECK_TIMEOUT, self.check_rabbitmq());
+        let hub_check = timeout(CHECK_TIMEOUT, self.check_dockerhub());
+        let redis_check = timeout(CHECK_TIMEOUT, self.check_redis());
+        let vault_check = timeout(CHECK_TIMEOUT, self.check_vault());
 
-        let results = futures::future::join_all(checks.into_iter().map(|(name, future)| async move {
-            let result = timeout(CHECK_TIMEOUT, future).await;
-            let health = match result {
-                Ok(health) => health,
-                Err(_) => ComponentHealth::unhealthy("Health check timeout".to_string()),
-            };
-            (name.to_string(), health)
-        }))
-        .await;
+        let (db_result, mq_result, hub_result, redis_result, vault_result) = 
+            tokio::join!(db_check, mq_check, hub_check, redis_check, vault_check);
 
-        for (name, health) in results {
-            response.add_component(name, health);
-        }
+        let db_health = db_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let mq_health = mq_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let hub_health = hub_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let redis_health = redis_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let vault_health = vault_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+
+        response.add_component("database".to_string(), db_health);
+        response.add_component("rabbitmq".to_string(), mq_health);
+        response.add_component("dockerhub".to_string(), hub_health);
+        response.add_component("redis".to_string(), redis_health);
+        response.add_component("vault".to_string(), vault_health);
 
         response
     }
@@ -103,11 +102,10 @@ impl HealthChecker {
         let start = Instant::now();
         let connection_string = self.settings.amqp.connection_string();
 
-        match deadpool_lapin::Config {
-            url: Some(connection_string.clone()),
-            ..Default::default()
-        }
-        .create_pool(Some(deadpool_lapin::Runtime::Tokio1))
+        let mut config = deadpool_lapin::Config::default();
+        config.url = Some(connection_string.clone());
+        
+        match config.create_pool(Some(deadpool_lapin::Runtime::Tokio1))
         {
             Ok(pool) => match pool.get().await {
                 Ok(conn) => match conn.create_channel().await {
