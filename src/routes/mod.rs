@@ -5,7 +5,7 @@ pub mod health_checks;
 pub(crate) mod rating;
 pub(crate) mod test;
 
-pub use health_checks::*;
+pub use health_checks::{health_check, health_metrics};
 pub(crate) mod cloud;
 pub(crate) mod project;
 pub(crate) mod server;

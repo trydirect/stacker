@@ -3,6 +3,7 @@ pub mod connectors;
 pub mod console;
 pub mod db;
 pub mod forms;
+pub mod health;
 pub mod helpers;
 pub mod mcp;
 mod middleware;
