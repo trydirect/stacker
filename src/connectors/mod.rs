@@ -40,10 +40,19 @@
 
 pub mod config;
 pub mod errors;
+pub mod admin_service;
+pub mod install_service;
 pub mod user_service;
 
 pub use config::{ConnectorConfig, UserServiceConfig, PaymentServiceConfig, EventsConfig};
 pub use errors::ConnectorError;
+pub use admin_service::{
+    parse_jwt_claims,
+    validate_jwt_expiration,
+    user_from_jwt_claims,
+    extract_bearer_token,
+};
+pub use install_service::{InstallServiceClient, InstallServiceConnector};
 pub use user_service::{
     UserServiceConnector, UserServiceClient, StackResponse, UserProfile, UserProduct, ProductInfo,
     UserPlanInfo, PlanDefinition, CategoryInfo,

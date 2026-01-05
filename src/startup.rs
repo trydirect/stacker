@@ -32,6 +32,8 @@ pub async fn run(
     // Initialize external service connectors (plugin pattern)
     // Connector handles category sync on startup
     let user_service_connector = connectors::init_user_service(&settings.connectors, pg_pool.clone());
+    let install_service_connector: web::Data<Arc<dyn connectors::InstallServiceConnector>> =
+        web::Data::new(Arc::new(connectors::InstallServiceClient));
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;
@@ -179,6 +181,7 @@ pub async fn run(
             .app_data(vault_client.clone())
             .app_data(mcp_registry.clone())
             .app_data(user_service_connector.clone())
+            .app_data(install_service_connector.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?
