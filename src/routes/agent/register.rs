@@ -51,25 +51,7 @@ pub async fn register_handler(
     vault_client: web::Data<helpers::VaultClient>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
-    // 1. Validate deployment exists first (prevents FK constraint violation)
-    let deployment = db::deployment::fetch_by_deployment_hash(
-        pg_pool.get_ref(),
-        &payload.deployment_hash,
-    )
-    .await
-    .map_err(|err| {
-        helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
-    })?;
-
-    if deployment.is_none() {
-        return Ok(HttpResponse::NotFound().json(serde_json::json!({
-            "message": "Deployment not found. Create deployment before registering agent.",
-            "deployment_hash": payload.deployment_hash,
-            "status_code": 404
-        })));
-    }
-
-    // 2. Check if agent already registered (idempotent operation)
+    // 1. Check if agent already registered (idempotent operation)
     let existing_agent =
         db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &payload.deployment_hash)
             .await
