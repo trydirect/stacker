@@ -26,9 +26,11 @@ impl VaultClient {
         deployment_hash: &str,
         token: &str,
     ) -> Result<(), String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
         let path = format!(
-            "{}/v1/{}/{}/token",
-            self.address, self.agent_path_prefix, deployment_hash
+            "{}/{}/{}/token",
+            base, prefix, deployment_hash
         );
 
         let payload = json!({
@@ -64,9 +66,11 @@ impl VaultClient {
     /// Fetch agent token from Vault
     #[tracing::instrument(name = "Fetch agent token from Vault", skip(self))]
     pub async fn fetch_agent_token(&self, deployment_hash: &str) -> Result<String, String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
         let path = format!(
-            "{}/v1/{}/{}/token",
-            self.address, self.agent_path_prefix, deployment_hash
+            "{}/{}/{}/token",
+            base, prefix, deployment_hash
         );
 
         let response = self
@@ -109,9 +113,11 @@ impl VaultClient {
     /// Delete agent token from Vault
     #[tracing::instrument(name = "Delete agent token from Vault", skip(self))]
     pub async fn delete_agent_token(&self, deployment_hash: &str) -> Result<(), String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
         let path = format!(
-            "{}/v1/{}/{}/token",
-            self.address, self.agent_path_prefix, deployment_hash
+            "{}/{}/{}/token",
+            base, prefix, deployment_hash
         );
 
         self.client
