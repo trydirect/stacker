@@ -7,6 +7,7 @@ pub struct VaultClient {
     address: String,
     token: String,
     agent_path_prefix: String,
+    api_prefix: String,
 }
 
 impl VaultClient {
@@ -16,6 +17,7 @@ impl VaultClient {
             address: settings.address.clone(),
             token: settings.token.clone(),
             agent_path_prefix: settings.agent_path_prefix.clone(),
+            api_prefix: settings.api_prefix.clone(),
         }
     }
 
@@ -28,10 +30,12 @@ impl VaultClient {
     ) -> Result<(), String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
-        let path = format!(
-            "{}/{}/{}/token",
-            base, prefix, deployment_hash
-        );
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/token", base, prefix, deployment_hash)
+        } else {
+            format!("{}/{}/{}/{}/token", base, api_prefix, prefix, deployment_hash)
+        };
 
         let payload = json!({
             "data": {
@@ -68,10 +72,12 @@ impl VaultClient {
     pub async fn fetch_agent_token(&self, deployment_hash: &str) -> Result<String, String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
-        let path = format!(
-            "{}/{}/{}/token",
-            base, prefix, deployment_hash
-        );
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/token", base, prefix, deployment_hash)
+        } else {
+            format!("{}/{}/{}/{}/token", base, api_prefix, prefix, deployment_hash)
+        };
 
         let response = self
             .client
@@ -115,10 +121,12 @@ impl VaultClient {
     pub async fn delete_agent_token(&self, deployment_hash: &str) -> Result<(), String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
-        let path = format!(
-            "{}/{}/{}/token",
-            base, prefix, deployment_hash
-        );
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/token", base, prefix, deployment_hash)
+        } else {
+            format!("{}/{}/{}/{}/token", base, api_prefix, prefix, deployment_hash)
+        };
 
         self.client
             .delete(&path)

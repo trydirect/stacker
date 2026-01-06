@@ -74,6 +74,8 @@ pub struct VaultSettings {
     pub address: String,
     pub token: String,
     pub agent_path_prefix: String,
+    #[serde(default = "VaultSettings::default_api_prefix")]
+    pub api_prefix: String,
 }
 
 impl Default for VaultSettings {
@@ -82,11 +84,16 @@ impl Default for VaultSettings {
             address: "http://127.0.0.1:8200".to_string(),
             token: "dev-token".to_string(),
             agent_path_prefix: "agent".to_string(),
+            api_prefix: Self::default_api_prefix(),
         }
     }
 }
 
 impl VaultSettings {
+    fn default_api_prefix() -> String {
+        "v1".to_string()
+    }
+
     /// Overlay Vault settings from environment variables, if present.
     /// If an env var is missing, keep the existing file-provided value.
     pub fn overlay_env(self) -> Self {
@@ -94,11 +101,13 @@ impl VaultSettings {
         let token = std::env::var("VAULT_TOKEN").unwrap_or(self.token);
         let agent_path_prefix =
             std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
+        let api_prefix = std::env::var("VAULT_API_PREFIX").unwrap_or(self.api_prefix);
 
         VaultSettings {
             address,
             token,
             agent_path_prefix,
+            api_prefix,
         }
     }
 }
