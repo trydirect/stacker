@@ -4,6 +4,7 @@ pub(crate) mod command;
 pub mod health_checks;
 pub(crate) mod rating;
 pub(crate) mod test;
+pub(crate) mod dockerhub;
 
 pub use health_checks::*;
 pub(crate) mod cloud;

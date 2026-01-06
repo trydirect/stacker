@@ -39,6 +39,18 @@ connectors:
     amqp_url: "amqp://guest:guest@127.0.0.1:5672/%2f"
     exchange: "stacker_events"
     prefetch: 10
+  dockerhub_cservice:
+    enabled: false
+    base_url: "https://hub.docker.com"
+    timeout_secs: 10
+    retry_attempts: 3
+    page_size: 50
+    redis_url: "redis://127.0.0.1/0"
+    cache_ttl_namespaces_secs: 86400
+    cache_ttl_repositories_secs: 21600
+    cache_ttl_tags_secs: 3600
+    username: ~
+    personal_access_token: ~
 
 # Env overrides (optional):
 #   VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
