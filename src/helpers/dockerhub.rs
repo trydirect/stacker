@@ -317,25 +317,6 @@ impl<'a> DockerHub<'a> {
 
     pub async fn is_active(&'a self) -> Result<bool, String> {
         // if namespace/user is not set change endpoint and return a different response
-
-        // let n = self.repos
-        //     .split(':')
-        //     .map(|x| x.to_string())
-        //     .collect::<Vec<String>>();
-        //
-        // match n.len() {
-        //     1 => {
-        //         self.repos = n.first().unwrap().into();
-        //     }
-        //     2 => {
-        //         self.repos = n.first().unwrap().to_string();
-        //         self.tag = n.last().map(|s| s.to_string());
-        //     }
-        //     _ => {
-        //         return Err(format!("Wrong format of repository name"));
-        //     }
-        // }
-
         tokio::select! {
             Ok(true) = self.lookup_official_repos() => {
                     tracing::debug!("official: true");

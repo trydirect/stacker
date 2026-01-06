@@ -5,18 +5,18 @@ use crate::helpers::JsonResponse;
 use actix_web::{get, web, Error, Responder};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct AutocompleteQuery {
     #[serde(default)]
     pub q: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct NamespacePath {
     pub namespace: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct RepositoryPath {
     pub namespace: String,
     pub repository: String,
