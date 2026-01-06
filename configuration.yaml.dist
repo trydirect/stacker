@@ -20,9 +20,11 @@ amqp:
 vault:
   address: http://127.0.0.1:8200
   token: change-me-dev-token
-  # Full path to agent tokens (without deployment_hash), e.g. 'v1/agent' or 'secret/debug/status_panel'
-  # Trailing slashes are automatically handled. Final path: {address}/{agent_path_prefix}/{deployment_hash}/token
-  agent_path_prefix: v1/agent
+  # API prefix (Vault uses /v1 by default). Set empty to omit.
+  api_prefix: v1
+  # Path under the mount (without deployment_hash), e.g. 'secret/debug/status_panel' or 'agent'
+  # Final path: {address}/{api_prefix}/{agent_path_prefix}/{deployment_hash}/token
+  agent_path_prefix: agent
 
 # External service connectors
 connectors:
