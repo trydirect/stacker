@@ -1,5 +1,5 @@
 use crate::{db, helpers, models};
-use actix_web::{post, web, HttpRequest, Responder, Result};
+use actix_web::{post, web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -18,6 +18,16 @@ pub struct RegisterAgentResponse {
     pub agent_token: String,
     pub dashboard_version: String,
     pub supported_api_versions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisterAgentResponseWrapper {
+    pub data: RegisterAgentResponseData,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisterAgentResponseData {
+    pub item: RegisterAgentResponse,
 }
 
 /// Generate a secure random agent token (86 characters)
@@ -40,8 +50,7 @@ pub async fn register_handler(
     pg_pool: web::Data<PgPool>,
     vault_client: web::Data<helpers::VaultClient>,
     req: HttpRequest,
-) -> Result<impl Responder> {
-    // Check if agent already exists for this deployment
+) -> Result<HttpResponse> {
     let existing_agent =
         db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &payload.deployment_hash)
             .await
@@ -50,20 +59,19 @@ pub async fn register_handler(
             })?;
 
     if existing_agent.is_some() {
-        return Err(helpers::JsonResponse::<RegisterAgentResponse>::build()
-            .bad_request("Agent already registered for this deployment".to_string()));
+        return Ok(HttpResponse::Conflict().json(serde_json::json!({
+            "message": "Agent already registered for this deployment",
+            "status_code": 409
+        })));
     }
 
-    // Create new agent
     let mut agent = models::Agent::new(payload.deployment_hash.clone());
     agent.capabilities = Some(serde_json::json!(payload.capabilities));
     agent.version = Some(payload.agent_version.clone());
     agent.system_info = Some(payload.system_info.clone());
 
-    // Generate agent token
     let agent_token = generate_agent_token();
 
-    // Store token in Vault (non-blocking - log warning on failure for dev/test environments)
     if let Err(err) = vault_client
         .store_agent_token(&payload.deployment_hash, &agent_token)
         .await
@@ -72,15 +80,12 @@ pub async fn register_handler(
             "Failed to store token in Vault (continuing anyway): {:?}",
             err
         );
-        // In production, you may want to fail here. For now, we continue to allow dev/test environments.
     }
 
-    // Save agent to database
     let saved_agent = db::agent::insert(pg_pool.get_ref(), agent)
         .await
         .map_err(|err| {
             tracing::error!("Failed to save agent: {:?}", err);
-            // Clean up Vault token if DB insert fails
             let vault = vault_client.clone();
             let hash = payload.deployment_hash.clone();
             actix_web::rt::spawn(async move {
@@ -89,7 +94,6 @@ pub async fn register_handler(
             helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
         })?;
 
-    // Log registration in audit log
     let audit_log = models::AuditLog::new(
         Some(saved_agent.id),
         Some(payload.deployment_hash.clone()),
@@ -106,13 +110,19 @@ pub async fn register_handler(
             .unwrap_or_default(),
     );
 
-    let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;
+    if let Err(err) = db::agent::log_audit(pg_pool.get_ref(), audit_log).await {
+        tracing::warn!("Failed to log agent registration audit: {:?}", err);
+    }
 
-    let response = RegisterAgentResponse {
-        agent_id: saved_agent.id.to_string(),
-        agent_token,
-        dashboard_version: "2.0.0".to_string(),
-        supported_api_versions: vec!["1.0".to_string()],
+    let response = RegisterAgentResponseWrapper {
+        data: RegisterAgentResponseData {
+            item: RegisterAgentResponse {
+                agent_id: saved_agent.id.to_string(),
+                agent_token,
+                dashboard_version: "2.0.0".to_string(),
+                supported_api_versions: vec!["1.0".to_string()],
+            },
+        },
     };
 
     tracing::info!(
@@ -121,7 +131,5 @@ pub async fn register_handler(
         payload.deployment_hash
     );
 
-    Ok(helpers::JsonResponse::build()
-        .set_item(Some(response))
-        .ok("Agent registered"))
+    Ok(HttpResponse::Created().json(response))
 }

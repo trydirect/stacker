@@ -32,6 +32,7 @@ pub async fn run(
     // Initialize external service connectors (plugin pattern)
     // Connector handles category sync on startup
     let user_service_connector = connectors::init_user_service(&settings.connectors, pg_pool.clone());
+    let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
     let install_service_connector: web::Data<Arc<dyn connectors::InstallServiceConnector>> =
         web::Data::new(Arc::new(connectors::InstallServiceClient));
 
@@ -83,6 +84,12 @@ pub async fn run(
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item)
                     .service(crate::routes::project::delete::item),
+            )
+            .service(
+                web::scope("/dockerhub")
+                    .service(crate::routes::dockerhub::search_namespaces)
+                    .service(crate::routes::dockerhub::list_repositories)
+                    .service(crate::routes::dockerhub::list_tags),
             )
             .service(
                 web::scope("/admin")
@@ -179,10 +186,11 @@ pub async fn run(
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
-            .app_data(mcp_registry.clone())
-            .app_data(user_service_connector.clone())
-            .app_data(install_service_connector.clone())
-            .app_data(settings.clone())
+             .app_data(mcp_registry.clone())
+             .app_data(user_service_connector.clone())
+             .app_data(install_service_connector.clone())
+             .app_data(dockerhub_connector.clone())
+             .app_data(settings.clone())
     })
     .listen(listener)?
     .run();
