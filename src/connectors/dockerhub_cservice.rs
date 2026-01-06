@@ -124,7 +124,7 @@ impl RedisCache {
 
         let mut conn = self.connection.lock().await;
         let (): () = conn
-            .set_ex(key, payload, ttl_secs)
+            .set_ex(key, payload, ttl_secs as u64)
             .await
             .map_err(|err| ConnectorError::ServiceUnavailable(format!("Redis SET failed: {}", err)))?;
         Ok(())

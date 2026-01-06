@@ -329,6 +329,11 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
         assert!(json.contains("template_approved"));
         assert!(json.contains("ai-agent-stack-pro"));
+        
+        // Verify all fields are present
+        assert!(json.contains("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(json.contains("AI Agent Stack Pro"));
+        assert!(json.contains("99.99"));
     }
 
     #[test]
@@ -353,4 +358,190 @@ mod tests {
         assert!(json.contains("template_rejected"));
         assert!(!json.contains("ai-agent"));
     }
+
+    /// Test webhook payload for approved template action
+    #[test]
+    fn test_webhook_payload_template_approved() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_approved".to_string(),
+            stack_template_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            external_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            code: Some("cms-starter".to_string()),
+            name: Some("CMS Starter Template".to_string()),
+            description: Some("Complete CMS setup".to_string()),
+            price: Some(49.99),
+            billing_cycle: Some("one_time".to_string()),
+            currency: Some("USD".to_string()),
+            vendor_user_id: Some("vendor-123".to_string()),
+            vendor_name: Some("vendor@example.com".to_string()),
+            category: Some("CMS".to_string()),
+            tags: Some(serde_json::json!(["cms", "wordpress"])),
+        };
+
+        assert_eq!(payload.action, "template_approved");
+        assert_eq!(payload.code, Some("cms-starter".to_string()));
+        assert_eq!(payload.price, Some(49.99));
+    }
+
+    /// Test webhook payload for updated template action
+    #[test]
+    fn test_webhook_payload_template_updated() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_updated".to_string(),
+            stack_template_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+            external_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+            code: Some("cms-starter".to_string()),
+            name: Some("CMS Starter Template v2".to_string()),
+            description: Some("Updated CMS setup with new features".to_string()),
+            price: Some(59.99), // Price updated
+            billing_cycle: Some("one_time".to_string()),
+            currency: Some("USD".to_string()),
+            vendor_user_id: Some("vendor-123".to_string()),
+            vendor_name: Some("vendor@example.com".to_string()),
+            category: Some("CMS".to_string()),
+            tags: Some(serde_json::json!(["cms", "wordpress", "v2"])),
+        };
+
+        assert_eq!(payload.action, "template_updated");
+        assert_eq!(payload.name, Some("CMS Starter Template v2".to_string()));
+        assert_eq!(payload.price, Some(59.99));
+    }
+
+    /// Test webhook payload for free template
+    #[test]
+    fn test_webhook_payload_free_template() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_approved".to_string(),
+            stack_template_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+            external_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+            code: Some("basic-blog".to_string()),
+            name: Some("Basic Blog Template".to_string()),
+            description: Some("Free blog template".to_string()),
+            price: None, // Free template
+            billing_cycle: None,
+            currency: None,
+            vendor_user_id: None,
+            vendor_name: None,
+            category: Some("CMS".to_string()),
+            tags: Some(serde_json::json!(["blog", "free"])),
+        };
+
+        assert_eq!(payload.action, "template_approved");
+        assert_eq!(payload.price, None);
+        assert_eq!(payload.billing_cycle, None);
+    }
+
+    /// Test webhook sender config from environment
+    #[test]
+    fn test_webhook_sender_config_creation() {
+        let config = WebhookSenderConfig {
+            base_url: "http://user:4100".to_string(),
+            bearer_token: "test-token-123".to_string(),
+            timeout_secs: 10,
+            retry_attempts: 3,
+        };
+
+        assert_eq!(config.base_url, "http://user:4100");
+        assert_eq!(config.bearer_token, "test-token-123");
+        assert_eq!(config.timeout_secs, 10);
+        assert_eq!(config.retry_attempts, 3);
+    }
+
+    /// Test that MarketplaceWebhookSender creates successfully
+    #[test]
+    fn test_webhook_sender_creation() {
+        let config = WebhookSenderConfig {
+            base_url: "http://user:4100".to_string(),
+            bearer_token: "test-token".to_string(),
+            timeout_secs: 10,
+            retry_attempts: 3,
+        };
+
+        let sender = MarketplaceWebhookSender::new(config);
+        // Just verify sender was created without panicking
+        assert!(sender.pending_webhooks.blocking_lock().is_empty());
+    }
+
+    /// Test webhook response deserialization
+    #[test]
+    fn test_webhook_response_deserialization() {
+        let json = serde_json::json!({
+            "success": true,
+            "message": "Product created successfully",
+            "product_id": "product-123"
+        });
+
+        let response: WebhookResponse = serde_json::from_value(json).unwrap();
+        assert!(response.success);
+        assert_eq!(response.message, Some("Product created successfully".to_string()));
+        assert_eq!(response.product_id, Some("product-123".to_string()));
+    }
+
+    /// Test webhook response with failure
+    #[test]
+    fn test_webhook_response_failure() {
+        let json = serde_json::json!({
+            "success": false,
+            "message": "Template not found",
+            "product_id": null
+        });
+
+        let response: WebhookResponse = serde_json::from_value(json).unwrap();
+        assert!(!response.success);
+        assert_eq!(response.message, Some("Template not found".to_string()));
+        assert_eq!(response.product_id, None);
+    }
+
+    /// Test payload with all optional fields populated
+    #[test]
+    fn test_webhook_payload_all_fields_populated() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_approved".to_string(),
+            stack_template_id: "template-uuid".to_string(),
+            external_id: "external-id".to_string(),
+            code: Some("complex-template".to_string()),
+            name: Some("Complex Template".to_string()),
+            description: Some("A complex template with many features".to_string()),
+            price: Some(199.99),
+            billing_cycle: Some("monthly".to_string()),
+            currency: Some("EUR".to_string()),
+            vendor_user_id: Some("vendor-id".to_string()),
+            vendor_name: Some("John Doe".to_string()),
+            category: Some("Enterprise".to_string()),
+            tags: Some(serde_json::json!(["enterprise", "complex", "saas"])),
+        };
+
+        // Verify all fields are accessible
+        assert_eq!(payload.action, "template_approved");
+        assert_eq!(payload.billing_cycle, Some("monthly".to_string()));
+        assert_eq!(payload.currency, Some("EUR".to_string()));
+        assert_eq!(payload.price, Some(199.99));
+    }
+
+    /// Test payload minimal fields (only required ones)
+    #[test]
+    fn test_webhook_payload_minimal_fields() {
+        let payload = MarketplaceWebhookPayload {
+            action: "template_rejected".to_string(),
+            stack_template_id: "template-uuid".to_string(),
+            external_id: "external-id".to_string(),
+            code: None,
+            name: None,
+            description: None,
+            price: None,
+            billing_cycle: None,
+            currency: None,
+            vendor_user_id: None,
+            vendor_name: None,
+            category: None,
+            tags: None,
+        };
+
+        // Should serialize without errors even with all optional fields as None
+        let json = serde_json::to_string(&payload).expect("Should serialize");
+        assert!(json.contains("template_rejected"));
+        assert!(json.contains("external_id"));
+    }
 }
+
+

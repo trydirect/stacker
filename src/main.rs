@@ -1,4 +1,5 @@
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use stacker::banner;
 use stacker::configuration::get_configuration;
 use stacker::startup::run;
 use stacker::telemetry::{get_subscriber, init_subscriber};
@@ -7,6 +8,9 @@ use std::time::Duration;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Display banner
+    banner::print_banner();
+
     let subscriber = get_subscriber("stacker".into(), "info".into());
     init_subscriber(subscriber);
 
@@ -35,6 +39,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to connect to database.");
 
     let address = format!("{}:{}", settings.app_host, settings.app_port);
+    banner::print_startup_info(&settings.app_host, settings.app_port);
     tracing::info!("Start server at {:?}", &address);
     let listener =
         TcpListener::bind(address).expect(&format!("failed to bind to {}", settings.app_port));
