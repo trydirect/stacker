@@ -131,6 +131,19 @@ pub async fn run(
                             .service(crate::routes::marketplace::creator::mine_handler),
                     )
                     .service(
+                        web::scope("/v1/agent")
+                            .service(routes::agent::register_handler)
+                            .service(routes::agent::wait_handler)
+                            .service(routes::agent::report_handler),
+                    )
+                    .service(
+                        web::scope("/v1/commands")
+                            .service(routes::command::create_handler)
+                            .service(routes::command::list_handler)
+                            .service(routes::command::get_handler)
+                            .service(routes::command::cancel_handler),
+                    )
+                    .service(
                         web::scope("/admin")
                             .service(
                                 web::scope("/templates")
@@ -158,19 +171,6 @@ pub async fn run(
                     .service(crate::routes::server::get::list)
                     .service(crate::routes::server::update::item)
                     .service(crate::routes::server::delete::item),
-            )
-            .service(
-                web::scope("/api/v1/agent")
-                    .service(routes::agent::register_handler)
-                    .service(routes::agent::wait_handler)
-                    .service(routes::agent::report_handler),
-            )
-            .service(
-                web::scope("/api/v1/commands")
-                    .service(routes::command::create_handler)
-                    .service(routes::command::list_handler)
-                    .service(routes::command::get_handler)
-                    .service(routes::command::cancel_handler),
             )
             .service(
                 web::scope("/agreement")
