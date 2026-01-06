@@ -51,6 +51,25 @@ pub async fn register_handler(
     vault_client: web::Data<helpers::VaultClient>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
+    // 1. Validate deployment exists first (prevents FK constraint violation)
+    let deployment = db::deployment::fetch_by_deployment_hash(
+        pg_pool.get_ref(),
+        &payload.deployment_hash,
+    )
+    .await
+    .map_err(|err| {
+        helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+    })?;
+
+    if deployment.is_none() {
+        return Ok(HttpResponse::NotFound().json(serde_json::json!({
+            "message": "Deployment not found. Create deployment before registering agent.",
+            "deployment_hash": payload.deployment_hash,
+            "status_code": 404
+        })));
+    }
+
+    // 2. Check if agent already registered (idempotent operation)
     let existing_agent =
         db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &payload.deployment_hash)
             .await
@@ -58,13 +77,49 @@ pub async fn register_handler(
                 helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
             })?;
 
-    if existing_agent.is_some() {
-        return Ok(HttpResponse::Conflict().json(serde_json::json!({
-            "message": "Agent already registered for this deployment",
-            "status_code": 409
-        })));
+    if let Some(existing) = existing_agent {
+        tracing::info!(
+            "Agent already registered for deployment {}, returning existing",
+            payload.deployment_hash
+        );
+        
+        // Try to fetch existing token from Vault
+        let agent_token = vault_client
+            .fetch_agent_token(&payload.deployment_hash)
+            .await
+            .unwrap_or_else(|_| {
+                tracing::warn!("Existing agent found but token missing in Vault, regenerating");
+                let new_token = generate_agent_token();
+                let vault = vault_client.clone();
+                let hash = payload.deployment_hash.clone();
+                let token = new_token.clone();
+                actix_web::rt::spawn(async move {
+                    for retry in 0..3 {
+                        if vault.store_agent_token(&hash, &token).await.is_ok() {
+                            tracing::info!("Token restored to Vault for {}", hash);
+                            break;
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry))).await;
+                    }
+                });
+                new_token
+            });
+
+        let response = RegisterAgentResponseWrapper {
+            data: RegisterAgentResponseData {
+                item: RegisterAgentResponse {
+                    agent_id: existing.id.to_string(),
+                    agent_token,
+                    dashboard_version: "2.0.0".to_string(),
+                    supported_api_versions: vec!["1.0".to_string()],
+                },
+            },
+        };
+
+        return Ok(HttpResponse::Ok().json(response));
     }
 
+    // 3. Create new agent
     let mut agent = models::Agent::new(payload.deployment_hash.clone());
     agent.capabilities = Some(serde_json::json!(payload.capabilities));
     agent.version = Some(payload.agent_version.clone());
@@ -72,27 +127,38 @@ pub async fn register_handler(
 
     let agent_token = generate_agent_token();
 
-    if let Err(err) = vault_client
-        .store_agent_token(&payload.deployment_hash, &agent_token)
-        .await
-    {
-        tracing::warn!(
-            "Failed to store token in Vault (continuing anyway): {:?}",
-            err
-        );
-    }
-
+    // 4. Insert to DB first (source of truth)
     let saved_agent = db::agent::insert(pg_pool.get_ref(), agent)
         .await
         .map_err(|err| {
-            tracing::error!("Failed to save agent: {:?}", err);
-            let vault = vault_client.clone();
-            let hash = payload.deployment_hash.clone();
-            actix_web::rt::spawn(async move {
-                let _ = vault.delete_agent_token(&hash).await;
-            });
+            tracing::error!("Failed to save agent to DB: {:?}", err);
             helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
         })?;
+
+    // 5. Store token in Vault asynchronously with retry (best-effort)
+    let vault = vault_client.clone();
+    let hash = payload.deployment_hash.clone();
+    let token = agent_token.clone();
+    actix_web::rt::spawn(async move {
+        for retry in 0..3 {
+            match vault.store_agent_token(&hash, &token).await {
+                Ok(_) => {
+                    tracing::info!("Token stored in Vault for {} (attempt {})", hash, retry + 1);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to store token in Vault (attempt {}): {:?}",
+                        retry + 1,
+                        e
+                    );
+                    if retry < 2 {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry))).await;
+                    }
+                }
+            }
+        }
+    });
 
     let audit_log = models::AuditLog::new(
         Some(saved_agent.id),
