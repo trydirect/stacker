@@ -43,7 +43,7 @@ pub mod errors;
 pub mod admin_service;
 pub mod install_service;
 pub mod user_service;
-pub mod dockerhub_cservice;
+pub mod dockerhub_service;
 
 pub use config::{ConnectorConfig, UserServiceConfig, PaymentServiceConfig, EventsConfig};
 pub use errors::ConnectorError;
@@ -63,8 +63,8 @@ pub use user_service::{
 
 // Re-export init functions for convenient access
 pub use user_service::init as init_user_service;
-pub use dockerhub_cservice::init as init_dockerhub;
-pub use dockerhub_cservice::{
+pub use dockerhub_service::init as init_dockerhub;
+pub use dockerhub_service::{
     DockerHubClient,
     DockerHubConnector,
     NamespaceSummary,

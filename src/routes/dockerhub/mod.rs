@@ -81,7 +81,7 @@ pub async fn list_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connectors::dockerhub_cservice::mock::MockDockerHubConnector;
+    use crate::connectors::dockerhub_service::mock::MockDockerHubConnector;
     use actix_web::{http::StatusCode, test, App};
 
     #[actix_web::test]
