@@ -6,7 +6,7 @@ pub struct ConnectorConfig {
     pub user_service: Option<UserServiceConfig>,
     pub payment_service: Option<PaymentServiceConfig>,
     pub events: Option<EventsConfig>,
-    pub dockerhub_cservice: Option<DockerHubConnectorConfig>,
+    pub dockerhub_service: Option<DockerHubConnectorConfig>,
 }
 
 /// User Service connector configuration
@@ -92,7 +92,7 @@ impl Default for ConnectorConfig {
             user_service: Some(UserServiceConfig::default()),
             payment_service: Some(PaymentServiceConfig::default()),
             events: Some(EventsConfig::default()),
-            dockerhub_cservice: Some(DockerHubConnectorConfig::default()),
+            dockerhub_service: Some(DockerHubConnectorConfig::default()),
         }
     }
 }
