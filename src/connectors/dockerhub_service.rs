@@ -532,7 +532,7 @@ pub async fn init(
 ) -> web::Data<Arc<dyn DockerHubConnector>> {
     let connector: Arc<dyn DockerHubConnector> =
         if let Some(config) = connector_config
-            .dockerhub_cservice
+            .dockerhub_service
             .as_ref()
             .filter(|cfg| cfg.enabled)
         {
