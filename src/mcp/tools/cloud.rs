@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::db;
-use crate::models;
-use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::mcp::protocol::{Tool, ToolContent};
+use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::models;
 use serde::Deserialize;
 
 /// List user's cloud credentials
@@ -20,10 +20,14 @@ impl ToolHandler for ListCloudsTool {
                 format!("Database error: {}", e)
             })?;
 
-        let result = serde_json::to_string(&clouds)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&clouds).map_err(|e| format!("Serialization error: {}", e))?;
 
-        tracing::info!("Listed {} clouds for user {}", clouds.len(), context.user.id);
+        tracing::info!(
+            "Listed {} clouds for user {}",
+            clouds.len(),
+            context.user.id
+        );
 
         Ok(ToolContent::Text { text: result })
     }
@@ -31,7 +35,8 @@ impl ToolHandler for ListCloudsTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "list_clouds".to_string(),
-            description: "List all cloud provider credentials owned by the authenticated user".to_string(),
+            description: "List all cloud provider credentials owned by the authenticated user"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -52,8 +57,8 @@ impl ToolHandler for GetCloudTool {
             id: i32,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let cloud = db::cloud::fetch(&context.pg_pool, args.id)
             .await
@@ -63,8 +68,8 @@ impl ToolHandler for GetCloudTool {
             })?
             .ok_or_else(|| "Cloud not found".to_string())?;
 
-        let result = serde_json::to_string(&cloud)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&cloud).map_err(|e| format!("Serialization error: {}", e))?;
 
         tracing::info!("Retrieved cloud {} for user {}", args.id, context.user.id);
 
@@ -100,8 +105,8 @@ impl ToolHandler for DeleteCloudTool {
             id: i32,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let cloud = db::cloud::fetch(&context.pg_pool, args.id)
             .await
@@ -119,7 +124,9 @@ impl ToolHandler for DeleteCloudTool {
 
         tracing::info!("Deleted cloud {} for user {}", args.id, context.user.id);
 
-        Ok(ToolContent::Text { text: response.to_string() })
+        Ok(ToolContent::Text {
+            text: response.to_string(),
+        })
     }
 
     fn schema(&self) -> Tool {
@@ -155,8 +162,8 @@ impl ToolHandler for AddCloudTool {
             save_token: Option<bool>,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Validate provider
         let valid_providers = ["aws", "digitalocean", "hetzner", "azure", "gcp"];
@@ -169,7 +176,10 @@ impl ToolHandler for AddCloudTool {
 
         // Validate at least one credential is provided
         if args.cloud_token.is_none() && args.cloud_key.is_none() && args.cloud_secret.is_none() {
-            return Err("At least one of cloud_token, cloud_key, or cloud_secret must be provided".to_string());
+            return Err(
+                "At least one of cloud_token, cloud_key, or cloud_secret must be provided"
+                    .to_string(),
+            );
         }
 
         // Create cloud record
@@ -197,9 +207,15 @@ impl ToolHandler for AddCloudTool {
             "message": "Cloud credentials added successfully"
         });
 
-        tracing::info!("Added cloud {} for user {}", created_cloud.id, context.user.id);
+        tracing::info!(
+            "Added cloud {} for user {}",
+            created_cloud.id,
+            context.user.id
+        );
 
-        Ok(ToolContent::Text { text: response.to_string() })
+        Ok(ToolContent::Text {
+            text: response.to_string(),
+        })
     }
 
     fn schema(&self) -> Tool {

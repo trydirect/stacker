@@ -3,7 +3,6 @@
 /// Validates that users can deploy marketplace templates they own.
 /// Implements plan gating (if template requires specific plan tier) and
 /// product ownership checks (if template is a paid marketplace product).
-
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -26,14 +25,10 @@ pub enum DeploymentValidationError {
     },
 
     /// Template not found in User Service
-    TemplateNotFound {
-        template_id: String,
-    },
+    TemplateNotFound { template_id: String },
 
     /// Failed to validate with User Service (unavailable, auth error, etc.)
-    ValidationFailed {
-        reason: String,
-    },
+    ValidationFailed { reason: String },
 }
 
 impl std::fmt::Display for DeploymentValidationError {
@@ -134,10 +129,7 @@ impl DeploymentValidator {
         user_token: &str,
         required_plan: &str,
     ) -> Result<(), DeploymentValidationError> {
-        let span = tracing::info_span!(
-            "validate_plan_access",
-            required_plan = required_plan
-        );
+        let span = tracing::info_span!("validate_plan_access", required_plan = required_plan);
 
         // Extract user ID from token (or use token directly for User Service query)
         // For now, we'll rely on User Service to validate the token
@@ -366,5 +358,3 @@ mod tests {
         // If we get here, all variants can be constructed
     }
 }
-
-

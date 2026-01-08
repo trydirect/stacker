@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::db;
-use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::mcp::protocol::{Tool, ToolContent};
+use crate::mcp::registry::{ToolContext, ToolHandler};
 use serde::Deserialize;
 
 /// Get deployment status
@@ -17,8 +17,8 @@ impl ToolHandler for GetDeploymentStatusTool {
             deployment_id: i32,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let deployment = db::deployment::fetch(&context.pg_pool, args.deployment_id)
             .await
@@ -39,7 +39,9 @@ impl ToolHandler for GetDeploymentStatusTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "get_deployment_status".to_string(),
-            description: "Get the current status of a deployment (pending, running, completed, failed)".to_string(),
+            description:
+                "Get the current status of a deployment (pending, running, completed, failed)"
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -67,8 +69,8 @@ impl ToolHandler for StartDeploymentTool {
             environment: Option<String>,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify user owns the project
         let project = db::project::fetch(&context.pg_pool, args.project_id)
@@ -103,9 +105,15 @@ impl ToolHandler for StartDeploymentTool {
             "message": "Deployment initiated - agent will connect shortly"
         });
 
-        tracing::info!("Started deployment {} for project {}", deployment.id, args.project_id);
+        tracing::info!(
+            "Started deployment {} for project {}",
+            deployment.id,
+            args.project_id
+        );
 
-        Ok(ToolContent::Text { text: response.to_string() })
+        Ok(ToolContent::Text {
+            text: response.to_string(),
+        })
     }
 
     fn schema(&self) -> Tool {
@@ -146,8 +154,8 @@ impl ToolHandler for CancelDeploymentTool {
             deployment_id: i32,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let _deployment = db::deployment::fetch(&context.pg_pool, args.deployment_id)
             .await
@@ -173,7 +181,9 @@ impl ToolHandler for CancelDeploymentTool {
 
         tracing::info!("Cancelled deployment {}", args.deployment_id);
 
-        Ok(ToolContent::Text { text: response.to_string() })
+        Ok(ToolContent::Text {
+            text: response.to_string(),
+        })
     }
 
     fn schema(&self) -> Tool {

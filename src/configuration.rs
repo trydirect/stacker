@@ -1,5 +1,5 @@
-use serde;
 use crate::connectors::ConnectorConfig;
+use serde;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Settings {

@@ -1,10 +1,10 @@
 pub(crate) mod agent;
 pub mod client;
 pub(crate) mod command;
+pub(crate) mod dockerhub;
 pub mod health_checks;
 pub(crate) mod rating;
 pub(crate) mod test;
-pub(crate) mod dockerhub;
 
 pub use health_checks::{health_check, health_metrics};
 pub(crate) mod cloud;

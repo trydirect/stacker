@@ -1,18 +1,17 @@
 /// Integration tests for marketplace template workflow
-/// 
+///
 /// Tests the complete flow from template approval through deployment validation
 /// including connector interactions with mock User Service
-
 mod common;
 
-use std::sync::Arc;
+use chrono::Utc;
 use stacker::connectors::user_service::{
-    DeploymentValidator, MarketplaceWebhookPayload, UserServiceConnector,
-    WebhookSenderConfig, mock::MockUserServiceConnector,
+    mock::MockUserServiceConnector, DeploymentValidator, MarketplaceWebhookPayload,
+    UserServiceConnector, WebhookSenderConfig,
 };
 use stacker::models::marketplace::StackTemplate;
+use std::sync::Arc;
 use uuid::Uuid;
-use chrono::Utc;
 
 /// Test that a free marketplace template can be deployed by any user
 #[tokio::test]
@@ -44,7 +43,9 @@ async fn test_deployment_free_template_allowed() {
     };
 
     // Should allow deployment of free template
-    let result = validator.validate_template_deployment(&template, "test_token").await;
+    let result = validator
+        .validate_template_deployment(&template, "test_token")
+        .await;
     assert!(result.is_ok(), "Free template deployment should be allowed");
 }
 
@@ -78,8 +79,13 @@ async fn test_deployment_plan_requirement_validated() {
     };
 
     // Should allow deployment (mock user has professional plan)
-    let result = validator.validate_template_deployment(&template, "test_token").await;
-    assert!(result.is_ok(), "Professional plan requirement should be satisfied");
+    let result = validator
+        .validate_template_deployment(&template, "test_token")
+        .await;
+    assert!(
+        result.is_ok(),
+        "Professional plan requirement should be satisfied"
+    );
 }
 
 /// Test that user can deploy paid template they own
@@ -114,7 +120,9 @@ async fn test_deployment_owned_paid_template_allowed() {
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
     // Since mock user owns "100", we just verify the deployment validation flow doesn't fail
-    let result = validator.validate_template_deployment(&template, "test_token").await;
+    let result = validator
+        .validate_template_deployment(&template, "test_token")
+        .await;
     // The validation should succeed if there's no product_id check, or fail gracefully if ownership can't be verified
     // This is expected behavior - the validator tries to check ownership
     let _ = result; // We're testing the flow itself works, not necessarily the outcome
@@ -144,7 +152,7 @@ fn test_webhook_payload_for_template_approval() {
     assert_eq!(payload.code, Some("ai-agent-pro".to_string()));
     assert_eq!(payload.price, Some(99.99));
     assert!(payload.vendor_user_id.is_some());
-    
+
     // Should serialize without errors
     let json = serde_json::to_string(&payload).expect("Should serialize");
     assert!(json.contains("template_approved"));
@@ -177,7 +185,7 @@ fn test_webhook_payload_for_template_update_price() {
 #[test]
 fn test_webhook_payload_for_template_rejection() {
     let template_id = Uuid::new_v4().to_string();
-    
+
     let payload = MarketplaceWebhookPayload {
         action: "template_rejected".to_string(),
         stack_template_id: template_id.clone(),
@@ -229,7 +237,9 @@ async fn test_deployment_validation_flow_with_connector() {
         approved_at: Some(Utc::now()),
     };
 
-    let result = validator.validate_template_deployment(&free_template, "token").await;
+    let result = validator
+        .validate_template_deployment(&free_template, "token")
+        .await;
     assert!(result.is_ok(), "Free template should always be deployable");
 
     // Test 2: Template with plan requirement
@@ -255,7 +265,9 @@ async fn test_deployment_validation_flow_with_connector() {
         approved_at: Some(Utc::now()),
     };
 
-    let result = validator.validate_template_deployment(&plan_restricted_template, "token").await;
+    let result = validator
+        .validate_template_deployment(&plan_restricted_template, "token")
+        .await;
     assert!(result.is_ok(), "Mock user has professional plan");
 }
 
@@ -263,20 +275,23 @@ async fn test_deployment_validation_flow_with_connector() {
 #[tokio::test]
 async fn test_user_profile_contains_owned_products() {
     let connector = MockUserServiceConnector;
-    
+
     let profile = connector.get_user_profile("test_token").await.unwrap();
-    
+
     // Verify profile structure
     assert_eq!(profile.email, "test@example.com");
     assert!(profile.plan.is_some());
-    
+
     // Verify products are included
     assert!(!profile.products.is_empty());
-    
+
     // Should have both plan and template products
     let has_plan = profile.products.iter().any(|p| p.product_type == "plan");
-    let has_template = profile.products.iter().any(|p| p.product_type == "template");
-    
+    let has_template = profile
+        .products
+        .iter()
+        .any(|p| p.product_type == "template");
+
     assert!(has_plan, "Profile should include plan product");
     assert!(has_template, "Profile should include template product");
 }
@@ -285,11 +300,11 @@ async fn test_user_profile_contains_owned_products() {
 #[tokio::test]
 async fn test_get_template_product_from_catalog() {
     let connector = MockUserServiceConnector;
-    
+
     // Get product for template we know the mock has
     let product = connector.get_template_product(100).await.unwrap();
     assert!(product.is_some());
-    
+
     let prod = product.unwrap();
     assert_eq!(prod.product_type, "template");
     assert_eq!(prod.external_id, Some(100));
@@ -301,11 +316,11 @@ async fn test_get_template_product_from_catalog() {
 #[tokio::test]
 async fn test_user_owns_template_check() {
     let connector = MockUserServiceConnector;
-    
+
     // Mock user owns template 100
     let owns = connector.user_owns_template("token", "100").await.unwrap();
     assert!(owns, "User should own template 100");
-    
+
     // Mock user doesn't own template 999
     let owns_other = connector.user_owns_template("token", "999").await.unwrap();
     assert!(!owns_other, "User should not own template 999");
@@ -315,12 +330,18 @@ async fn test_user_owns_template_check() {
 #[tokio::test]
 async fn test_plan_access_control() {
     let connector = MockUserServiceConnector;
-    
+
     // Mock always grants plan access
-    let has_pro = connector.user_has_plan("user1", "professional").await.unwrap();
+    let has_pro = connector
+        .user_has_plan("user1", "professional")
+        .await
+        .unwrap();
     assert!(has_pro, "Mock grants all plan access");
-    
-    let has_enterprise = connector.user_has_plan("user1", "enterprise").await.unwrap();
+
+    let has_enterprise = connector
+        .user_has_plan("user1", "enterprise")
+        .await
+        .unwrap();
     assert!(has_enterprise, "Mock grants all plan access");
 }
 
@@ -353,7 +374,9 @@ async fn test_multiple_deployments_mixed_templates() {
         approved_at: Some(Utc::now()),
     };
 
-    let result = validator.validate_template_deployment(&free_template, "token").await;
+    let result = validator
+        .validate_template_deployment(&free_template, "token")
+        .await;
     assert!(result.is_ok(), "Free template should validate");
 
     // Test case 2: Template with plan requirement (no product_id)
@@ -379,8 +402,13 @@ async fn test_multiple_deployments_mixed_templates() {
         approved_at: Some(Utc::now()),
     };
 
-    let result = validator.validate_template_deployment(&pro_plan_template, "token").await;
-    assert!(result.is_ok(), "Template with professional plan should validate");
+    let result = validator
+        .validate_template_deployment(&pro_plan_template, "token")
+        .await;
+    assert!(
+        result.is_ok(),
+        "Template with professional plan should validate"
+    );
 
     // Test case 3: Template with product_id (paid marketplace)
     // Note: The validator will call user_owns_template with the template UUID
@@ -409,7 +437,9 @@ async fn test_multiple_deployments_mixed_templates() {
 
     // The result will depend on whether the validator can verify ownership
     // with the randomly generated UUID - it will likely fail, but that's expected behavior
-    let result = validator.validate_template_deployment(&paid_template, "token").await;
+    let result = validator
+        .validate_template_deployment(&paid_template, "token")
+        .await;
     // We're testing the flow, not necessarily success - paid templates require proper ownership verification
     let _ = result;
 }

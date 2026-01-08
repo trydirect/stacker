@@ -34,7 +34,10 @@ impl VaultClient {
         let path = if api_prefix.is_empty() {
             format!("{}/{}/{}/token", base, prefix, deployment_hash)
         } else {
-            format!("{}/{}/{}/{}/token", base, api_prefix, prefix, deployment_hash)
+            format!(
+                "{}/{}/{}/{}/token",
+                base, api_prefix, prefix, deployment_hash
+            )
         };
 
         let payload = json!({
@@ -76,7 +79,10 @@ impl VaultClient {
         let path = if api_prefix.is_empty() {
             format!("{}/{}/{}/token", base, prefix, deployment_hash)
         } else {
-            format!("{}/{}/{}/{}/token", base, api_prefix, prefix, deployment_hash)
+            format!(
+                "{}/{}/{}/{}/token",
+                base, api_prefix, prefix, deployment_hash
+            )
         };
 
         let response = self
@@ -125,7 +131,10 @@ impl VaultClient {
         let path = if api_prefix.is_empty() {
             format!("{}/{}/{}/token", base, prefix, deployment_hash)
         } else {
-            format!("{}/{}/{}/{}/token", base, api_prefix, prefix, deployment_hash)
+            format!(
+                "{}/{}/{}/{}/token",
+                base, api_prefix, prefix, deployment_hash
+            )
         };
 
         self.client

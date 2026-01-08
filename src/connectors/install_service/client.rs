@@ -51,7 +51,13 @@ impl InstallServiceConnector for InstallServiceClient {
         let provider = payload
             .cloud
             .as_ref()
-            .map(|form| if form.provider.contains("own") { "own" } else { "tfa" })
+            .map(|form| {
+                if form.provider.contains("own") {
+                    "own"
+                } else {
+                    "tfa"
+                }
+            })
             .unwrap_or("tfa")
             .to_string();
 

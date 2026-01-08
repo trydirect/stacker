@@ -19,7 +19,7 @@ pub async fn run(
 ) -> Result<Server, std::io::Error> {
     let settings_arc = Arc::new(settings.clone());
     let pg_pool_arc = Arc::new(pg_pool.clone());
-    
+
     let settings = web::Data::new(settings);
     let pg_pool = web::Data::new(pg_pool);
 
@@ -34,15 +34,19 @@ pub async fn run(
     let mcp_registry = web::Data::new(mcp_registry);
 
     // Initialize health checker and metrics
-    let health_checker = Arc::new(HealthChecker::new(pg_pool_arc.clone(), settings_arc.clone()));
+    let health_checker = Arc::new(HealthChecker::new(
+        pg_pool_arc.clone(),
+        settings_arc.clone(),
+    ));
     let health_checker = web::Data::new(health_checker);
-    
+
     let health_metrics = Arc::new(HealthMetrics::new(1000));
     let health_metrics = web::Data::new(health_metrics);
 
     // Initialize external service connectors (plugin pattern)
     // Connector handles category sync on startup
-    let user_service_connector = connectors::init_user_service(&settings.connectors, pg_pool.clone());
+    let user_service_connector =
+        connectors::init_user_service(&settings.connectors, pg_pool.clone());
     let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
     let install_service_connector: web::Data<Arc<dyn connectors::InstallServiceConnector>> =
         web::Data::new(Arc::new(connectors::InstallServiceClient));
@@ -73,7 +77,7 @@ pub async fn run(
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)
-                    .service(routes::health_metrics)
+                    .service(routes::health_metrics),
             )
             .service(
                 web::scope("/client")
@@ -164,7 +168,9 @@ pub async fn run(
                         web::scope("/admin")
                             .service(
                                 web::scope("/templates")
-                                    .service(crate::routes::marketplace::admin::list_submitted_handler)
+                                    .service(
+                                        crate::routes::marketplace::admin::list_submitted_handler,
+                                    )
                                     .service(crate::routes::marketplace::admin::approve_handler)
                                     .service(crate::routes::marketplace::admin::reject_handler),
                             )
@@ -195,19 +201,16 @@ pub async fn run(
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
             )
-            .service(
-                web::resource("/mcp")
-                    .route(web::get().to(mcp::mcp_websocket))
-            )
+            .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())
             .app_data(pg_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
-             .app_data(mcp_registry.clone())
-             .app_data(user_service_connector.clone())
-             .app_data(install_service_connector.clone())
-             .app_data(dockerhub_connector.clone())
-             .app_data(settings.clone())
+            .app_data(mcp_registry.clone())
+            .app_data(user_service_connector.clone())
+            .app_data(install_service_connector.clone())
+            .app_data(dockerhub_connector.clone())
+            .app_data(settings.clone())
     })
     .listen(listener)?
     .run();

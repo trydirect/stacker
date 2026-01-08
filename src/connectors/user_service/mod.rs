@@ -1,10 +1,12 @@
+pub mod category_sync;
 pub mod deployment_validator;
 pub mod marketplace_webhook;
-pub mod category_sync;
 
-pub use deployment_validator::{DeploymentValidator, DeploymentValidationError};
-pub use marketplace_webhook::{MarketplaceWebhookSender, WebhookSenderConfig, MarketplaceWebhookPayload, WebhookResponse};
 pub use category_sync::sync_categories_from_user_service;
+pub use deployment_validator::{DeploymentValidationError, DeploymentValidator};
+pub use marketplace_webhook::{
+    MarketplaceWebhookPayload, MarketplaceWebhookSender, WebhookResponse, WebhookSenderConfig,
+};
 
 use super::config::UserServiceConfig;
 use super::errors::ConnectorError;
@@ -109,7 +111,11 @@ pub trait UserServiceConnector: Send + Sync {
     ) -> Result<StackResponse, ConnectorError>;
 
     /// Fetch stack details from User Service
-    async fn get_stack(&self, stack_id: i32, user_id: &str) -> Result<StackResponse, ConnectorError>;
+    async fn get_stack(
+        &self,
+        stack_id: i32,
+        user_id: &str,
+    ) -> Result<StackResponse, ConnectorError>;
 
     /// List user's stacks
     async fn list_stacks(&self, user_id: &str) -> Result<Vec<StackResponse>, ConnectorError>;
@@ -239,7 +245,8 @@ impl UserServiceConnector for UserServiceClient {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.send()
+        let resp = req
+            .send()
             .instrument(span)
             .await
             .and_then(|resp| resp.error_for_status())
@@ -248,13 +255,21 @@ impl UserServiceConnector for UserServiceClient {
                 ConnectorError::HttpError(format!("Failed to create stack: {}", e))
             })?;
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
         serde_json::from_str::<StackResponse>(&text)
             .map_err(|_| ConnectorError::InvalidResponse(text))
     }
 
-    async fn get_stack(&self, stack_id: i32, user_id: &str) -> Result<StackResponse, ConnectorError> {
-        let span = tracing::info_span!("user_service_get_stack", stack_id = stack_id, user_id = %user_id);
+    async fn get_stack(
+        &self,
+        stack_id: i32,
+        user_id: &str,
+    ) -> Result<StackResponse, ConnectorError> {
+        let span =
+            tracing::info_span!("user_service_get_stack", stack_id = stack_id, user_id = %user_id);
 
         let url = format!("{}/api/1.0/stacks/{}", self.base_url, stack_id);
         let mut req = self.http_client.get(&url);
@@ -263,22 +278,25 @@ impl UserServiceConnector for UserServiceClient {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.send()
-            .instrument(span)
-            .await
-            .map_err(|e| {
-                if e.status().map_or(false, |s| s == 404) {
-                    ConnectorError::NotFound(format!("Stack {} not found", stack_id))
-                } else {
-                    ConnectorError::HttpError(format!("Failed to get stack: {}", e))
-                }
-            })?;
+        let resp = req.send().instrument(span).await.map_err(|e| {
+            if e.status().map_or(false, |s| s == 404) {
+                ConnectorError::NotFound(format!("Stack {} not found", stack_id))
+            } else {
+                ConnectorError::HttpError(format!("Failed to get stack: {}", e))
+            }
+        })?;
 
         if resp.status() == 404 {
-            return Err(ConnectorError::NotFound(format!("Stack {} not found", stack_id)));
+            return Err(ConnectorError::NotFound(format!(
+                "Stack {} not found",
+                stack_id
+            )));
         }
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
         serde_json::from_str::<StackResponse>(&text)
             .map_err(|_| ConnectorError::InvalidResponse(text))
     }
@@ -301,7 +319,8 @@ impl UserServiceConnector for UserServiceClient {
             _items: Vec<StackResponse>,
         }
 
-        let resp = req.send()
+        let resp = req
+            .send()
             .instrument(span)
             .await
             .and_then(|resp| resp.error_for_status())
@@ -310,7 +329,10 @@ impl UserServiceConnector for UserServiceClient {
                 ConnectorError::HttpError(format!("Failed to list stacks: {}", e))
             })?;
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
         serde_json::from_str::<ListResponse>(&text)
             .map(|r| r._items)
             .map_err(|_| ConnectorError::InvalidResponse(text))
@@ -346,28 +368,26 @@ impl UserServiceConnector for UserServiceClient {
             name: Option<String>,
         }
 
-        let resp = req.send()
-            .instrument(span.clone())
-            .await
-            .map_err(|e| {
-                tracing::error!("user_has_plan error: {:?}", e);
-                ConnectorError::HttpError(format!("Failed to check plan: {}", e))
-            })?;
+        let resp = req.send().instrument(span.clone()).await.map_err(|e| {
+            tracing::error!("user_has_plan error: {:?}", e);
+            ConnectorError::HttpError(format!("Failed to check plan: {}", e))
+        })?;
 
         match resp.status().as_u16() {
             200 => {
-                let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
                 serde_json::from_str::<UserMeResponse>(&text)
                     .map(|response| {
-                        let user_plan = response
-                            .plan
-                            .and_then(|p| p.name)
-                            .unwrap_or_default();
+                        let user_plan = response.plan.and_then(|p| p.name).unwrap_or_default();
                         // Check if user's plan matches or is higher tier than required
                         if user_plan.is_empty() || required_plan_name.is_empty() {
                             return user_plan == required_plan_name;
                         }
-                        user_plan == required_plan_name || is_plan_upgrade(&user_plan, required_plan_name)
+                        user_plan == required_plan_name
+                            || is_plan_upgrade(&user_plan, required_plan_name)
                     })
                     .map_err(|_| ConnectorError::InvalidResponse(text))
             }
@@ -411,7 +431,8 @@ impl UserServiceConnector for UserServiceClient {
             active: Option<bool>,
         }
 
-        let resp = req.send()
+        let resp = req
+            .send()
             .instrument(span)
             .await
             .and_then(|resp| resp.error_for_status())
@@ -420,7 +441,10 @@ impl UserServiceConnector for UserServiceClient {
                 ConnectorError::HttpError(format!("Failed to get user plan: {}", e))
             })?;
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
         serde_json::from_str::<PlanInfoResponse>(&text)
             .map(|info| UserPlanInfo {
                 user_id: info.user_id.unwrap_or_else(|| user_id.to_string()),
@@ -462,7 +486,8 @@ impl UserServiceConnector for UserServiceClient {
             features: Option<serde_json::Value>,
         }
 
-        let resp = req.send()
+        let resp = req
+            .send()
             .instrument(span)
             .await
             .and_then(|resp| resp.error_for_status())
@@ -471,8 +496,11 @@ impl UserServiceConnector for UserServiceClient {
                 ConnectorError::HttpError(format!("Failed to list plans: {}", e))
             })?;
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-        
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+
         // Try Eve format first, fallback to direct array
         if let Ok(eve_resp) = serde_json::from_str::<EveResponse>(&text) {
             Ok(eve_resp._items)
@@ -492,14 +520,10 @@ impl UserServiceConnector for UserServiceClient {
             .get(&url)
             .header("Authorization", format!("Bearer {}", user_token));
 
-        let resp = req
-            .send()
-            .instrument(span.clone())
-            .await
-            .map_err(|e| {
-                tracing::error!("get_user_profile error: {:?}", e);
-                ConnectorError::HttpError(format!("Failed to get user profile: {}", e))
-            })?;
+        let resp = req.send().instrument(span.clone()).await.map_err(|e| {
+            tracing::error!("get_user_profile error: {:?}", e);
+            ConnectorError::HttpError(format!("Failed to get user profile: {}", e))
+        })?;
 
         if resp.status() == 401 {
             return Err(ConnectorError::Unauthorized(
@@ -507,12 +531,14 @@ impl UserServiceConnector for UserServiceClient {
             ));
         }
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-        serde_json::from_str::<UserProfile>(&text)
-            .map_err(|e| {
-                tracing::error!("Failed to parse user profile: {:?}", e);
-                ConnectorError::InvalidResponse(text)
-            })
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+        serde_json::from_str::<UserProfile>(&text).map_err(|e| {
+            tracing::error!("Failed to parse user profile: {:?}", e);
+            ConnectorError::InvalidResponse(text)
+        })
     }
 
     async fn get_template_product(
@@ -542,16 +568,15 @@ impl UserServiceConnector for UserServiceClient {
             _items: Vec<ProductInfo>,
         }
 
-        let resp = req
-            .send()
-            .instrument(span)
-            .await
-            .map_err(|e| {
-                tracing::error!("get_template_product error: {:?}", e);
-                ConnectorError::HttpError(format!("Failed to get template product: {}", e))
-            })?;
+        let resp = req.send().instrument(span).await.map_err(|e| {
+            tracing::error!("get_template_product error: {:?}", e);
+            ConnectorError::HttpError(format!("Failed to get template product: {}", e))
+        })?;
 
-        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
 
         // Try Eve format first (with _items wrapper)
         if let Ok(products_resp) = serde_json::from_str::<ProductsResponse>(&text) {
@@ -575,37 +600,35 @@ impl UserServiceConnector for UserServiceClient {
         );
 
         // Get user profile (includes products list)
-        let profile = self.get_user_profile(user_token).instrument(span.clone()).await?;
+        let profile = self
+            .get_user_profile(user_token)
+            .instrument(span.clone())
+            .await?;
 
         // Try to parse stack_template_id as i32 first (for backward compatibility with integer IDs)
         let owns_template = if let Ok(template_id_int) = stack_template_id.parse::<i32>() {
             profile
                 .products
                 .iter()
-                .any(|p| {
-                    p.product_type == "template" && p.external_id == Some(template_id_int)
-                })
+                .any(|p| p.product_type == "template" && p.external_id == Some(template_id_int))
         } else {
             // If not i32, try comparing as string (UUID or slug)
-            profile
-                .products
-                .iter()
-                .any(|p| {
-                    if p.product_type != "template" {
-                        return false;
-                    }
-                    // Compare with code (slug)
-                    if p.code == stack_template_id {
+            profile.products.iter().any(|p| {
+                if p.product_type != "template" {
+                    return false;
+                }
+                // Compare with code (slug)
+                if p.code == stack_template_id {
+                    return true;
+                }
+                // Compare with id if available
+                if let Some(id) = &p.id {
+                    if id == stack_template_id {
                         return true;
                     }
-                    // Compare with id if available
-                    if let Some(id) = &p.id {
-                        if id == stack_template_id {
-                            return true;
-                        }
-                    }
-                    false
-                })
+                }
+                false
+            })
         };
 
         tracing::info!(
@@ -637,7 +660,7 @@ impl UserServiceConnector for UserServiceClient {
                             .text()
                             .await
                             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-                        
+
                         // User Service returns {_items: [...]}
                         #[derive(Deserialize)]
                         struct CategoriesResponse {
@@ -686,7 +709,10 @@ impl UserServiceConnector for UserServiceClient {
                     if attempt < self.retry_attempts {
                         let backoff =
                             std::time::Duration::from_millis(100 * 2_u64.pow((attempt - 1) as u32));
-                        tracing::warn!("User Service get categories timeout, retrying after {:?}", backoff);
+                        tracing::warn!(
+                            "User Service get categories timeout, retrying after {:?}",
+                            backoff
+                        );
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
@@ -732,7 +758,11 @@ pub mod mock {
             })
         }
 
-        async fn get_stack(&self, stack_id: i32, user_id: &str) -> Result<StackResponse, ConnectorError> {
+        async fn get_stack(
+            &self,
+            stack_id: i32,
+            user_id: &str,
+        ) -> Result<StackResponse, ConnectorError> {
             Ok(StackResponse {
                 id: stack_id,
                 user_id: user_id.to_string(),
@@ -885,10 +915,10 @@ pub mod mock {
 }
 
 /// Initialize User Service connector with config from Settings
-/// 
+///
 /// Returns configured connector wrapped in web::Data for injection into Actix app
 /// Also spawns background task to sync categories from User Service
-/// 
+///
 /// # Example
 /// ```ignore
 /// // In startup.rs
@@ -899,8 +929,8 @@ pub fn init(
     connector_config: &super::config::ConnectorConfig,
     pg_pool: web::Data<sqlx::PgPool>,
 ) -> web::Data<Arc<dyn UserServiceConnector>> {
-    let connector: Arc<dyn UserServiceConnector> = if let Some(user_service_config) = 
-        connector_config.user_service.as_ref().filter(|c| c.enabled) 
+    let connector: Arc<dyn UserServiceConnector> = if let Some(user_service_config) =
+        connector_config.user_service.as_ref().filter(|c| c.enabled)
     {
         let mut config = user_service_config.clone();
         // Load auth token from environment if not set in config
@@ -921,15 +951,20 @@ pub fn init(
         match connector_clone.get_categories().await {
             Ok(categories) => {
                 tracing::info!("Fetched {} categories from User Service", categories.len());
-                match crate::db::marketplace::sync_categories(pg_pool_clone.get_ref(), categories).await {
+                match crate::db::marketplace::sync_categories(pg_pool_clone.get_ref(), categories)
+                    .await
+                {
                     Ok(count) => tracing::info!("Successfully synced {} categories", count),
                     Err(e) => tracing::error!("Failed to sync categories to database: {}", e),
                 }
             }
-            Err(e) => tracing::warn!("Failed to fetch categories from User Service (will retry later): {:?}", e),
+            Err(e) => tracing::warn!(
+                "Failed to fetch categories from User Service (will retry later): {:?}",
+                e
+            ),
         }
     });
-    
+
     web::Data::new(connector)
 }
 
@@ -937,10 +972,16 @@ pub fn init(
 /// Basic idea: enterprise >= professional >= basic
 fn is_plan_upgrade(user_plan: &str, required_plan: &str) -> bool {
     let plan_hierarchy = vec!["basic", "professional", "enterprise"];
-    
-    let user_level = plan_hierarchy.iter().position(|&p| p == user_plan).unwrap_or(0);
-    let required_level = plan_hierarchy.iter().position(|&p| p == required_plan).unwrap_or(0);
-    
+
+    let user_level = plan_hierarchy
+        .iter()
+        .position(|&p| p == user_plan)
+        .unwrap_or(0);
+    let required_level = plan_hierarchy
+        .iter()
+        .position(|&p| p == required_plan)
+        .unwrap_or(0);
+
     user_level > required_level
 }
 
@@ -958,18 +999,19 @@ mod tests {
         // Assertions on user profile structure
         assert_eq!(profile.email, "test@example.com");
         assert!(profile.plan.is_some());
-        
+
         // Verify products list is populated
         assert!(!profile.products.is_empty());
-        
+
         // Check for plan product
-        let plan_product = profile.products.iter()
-            .find(|p| p.product_type == "plan");
+        let plan_product = profile.products.iter().find(|p| p.product_type == "plan");
         assert!(plan_product.is_some());
         assert_eq!(plan_product.unwrap().code, "professional");
-        
+
         // Check for template product
-        let template_product = profile.products.iter()
+        let template_product = profile
+            .products
+            .iter()
             .find(|p| p.product_type == "template");
         assert!(template_product.is_some());
         assert_eq!(template_product.unwrap().name, "AI Agent Stack Pro");
@@ -980,11 +1022,11 @@ mod tests {
     #[tokio::test]
     async fn test_mock_get_template_product_returns_product_info() {
         let connector = mock::MockUserServiceConnector;
-        
+
         // Test with template ID that exists (100)
         let product = connector.get_template_product(100).await.unwrap();
         assert!(product.is_some());
-        
+
         let prod = product.unwrap();
         assert_eq!(prod.id, "uuid-product-ai");
         assert_eq!(prod.name, "AI Agent Stack Pro");
@@ -1000,7 +1042,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_get_template_product_not_found() {
         let connector = mock::MockUserServiceConnector;
-        
+
         // Test with non-existent template ID
         let product = connector.get_template_product(999).await.unwrap();
         assert!(product.is_none());
@@ -1010,13 +1052,19 @@ mod tests {
     #[tokio::test]
     async fn test_mock_user_owns_template_owned() {
         let connector = mock::MockUserServiceConnector;
-        
+
         // Test with owned template ID
-        let owns = connector.user_owns_template("test_token", "100").await.unwrap();
+        let owns = connector
+            .user_owns_template("test_token", "100")
+            .await
+            .unwrap();
         assert!(owns);
-        
+
         // Test with code containing "ai-agent"
-        let owns_code = connector.user_owns_template("test_token", "ai-agent-stack-pro").await.unwrap();
+        let owns_code = connector
+            .user_owns_template("test_token", "ai-agent-stack-pro")
+            .await
+            .unwrap();
         assert!(owns_code);
     }
 
@@ -1024,13 +1072,19 @@ mod tests {
     #[tokio::test]
     async fn test_mock_user_owns_template_not_owned() {
         let connector = mock::MockUserServiceConnector;
-        
+
         // Test with non-owned template ID
-        let owns = connector.user_owns_template("test_token", "999").await.unwrap();
+        let owns = connector
+            .user_owns_template("test_token", "999")
+            .await
+            .unwrap();
         assert!(!owns);
-        
+
         // Test with random code that doesn't match
-        let owns_code = connector.user_owns_template("test_token", "random-template").await.unwrap();
+        let owns_code = connector
+            .user_owns_template("test_token", "random-template")
+            .await
+            .unwrap();
         assert!(!owns_code);
     }
 
@@ -1038,13 +1092,19 @@ mod tests {
     #[tokio::test]
     async fn test_mock_user_has_plan() {
         let connector = mock::MockUserServiceConnector;
-        
-        let has_professional = connector.user_has_plan("user_123", "professional").await.unwrap();
+
+        let has_professional = connector
+            .user_has_plan("user_123", "professional")
+            .await
+            .unwrap();
         assert!(has_professional);
-        
-        let has_enterprise = connector.user_has_plan("user_123", "enterprise").await.unwrap();
+
+        let has_enterprise = connector
+            .user_has_plan("user_123", "enterprise")
+            .await
+            .unwrap();
         assert!(has_enterprise);
-        
+
         let has_basic = connector.user_has_plan("user_123", "basic").await.unwrap();
         assert!(has_basic);
     }
@@ -1053,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_get_user_plan() {
         let connector = mock::MockUserServiceConnector;
-        
+
         let plan = connector.get_user_plan("user_123").await.unwrap();
         assert_eq!(plan.user_id, "user_123");
         assert_eq!(plan.plan_name, "professional");
@@ -1066,11 +1126,11 @@ mod tests {
     #[tokio::test]
     async fn test_mock_list_available_plans() {
         let connector = mock::MockUserServiceConnector;
-        
+
         let plans = connector.list_available_plans().await.unwrap();
         assert!(!plans.is_empty());
         assert_eq!(plans.len(), 3);
-        
+
         // Verify specific plans exist
         let plan_names: Vec<String> = plans.iter().map(|p| p.name.clone()).collect();
         assert!(plan_names.contains(&"basic".to_string()));
@@ -1082,17 +1142,17 @@ mod tests {
     #[tokio::test]
     async fn test_mock_get_categories() {
         let connector = mock::MockUserServiceConnector;
-        
+
         let categories = connector.get_categories().await.unwrap();
         assert!(!categories.is_empty());
         assert_eq!(categories.len(), 3);
-        
+
         // Verify specific categories exist
         let category_names: Vec<String> = categories.iter().map(|c| c.name.clone()).collect();
         assert!(category_names.contains(&"cms".to_string()));
         assert!(category_names.contains(&"ecommerce".to_string()));
         assert!(category_names.contains(&"ai".to_string()));
-        
+
         // Verify category has expected fields
         let ai_category = categories.iter().find(|c| c.name == "ai").unwrap();
         assert_eq!(ai_category.title, "AI Agents");
@@ -1104,7 +1164,7 @@ mod tests {
     async fn test_mock_create_stack_from_template() {
         let connector = mock::MockUserServiceConnector;
         let template_id = Uuid::new_v4();
-        
+
         let stack = connector
             .create_stack_from_template(
                 &template_id,
@@ -1127,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_get_stack() {
         let connector = mock::MockUserServiceConnector;
-        
+
         let stack = connector.get_stack(1, "user_123").await.unwrap();
         assert_eq!(stack.id, 1);
         assert_eq!(stack.user_id, "user_123");
@@ -1138,7 +1198,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_list_stacks() {
         let connector = mock::MockUserServiceConnector;
-        
+
         let stacks = connector.list_stacks("user_123").await.unwrap();
         assert!(!stacks.is_empty());
         assert_eq!(stacks[0].user_id, "user_123");
@@ -1149,19 +1209,19 @@ mod tests {
     fn test_is_plan_upgrade_hierarchy() {
         // Enterprise user can access professional tier
         assert!(is_plan_upgrade("enterprise", "professional"));
-        
+
         // Enterprise user can access basic tier
         assert!(is_plan_upgrade("enterprise", "basic"));
-        
+
         // Professional user can access basic tier
         assert!(is_plan_upgrade("professional", "basic"));
-        
+
         // Basic user cannot access professional
         assert!(!is_plan_upgrade("basic", "professional"));
-        
+
         // Basic user cannot access enterprise
         assert!(!is_plan_upgrade("basic", "enterprise"));
-        
+
         // Same plan should not be considered upgrade
         assert!(!is_plan_upgrade("professional", "professional"));
     }
