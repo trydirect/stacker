@@ -13,16 +13,14 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
 
     // Parse cookies to find access_token
     let cookies = cookie_header.unwrap();
-    let token = cookies
-        .split(';')
-        .find_map(|cookie| {
-            let parts: Vec<&str> = cookie.trim().splitn(2, '=').collect();
-            if parts.len() == 2 && parts[0] == "access_token" {
-                Some(parts[1].to_string())
-            } else {
-                None
-            }
-        });
+    let token = cookies.split(';').find_map(|cookie| {
+        let parts: Vec<&str> = cookie.trim().splitn(2, '=').collect();
+        if parts.len() == 2 && parts[0] == "access_token" {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
+    });
 
     if token.is_none() {
         return Ok(false);

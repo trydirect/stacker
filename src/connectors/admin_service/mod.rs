@@ -5,9 +5,6 @@
 pub mod jwt;
 
 pub use jwt::{
+    extract_bearer_token, parse_jwt_claims, user_from_jwt_claims, validate_jwt_expiration,
     JwtClaims,
-    parse_jwt_claims,
-    validate_jwt_expiration,
-    user_from_jwt_claims,
-    extract_bearer_token,
 };

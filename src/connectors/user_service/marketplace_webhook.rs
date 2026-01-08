@@ -1,5 +1,5 @@
 /// Marketplace webhook sender for User Service integration
-/// 
+///
 /// Sends webhooks to User Service when marketplace templates change status.
 /// This implements Flow 3 from PAYMENT_MODEL.md: Creator publishes template → Product created in User Service
 ///
@@ -7,7 +7,6 @@
 /// - No bi-directional queries on approval
 /// - Bearer token authentication using STACKER_SERVICE_TOKEN
 /// - Template approval does not block if webhook send fails (async/retry pattern)
-
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -156,7 +155,10 @@ impl MarketplaceWebhookSender {
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
             name: Some(template.name.clone()),
-            description: template.short_description.clone().or_else(|| template.long_description.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
             price: None, // Pricing not stored in Stacker (User Service responsibility)
             billing_cycle: None,
             currency: None,
@@ -192,7 +194,10 @@ impl MarketplaceWebhookSender {
             external_id: template.id.to_string(),
             code: Some(template.slug.clone()),
             name: Some(template.name.clone()),
-            description: template.short_description.clone().or_else(|| template.long_description.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
             price: None,
             billing_cycle: None,
             currency: None,
@@ -215,7 +220,10 @@ impl MarketplaceWebhookSender {
         &self,
         stack_template_id: &str,
     ) -> Result<WebhookResponse, ConnectorError> {
-        let span = tracing::info_span!("send_template_rejected_webhook", template_id = stack_template_id);
+        let span = tracing::info_span!(
+            "send_template_rejected_webhook",
+            template_id = stack_template_id
+        );
 
         let payload = MarketplaceWebhookPayload {
             action: "template_rejected".to_string(),
@@ -237,7 +245,10 @@ impl MarketplaceWebhookSender {
     }
 
     /// Internal method to send webhook with retries
-    async fn send_webhook(&self, payload: &MarketplaceWebhookPayload) -> Result<WebhookResponse, ConnectorError> {
+    async fn send_webhook(
+        &self,
+        payload: &MarketplaceWebhookPayload,
+    ) -> Result<WebhookResponse, ConnectorError> {
         let url = format!("{}/marketplace/sync", self.config.base_url);
 
         let mut attempt = 0;
@@ -248,13 +259,19 @@ impl MarketplaceWebhookSender {
                 .http_client
                 .post(&url)
                 .json(payload)
-                .header("Authorization", format!("Bearer {}", self.config.bearer_token))
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", self.config.bearer_token),
+                )
                 .header("Content-Type", "application/json");
 
             match req.send().await {
                 Ok(resp) => match resp.status().as_u16() {
                     200 | 201 => {
-                        let text = resp.text().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+                        let text = resp
+                            .text()
+                            .await
+                            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
                         return serde_json::from_str::<WebhookResponse>(&text)
                             .map_err(|_| ConnectorError::InvalidResponse(text));
                     }
@@ -264,12 +281,16 @@ impl MarketplaceWebhookSender {
                         ));
                     }
                     404 => {
-                        return Err(ConnectorError::NotFound("/marketplace/sync endpoint not found".to_string()));
+                        return Err(ConnectorError::NotFound(
+                            "/marketplace/sync endpoint not found".to_string(),
+                        ));
                     }
                     500..=599 => {
                         // Retry on server errors
                         if attempt < self.config.retry_attempts {
-                            let backoff = std::time::Duration::from_millis(100 * 2_u64.pow((attempt - 1) as u32));
+                            let backoff = std::time::Duration::from_millis(
+                                100 * 2_u64.pow((attempt - 1) as u32),
+                            );
                             tracing::warn!(
                                 "User Service webhook failed with {}, retrying after {:?}",
                                 resp.status(),
@@ -284,20 +305,32 @@ impl MarketplaceWebhookSender {
                         )));
                     }
                     status => {
-                        return Err(ConnectorError::HttpError(format!("Unexpected status code: {}", status)));
+                        return Err(ConnectorError::HttpError(format!(
+                            "Unexpected status code: {}",
+                            status
+                        )));
                     }
                 },
                 Err(e) if e.is_timeout() => {
                     if attempt < self.config.retry_attempts {
-                        let backoff = std::time::Duration::from_millis(100 * 2_u64.pow((attempt - 1) as u32));
-                        tracing::warn!("User Service webhook timeout, retrying after {:?}", backoff);
+                        let backoff =
+                            std::time::Duration::from_millis(100 * 2_u64.pow((attempt - 1) as u32));
+                        tracing::warn!(
+                            "User Service webhook timeout, retrying after {:?}",
+                            backoff
+                        );
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
-                    return Err(ConnectorError::ServiceUnavailable("Webhook send timeout".to_string()));
+                    return Err(ConnectorError::ServiceUnavailable(
+                        "Webhook send timeout".to_string(),
+                    ));
                 }
                 Err(e) => {
-                    return Err(ConnectorError::HttpError(format!("Webhook send failed: {}", e)));
+                    return Err(ConnectorError::HttpError(format!(
+                        "Webhook send failed: {}",
+                        e
+                    )));
                 }
             }
         }
@@ -329,7 +362,7 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
         assert!(json.contains("template_approved"));
         assert!(json.contains("ai-agent-stack-pro"));
-        
+
         // Verify all fields are present
         assert!(json.contains("550e8400-e29b-41d4-a716-446655440000"));
         assert!(json.contains("AI Agent Stack Pro"));
@@ -473,7 +506,10 @@ mod tests {
 
         let response: WebhookResponse = serde_json::from_value(json).unwrap();
         assert!(response.success);
-        assert_eq!(response.message, Some("Product created successfully".to_string()));
+        assert_eq!(
+            response.message,
+            Some("Product created successfully".to_string())
+        );
         assert_eq!(response.product_id, Some("product-123".to_string()));
     }
 
@@ -543,5 +579,3 @@ mod tests {
         assert!(json.contains("external_id"));
     }
 }
-
-

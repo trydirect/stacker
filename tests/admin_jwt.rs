@@ -41,7 +41,10 @@ async fn admin_templates_accepts_valid_jwt() {
         .await
         .expect("Response should be valid JSON");
 
-    assert!(body.get("list").is_some(), "Response should contain template list");
+    assert!(
+        body.get("list").is_some(),
+        "Response should contain template list"
+    );
 }
 
 #[tokio::test]
@@ -59,7 +62,11 @@ async fn admin_templates_rejects_expired_jwt() {
 
     assert_eq!(StatusCode::BAD_REQUEST, response.status());
     let text = response.text().await.expect("Should read body");
-    assert!(text.contains("expired"), "Error body should mention expiration: {}", text);
+    assert!(
+        text.contains("expired"),
+        "Error body should mention expiration: {}",
+        text
+    );
 }
 
 #[tokio::test]

@@ -36,7 +36,11 @@ pub async fn search_namespaces(
     connector
         .search_namespaces(term)
         .await
-        .map(|namespaces| JsonResponse::<NamespaceSummary>::build().set_list(namespaces).ok("OK"))
+        .map(|namespaces| {
+            JsonResponse::<NamespaceSummary>::build()
+                .set_list(namespaces)
+                .ok("OK")
+        })
         .map_err(Error::from)
 }
 
@@ -55,7 +59,11 @@ pub async fn list_repositories(
     connector
         .list_repositories(&params.namespace, query.q.as_deref())
         .await
-        .map(|repos| JsonResponse::<RepositorySummary>::build().set_list(repos).ok("OK"))
+        .map(|repos| {
+            JsonResponse::<RepositorySummary>::build()
+                .set_list(repos)
+                .ok("OK")
+        })
         .map_err(Error::from)
 }
 

@@ -64,7 +64,7 @@ pub async fn register_handler(
             "Agent already registered for deployment {}, returning existing",
             payload.deployment_hash
         );
-        
+
         // Try to fetch existing token from Vault
         let agent_token = vault_client
             .fetch_agent_token(&payload.deployment_hash)
@@ -81,7 +81,8 @@ pub async fn register_handler(
                             tracing::info!("Token restored to Vault for {}", hash);
                             break;
                         }
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry))).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
+                            .await;
                     }
                 });
                 new_token
@@ -135,7 +136,8 @@ pub async fn register_handler(
                         e
                     );
                     if retry < 2 {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry))).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2_u64.pow(retry)))
+                            .await;
                     }
                 }
             }

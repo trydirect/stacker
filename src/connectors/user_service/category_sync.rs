@@ -2,7 +2,6 @@
 ///
 /// Implements automatic category sync on startup to keep local category table
 /// in sync with User Service as the source of truth.
-
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -42,9 +41,7 @@ pub async fn sync_categories_from_user_service(
     }
 
     // Upsert categories to local database
-    let synced_count = upsert_categories(pool, categories)
-        .instrument(span)
-        .await?;
+    let synced_count = upsert_categories(pool, categories).instrument(span).await?;
 
     tracing::info!(
         "Successfully synced {} categories from User Service to local mirror",
@@ -83,11 +80,7 @@ async fn upsert_categories(pool: &PgPool, categories: Vec<CategoryInfo>) -> Resu
 
         if result.rows_affected() > 0 {
             synced_count += 1;
-            tracing::debug!(
-                "Synced category: {} ({})",
-                category.name,
-                category.title
-            );
+            tracing::debug!("Synced category: {} ({})", category.name, category.title);
         }
     }
 

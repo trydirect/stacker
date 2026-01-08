@@ -9,6 +9,7 @@ use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -55,7 +56,8 @@ pub struct TagSummary {
 
 #[async_trait]
 pub trait DockerHubConnector: Send + Sync {
-    async fn search_namespaces(&self, query: &str) -> Result<Vec<NamespaceSummary>, ConnectorError>;
+    async fn search_namespaces(&self, query: &str)
+        -> Result<Vec<NamespaceSummary>, ConnectorError>;
     async fn list_repositories(
         &self,
         namespace: &str,
@@ -80,9 +82,9 @@ impl RedisCache {
             ConnectorError::Internal(format!("Invalid Redis URL for Docker Hub cache: {}", err))
         })?;
 
-        let connection = ConnectionManager::new(client)
-            .await
-            .map_err(|err| ConnectorError::ServiceUnavailable(format!("Redis unavailable: {}", err)))?;
+        let connection = ConnectionManager::new(client).await.map_err(|err| {
+            ConnectorError::ServiceUnavailable(format!("Redis unavailable: {}", err))
+        })?;
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -94,10 +96,9 @@ impl RedisCache {
         T: DeserializeOwned,
     {
         let mut conn = self.connection.lock().await;
-        let value: Option<String> = conn
-            .get(key)
-            .await
-            .map_err(|err| ConnectorError::ServiceUnavailable(format!("Redis GET failed: {}", err)))?;
+        let value: Option<String> = conn.get(key).await.map_err(|err| {
+            ConnectorError::ServiceUnavailable(format!("Redis GET failed: {}", err))
+        })?;
 
         if let Some(payload) = value {
             if payload.is_empty() {
@@ -126,7 +127,9 @@ impl RedisCache {
         let (): () = conn
             .set_ex(key, payload, ttl_secs as u64)
             .await
-            .map_err(|err| ConnectorError::ServiceUnavailable(format!("Redis SET failed: {}", err)))?;
+            .map_err(|err| {
+                ConnectorError::ServiceUnavailable(format!("Redis SET failed: {}", err))
+            })?;
         Ok(())
     }
 }
@@ -284,12 +287,9 @@ impl DockerHubClient {
                         }
                         StatusCode::NOT_FOUND => ConnectorError::NotFound(text),
                         StatusCode::TOO_MANY_REQUESTS => ConnectorError::RateLimited(text),
-                        status if status.is_server_error() => {
-                            ConnectorError::ServiceUnavailable(format!(
-                                "Docker Hub error {}: {}",
-                                status, text
-                            ))
-                        }
+                        status if status.is_server_error() => ConnectorError::ServiceUnavailable(
+                            format!("Docker Hub error {}: {}", status, text),
+                        ),
                         status => ConnectorError::HttpError(format!(
                             "Docker Hub error {}: {}",
                             status, text
@@ -317,49 +317,11 @@ impl DockerHubClient {
         }))
     }
 
-    fn parse_namespace_response(payload: Value) -> Vec<NamespaceSummary> {
-        Self::extract_items(&payload, &["summaries", "results"])
-            .into_iter()
-            .filter_map(|item| {
-                let name = item.get("name")?.as_str()?.to_string();
-                Some(NamespaceSummary {
-                    name,
-                    namespace_type: item
-                        .get("namespace_type")
-                        .or_else(|| item.get("type"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    description: item
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    is_user: item
-                        .get("is_user")
-                        .or_else(|| item.get("is_user_namespace"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    is_organization: item
-                        .get("is_organization")
-                        .or_else(|| item.get("is_org"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                })
-            })
-            .collect()
-    }
-
     fn parse_repository_response(payload: Value) -> Vec<RepositorySummary> {
         Self::extract_items(&payload, &["results", "repositories"])
             .into_iter()
             .filter_map(|item| {
-                let name = item.get("name")?.as_str()?.to_string();
-                let namespace = item
-                    .get("namespace")
-                    .or_else(|| item.get("user"))
-                    .or_else(|| item.get("organization"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+                let (namespace, name) = Self::resolve_namespace_and_name(&item)?;
 
                 Some(RepositorySummary {
                     name,
@@ -424,11 +386,56 @@ impl DockerHubClient {
 
         payload.as_array().cloned().unwrap_or_default()
     }
+
+    fn resolve_namespace_and_name(item: &Value) -> Option<(String, String)> {
+        let mut namespace = item
+            .get("namespace")
+            .or_else(|| item.get("user"))
+            .or_else(|| item.get("organization"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let mut repo_name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())?;
+
+        if namespace.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+            if let Some(slug) = item
+                .get("slug")
+                .or_else(|| item.get("repo_name"))
+                .and_then(|v| v.as_str())
+            {
+                if let Some((ns, repo)) = slug.split_once('/') {
+                    namespace = Some(ns.to_string());
+                    repo_name = repo.to_string();
+                }
+            }
+        }
+
+        if namespace.as_ref().map(|s| s.is_empty()).unwrap_or(true) && repo_name.contains('/') {
+            if let Some((ns, repo)) = repo_name.split_once('/') {
+                namespace = Some(ns.to_string());
+                repo_name = repo.to_string();
+            }
+        }
+
+        namespace.and_then(|ns| {
+            if ns.is_empty() {
+                None
+            } else {
+                Some((ns, repo_name))
+            }
+        })
+    }
 }
 
 #[async_trait]
 impl DockerHubConnector for DockerHubClient {
-    async fn search_namespaces(&self, query: &str) -> Result<Vec<NamespaceSummary>, ConnectorError> {
+    async fn search_namespaces(
+        &self,
+        query: &str,
+    ) -> Result<Vec<NamespaceSummary>, ConnectorError> {
         let cache_key = format!("dockerhub:namespaces:{}", Self::cache_suffix(query));
         if let Some(cached) = self.read_cache::<Vec<NamespaceSummary>>(&cache_key).await {
             return Ok(cached);
@@ -441,9 +448,26 @@ impl DockerHubConnector for DockerHubClient {
         }
 
         let payload = self
-            .send_request(Method::GET, "/v2/search/namespaces/", query_params)
+            .send_request(Method::GET, "/v2/search/repositories/", query_params)
             .await?;
-        let namespaces = Self::parse_namespace_response(payload);
+        let repositories = Self::parse_repository_response(payload);
+
+        let mut seen = HashSet::new();
+        let mut namespaces = Vec::new();
+        for repo in repositories {
+            if repo.namespace.is_empty() || !seen.insert(repo.namespace.clone()) {
+                continue;
+            }
+
+            namespaces.push(NamespaceSummary {
+                name: repo.namespace.clone(),
+                namespace_type: None,
+                description: repo.description.clone(),
+                is_user: false,
+                is_organization: false,
+            });
+        }
+
         self.write_cache(&cache_key, &namespaces, self.cache_ttls.namespaces)
             .await;
         Ok(namespaces)
@@ -477,9 +501,7 @@ impl DockerHubConnector for DockerHubClient {
             Self::encode_segment(namespace)
         );
 
-        let payload = self
-            .send_request(Method::GET, &path, query_params)
-            .await?;
+        let payload = self.send_request(Method::GET, &path, query_params).await?;
         let repositories = Self::parse_repository_response(payload);
         self.write_cache(&cache_key, &repositories, self.cache_ttls.repositories)
             .await;
@@ -517,58 +539,54 @@ impl DockerHubConnector for DockerHubClient {
             Self::encode_segment(repository)
         );
 
-        let payload = self
-            .send_request(Method::GET, &path, query_params)
-            .await?;
+        let payload = self.send_request(Method::GET, &path, query_params).await?;
         let tags = Self::parse_tag_response(payload);
-        self.write_cache(&cache_key, &tags, self.cache_ttls.tags).await;
+        self.write_cache(&cache_key, &tags, self.cache_ttls.tags)
+            .await;
         Ok(tags)
     }
 }
 
 /// Initialize Docker Hub connector from app settings
-pub async fn init(
-    connector_config: &ConnectorConfig,
-) -> web::Data<Arc<dyn DockerHubConnector>> {
-    let connector: Arc<dyn DockerHubConnector> =
-        if let Some(config) = connector_config
-            .dockerhub_service
-            .as_ref()
-            .filter(|cfg| cfg.enabled)
-        {
-            let mut cfg = config.clone();
+pub async fn init(connector_config: &ConnectorConfig) -> web::Data<Arc<dyn DockerHubConnector>> {
+    let connector: Arc<dyn DockerHubConnector> = if let Some(config) = connector_config
+        .dockerhub_service
+        .as_ref()
+        .filter(|cfg| cfg.enabled)
+    {
+        let mut cfg = config.clone();
 
-            if cfg.username.is_none() {
-                cfg.username = std::env::var("DOCKERHUB_USERNAME").ok();
-            }
+        if cfg.username.is_none() {
+            cfg.username = std::env::var("DOCKERHUB_USERNAME").ok();
+        }
 
-            if cfg.personal_access_token.is_none() {
-                cfg.personal_access_token = std::env::var("DOCKERHUB_TOKEN").ok();
-            }
+        if cfg.personal_access_token.is_none() {
+            cfg.personal_access_token = std::env::var("DOCKERHUB_TOKEN").ok();
+        }
 
-            if cfg.redis_url.is_none() {
-                cfg.redis_url = std::env::var("DOCKERHUB_REDIS_URL")
-                    .ok()
-                    .or_else(|| std::env::var("REDIS_URL").ok());
-            }
+        if cfg.redis_url.is_none() {
+            cfg.redis_url = std::env::var("DOCKERHUB_REDIS_URL")
+                .ok()
+                .or_else(|| std::env::var("REDIS_URL").ok());
+        }
 
-            match DockerHubClient::new(cfg.clone()).await {
-                Ok(client) => {
-                    tracing::info!("Docker Hub connector initialized ({})", cfg.base_url);
-                    Arc::new(client)
-                }
-                Err(err) => {
-                    tracing::error!(
-                        error = %err,
-                        "Failed to initialize Docker Hub connector, falling back to mock"
-                    );
-                    Arc::new(mock::MockDockerHubConnector::default())
-                }
+        match DockerHubClient::new(cfg.clone()).await {
+            Ok(client) => {
+                tracing::info!("Docker Hub connector initialized ({})", cfg.base_url);
+                Arc::new(client)
             }
-        } else {
-            tracing::warn!("Docker Hub connector disabled - using mock responses");
-            Arc::new(mock::MockDockerHubConnector::default())
-        };
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    "Failed to initialize Docker Hub connector, falling back to mock"
+                );
+                Arc::new(mock::MockDockerHubConnector::default())
+            }
+        }
+    } else {
+        tracing::warn!("Docker Hub connector disabled - using mock responses");
+        Arc::new(mock::MockDockerHubConnector::default())
+    };
 
     web::Data::new(connector)
 }
@@ -663,14 +681,18 @@ pub mod mock {
                     digest: Some(format!("sha256:{:x}", 1)),
                     last_updated: Some("2026-01-03T12:00:00Z".to_string()),
                     tag_status: Some("active".to_string()),
-                    content_type: Some("application/vnd.docker.distribution.manifest.v2+json".to_string()),
+                    content_type: Some(
+                        "application/vnd.docker.distribution.manifest.v2+json".to_string(),
+                    ),
                 },
                 TagSummary {
                     name: "v1.2.3".to_string(),
                     digest: Some(format!("sha256:{:x}", 2)),
                     last_updated: Some("2026-01-02T08:00:00Z".to_string()),
                     tag_status: Some("active".to_string()),
-                    content_type: Some("application/vnd.docker.distribution.manifest.v2+json".to_string()),
+                    content_type: Some(
+                        "application/vnd.docker.distribution.manifest.v2+json".to_string(),
+                    ),
                 },
             ];
 
@@ -685,7 +707,11 @@ pub mod mock {
                     tag.digest = Some(format!(
                         "sha256:{:x}{}",
                         idx,
-                        repository.to_lowercase().chars().take(4).collect::<String>()
+                        repository
+                            .to_lowercase()
+                            .chars()
+                            .take(4)
+                            .collect::<String>()
                     ));
                 }
             }

@@ -39,7 +39,10 @@ pub fn parse_jwt_claims(token: &str) -> Result<JwtClaims, String> {
 pub fn validate_jwt_expiration(claims: &JwtClaims) -> Result<(), String> {
     let now = chrono::Utc::now().timestamp();
     if claims.exp < now {
-        return Err(format!("JWT token expired (exp: {}, now: {})", claims.exp, now));
+        return Err(format!(
+            "JWT token expired (exp: {}, now: {})",
+            claims.exp, now
+        ));
     }
     Ok(())
 }

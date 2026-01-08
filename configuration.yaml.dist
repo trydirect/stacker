@@ -42,8 +42,8 @@ connectors:
     amqp_url: "amqp://guest:guest@127.0.0.1:5672/%2f"
     exchange: "stacker_events"
     prefetch: 10
-  dockerhub_cservice:
-    enabled: false
+  dockerhub_service:
+    enabled: true
     base_url: "https://hub.docker.com"
     timeout_secs: 10
     retry_attempts: 3

@@ -152,7 +152,7 @@ impl DockerHubConnectorConfig {
 impl Default for DockerHubConnectorConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             base_url: "https://hub.docker.com".to_string(),
             timeout_secs: 10,
             retry_attempts: 3,

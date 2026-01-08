@@ -35,14 +35,19 @@ impl HealthChecker {
         let redis_check = timeout(CHECK_TIMEOUT, self.check_redis());
         let vault_check = timeout(CHECK_TIMEOUT, self.check_vault());
 
-        let (db_result, mq_result, hub_result, redis_result, vault_result) = 
+        let (db_result, mq_result, hub_result, redis_result, vault_result) =
             tokio::join!(db_check, mq_check, hub_check, redis_check, vault_check);
 
-        let db_health = db_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
-        let mq_health = mq_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
-        let hub_health = hub_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
-        let redis_health = redis_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
-        let vault_health = vault_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let db_health =
+            db_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let mq_health =
+            mq_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let hub_health =
+            hub_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let redis_health =
+            redis_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let vault_health =
+            vault_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
 
         response.add_component("database".to_string(), db_health);
         response.add_component("rabbitmq".to_string(), mq_health);
@@ -75,10 +80,7 @@ impl HealthChecker {
                 let pool_size = self.pg_pool.size();
                 let idle_connections = self.pg_pool.num_idle();
                 let mut details = HashMap::new();
-                details.insert(
-                    "pool_size".to_string(),
-                    serde_json::json!(pool_size),
-                );
+                details.insert("pool_size".to_string(), serde_json::json!(pool_size));
                 details.insert(
                     "idle_connections".to_string(),
                     serde_json::json!(idle_connections),
@@ -104,9 +106,8 @@ impl HealthChecker {
 
         let mut config = deadpool_lapin::Config::default();
         config.url = Some(connection_string.clone());
-        
-        match config.create_pool(Some(deadpool_lapin::Runtime::Tokio1))
-        {
+
+        match config.create_pool(Some(deadpool_lapin::Runtime::Tokio1)) {
             Ok(pool) => match pool.get().await {
                 Ok(conn) => match conn.create_channel().await {
                     Ok(_channel) => {
@@ -201,13 +202,14 @@ impl HealthChecker {
 
     #[tracing::instrument(name = "Check Redis health", skip(self))]
     async fn check_redis(&self) -> ComponentHealth {
-        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
         let start = Instant::now();
 
         match redis::Client::open(redis_url.as_str()) {
             Ok(client) => {
-                let conn_result = tokio::task::spawn_blocking(move || client.get_connection())
-                    .await;
+                let conn_result =
+                    tokio::task::spawn_blocking(move || client.get_connection()).await;
 
                 match conn_result {
                     Ok(Ok(mut conn)) => {
@@ -216,10 +218,12 @@ impl HealthChecker {
                                 redis::cmd("PING").query(&mut conn)
                             })
                             .await
-                            .unwrap_or_else(|_| Err(redis::RedisError::from((
-                                redis::ErrorKind::IoError,
-                                "Task join error",
-                            ))));
+                            .unwrap_or_else(|_| {
+                                Err(redis::RedisError::from((
+                                    redis::ErrorKind::IoError,
+                                    "Task join error",
+                                )))
+                            });
 
                         match ping_result {
                             Ok(_) => {
@@ -301,7 +305,8 @@ impl HealthChecker {
 
                             let mut details = HashMap::new();
                             details.insert("address".to_string(), serde_json::json!(vault_address));
-                            details.insert("status_code".to_string(), serde_json::json!(status_code));
+                            details
+                                .insert("status_code".to_string(), serde_json::json!(status_code));
 
                             if let Ok(body) = response.json::<serde_json::Value>().await {
                                 if let Some(initialized) = body.get("initialized") {

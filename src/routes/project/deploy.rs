@@ -1,5 +1,7 @@
 use crate::configuration::Settings;
-use crate::connectors::{install_service::InstallServiceConnector, user_service::UserServiceConnector};
+use crate::connectors::{
+    install_service::InstallServiceConnector, user_service::UserServiceConnector,
+};
 use crate::db;
 use crate::forms;
 use crate::helpers::compressor::compress;
@@ -68,12 +70,10 @@ pub async fn item(
                         required_plan,
                         template_id
                     );
-                    return Err(JsonResponse::<models::Project>::build().forbidden(
-                        format!(
-                            "You require a '{}' subscription to deploy this template",
-                            required_plan
-                        ),
-                    ));
+                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
+                        "You require a '{}' subscription to deploy this template",
+                        required_plan
+                    )));
                 }
             }
         }
@@ -214,12 +214,10 @@ pub async fn saved_item(
                         required_plan,
                         template_id
                     );
-                    return Err(JsonResponse::<models::Project>::build().forbidden(
-                        format!(
-                            "You require a '{}' subscription to deploy this template",
-                            required_plan
-                        ),
-                    ));
+                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
+                        "You require a '{}' subscription to deploy this template",
+                        required_plan
+                    )));
                 }
             }
         }

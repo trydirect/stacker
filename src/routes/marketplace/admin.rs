@@ -1,13 +1,13 @@
-use crate::db;
 use crate::connectors::user_service::UserServiceConnector;
 use crate::connectors::{MarketplaceWebhookSender, WebhookSenderConfig};
+use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
-use uuid;
 use tracing::Instrument;
+use uuid;
 
 #[tracing::instrument(name = "List submitted templates (admin)")]
 #[get("")]
@@ -17,7 +17,9 @@ pub async fn list_submitted_handler(
 ) -> Result<impl Responder> {
     db::marketplace::admin_list_submitted(pg_pool.get_ref())
         .await
-        .map_err(|err| JsonResponse::<Vec<models::StackTemplate>>::build().internal_server_error(err))
+        .map_err(|err| {
+            JsonResponse::<Vec<models::StackTemplate>>::build().internal_server_error(err)
+        })
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }
 
@@ -38,10 +40,16 @@ pub async fn approve_handler(
     let id = uuid::Uuid::parse_str(&path.into_inner().0)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
     let req = body.into_inner();
-    
-    let updated = db::marketplace::admin_decide(pg_pool.get_ref(), &id, &admin.id, "approved", req.reason.as_deref())
-        .await
-        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let updated = db::marketplace::admin_decide(
+        pg_pool.get_ref(),
+        &id,
+        &admin.id,
+        "approved",
+        req.reason.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     if !updated {
         return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
@@ -65,10 +73,15 @@ pub async fn approve_handler(
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
                 let sender = MarketplaceWebhookSender::new(config);
-                let span = tracing::info_span!("send_approval_webhook", template_id = %template_clone.id);
-                
+                let span =
+                    tracing::info_span!("send_approval_webhook", template_id = %template_clone.id);
+
                 if let Err(e) = sender
-                    .send_template_approved(&template_clone, &template_clone.creator_user_id, template_clone.category_code.clone())
+                    .send_template_approved(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        template_clone.category_code.clone(),
+                    )
                     .instrument(span)
                     .await
                 {
@@ -97,10 +110,16 @@ pub async fn reject_handler(
     let id = uuid::Uuid::parse_str(&path.into_inner().0)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
     let req = body.into_inner();
-    
-    let updated = db::marketplace::admin_decide(pg_pool.get_ref(), &id, &admin.id, "rejected", req.reason.as_deref())
-        .await
-        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let updated = db::marketplace::admin_decide(
+        pg_pool.get_ref(),
+        &id,
+        &admin.id,
+        "rejected",
+        req.reason.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     if !updated {
         return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
@@ -113,8 +132,9 @@ pub async fn reject_handler(
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
                 let sender = MarketplaceWebhookSender::new(config);
-                let span = tracing::info_span!("send_rejection_webhook", template_id = %template_id);
-                
+                let span =
+                    tracing::info_span!("send_rejection_webhook", template_id = %template_id);
+
                 if let Err(e) = sender
                     .send_template_rejected(&template_id)
                     .instrument(span)

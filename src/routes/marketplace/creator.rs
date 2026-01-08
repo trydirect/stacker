@@ -33,20 +33,60 @@ pub async fn create_handler(
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
-    let template = db::marketplace::create_draft(
-        pg_pool.get_ref(),
-        &user.id,
-        Some(&creator_name),
-        &req.name,
-        &req.slug,
-        req.short_description.as_deref(),
-        req.long_description.as_deref(),
-        req.category_code.as_deref(),
-        tags,
-        tech_stack,
-    )
-    .await
-    .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
+    
+    // Check if template with this slug already exists for this user
+    let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
+        .await
+        .ok();
+    
+    let template = if let Some(existing_template) = existing {
+        // Update existing template
+        tracing::info!("Updating existing template with slug: {}", req.slug);
+        let updated = db::marketplace::update_metadata(
+            pg_pool.get_ref(),
+            &existing_template.id,
+            Some(&req.name),
+            req.short_description.as_deref(),
+            req.long_description.as_deref(),
+            req.category_code.as_deref(),
+            Some(tags.clone()),
+            Some(tech_stack.clone()),
+        )
+        .await
+        .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
+        
+        if !updated {
+            return Err(JsonResponse::<models::StackTemplate>::build().internal_server_error("Failed to update template"));
+        }
+        
+        // Fetch updated template
+        db::marketplace::get_by_id(pg_pool.get_ref(), existing_template.id)
+            .await
+            .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?
+            .ok_or_else(|| JsonResponse::<models::StackTemplate>::build().not_found("Template not found after update"))?
+    } else {
+        // Create new template
+        db::marketplace::create_draft(
+            pg_pool.get_ref(),
+            &user.id,
+            Some(&creator_name),
+            &req.name,
+            &req.slug,
+            req.short_description.as_deref(),
+            req.long_description.as_deref(),
+            req.category_code.as_deref(),
+            tags,
+            tech_stack,
+        )
+        .await
+        .map_err(|err| {
+            // If error message indicates duplicate slug, return 409 Conflict
+            if err.contains("already in use") {
+                return JsonResponse::<models::StackTemplate>::build().conflict(err);
+            }
+            JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+        })?
+    };
 
     // Optional initial version
     if let Some(def) = req.stack_definition {
@@ -62,7 +102,9 @@ pub async fn create_handler(
         .await;
     }
 
-    Ok(JsonResponse::build().set_item(Some(template)).created("Created"))
+    Ok(JsonResponse::build()
+        .set_item(Some(template))
+        .created("Created"))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -163,6 +205,8 @@ pub async fn mine_handler(
 ) -> Result<impl Responder> {
     db::marketplace::list_mine(pg_pool.get_ref(), &user.id)
         .await
-        .map_err(|err| JsonResponse::<Vec<models::StackTemplate>>::build().internal_server_error(err))
+        .map_err(|err| {
+            JsonResponse::<Vec<models::StackTemplate>>::build().internal_server_error(err)
+        })
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }

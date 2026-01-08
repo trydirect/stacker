@@ -2,7 +2,7 @@
 pub fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
     let name = env!("CARGO_PKG_NAME");
-    
+
     let banner = format!(
         r#"
         _              | |                
@@ -24,7 +24,7 @@ pub fn print_banner() {
         env!("CARGO_PKG_VERSION"),
         "2021"
     );
-    
+
     println!("{}", banner);
 }
 
@@ -39,7 +39,7 @@ pub fn print_startup_info(host: &str, port: u16) {
 "#,
         host, port
     );
-    
+
     println!("{}", info);
 }
 

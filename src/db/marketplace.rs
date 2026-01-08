@@ -1,8 +1,13 @@
-use crate::models::{StackTemplate, StackTemplateVersion, StackCategory};
+use crate::models::{StackCategory, StackTemplate, StackTemplateVersion};
 use sqlx::PgPool;
 use tracing::Instrument;
 
-pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&str>, sort: Option<&str>) -> Result<Vec<StackTemplate>, String> {
+pub async fn list_approved(
+    pool: &PgPool,
+    category: Option<&str>,
+    tag: Option<&str>,
+    sort: Option<&str>,
+) -> Result<Vec<StackTemplate>, String> {
     let mut base = String::from(
         r#"SELECT 
             t.id,
@@ -76,7 +81,54 @@ pub async fn list_approved(pool: &PgPool, category: Option<&str>, tag: Option<&s
     })
 }
 
-pub async fn get_by_slug_with_latest(pool: &PgPool, slug: &str) -> Result<(StackTemplate, Option<StackTemplateVersion>), String> {
+pub async fn get_by_slug_and_user(
+    pool: &PgPool,
+    slug: &str,
+    user_id: &str,
+) -> Result<StackTemplate, String> {
+    let query_span = tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
+
+    sqlx::query_as!(
+        StackTemplate,
+        r#"SELECT 
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS "category_code?",
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.created_at,
+            t.updated_at,
+            t.approved_at
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.slug = $1 AND t.creator_user_id = $2"#,
+        slug,
+        user_id
+    )
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::debug!("get_by_slug_and_user error: {:?}", e);
+        "Not Found".to_string()
+    })
+}
+
+pub async fn get_by_slug_with_latest(
+    pool: &PgPool,
+    slug: &str,
+) -> Result<(StackTemplate, Option<StackTemplateVersion>), String> {
     let query_span = tracing::info_span!("marketplace_get_by_slug_with_latest", slug = %slug);
 
     let template = sqlx::query_as!(
@@ -139,7 +191,10 @@ pub async fn get_by_slug_with_latest(pool: &PgPool, slug: &str) -> Result<(Stack
     Ok((template, version))
 }
 
-pub async fn get_by_id(pool: &PgPool, template_id: uuid::Uuid) -> Result<Option<StackTemplate>, String> {
+pub async fn get_by_id(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Option<StackTemplate>, String> {
     let query_span = tracing::info_span!("marketplace_get_by_id", id = %template_id);
 
     let template = sqlx::query_as!(
@@ -237,14 +292,35 @@ pub async fn create_draft(
     .await
     .map_err(|e| {
         tracing::error!("create_draft error: {:?}", e);
+        
+        // Provide user-friendly error messages for common constraint violations
+        if let sqlx::Error::Database(db_err) = &e {
+            if let Some(code) = db_err.code() {
+                if code == "23505" {
+                    // Unique constraint violation
+                    if db_err.message().contains("stack_template_slug_key") {
+                        return format!("Template slug '{}' is already in use. Please choose a different slug.", slug);
+                    }
+                }
+            }
+        }
+        
         "Internal Server Error".to_string()
     })?;
 
     Ok(rec)
 }
 
-pub async fn set_latest_version(pool: &PgPool, template_id: &uuid::Uuid, version: &str, stack_definition: serde_json::Value, definition_format: Option<&str>, changelog: Option<&str>) -> Result<StackTemplateVersion, String> {
-    let query_span = tracing::info_span!("marketplace_set_latest_version", template_id = %template_id);
+pub async fn set_latest_version(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    version: &str,
+    stack_definition: serde_json::Value,
+    definition_format: Option<&str>,
+    changelog: Option<&str>,
+) -> Result<StackTemplateVersion, String> {
+    let query_span =
+        tracing::info_span!("marketplace_set_latest_version", template_id = %template_id);
 
     // Clear previous latest
     sqlx::query!(
@@ -282,7 +358,16 @@ pub async fn set_latest_version(pool: &PgPool, template_id: &uuid::Uuid, version
     Ok(rec)
 }
 
-pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Option<&str>, short_description: Option<&str>, long_description: Option<&str>, category_code: Option<&str>, tags: Option<serde_json::Value>, tech_stack: Option<serde_json::Value>) -> Result<bool, String> {
+pub async fn update_metadata(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    name: Option<&str>,
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+    category_code: Option<&str>,
+    tags: Option<serde_json::Value>,
+    tech_stack: Option<serde_json::Value>,
+) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_update_metadata", template_id = %template_id);
 
     // Update only allowed statuses
@@ -331,7 +416,8 @@ pub async fn update_metadata(pool: &PgPool, template_id: &uuid::Uuid, name: Opti
 }
 
 pub async fn submit_for_review(pool: &PgPool, template_id: &uuid::Uuid) -> Result<bool, String> {
-    let query_span = tracing::info_span!("marketplace_submit_for_review", template_id = %template_id);
+    let query_span =
+        tracing::info_span!("marketplace_submit_for_review", template_id = %template_id);
 
     let res = sqlx::query!(
         r#"UPDATE stack_template SET status = 'submitted' WHERE id = $1::uuid AND status IN ('draft','rejected')"#,
@@ -427,7 +513,13 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
     })
 }
 
-pub async fn admin_decide(pool: &PgPool, template_id: &uuid::Uuid, reviewer_user_id: &str, decision: &str, review_reason: Option<&str>) -> Result<bool, String> {
+pub async fn admin_decide(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    reviewer_user_id: &str,
+    decision: &str,
+    review_reason: Option<&str>,
+) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_admin_decide", template_id = %template_id, decision = %decision);
 
     let valid = ["approved", "rejected", "needs_changes"];
@@ -454,7 +546,13 @@ pub async fn admin_decide(pool: &PgPool, template_id: &uuid::Uuid, reviewer_user
         "Internal Server Error".to_string()
     })?;
 
-    let status_sql = if decision == "approved" { "approved" } else if decision == "rejected" { "rejected" } else { "under_review" };
+    let status_sql = if decision == "approved" {
+        "approved"
+    } else if decision == "rejected" {
+        "rejected"
+    } else {
+        "under_review"
+    };
     let should_set_approved = decision == "approved";
 
     sqlx::query!(
@@ -506,7 +604,7 @@ pub async fn sync_categories(
             SET name = EXCLUDED.name,
                 title = EXCLUDED.title,
                 metadata = EXCLUDED.metadata
-            "#
+            "#,
         )
         .bind(category.id)
         .bind(&category.name)
@@ -527,7 +625,7 @@ pub async fn sync_categories(
                     SET id = EXCLUDED.id,
                         title = EXCLUDED.title,
                         metadata = EXCLUDED.metadata
-                    "#
+                    "#,
                 )
                 .bind(category.id)
                 .bind(&category.name)
@@ -554,11 +652,15 @@ pub async fn sync_categories(
     }
 
     if error_count > 0 {
-        tracing::warn!("Synced {} categories with {} errors", synced_count, error_count);
+        tracing::warn!(
+            "Synced {} categories with {} errors",
+            synced_count,
+            error_count
+        );
     } else {
         tracing::info!("Synced {} categories from User Service", synced_count);
     }
-    
+
     Ok(synced_count)
 }
 
@@ -571,7 +673,7 @@ pub async fn get_categories(pool: &PgPool) -> Result<Vec<StackCategory>, String>
         SELECT id, name, title, metadata
         FROM stack_category
         ORDER BY id
-        "#
+        "#,
     )
     .fetch_all(pool)
     .instrument(query_span)
