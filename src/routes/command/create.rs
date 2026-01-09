@@ -4,8 +4,127 @@ use crate::models::{Command, CommandPriority, User};
 use crate::services::agent_dispatcher;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
+
+fn default_include_metrics() -> bool {
+    true
+}
+
+fn default_log_limit() -> i32 {
+    400
+}
+
+fn default_log_streams() -> Vec<String> {
+    vec!["stdout".to_string(), "stderr".to_string()]
+}
+
+fn default_log_redact() -> bool {
+    true
+}
+
+fn default_restart_force() -> bool {
+    false
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HealthCommandPayload {
+    pub app_code: String,
+    #[serde(default = "default_include_metrics")]
+    pub include_metrics: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LogsCommandPayload {
+    pub app_code: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default = "default_log_limit")]
+    pub limit: i32,
+    #[serde(default = "default_log_streams")]
+    pub streams: Vec<String>,
+    #[serde(default = "default_log_redact")]
+    pub redact: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RestartCommandPayload {
+    pub app_code: String,
+    #[serde(default = "default_restart_force")]
+    pub force: bool,
+}
+
+fn validate_status_panel_command(
+    command_type: &str,
+    parameters: &Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    match command_type {
+        "health" => {
+            let value = parameters
+                .clone()
+                .unwrap_or_else(|| json!({}));
+            let params: HealthCommandPayload = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid health parameters: {}", err))?;
+
+            if params.app_code.trim().is_empty() {
+                return Err("health.app_code is required".to_string());
+            }
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode health parameters: {}", err))
+        }
+        "logs" => {
+            let value = parameters
+                .clone()
+                .unwrap_or_else(|| json!({}));
+            let mut params: LogsCommandPayload = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid logs parameters: {}", err))?;
+
+            if params.app_code.trim().is_empty() {
+                return Err("logs.app_code is required".to_string());
+            }
+
+            if params.limit <= 0 || params.limit > 1000 {
+                return Err("logs.limit must be between 1 and 1000".to_string());
+            }
+
+            if params.streams.is_empty() {
+                params.streams = default_log_streams();
+            }
+
+            let allowed_streams = ["stdout", "stderr"];
+            if !params
+                .streams
+                .iter()
+                .all(|s| allowed_streams.contains(&s.as_str()))
+            {
+                return Err("logs.streams must be one of: stdout, stderr".to_string());
+            }
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode logs parameters: {}", err))
+        }
+        "restart" => {
+            let value = parameters
+                .clone()
+                .unwrap_or_else(|| json!({}));
+            let params: RestartCommandPayload = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid restart parameters: {}", err))?;
+
+            if params.app_code.trim().is_empty() {
+                return Err("restart.app_code is required".to_string());
+            }
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode restart parameters: {}", err))
+        }
+        _ => Ok(parameters.clone()),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateCommandRequest {
@@ -36,6 +155,24 @@ pub async fn create_handler(
     pg_pool: web::Data<PgPool>,
     vault_client: web::Data<VaultClient>,
 ) -> Result<impl Responder> {
+    if req.deployment_hash.trim().is_empty() {
+        return Err(JsonResponse::<()>::build().bad_request(
+            "deployment_hash is required",
+        ));
+    }
+
+    if req.command_type.trim().is_empty() {
+        return Err(JsonResponse::<()>::build().bad_request(
+            "command_type is required",
+        ));
+    }
+
+    let validated_parameters =
+        validate_status_panel_command(&req.command_type, &req.parameters).map_err(|err| {
+            tracing::warn!("Invalid command payload: {}", err);
+            JsonResponse::<()>::build().bad_request(err)
+        })?;
+
     // Generate unique command ID
     let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
 
@@ -61,7 +198,7 @@ pub async fn create_handler(
     )
     .with_priority(priority.clone());
 
-    if let Some(params) = &req.parameters {
+    if let Some(params) = &validated_parameters {
         command = command.with_parameters(params.clone());
     }
 

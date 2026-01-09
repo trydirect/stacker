@@ -28,7 +28,7 @@ where
     type Future = LocalBoxFuture<'static, Result<ServiceResponse<B>, Error>>;
 
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if let Some(mut guard) = self.service.try_lock() {
+        if let Some(guard) = self.service.try_lock() {
             guard.poll_ready(ctx)
         } else {
             // Another request is in-flight; signal pending instead of panicking

@@ -88,8 +88,7 @@ pub async fn get_by_slug_and_user(
 ) -> Result<StackTemplate, String> {
     let query_span = tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
 
-    sqlx::query_as!(
-        StackTemplate,
+    sqlx::query_as::<_, StackTemplate>(
         r#"SELECT 
             t.id,
             t.creator_user_id,
@@ -98,7 +97,7 @@ pub async fn get_by_slug_and_user(
             t.slug,
             t.short_description,
             t.long_description,
-            c.name AS "category_code?",
+            c.name AS category_code,
             t.product_id,
             t.tags,
             t.tech_stack,
@@ -112,10 +111,10 @@ pub async fn get_by_slug_and_user(
             t.approved_at
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        WHERE t.slug = $1 AND t.creator_user_id = $2"#,
-        slug,
-        user_id
+        WHERE t.slug = $1 AND t.creator_user_id = $2"#
     )
+    .bind(slug)
+    .bind(user_id)
     .fetch_one(pool)
     .instrument(query_span)
     .await
