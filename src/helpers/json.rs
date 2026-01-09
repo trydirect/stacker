@@ -87,6 +87,10 @@ where
         ErrorForbidden(self.set_msg(msg).to_string())
     }
 
+    pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
+        actix_web::error::ErrorConflict(self.set_msg(msg).to_string())
+    }
+
     pub(crate) fn created<I: Into<String>>(self, msg: I) -> HttpResponse {
         HttpResponse::Created().json(self.set_msg(msg).to_json_response())
     }

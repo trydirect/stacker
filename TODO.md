@@ -5,6 +5,55 @@
 ## Context
 Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Service when templates are published/updated. User Service owns the `products` table for monetization, while Stacker owns `stack_template` (template definitions only).
 
+### New Open Questions (Status Panel & MCP)
+
+**Status**: ✅ PROPOSED ANSWERS DOCUMENTED  
+**See**: [OPEN_QUESTIONS_RESOLUTIONS.md](docs/OPEN_QUESTIONS_RESOLUTIONS.md)
+
+**Questions** (awaiting team confirmation):
+- Health check contract per app: exact URL/expected status/timeout that Status Panel should register and return.
+- Per-app deploy trigger rate limits: allowed requests per minute/hour to expose in User Service.
+- Log redaction patterns: which env var names/secret regexes to strip before returning logs via Stacker/User Service.
+- Container→app_code mapping: confirm canonical source (deployment_apps.metadata.container_name) for Status Panel health/logs responses.
+
+**Current Proposals**:
+1. **Health Check**: `GET /api/health/deployment/{deployment_hash}/app/{app_code}` with 10s timeout
+2. **Rate Limits**: Deploy 10/min, Restart 5/min, Logs 20/min (configurable by plan tier)
+3. **Log Redaction**: 6 pattern categories + 20 env var blacklist (regex-based)
+4. **Container Mapping**: `app_code` is canonical; requires `deployment_apps` table in User Service
+
+### Status Panel Command Payloads (proposed)
+- Commands flow over existing agent endpoints (`/api/v1/commands/execute` or `/enqueue`) signed with HMAC headers from `AgentClient`.
+- **Health** request:
+  ```json
+  {"type":"health","deployment_hash":"<hash>","app_code":"<app>","include_metrics":true}
+  ```
+  **Health report** (agent → `/api/v1/commands/report`):
+  ```json
+  {"type":"health","deployment_hash":"<hash>","app_code":"<app>","status":"ok|unhealthy|unknown","container_state":"running|exited|starting|unknown","last_heartbeat_at":"2026-01-09T00:00:00Z","metrics":{"cpu_pct":0.12,"mem_mb":256},"errors":[]}
+  ```
+- **Logs** request:
+  ```json
+  {"type":"logs","deployment_hash":"<hash>","app_code":"<app>","cursor":"<opaque>","limit":400,"streams":["stdout","stderr"],"redact":true}
+  ```
+  **Logs report**:
+  ```json
+  {"type":"logs","deployment_hash":"<hash>","app_code":"<app>","cursor":"<next>","lines":[{"ts":"2026-01-09T00:00:00Z","stream":"stdout","message":"...","redacted":false}],"truncated":false}
+  ```
+- **Restart** request:
+  ```json
+  {"type":"restart","deployment_hash":"<hash>","app_code":"<app>","force":false}
+  ```
+  **Restart report**:
+  ```json
+  {"type":"restart","deployment_hash":"<hash>","app_code":"<app>","status":"ok|failed","container_state":"running|failed|unknown","errors":[]}
+  ```
+- Errors: agent reports `{ "type":"<same>", "deployment_hash":..., "app_code":..., "status":"failed", "errors":[{"code":"timeout","message":"..."}] }`.
+- Tasks: (1) add schemas/validation for these command payloads; (2) document in agent docs; (3) expose in Stacker UI/Status Panel integration notes; (4) ensure Vault token/HMAC headers remain the auth path.
+
+### Coordination Note
+Sub-agents can communicate with the team lead via the shared memory tool (see /memories/subagents.md). If questions remain, record them in TODO.md and log work in CHANGELOG.md.
+
 ### Nginx Proxy Routing
 **Browser → Stacker** (via nginx): `https://dev.try.direct/stacker/` → `stacker:8000`
 **Stacker → User Service** (internal): `http://user:4100/marketplace/sync` (no nginx prefix)
