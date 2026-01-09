@@ -86,7 +86,8 @@ pub async fn get_by_slug_and_user(
     slug: &str,
     user_id: &str,
 ) -> Result<StackTemplate, String> {
-    let query_span = tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
+    let query_span =
+        tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
 
     sqlx::query_as::<_, StackTemplate>(
         r#"SELECT 
@@ -111,7 +112,7 @@ pub async fn get_by_slug_and_user(
             t.approved_at
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        WHERE t.slug = $1 AND t.creator_user_id = $2"#
+        WHERE t.slug = $1 AND t.creator_user_id = $2"#,
     )
     .bind(slug)
     .bind(user_id)
@@ -291,19 +292,22 @@ pub async fn create_draft(
     .await
     .map_err(|e| {
         tracing::error!("create_draft error: {:?}", e);
-        
+
         // Provide user-friendly error messages for common constraint violations
         if let sqlx::Error::Database(db_err) = &e {
             if let Some(code) = db_err.code() {
                 if code == "23505" {
                     // Unique constraint violation
                     if db_err.message().contains("stack_template_slug_key") {
-                        return format!("Template slug '{}' is already in use. Please choose a different slug.", slug);
+                        return format!(
+                            "Template slug '{}' is already in use. Please choose a different slug.",
+                            slug
+                        );
                     }
                 }
             }
         }
-        
+
         "Internal Server Error".to_string()
     })?;
 

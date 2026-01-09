@@ -49,7 +49,11 @@ Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Se
   {"type":"restart","deployment_hash":"<hash>","app_code":"<app>","status":"ok|failed","container_state":"running|failed|unknown","errors":[]}
   ```
 - Errors: agent reports `{ "type":"<same>", "deployment_hash":..., "app_code":..., "status":"failed", "errors":[{"code":"timeout","message":"..."}] }`.
-- Tasks: (1) add schemas/validation for these command payloads; (2) document in agent docs; (3) expose in Stacker UI/Status Panel integration notes; (4) ensure Vault token/HMAC headers remain the auth path.
+- Tasks progress:
+  1. ✅ add schemas/validation for these command payloads → implemented in `src/forms/status_panel.rs` and enforced via `/api/v1/commands` create/report handlers.
+  2. ✅ document in agent docs → see `docs/AGENT_REGISTRATION_SPEC.md`, `docs/STACKER_INTEGRATION_REQUIREMENTS.md`, and `docs/QUICK_REFERENCE.md` (field reference + auth note).
+  3. ✅ expose in Stacker UI/Status Panel integration notes → new `docs/STATUS_PANEL_INTEGRATION_NOTES.md` consumed by dashboard team.
+  4. ⏳ ensure Vault token/HMAC headers remain the auth path (UI + ops playbook updates pending).
 
 ### Coordination Note
 Sub-agents can communicate with the team lead via the shared memory tool (see /memories/subagents.md). If questions remain, record them in TODO.md and log work in CHANGELOG.md.
@@ -940,4 +944,3 @@ Deployment proceeds (user owns product)
 - [try.direct.user.service/TODO.md](try.direct.user.service/TODO.md) - User Service implementation
 - [try.direct.tools/TODO.md](try.direct.tools/TODO.md) - Shared utilities
 - [blog/TODO.md](blog/TODO.md) - Frontend marketplace UI
-

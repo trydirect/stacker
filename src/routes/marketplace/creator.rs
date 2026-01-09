@@ -33,12 +33,12 @@ pub async fn create_handler(
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
-    
+
     // Check if template with this slug already exists for this user
     let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
         .await
         .ok();
-    
+
     let template = if let Some(existing_template) = existing {
         // Update existing template
         tracing::info!("Updating existing template with slug: {}", req.slug);
@@ -54,16 +54,22 @@ pub async fn create_handler(
         )
         .await
         .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
-        
+
         if !updated {
-            return Err(JsonResponse::<models::StackTemplate>::build().internal_server_error("Failed to update template"));
+            return Err(JsonResponse::<models::StackTemplate>::build()
+                .internal_server_error("Failed to update template"));
         }
-        
+
         // Fetch updated template
         db::marketplace::get_by_id(pg_pool.get_ref(), existing_template.id)
             .await
-            .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?
-            .ok_or_else(|| JsonResponse::<models::StackTemplate>::build().not_found("Template not found after update"))?
+            .map_err(|err| {
+                JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+            })?
+            .ok_or_else(|| {
+                JsonResponse::<models::StackTemplate>::build()
+                    .not_found("Template not found after update")
+            })?
     } else {
         // Create new template
         db::marketplace::create_draft(
