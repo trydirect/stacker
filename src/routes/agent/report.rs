@@ -1,8 +1,8 @@
-use crate::{db, helpers, models};
+use crate::{db, forms::status_panel, helpers, models};
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use serde_json::json;
+use sqlx::PgPool;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +70,33 @@ pub async fn report_handler(
         }
     };
 
+    let command = db::command::fetch_by_id(pg_pool.get_ref(), &payload.command_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch command {}: {}", payload.command_id, err);
+            helpers::JsonResponse::internal_server_error(err)
+        })?;
+
+    let command = match command {
+        Some(cmd) => cmd,
+        None => {
+            tracing::warn!("Command not found for report: {}", payload.command_id);
+            return Err(helpers::JsonResponse::not_found("Command not found"));
+        }
+    };
+
+    if command.deployment_hash != payload.deployment_hash {
+        tracing::warn!(
+            "Deployment hash mismatch for command {}: expected {}, got {}",
+            payload.command_id,
+            command.deployment_hash,
+            payload.deployment_hash
+        );
+        return Err(helpers::JsonResponse::not_found(
+            "Command not found for this deployment",
+        ));
+    }
+
     let error_payload = if let Some(errors) = payload.errors.as_ref() {
         if errors.is_empty() {
             None
@@ -80,13 +107,24 @@ pub async fn report_handler(
         payload.error.clone()
     };
 
-    let result_payload = if let Some(result) = payload.result.clone() {
-        Some(result)
-    } else if !payload.status.is_empty() {
-        Some(json!({ "status": payload.status.clone() }))
-    } else {
-        None
-    };
+    let mut result_payload = status_panel::validate_command_result(
+        &command.r#type,
+        &payload.deployment_hash,
+        &payload.result,
+    )
+    .map_err(|err| {
+        tracing::warn!(
+            command_type = %command.r#type,
+            command_id = %payload.command_id,
+            "Invalid command result payload: {}",
+            err
+        );
+        helpers::JsonResponse::<()>::build().bad_request(err)
+    })?;
+
+    if result_payload.is_none() && !payload.status.is_empty() {
+        result_payload = Some(json!({ "status": payload.status.clone() }));
+    }
 
     // Update command in database with result
     match db::command::update_result(
