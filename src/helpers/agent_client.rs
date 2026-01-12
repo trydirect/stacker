@@ -109,12 +109,13 @@ impl AgentClient {
             .await
     }
 
-    // GET /api/v1/commands/wait/{hash} (no signature, only X-Agent-Id)
+    // GET /api/v1/agent/commands/wait/{hash} (requires X-Agent-Id + Bearer token)
     pub async fn wait(&self, deployment_hash: &str) -> Result<Response, reqwest::Error> {
-        let url = format!("{}/api/v1/commands/wait/{}", self.base_url, deployment_hash);
+        let url = format!("{}/api/v1/agent/commands/wait/{}", self.base_url, deployment_hash);
         self.http
             .get(url)
             .header("X-Agent-Id", &self.agent_id)
+            .header("Authorization", format!("Bearer {}", self.agent_token))
             .send()
             .await
     }
