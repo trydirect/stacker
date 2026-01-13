@@ -26,7 +26,7 @@ CREATE TABLE audit_log (
     details JSONB DEFAULT '{}'::jsonb,
     ip_address INET,
     user_agent TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_audit_log_agent_id ON audit_log(agent_id);

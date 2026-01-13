@@ -32,8 +32,11 @@ async fn main() -> std::io::Result<()> {
         .ssl_mode(PgSslMode::Disable);
 
     let pg_pool = PgPoolOptions::new()
-        .max_connections(5)
-        .acquire_timeout(Duration::from_secs(30))
+        .max_connections(50) // Increased from 5 to handle concurrent agent polling + regular requests
+        .min_connections(5) // Keep minimum pool size for quick response
+        .acquire_timeout(Duration::from_secs(10)) // Reduced from 30s - fail faster if pool exhausted
+        .idle_timeout(Duration::from_secs(600)) // Close idle connections after 10 minutes
+        .max_lifetime(Duration::from_secs(1800)) // Recycle connections after 30 minutes
         .connect_with(connect_options)
         .await
         .expect("Failed to connect to database.");
