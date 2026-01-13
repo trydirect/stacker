@@ -158,6 +158,10 @@ pub async fn run(
                             .service(routes::agent::report_handler),
                     )
                     .service(
+                        web::scope("/v1/deployments")
+                            .service(routes::deployment::capabilities_handler),
+                    )
+                    .service(
                         web::scope("/v1/commands")
                             .service(routes::command::create_handler)
                             .service(routes::command::list_handler)
