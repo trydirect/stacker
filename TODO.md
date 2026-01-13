@@ -55,6 +55,23 @@ Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Se
   3. ✅ expose in Stacker UI/Status Panel integration notes → new `docs/STATUS_PANEL_INTEGRATION_NOTES.md` consumed by dashboard team.
   4. ⏳ ensure Vault token/HMAC headers remain the auth path (UI + ops playbook updates pending).
 
+### Dynamic Agent Capabilities Endpoint
+- [x] Expose `GET /api/v1/deployments/{deployment_hash}/capabilities` returning available commands based on `agents.capabilities` JSONB (implemented in `routes::deployment::capabilities_handler`).
+- [x] Define command→capability mapping (static config) embedded in the handler:
+  ```json
+  {
+    "restart": { "requires": "docker", "scope": "container", "label": "Restart", "icon": "fas fa-redo" },
+    "start":   { "requires": "docker", "scope": "container", "label": "Start", "icon": "fas fa-play" },
+    "stop":    { "requires": "docker", "scope": "container", "label": "Stop", "icon": "fas fa-stop" },
+    "pause":   { "requires": "docker", "scope": "container", "label": "Pause", "icon": "fas fa-pause" },
+    "logs":    { "requires": "logs",   "scope": "container", "label": "Logs", "icon": "fas fa-file-alt" },
+    "rebuild": { "requires": "compose", "scope": "deployment", "label": "Rebuild Stack", "icon": "fas fa-sync" },
+    "backup":  { "requires": "backup", "scope": "deployment", "label": "Backup", "icon": "fas fa-download" }
+  }
+  ```
+- [x] Return only commands whose `requires` capability is present in the agent's capabilities array (see `filter_commands` helper).
+- [x] Include agent status (online/offline) and last_heartbeat plus existing metadata in the response so Blog can gate UI.
+
 ### Coordination Note
 Sub-agents can communicate with the team lead via the shared memory tool (see /memories/subagents.md). If questions remain, record them in TODO.md and log work in CHANGELOG.md.
 
