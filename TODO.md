@@ -72,6 +72,13 @@ Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Se
 - [x] Return only commands whose `requires` capability is present in the agent's capabilities array (see `filter_commands` helper).
 - [x] Include agent status (online/offline) and last_heartbeat plus existing metadata in the response so Blog can gate UI.
 
+### Dual Endpoint Strategy (Status Panel + Compose Agent)
+- [ ] Maintain legacy proxy routes under `/api/v1/deployments/{hash}/containers/*` for hosts without Compose Agent; ensure regression tests continue to cover restart/start/stop/logs flows.
+- [ ] Add Compose control-plane routes (`/api/v1/compose/{hash}/status|logs|restart|metrics`) that translate into cagent API calls using the new `compose_agent_token` from Vault.
+- [ ] Augment `agent_dispatcher` to fetch and cache both secrets (`status_panel_token`, `compose_agent_token`); include provenance metadata in tracing spans so ops can distinguish which plane handled a command.
+- [ ] Return `"compose_agent": true|false` in `/capabilities` response plus a `"fallback_reason"` field when Compose Agent is unavailable (missing registration, unhealthy heartbeat, token fetch failure).
+- [ ] Write ops playbook entry + automated alert when Compose Agent is offline for >15 minutes so we can investigate hosts stuck on the legacy path.
+
 ### Coordination Note
 Sub-agents can communicate with the team lead via the shared memory tool (see /memories/subagents.md). If questions remain, record them in TODO.md and log work in CHANGELOG.md.
 

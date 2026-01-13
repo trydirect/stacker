@@ -21,10 +21,10 @@ pub async fn wait_handler(
         ));
     }
 
-    // Update agent heartbeat
+    // Update agent heartbeat - acquire and release connection quickly
     let _ = db::agent::update_heartbeat(pg_pool.get_ref(), agent.id, "online").await;
 
-    // Log poll event
+    // Log poll event - acquire and release connection quickly
     let audit_log = models::AuditLog::new(
         Some(agent.id),
         Some(deployment_hash.clone()),
@@ -34,12 +34,13 @@ pub async fn wait_handler(
     let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;
 
     // Long-polling: Check for pending commands with retries
+    // IMPORTANT: Each check acquires and releases DB connection to avoid pool exhaustion
     let timeout_seconds = 30;
     let check_interval = Duration::from_secs(2);
     let max_checks = timeout_seconds / check_interval.as_secs();
 
     for i in 0..max_checks {
-        // Check command_queue for next pending command
+        // Acquire connection only for query, then release immediately
         match db::command::fetch_next_for_deployment(pg_pool.get_ref(), &deployment_hash).await {
             Ok(Some(command)) => {
                 tracing::info!(
@@ -49,7 +50,7 @@ pub async fn wait_handler(
                     deployment_hash
                 );
 
-                // Update command status to 'sent'
+                // Update command status to 'sent' - separate connection
                 let updated_command = db::command::update_status(
                     pg_pool.get_ref(),
                     &command.command_id,
@@ -61,7 +62,7 @@ pub async fn wait_handler(
                     helpers::JsonResponse::internal_server_error(err)
                 })?;
 
-                // Remove from queue (command now 'in-flight' to agent)
+                // Remove from queue - separate connection
                 let _ =
                     db::command::remove_from_queue(pg_pool.get_ref(), &command.command_id).await;
 
@@ -70,7 +71,7 @@ pub async fn wait_handler(
                     .ok("Command available"));
             }
             Ok(None) => {
-                // No command yet, continue polling
+                // No command yet, sleep WITHOUT holding DB connection
                 if i < max_checks - 1 {
                     tokio::time::sleep(check_interval).await;
                 }
