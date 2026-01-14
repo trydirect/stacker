@@ -72,10 +72,19 @@ Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Se
 - [x] Return only commands whose `requires` capability is present in the agent's capabilities array (see `filter_commands` helper).
 - [x] Include agent status (online/offline) and last_heartbeat plus existing metadata in the response so Blog can gate UI.
 
+### Pull-Only Command Architecture (No Push)
+**Key principle**: Stacker never dials out to agents. Commands are enqueued in the database; agents poll and sign their own requests.
+- [x] `POST /api/v1/agent/commands/enqueue` validates user auth, inserts into `commands` + `command_queue` tables, returns 202. No outbound HTTP to agent.
+- [x] Agent polls `GET /api/v1/agent/commands/wait/{deployment_hash}` with HMAC headers it generates using its Vault-fetched token.
+- [x] Stacker verifies agent's HMAC, returns queued commands.
+- [x] Agent executes locally and calls `POST /api/v1/agent/commands/report` (HMAC-signed).
+- [x] Remove any legacy `agent_dispatcher::execute/enqueue` code that attempted to push to agents; keep only `rotate_token` for Vault token management.
+- [x] Document that `AGENT_BASE_URL` env var is NOT required for Status Panel; Stacker is server-only (see README.md).
+
 ### Dual Endpoint Strategy (Status Panel + Compose Agent)
 - [ ] Maintain legacy proxy routes under `/api/v1/deployments/{hash}/containers/*` for hosts without Compose Agent; ensure regression tests continue to cover restart/start/stop/logs flows.
 - [ ] Add Compose control-plane routes (`/api/v1/compose/{hash}/status|logs|restart|metrics`) that translate into cagent API calls using the new `compose_agent_token` from Vault.
-- [ ] Augment `agent_dispatcher` to fetch and cache both secrets (`status_panel_token`, `compose_agent_token`); include provenance metadata in tracing spans so ops can distinguish which plane handled a command.
+- [ ] For Compose Agent path only: `agent_dispatcher` may push commands if cagent exposes an HTTP API; this is the exception, not the rule.
 - [ ] Return `"compose_agent": true|false` in `/capabilities` response plus a `"fallback_reason"` field when Compose Agent is unavailable (missing registration, unhealthy heartbeat, token fetch failure).
 - [ ] Write ops playbook entry + automated alert when Compose Agent is offline for >15 minutes so we can investigate hosts stuck on the legacy path.
 

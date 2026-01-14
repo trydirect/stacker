@@ -107,41 +107,31 @@ use serde_json::json;
 
 let client = AgentClient::new("http://agent:5000", agent_id, agent_token);
 let payload = json!({"deployment_hash": dh, "type": "restart_service", "parameters": {"service": "web"}});
-let resp = client.commands_execute(&payload).await?;
+let resp = client.get("/api/v1/status").await?;
 ``` 
 
-Dispatcher example (recommended wiring):
+### Pull-Only Command Architecture
+
+Stacker uses a pull-only architecture for agent communication. **Stacker never dials out to agents.** Commands are enqueued in the database; agents poll and sign their own requests.
+
+**Flow:**
+1. UI/API calls `POST /api/v1/commands` or `POST /api/v1/agent/commands/enqueue`
+2. Command is inserted into `commands` + `command_queue` tables
+3. Agent polls `GET /api/v1/agent/commands/wait/{deployment_hash}` with HMAC headers
+4. Stacker verifies agent's HMAC, returns queued commands
+5. Agent executes locally and calls `POST /api/v1/agent/commands/report`
+
+**Note:** `AGENT_BASE_URL` environment variable is NOT required for Status Panel commands.
+
+Token rotation (writes to Vault; agent pulls latest):
 ```rust
 use stacker::services::agent_dispatcher;
-use serde_json::json;
 
-// Given: deployment_hash, agent_base_url, PgPool (pg), VaultClient (vault)
-let cmd = json!({
-  "deployment_hash": deployment_hash,
-  "type": "restart_service",
-  "parameters": { "service": "web", "graceful": true }
-});
-
-// Enqueue command for agent (signed HMAC headers handled internally)
-agent_dispatcher::enqueue(&pg, &vault, &deployment_hash, agent_base_url, &cmd).await?;
-
-// Or execute immediately
-agent_dispatcher::execute(&pg, &vault, &deployment_hash, agent_base_url, &cmd).await?;
-
-// Report result later
-let result = json!({
-  "deployment_hash": deployment_hash,
-  "command_id": "...",
-  "status": "completed",
-  "result": { "ok": true }
-});
-agent_dispatcher::report(&pg, &vault, &deployment_hash, agent_base_url, &result).await?;
-
-// Rotate token (Vault-only; agent pulls latest)
+// Rotate token - stored in Vault, agent fetches on next poll
 agent_dispatcher::rotate_token(&pg, &vault, &deployment_hash, "NEW_TOKEN").await?;
 ```
 
-Console token rotation (writes to Vault; agent pulls):
+Console token rotation:
 ```bash
 cargo run --bin console -- Agent rotate-token \
   --deployment-hash <hash> \
