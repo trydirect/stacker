@@ -154,6 +154,7 @@ pub async fn run(
                     .service(
                         web::scope("/v1/agent")
                             .service(routes::agent::register_handler)
+                            .service(routes::agent::enqueue_handler)
                             .service(routes::agent::wait_handler)
                             .service(routes::agent::report_handler),
                     )
