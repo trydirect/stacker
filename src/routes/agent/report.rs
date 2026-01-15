@@ -70,7 +70,7 @@ pub async fn report_handler(
         }
     };
 
-    let command = db::command::fetch_by_id(pg_pool.get_ref(), &payload.command_id)
+    let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &payload.command_id)
         .await
         .map_err(|err| {
             tracing::error!("Failed to fetch command {}: {}", payload.command_id, err);
