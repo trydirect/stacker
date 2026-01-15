@@ -30,9 +30,23 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
 
     // Use same OAuth validation as Bearer token
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
-    let user = super::f_oauth::fetch_user(settings.auth_url.as_str(), &token.unwrap())
-        .await
-        .map_err(|err| format!("{err}"))?;
+    let http_client = req.app_data::<web::Data<reqwest::Client>>().unwrap();
+    let cache = req.app_data::<web::Data<super::f_oauth::OAuthCache>>().unwrap();
+    let token = token.unwrap();
+    let user = match cache.get(&token).await {
+        Some(user) => user,
+        None => {
+            let user = super::f_oauth::fetch_user(
+                http_client.get_ref(),
+                settings.auth_url.as_str(),
+                &token,
+            )
+            .await
+            .map_err(|err| format!("{err}"))?;
+            cache.insert(token.clone(), user.clone()).await;
+            user
+        }
+    };
 
     // Control access using user role
     tracing::debug!("ACL check for role (cookie auth): {}", user.role.clone());

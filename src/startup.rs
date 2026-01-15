@@ -6,7 +6,8 @@ use crate::mcp;
 use crate::middleware;
 use crate::routes;
 use actix_cors::Cors;
-use actix_web::{dev::Server, error, http, middleware, web, App, HttpServer};
+use actix_web::{dev::Server, error, http, web, App, HttpServer};
+use actix_web::middleware::Compress;
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -82,7 +83,7 @@ pub async fn run(
             .wrap(TracingLogger::default())
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
-            .wrap(middleware::Compress::default())
+            .wrap(Compress::default())
             .wrap(Cors::permissive())
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
