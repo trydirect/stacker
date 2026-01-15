@@ -198,7 +198,7 @@ pub async fn fetch_by_id(pool: &PgPool, command_id: &str) -> Result<Option<Comma
                parameters, result, error, created_by, created_at, updated_at,
                timeout_seconds, metadata
         FROM commands
-        WHERE command_id = $1
+        WHERE id = $1
         "#,
         command_id,
     )
