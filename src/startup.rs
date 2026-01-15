@@ -6,10 +6,11 @@ use crate::mcp;
 use crate::middleware;
 use crate::routes;
 use actix_cors::Cors;
-use actix_web::{dev::Server, error, http, web, App, HttpServer};
+use actix_web::{dev::Server, error, http, middleware, web, App, HttpServer};
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_actix_web::TracingLogger;
 
 pub async fn run(
@@ -28,6 +29,16 @@ pub async fn run(
 
     let vault_client = helpers::VaultClient::new(&settings.vault);
     let vault_client = web::Data::new(vault_client);
+
+    let oauth_http_client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+    let oauth_http_client = web::Data::new(oauth_http_client);
+
+    let oauth_cache = web::Data::new(middleware::authentication::OAuthCache::new(
+        Duration::from_secs(60),
+    ));
 
     // Initialize MCP tool registry
     let mcp_registry = Arc::new(mcp::ToolRegistry::new());
@@ -71,9 +82,12 @@ pub async fn run(
             .wrap(TracingLogger::default())
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
+            .wrap(middleware::Compress::default())
             .wrap(Cors::permissive())
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
+            .app_data(oauth_http_client.clone())
+            .app_data(oauth_cache.clone())
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)
