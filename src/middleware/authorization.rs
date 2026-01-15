@@ -12,7 +12,7 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
     let m = DefaultModel::from_file("access_control.conf")
         .await
         .map_err(|err| Error::new(ErrorKind::Other, format!("{err:?}")))?;
-    let a = SqlxAdapter::new(db_connection_address, 8)
+    let a = SqlxAdapter::new(db_connection_address.clone(), 8)
         .await
         .map_err(|err| Error::new(ErrorKind::Other, format!("{err:?}")))?;
 
