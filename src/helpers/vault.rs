@@ -230,6 +230,7 @@ mod tests {
             address: address.clone(),
             token: "dev-token".to_string(),
             agent_path_prefix: prefix.clone(),
+            api_prefix: "v1".to_string(),
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_test_abc";
