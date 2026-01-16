@@ -107,7 +107,7 @@ Stacker responsibilities:
 - [x] Cache OAuth token validation in Stacker (30–60s TTL) to avoid a User Service call on every request.
 - [x] Reuse/persist the HTTP client with keep-alive and a shared connection pool for User Service; avoid starting new connections per request.
 - [x] Stop reloading Casbin policies on every request; reload on policy change.
-- [ ] Reduce polling frequency and batch command status queries; prefer streaming/long-poll responses.
+- [x] Reduce polling frequency and batch command status queries; prefer streaming/long-poll responses.
 - [ ] Add server-side aggregation: return only latest command states instead of fetching full 150+ rows each time.
 - [x] Add gzip/br on internal HTTP responses and trim response payloads.
 - [x] Co-locate Stacker and User Service (same network/region) or use private networking to cut latency.

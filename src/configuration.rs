@@ -8,6 +8,8 @@ pub struct Settings {
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
+    pub agent_command_poll_timeout_secs: u64,
+    pub agent_command_poll_interval_secs: u64,
     pub amqp: AmqpSettings,
     pub vault: VaultSettings,
     #[serde(default)]
@@ -22,6 +24,8 @@ impl Default for Settings {
             app_host: "127.0.0.1".to_string(),
             auth_url: "http://localhost:8080/me".to_string(),
             max_clients_number: 10,
+            agent_command_poll_timeout_secs: 30,
+            agent_command_poll_interval_secs: 3,
             amqp: AmqpSettings::default(),
             vault: VaultSettings::default(),
             connectors: ConnectorConfig::default(),
@@ -164,6 +168,18 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
 
     // Overlay Vault settings with environment variables if present
     config.vault = config.vault.overlay_env();
+
+    if let Ok(timeout) = std::env::var("STACKER_AGENT_POLL_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.agent_command_poll_timeout_secs = parsed;
+        }
+    }
+
+    if let Ok(interval) = std::env::var("STACKER_AGENT_POLL_INTERVAL_SECS") {
+        if let Ok(parsed) = interval.parse::<u64>() {
+            config.agent_command_poll_interval_secs = parsed;
+        }
+    }
 
     Ok(config)
 }
