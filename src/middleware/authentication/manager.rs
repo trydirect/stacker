@@ -1,8 +1,8 @@
 use crate::middleware::authentication::*;
 
-use futures::lock::Mutex;
+use std::cell::RefCell;
 use std::future::{ready, Ready};
-use std::sync::Arc;
+use std::rc::Rc;
 
 use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
@@ -31,7 +31,7 @@ where
 
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(ManagerMiddleware {
-            service: Arc::new(Mutex::new(service)),
+            service: Rc::new(RefCell::new(service)),
         }))
     }
 }

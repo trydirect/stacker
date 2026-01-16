@@ -8,13 +8,13 @@ use actix_web::{
 };
 use futures::{
     future::{FutureExt, LocalBoxFuture},
-    lock::Mutex,
     task::{Context, Poll},
 };
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub struct ManagerMiddleware<S> {
-    pub service: Arc<Mutex<S>>,
+    pub service: Rc<RefCell<S>>,
 }
 
 impl<S, B> Service<ServiceRequest> for ManagerMiddleware<S>
@@ -28,10 +28,9 @@ where
     type Future = LocalBoxFuture<'static, Result<ServiceResponse<B>, Error>>;
 
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if let Some(guard) = self.service.try_lock() {
-            guard.poll_ready(ctx)
+        if let Ok(mut service) = self.service.try_borrow_mut() {
+            service.poll_ready(ctx)
         } else {
-            // Another request is in-flight; signal pending instead of panicking
             Poll::Pending
         }
     }
@@ -51,8 +50,8 @@ where
         .then(|req: Result<ServiceRequest, String>| async move {
             match req {
                 Ok(req) => {
-                    let service = service.lock().await;
-                    service.call(req).await
+                    let fut = service.borrow_mut().call(req);
+                    fut.await
                 }
                 Err(msg) => Err(ErrorBadRequest(
                     JsonResponse::<models::Client>::build()
