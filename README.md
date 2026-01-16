@@ -31,13 +31,6 @@ When you start the Stacker server, you'll see a welcome banner displaying versio
   📦 Ready to accept connections
 ```
 
-This banner provides quick visibility into:
-- **Version**: Current Stacker version
-- **Build**: Build version information
-- **Edition**: Rust edition used
-- **Server Address**: Where the API server is listening
-- **Status**: Server readiness
-
 ## Core Purpose
 - Allows users to build projects using both open source and custom Docker containers
 - Provides deployment capabilities to various cloud platforms through TryDirect API
