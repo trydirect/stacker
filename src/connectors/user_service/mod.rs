@@ -304,15 +304,26 @@ impl UserServiceConnector for UserServiceClient {
     async fn list_stacks(&self, user_id: &str) -> Result<Vec<StackResponse>, ConnectorError> {
         let span = tracing::info_span!("user_service_list_stacks", user_id = %user_id);
 
-        let url = format!(
-            "{}/api/1.0/stacks?where={{\"user_id\":\"{}\"}}",
-            self.base_url, user_id
-        );
-        let mut req = self.http_client.get(&url);
+        let url = format!("{}/api/1.0/stacks", self.base_url);
+        let mut req = self.http_client.post(&url);
 
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
+
+        #[derive(Serialize)]
+        struct WhereFilter<'a> {
+            user_id: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct ListRequest<'a> {
+            r#where: WhereFilter<'a>,
+        }
+
+        let body = ListRequest {
+            r#where: WhereFilter { user_id },
+        };
 
         #[derive(Deserialize)]
         struct ListResponse {
@@ -320,6 +331,7 @@ impl UserServiceConnector for UserServiceClient {
         }
 
         let resp = req
+            .json(&body)
             .send()
             .instrument(span)
             .await
