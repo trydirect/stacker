@@ -278,8 +278,7 @@ pub async fn fetch_updates_by_deployment(
     limit: i64,
 ) -> Result<Vec<Command>, String> {
     let query_span = tracing::info_span!("Fetching command updates for deployment");
-    sqlx::query_as!(
-        Command,
+    sqlx::query_as::<_, Command>(
         r#"
         SELECT id, command_id, deployment_hash, type, status, priority,
                parameters, result, error, created_by, created_at, updated_at,
@@ -290,10 +289,10 @@ pub async fn fetch_updates_by_deployment(
         ORDER BY updated_at DESC
         LIMIT $3
         "#,
-        deployment_hash,
-        since,
-        limit,
     )
+    .bind(deployment_hash)
+    .bind(since)
+    .bind(limit)
     .fetch_all(pool)
     .instrument(query_span)
     .await
