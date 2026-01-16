@@ -8,9 +8,13 @@ pub struct Settings {
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
+    #[serde(default = "Settings::default_agent_command_poll_timeout_secs")]
     pub agent_command_poll_timeout_secs: u64,
+    #[serde(default = "Settings::default_agent_command_poll_interval_secs")]
     pub agent_command_poll_interval_secs: u64,
+    #[serde(default = "Settings::default_casbin_reload_enabled")]
     pub casbin_reload_enabled: bool,
+    #[serde(default = "Settings::default_casbin_reload_interval_secs")]
     pub casbin_reload_interval_secs: u64,
     pub amqp: AmqpSettings,
     pub vault: VaultSettings,
@@ -26,14 +30,32 @@ impl Default for Settings {
             app_host: "127.0.0.1".to_string(),
             auth_url: "http://localhost:8080/me".to_string(),
             max_clients_number: 10,
-            agent_command_poll_timeout_secs: 30,
-            agent_command_poll_interval_secs: 3,
-            casbin_reload_enabled: true,
-            casbin_reload_interval_secs: 10,
+            agent_command_poll_timeout_secs: Self::default_agent_command_poll_timeout_secs(),
+            agent_command_poll_interval_secs: Self::default_agent_command_poll_interval_secs(),
+            casbin_reload_enabled: Self::default_casbin_reload_enabled(),
+            casbin_reload_interval_secs: Self::default_casbin_reload_interval_secs(),
             amqp: AmqpSettings::default(),
             vault: VaultSettings::default(),
             connectors: ConnectorConfig::default(),
         }
+    }
+}
+
+impl Settings {
+    fn default_agent_command_poll_timeout_secs() -> u64 {
+        30
+    }
+
+    fn default_agent_command_poll_interval_secs() -> u64 {
+        3
+    }
+
+    fn default_casbin_reload_enabled() -> bool {
+        true
+    }
+
+    fn default_casbin_reload_interval_secs() -> u64 {
+        10
     }
 }
 
