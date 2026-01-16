@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO project (stack_id, user_id, name, metadata, created_at, updated_at, request_json)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        RETURNING id;\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Text",
+        "Json",
+        "Timestamptz",
+        "Timestamptz",
+        "Json"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1f1b8182d59d8253662da0ea73b69b6857e5f3c8f4292ba9c4491e062591575b"
+}

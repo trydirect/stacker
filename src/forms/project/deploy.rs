@@ -1,8 +1,8 @@
+use crate::forms;
+use crate::forms::{CloudForm, ServerForm};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
-use crate::forms;
-use crate::forms::{CloudForm, ServerForm};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Deploy {

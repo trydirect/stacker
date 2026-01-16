@@ -1,16 +1,65 @@
+use crate::connectors::ConnectorConfig;
 use serde;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
     pub app_port: u16,
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
-    pub amqp: AmqpSettings
+    #[serde(default = "Settings::default_agent_command_poll_timeout_secs")]
+    pub agent_command_poll_timeout_secs: u64,
+    #[serde(default = "Settings::default_agent_command_poll_interval_secs")]
+    pub agent_command_poll_interval_secs: u64,
+    #[serde(default = "Settings::default_casbin_reload_enabled")]
+    pub casbin_reload_enabled: bool,
+    #[serde(default = "Settings::default_casbin_reload_interval_secs")]
+    pub casbin_reload_interval_secs: u64,
+    pub amqp: AmqpSettings,
+    pub vault: VaultSettings,
+    #[serde(default)]
+    pub connectors: ConnectorConfig,
 }
 
-#[derive(Debug, serde::Deserialize)]
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            database: DatabaseSettings::default(),
+            app_port: 8000,
+            app_host: "127.0.0.1".to_string(),
+            auth_url: "http://localhost:8080/me".to_string(),
+            max_clients_number: 10,
+            agent_command_poll_timeout_secs: Self::default_agent_command_poll_timeout_secs(),
+            agent_command_poll_interval_secs: Self::default_agent_command_poll_interval_secs(),
+            casbin_reload_enabled: Self::default_casbin_reload_enabled(),
+            casbin_reload_interval_secs: Self::default_casbin_reload_interval_secs(),
+            amqp: AmqpSettings::default(),
+            vault: VaultSettings::default(),
+            connectors: ConnectorConfig::default(),
+        }
+    }
+}
+
+impl Settings {
+    fn default_agent_command_poll_timeout_secs() -> u64 {
+        30
+    }
+
+    fn default_agent_command_poll_interval_secs() -> u64 {
+        3
+    }
+
+    fn default_casbin_reload_enabled() -> bool {
+        true
+    }
+
+    fn default_casbin_reload_interval_secs() -> u64 {
+        10
+    }
+}
+
+#[derive(Debug, serde::Deserialize, Clone)]
 pub struct DatabaseSettings {
     pub username: String,
     pub password: String,
@@ -19,13 +68,80 @@ pub struct DatabaseSettings {
     pub database_name: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
+impl Default for DatabaseSettings {
+    fn default() -> Self {
+        Self {
+            username: "postgres".to_string(),
+            password: "postgres".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 5432,
+            database_name: "stacker".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, Clone)]
 pub struct AmqpSettings {
     pub username: String,
     pub password: String,
     pub host: String,
     pub port: u16,
 }
+
+impl Default for AmqpSettings {
+    fn default() -> Self {
+        Self {
+            username: "guest".to_string(),
+            password: "guest".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 5672,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, Clone)]
+pub struct VaultSettings {
+    pub address: String,
+    pub token: String,
+    pub agent_path_prefix: String,
+    #[serde(default = "VaultSettings::default_api_prefix")]
+    pub api_prefix: String,
+}
+
+impl Default for VaultSettings {
+    fn default() -> Self {
+        Self {
+            address: "http://127.0.0.1:8200".to_string(),
+            token: "dev-token".to_string(),
+            agent_path_prefix: "agent".to_string(),
+            api_prefix: Self::default_api_prefix(),
+        }
+    }
+}
+
+impl VaultSettings {
+    fn default_api_prefix() -> String {
+        "v1".to_string()
+    }
+
+    /// Overlay Vault settings from environment variables, if present.
+    /// If an env var is missing, keep the existing file-provided value.
+    pub fn overlay_env(self) -> Self {
+        let address = std::env::var("VAULT_ADDRESS").unwrap_or(self.address);
+        let token = std::env::var("VAULT_TOKEN").unwrap_or(self.token);
+        let agent_path_prefix =
+            std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
+        let api_prefix = std::env::var("VAULT_API_PREFIX").unwrap_or(self.api_prefix);
+
+        VaultSettings {
+            address,
+            token,
+            agent_path_prefix,
+            api_prefix,
+        }
+    }
+}
+
 impl DatabaseSettings {
     // Connection string: postgresql://<username>:<password>@<host>:<port>/<database_name>
     pub fn connection_string(&self) -> String {
@@ -53,14 +169,53 @@ impl AmqpSettings {
 }
 
 pub fn get_configuration() -> Result<Settings, config::ConfigError> {
-    // Initialize our configuration reader
-    let mut settings = config::Config::default();
+    // Load environment variables from .env file
+    dotenvy::dotenv().ok();
 
-    // Add configuration values from a file named `configuration`
-    // with the .yaml extension
-    settings.merge(config::File::with_name("configuration"))?; // .json, .toml, .yaml, .yml
+    // Start with defaults
+    let mut config = Settings::default();
 
-    // Try to convert the configuration values it read into
-    // our Settings type
-    settings.try_deserialize()
+    // Prefer real config, fall back to dist samples; layer multiple formats
+    let settings = config::Config::builder()
+        // Primary local config
+        .add_source(config::File::with_name("configuration.yaml").required(false))
+        .add_source(config::File::with_name("configuration.yml").required(false))
+        .add_source(config::File::with_name("configuration").required(false))
+        // Fallback samples
+        .add_source(config::File::with_name("configuration.yaml.dist").required(false))
+        .add_source(config::File::with_name("configuration.yml.dist").required(false))
+        .add_source(config::File::with_name("configuration.dist").required(false))
+        .build()?;
+
+    // Try to convert the configuration values it read into our Settings type
+    if let Ok(loaded) = settings.try_deserialize::<Settings>() {
+        config = loaded;
+    }
+
+    // Overlay Vault settings with environment variables if present
+    config.vault = config.vault.overlay_env();
+
+    if let Ok(timeout) = std::env::var("STACKER_AGENT_POLL_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.agent_command_poll_timeout_secs = parsed;
+        }
+    }
+
+    if let Ok(interval) = std::env::var("STACKER_AGENT_POLL_INTERVAL_SECS") {
+        if let Ok(parsed) = interval.parse::<u64>() {
+            config.agent_command_poll_interval_secs = parsed;
+        }
+    }
+
+    if let Ok(enabled) = std::env::var("STACKER_CASBIN_RELOAD_ENABLED") {
+        config.casbin_reload_enabled = matches!(enabled.as_str(), "1" | "true" | "TRUE");
+    }
+
+    if let Ok(interval) = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS") {
+        if let Ok(parsed) = interval.parse::<u64>() {
+            config.casbin_reload_interval_secs = parsed;
+        }
+    }
+
+    Ok(config)
 }

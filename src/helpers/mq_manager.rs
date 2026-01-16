@@ -1,6 +1,10 @@
 use deadpool_lapin::{Config, CreatePoolError, Object, Pool, Runtime};
-use lapin::{options::*, publisher_confirm::{Confirmation, PublisherConfirm}, BasicProperties, Channel, ExchangeKind};
 use lapin::types::{AMQPValue, FieldTable};
+use lapin::{
+    options::*,
+    publisher_confirm::{Confirmation, PublisherConfirm},
+    BasicProperties, Channel, ExchangeKind,
+};
 use serde::ser::Serialize;
 
 #[derive(Debug)]
@@ -54,9 +58,7 @@ impl MqManager {
         routing_key: String,
         msg: &T,
     ) -> Result<PublisherConfirm, String> {
-        let payload = serde_json::to_string::<T>(msg).map_err(|err| {
-            format!("{:?}", err)
-        })?;
+        let payload = serde_json::to_string::<T>(msg).map_err(|err| format!("{:?}", err))?;
 
         self.create_channel()
             .await?
@@ -78,7 +80,7 @@ impl MqManager {
         &self,
         exchange: String,
         routing_key: String,
-        msg: &T
+        msg: &T,
     ) -> Result<(), String> {
         self.publish(exchange, routing_key, msg)
             .await?
@@ -87,7 +89,6 @@ impl MqManager {
                 let msg = format!("confirming the publication {:?}", err);
                 tracing::error!(msg);
                 msg
-
             })
             .and_then(|confirm| match confirm {
                 Confirmation::NotRequested => {
@@ -105,7 +106,6 @@ impl MqManager {
         queue_name: &str,
         routing_key: &str,
     ) -> Result<Channel, String> {
-
         let channel = self.create_channel().await?;
 
         channel
@@ -119,7 +119,7 @@ impl MqManager {
                     internal: false,
                     nowait: false,
                 },
-                FieldTable::default()
+                FieldTable::default(),
             )
             .await
             .expect("Exchange declare failed");
@@ -127,19 +127,20 @@ impl MqManager {
         let mut args = FieldTable::default();
         args.insert("x-expires".into(), AMQPValue::LongUInt(3600000));
 
-        let _queue = channel.queue_declare(
-            queue_name,
-            QueueDeclareOptions {
-                passive: false,
-                durable: false,
-                exclusive: false,
-                auto_delete: true,
-                nowait: false,
-            },
-            args,
-        )
-        .await
-        .expect("Queue declare failed");
+        let _queue = channel
+            .queue_declare(
+                queue_name,
+                QueueDeclareOptions {
+                    passive: false,
+                    durable: false,
+                    exclusive: false,
+                    auto_delete: true,
+                    nowait: false,
+                },
+                args,
+            )
+            .await
+            .expect("Queue declare failed");
 
         let _ = channel
             .queue_bind(

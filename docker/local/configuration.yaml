@@ -4,7 +4,7 @@ auth_url: https://dev.try.direct/server/user/oauth_server/api/me
 max_clients_number: 2
 
 database:
-  host: 172.17.0.2
+  host: stackerdb
   port: 5432
   username: postgres
   password: postgres

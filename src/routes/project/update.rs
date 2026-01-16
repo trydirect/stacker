@@ -1,15 +1,12 @@
-use std::str::FromStr;
-use crate::forms::project::{ProjectForm, DockerImageReadResult};
+use crate::db;
+use crate::forms::project::{DockerImageReadResult, ProjectForm};
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::db;
-use actix_web::{web, Responder, Result, put};
+use actix_web::{put, web, Responder, Result};
 use serde_json::Value;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tracing::Instrument;
-use std::str;
 
 #[tracing::instrument(name = "Update project.")]
 #[put("/{id}")]
@@ -32,7 +29,7 @@ pub async fn item(
         })?;
 
     // @todo ACL
-    let form: ProjectForm= serde_json::from_value(request_json.clone())
+    let form: ProjectForm = serde_json::from_value(request_json.clone())
         .map_err(|err| JsonResponse::bad_request(err.to_string()))?;
 
     if !form.validate().is_ok() {
@@ -46,24 +43,21 @@ pub async fn item(
         Ok(result) => {
             if false == result.readable {
                 return Err(JsonResponse::<DockerImageReadResult>::build()
-                           .set_item(result)
-                           .bad_request("Can not access docker image"));
+                    .set_item(result)
+                    .bad_request("Can not access docker image"));
             }
         }
         Err(e) => {
-            return Err(JsonResponse::<DockerImageReadResult>::build()
-                .bad_request(e));
+            return Err(JsonResponse::<DockerImageReadResult>::build().bad_request(e));
         }
     }
 
-
-    let body: Value = serde_json::to_value::<ProjectForm>(form)
+    let metadata: Value = serde_json::to_value::<ProjectForm>(form)
         .or(serde_json::to_value::<ProjectForm>(ProjectForm::default()))
         .unwrap();
 
-
     project.name = project_name;
-    project.body = body;
+    project.metadata = metadata;
     project.request_json = request_json;
 
     db::project::update(pg_pool.get_ref(), project)

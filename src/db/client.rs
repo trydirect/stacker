@@ -1,5 +1,5 @@
-use sqlx::PgPool;
 use crate::models;
+use sqlx::PgPool;
 use tracing::Instrument;
 
 pub async fn update(pool: &PgPool, client: models::Client) -> Result<models::Client, String> {
@@ -18,7 +18,7 @@ pub async fn update(pool: &PgPool, client: models::Client) -> Result<models::Cli
     .execute(pool)
     .instrument(query_span)
     .await
-    .map(|_|{
+    .map(|_| {
         tracing::info!("Client {} has been saved to the database", client.id);
         client
     })
@@ -47,18 +47,16 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Client>, Str
     .instrument(query_span)
     .await
     .map(|client| Some(client))
-    .or_else(|e| {
-        match e {
-            sqlx::Error::RowNotFound => Ok(None),
-            s => {
-                tracing::error!("Failed to execute fetch query: {:?}", s);
-                Err("".to_string())
-            }
+    .or_else(|e| match e {
+        sqlx::Error::RowNotFound => Ok(None),
+        s => {
+            tracing::error!("Failed to execute fetch query: {:?}", s);
+            Err("".to_string())
         }
     })
 }
 
-pub async fn count_by_user(pool: &PgPool , user_id: &String) -> Result<i64, String> {
+pub async fn count_by_user(pool: &PgPool, user_id: &String) -> Result<i64, String> {
     let query_span = tracing::info_span!("Counting the user's clients");
 
     sqlx::query!(
@@ -73,14 +71,14 @@ pub async fn count_by_user(pool: &PgPool , user_id: &String) -> Result<i64, Stri
     .fetch_one(pool)
     .instrument(query_span)
     .await
-    .map(|result| {result.client_count.unwrap()})
+    .map(|result| result.client_count.unwrap())
     .map_err(|err| {
         tracing::error!("Failed to execute query: {:?}", err);
         "Internal Server Error".to_string()
     })
 }
 
-pub async fn  insert(pool: &PgPool, mut client: models::Client) -> Result<models::Client, String> {
+pub async fn insert(pool: &PgPool, mut client: models::Client) -> Result<models::Client, String> {
     let query_span = tracing::info_span!("Saving new client into the database");
     sqlx::query!(
         r#"

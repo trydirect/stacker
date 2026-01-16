@@ -6,4 +6,3 @@ impl Default for Config {
         Config {}
     }
 }
-

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n            id,\n            template_id,\n            version,\n            stack_definition,\n            definition_format,\n            changelog,\n            is_latest,\n            created_at\n        FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "template_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "stack_definition",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "definition_format",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "changelog",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_latest",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "f93b65a30034b0558781a3173986706ad8a6255bba2812d4e32da205773c6de9"
+}

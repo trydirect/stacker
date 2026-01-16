@@ -1,11 +1,11 @@
 use crate::forms;
+use crate::forms::project::network::Network;
+use crate::forms::project::{replace_id_with_name, DockerImage};
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_valid::Validate;
-use crate::forms::project::network::Network;
-use crate::forms::project::{DockerImage, replace_id_with_name};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct App {
@@ -64,6 +64,7 @@ pub struct App {
     #[validate(enumerate("always", "no", "unless-stopped", "on-failure"))]
     pub restart: String,
     pub command: Option<String>,
+    pub entrypoint: Option<String>,
     pub volumes: Option<Vec<forms::project::Volume>>,
     #[serde(flatten)]
     pub environment: forms::project::Environment,
@@ -96,9 +97,10 @@ impl App {
         named_volumes
     }
 
-
-    pub(crate) fn try_into_service(&self, all_networks: &Vec<Network>) -> Result<dctypes::Service, String> {
-
+    pub(crate) fn try_into_service(
+        &self,
+        all_networks: &Vec<Network>,
+    ) -> Result<dctypes::Service, String> {
         let mut service = dctypes::Service {
             image: Some(self.docker_image.to_string()),
             ..Default::default()
@@ -117,7 +119,7 @@ impl App {
                 }
                 collector
             }
-            None => vec![]
+            None => vec![],
         };
 
         let volumes: Vec<dctypes::Volumes> = match &self.volumes {
@@ -128,26 +130,36 @@ impl App {
                 }
 
                 collector
-            },
-            None => vec![]
+            }
+            None => vec![],
         };
 
         let mut envs = IndexMap::new();
         for item in self.environment.environment.clone() {
             let items = item
                 .into_iter()
-                .map(|env_var| (env_var.key, Some(dctypes::SingleValue::String(env_var.value.clone()))))
+                .map(|env_var| {
+                    (
+                        env_var.key,
+                        Some(dctypes::SingleValue::String(env_var.value.clone())),
+                    )
+                })
                 .collect::<IndexMap<_, _>>();
 
             envs.extend(items);
         }
-
 
         service.ports = dctypes::Ports::Long(ports);
         service.restart = Some(self.restart.clone());
         if let Some(cmd) = self.command.as_deref() {
             if !cmd.is_empty() {
                 service.command = Some(dctypes::Command::Simple(cmd.to_owned()));
+            }
+        }
+
+        if let Some(entry) = self.entrypoint.as_deref() {
+            if !entry.is_empty() {
+                service.entrypoint = Some(dctypes::Entrypoint::Simple(entry.to_owned()));
             }
         }
         service.volumes = volumes;

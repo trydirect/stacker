@@ -1,7 +1,11 @@
+pub mod agent;
+pub(crate) mod agreement;
 pub mod client;
-pub mod product;
-pub mod rating;
-pub mod project;
-pub(crate) mod deployment;
 pub(crate) mod cloud;
+pub mod command;
+pub(crate) mod deployment;
+pub mod marketplace;
+pub mod product;
+pub mod project;
+pub mod rating;
 pub(crate) mod server;

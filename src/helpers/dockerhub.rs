@@ -1,5 +1,4 @@
 use crate::forms::project::DockerImage;
-use reqwest::RequestBuilder;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
@@ -92,7 +91,6 @@ pub struct RepoResult {
     pub content_types: Option<Vec<String>>,
 }
 
-
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Validate)]
 pub struct DockerHub<'a> {
     pub(crate) creds: DockerHubCreds<'a>,
@@ -104,7 +102,6 @@ pub struct DockerHub<'a> {
 }
 
 impl<'a> DockerHub<'a> {
-
     #[tracing::instrument(name = "Dockerhub login.")]
     pub async fn login(&'a self) -> Result<String, String> {
         if self.creds.password.is_empty() {
@@ -138,7 +135,8 @@ impl<'a> DockerHub<'a> {
             .get(&url)
             .header("Accept", "application/json");
 
-        client.send()
+        client
+            .send()
             .await
             .map_err(|err| {
                 let msg = format!("🟥Error response {:?}", err);
@@ -153,19 +151,21 @@ impl<'a> DockerHub<'a> {
                 msg
             })
             .map(|repositories| {
-                tracing::debug!("Get public image repo {:?} response {:?}", &url, repositories);
+                tracing::debug!(
+                    "Get public image repo {:?} response {:?}",
+                    &url,
+                    repositories
+                );
                 if repositories.count.unwrap_or(0) > 0 {
                     // let's find at least one active repo
                     let active = repositories
                         .results
                         .into_iter()
-                        .any(|repo| {
-                            repo.status == Some(1)
-                        } );
-                    tracing::debug!("✅ Public image is active. url: {:?}", &url);
+                        .any(|repo| repo.status == Some(1));
+                    tracing::debug!("✅ Public repository is active. url: {:?}", &url);
                     active
                 } else {
-                    tracing::debug!("🟥 Public image tag is not active, url: {:?}", &url);
+                    tracing::debug!("🟥 Public repository is not active, url: {:?}", &url);
                     false
                 }
             })
@@ -173,12 +173,20 @@ impl<'a> DockerHub<'a> {
 
     #[tracing::instrument(name = "Lookup official repos")]
     pub async fn lookup_official_repos(&'a self) -> Result<bool, String> {
-        let url = format!("https://hub.docker.com/v2/repositories/library/{}/tags", self.repos);
+        let t = match self.tag.clone() {
+            Some(s) if !s.is_empty() => s,
+            _ => String::from("latest"),
+        };
+        let url = format!(
+            "https://hub.docker.com/v2/repositories/library/{}/tags?name={}&page_size=100",
+            self.repos, t
+        );
         let client = reqwest::Client::new()
             .get(url)
             .header("Accept", "application/json");
 
-        client.send()
+        client
+            .send()
             .await
             .map_err(|err| format!("🟥{}", err))?
             .json::<OfficialRepoResults>()
@@ -191,18 +199,16 @@ impl<'a> DockerHub<'a> {
                 tracing::debug!("Validate official image response {:?}", tags);
                 if tags.count.unwrap_or(0) > 0 {
                     // let's find at least one active tag
-                    let result = tags
-                        .results
-                        .into_iter()
-                        .any(|tag| {
-                            tracing::debug!("official: {:?}", tag);
-                            if "active".to_string() == tag.tag_status  && tag.name.eq(self.tag.as_deref().unwrap_or("latest")) {
-                                true
-                            } else {
-                                false
-                            }
-                        });
-                    tracing::debug!("✅ Official mage is active. url: {:?}", result);
+                    let result = tags.results.into_iter().any(|tag| {
+                        tracing::debug!(
+                            "🟨 check official tag.name {:?} tag.tag_status: {:?} t={:?}",
+                            tag.name,
+                            tag.tag_status,
+                            t
+                        );
+                        "active".to_string() == tag.tag_status
+                    });
+                    tracing::debug!("🟨 Official image is active? {:?}", result);
                     result
                 } else {
                     tracing::debug!("🟥 Official image tag is not active");
@@ -213,10 +219,14 @@ impl<'a> DockerHub<'a> {
 
     #[tracing::instrument(name = "Lookup vendor's public repos")]
     pub async fn lookup_vendor_public_repos(&'a self) -> Result<bool, String> {
-
+        let t = match self.tag.clone() {
+            Some(s) if !s.is_empty() => s,
+            _ => String::from("latest"),
+        };
+        // get exact tag name
         let url = format!(
-            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
-            &self.creds.username, &self.repos
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}&page_size=100",
+            &self.creds.username, &self.repos, &t
         );
 
         tracing::debug!("Search vendor's public repos {:?}", url);
@@ -258,10 +268,14 @@ impl<'a> DockerHub<'a> {
     #[tracing::instrument(name = "Lookup private repos")]
     pub async fn lookup_private_repo(&'a self) -> Result<bool, String> {
         let token = self.login().await?;
+        let t = match self.tag.clone() {
+            Some(s) if !s.is_empty() => s,
+            _ => String::from("latest"),
+        };
 
         let url = format!(
-            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags",
-            &self.creds.username, &self.repos
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags?name={}&page_size=100",
+            &self.creds.username, &self.repos, t
         );
 
         tracing::debug!("Search private repos {:?}", url);
@@ -269,7 +283,8 @@ impl<'a> DockerHub<'a> {
             .get(url)
             .header("Accept", "application/json");
 
-        client.bearer_auth(token)
+        client
+            .bearer_auth(token)
             .send()
             .await
             .map_err(|err| format!("🟥{}", err))?
@@ -285,7 +300,7 @@ impl<'a> DockerHub<'a> {
                     // let's find at least one active tag
                     let t = match self.tag.clone() {
                         Some(s) if !s.is_empty() => s,
-                        _ => String::from("latest")
+                        _ => String::from("latest"),
                     };
 
                     let active = tags
@@ -302,25 +317,6 @@ impl<'a> DockerHub<'a> {
 
     pub async fn is_active(&'a self) -> Result<bool, String> {
         // if namespace/user is not set change endpoint and return a different response
-
-        // let n = self.repos
-        //     .split(':')
-        //     .map(|x| x.to_string())
-        //     .collect::<Vec<String>>();
-        //
-        // match n.len() {
-        //     1 => {
-        //         self.repos = n.first().unwrap().into();
-        //     }
-        //     2 => {
-        //         self.repos = n.first().unwrap().to_string();
-        //         self.tag = n.last().map(|s| s.to_string());
-        //     }
-        //     _ => {
-        //         return Err(format!("Wrong format of repository name"));
-        //     }
-        // }
-
         tokio::select! {
             Ok(true) = self.lookup_official_repos() => {
                     tracing::debug!("official: true");
@@ -351,12 +347,10 @@ impl<'a> DockerHub<'a> {
     }
 }
 
-
 impl<'a> TryFrom<&'a DockerImage> for DockerHub<'a> {
     type Error = String;
 
     fn try_from(image: &'a DockerImage) -> Result<Self, Self::Error> {
-
         let username = match image.dockerhub_user {
             Some(ref username) => username,
             None => "",
@@ -373,18 +367,11 @@ impl<'a> TryFrom<&'a DockerImage> for DockerHub<'a> {
             .collect::<Vec<String>>();
 
         let (name, tag) = match n.len() {
-            1 => {
-                (
-                    n.first().unwrap().into(),
-                    Some("".to_string())
-                )
-            }
-            2 => {
-                (
-                    n.first().unwrap().to_string(),
-                    n.last().map(|s| s.to_string())
-                )
-            }
+            1 => (n.first().unwrap().into(), Some("".to_string())),
+            2 => (
+                n.first().unwrap().to_string(),
+                n.last().map(|s| s.to_string()),
+            ),
             _ => {
                 return Err("Wrong format of repository name".to_owned());
             }
@@ -406,6 +393,6 @@ impl<'a> TryFrom<&'a DockerImage> for DockerHub<'a> {
             return Err(format!("{:?}", msg));
         }
 
-       Ok(hub)
+        Ok(hub)
     }
 }

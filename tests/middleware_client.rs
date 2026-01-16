@@ -20,7 +20,6 @@ async fn middleware_client_works() {
     assert!(response.status().is_success());
     assert_eq!(Some(0), response.content_length());
 
-
     //todo header stacker-id not found
     //
 }

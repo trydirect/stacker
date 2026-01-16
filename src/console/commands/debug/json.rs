@@ -1,14 +1,18 @@
-use actix_web::{Result};
+use actix_web::Result;
 
 pub struct JsonCommand {
     line: usize,
     column: usize,
-    payload: String
+    payload: String,
 }
 
 impl JsonCommand {
     pub fn new(line: usize, column: usize, payload: String) -> Self {
-        Self { line, column, payload }
+        Self {
+            line,
+            column,
+            payload,
+        }
     }
 }
 
@@ -16,7 +20,10 @@ impl crate::console::commands::CallableTrait for JsonCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let payload: String = std::fs::read_to_string(&self.payload)?;
         let index = line_column_to_index(payload.as_ref(), self.line, self.column);
-        let prefix = String::from_utf8(<std::string::String as AsRef<[u8]>>::as_ref(&payload)[..index].to_vec()).unwrap(); 
+        let prefix = String::from_utf8(
+            <std::string::String as AsRef<[u8]>>::as_ref(&payload)[..index].to_vec(),
+        )
+        .unwrap();
 
         println!("{}", prefix);
         Ok(())

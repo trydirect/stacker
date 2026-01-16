@@ -1,7 +1,6 @@
 use crate::models;
+use serde::Serialize;
 use std::convert::From;
-use chrono::{DateTime, Utc};
-use serde::{Serialize};
 
 #[derive(Debug, Serialize, Default)]
 pub struct Anonymous {

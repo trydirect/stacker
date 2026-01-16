@@ -1,12 +1,12 @@
 use crate::middleware::authentication::*;
 
-use std::sync::Arc;
-use std::future::{ready, Ready};
 use futures::lock::Mutex;
+use std::future::{ready, Ready};
+use std::sync::Arc;
 
-use actix_web::{ 
-    Error,
+use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
+    Error,
 };
 
 pub struct Manager {}

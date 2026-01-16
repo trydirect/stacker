@@ -1,8 +1,8 @@
-use stacker::forms::project::ProjectForm;
-use stacker::forms::project::DockerImage;
 use stacker::forms::project::App;
-use std::fs;
+use stacker::forms::project::DockerImage;
+use stacker::forms::project::ProjectForm;
 use std::collections::HashMap;
+use std::fs;
 
 //  Unit Test
 
@@ -27,7 +27,6 @@ use std::collections::HashMap;
 // }
 #[test]
 fn test_deserialize_project() {
-
     let body_str = fs::read_to_string("./tests/custom-project-payload-11.json").unwrap();
     let form = serde_json::from_str::<ProjectForm>(&body_str).unwrap();
     println!("{:?}", form);
@@ -67,7 +66,7 @@ fn test_docker_image_only_name_other_empty() {
     let docker_image = DockerImage {
         dockerhub_user: Some("".to_string()),
         dockerhub_name: Some("mysql".to_string()),
-        dockerhub_image: Some("".to_string(),),
+        dockerhub_image: Some("".to_string()),
         dockerhub_password: None,
     };
     let output = docker_image.to_string();
@@ -90,7 +89,7 @@ fn test_docker_image_namespace_and_repo() {
     let docker_image = DockerImage {
         dockerhub_user: Some("trydirect".to_string()),
         dockerhub_name: Some("mysql".to_string()),
-        dockerhub_image: Some("".to_string(),),
+        dockerhub_image: Some("".to_string()),
         dockerhub_password: None,
     };
     let output = docker_image.to_string();
@@ -102,7 +101,7 @@ fn test_docker_image_namespace_and_repo_tag() {
     let docker_image = DockerImage {
         dockerhub_user: Some("trydirect".to_string()),
         dockerhub_name: Some("mysql:8.1".to_string()),
-        dockerhub_image: Some("".to_string(),),
+        dockerhub_image: Some("".to_string()),
         dockerhub_password: None,
     };
     let output = docker_image.to_string();
@@ -113,7 +112,7 @@ fn test_docker_image_only_image() {
     let docker_image = DockerImage {
         dockerhub_user: None,
         dockerhub_name: None,
-        dockerhub_image: Some("trydirect/mysql:stable".to_string(),),
+        dockerhub_image: Some("trydirect/mysql:stable".to_string()),
         dockerhub_password: None,
     };
     let output = docker_image.to_string();

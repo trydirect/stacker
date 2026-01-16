@@ -1,8 +1,7 @@
+use crate::forms::project::NetworkDriver;
+use docker_compose_types as dctypes;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
-use docker_compose_types as dctypes;
-use crate::forms::project::NetworkDriver;
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Network {
@@ -17,7 +16,6 @@ pub struct Network {
     pub(crate) labels: Option<String>,
     pub(crate) name: String,
 }
-
 
 impl Default for Network {
     fn default() -> Self {
@@ -38,9 +36,7 @@ impl Default for Network {
 }
 
 impl Into<dctypes::NetworkSettings> for Network {
-
     fn into(self) -> dctypes::NetworkSettings {
-
         // default_network is always external=true
         let is_default = self.name == String::from("default_network");
         let external = is_default || self.external.unwrap_or(false);
@@ -52,7 +48,7 @@ impl Into<dctypes::NetworkSettings> for Network {
             enable_ipv6: self.enable_ipv6.unwrap_or(false),
             internal: self.internal.unwrap_or(false),
             external: Some(dctypes::ComposeNetwork::Bool(external)),
-            ipam: None,                                               // @todo
+            ipam: None, // @todo
             labels: Default::default(),
             name: Some(self.name.clone()),
         }

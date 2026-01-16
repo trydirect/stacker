@@ -27,22 +27,22 @@ impl std::fmt::Display for Cloud {
         let cloud_token = mask_string(self.cloud_token.as_ref());
         let cloud_secret = mask_string(self.cloud_secret.as_ref());
 
-        write!(f, "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {}",
-               self.provider,
-               cloud_key,
-               cloud_token,
-               cloud_secret,
+        write!(
+            f,
+            "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {}",
+            self.provider, cloud_key, cloud_token, cloud_secret,
         )
     }
 }
 
 impl Cloud {
-    pub fn new(user_id: String,
-               provider: String,
-               cloud_token: Option<String>,
-               cloud_key: Option<String>,
-               cloud_secret: Option<String>,
-               save_token: Option<bool>
+    pub fn new(
+        user_id: String,
+        provider: String,
+        cloud_token: Option<String>,
+        cloud_key: Option<String>,
+        cloud_secret: Option<String>,
+        save_token: Option<bool>,
     ) -> Self {
         Self {
             id: 0,

@@ -1,12 +1,12 @@
+use crate::db;
 use crate::forms;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::views;
-use crate::db;
 use actix_web::{put, web, Responder, Result};
+use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
-use serde_valid::Validate;
 
 // workflow
 // add, update, list, get(user_id), ACL,
@@ -29,11 +29,9 @@ pub async fn user_edit_handler(
     let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
         .map_err(|_err| JsonResponse::<views::rating::User>::build().internal_server_error(""))
-        .and_then(|rating| {
-            match rating {
-                Some(rating) if rating.user_id == user.id && rating.hidden == Some(false) =>  Ok(rating),
-                _ => Err(JsonResponse::<views::rating::User>::build().not_found("not found"))
-            }
+        .and_then(|rating| match rating {
+            Some(rating) if rating.user_id == user.id && rating.hidden == Some(false) => Ok(rating),
+            _ => Err(JsonResponse::<views::rating::User>::build().not_found("not found")),
         })?;
 
     form.into_inner().update(&mut rating);
@@ -66,11 +64,9 @@ pub async fn admin_edit_handler(
     let mut rating = db::rating::fetch(pg_pool.get_ref(), rate_id)
         .await
         .map_err(|_err| JsonResponse::<views::rating::Admin>::build().internal_server_error(""))
-        .and_then(|rating| {
-            match rating {
-                Some(rating) =>  Ok(rating),
-                _ => Err(JsonResponse::<views::rating::Admin>::build().not_found("not found"))
-            }
+        .and_then(|rating| match rating {
+            Some(rating) => Ok(rating),
+            _ => Err(JsonResponse::<views::rating::Admin>::build().not_found("not found")),
         })?;
 
     form.into_inner().update(&mut rating);

@@ -1,9 +1,8 @@
 use crate::forms;
-use docker_compose_types as dctypes;
 use crate::models;
+use docker_compose_types as dctypes;
 use serde_yaml;
 // use crate::helpers::project::*;
-
 
 /// A builder for constructing docker compose.
 #[derive(Clone, Debug)]
@@ -11,7 +10,6 @@ pub struct DcBuilder {
     // config: Config,
     pub(crate) project: models::Project,
 }
-
 
 impl DcBuilder {
     pub fn new(project: models::Project) -> Self {

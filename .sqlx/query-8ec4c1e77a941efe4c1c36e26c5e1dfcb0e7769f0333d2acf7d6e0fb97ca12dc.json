@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO cloud (\n        user_id,\n        provider,\n        cloud_token,\n        cloud_key,\n        cloud_secret,\n        save_token,\n        created_at,\n        updated_at\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')\n        RETURNING id;\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8ec4c1e77a941efe4c1c36e26c5e1dfcb0e7769f0333d2acf7d6e0fb97ca12dc"
+}

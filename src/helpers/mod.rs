@@ -1,13 +1,17 @@
+pub mod agent_client;
 pub mod client;
 pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;
+pub mod vault;
 
+pub use agent_client::*;
 pub use json::*;
 pub use mq_manager::*;
-pub mod dockerhub;
-pub(crate) mod compressor;
+pub use vault::*;
 pub(crate) mod cloud;
+pub(crate) mod compressor;
+pub mod dockerhub;
 
 pub use dockerhub::*;
 

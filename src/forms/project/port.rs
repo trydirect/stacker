@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -26,14 +26,14 @@ fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation:
         let re = Regex::new(r"^\d{2,6}$").unwrap();
 
         if !re.is_match(value.as_str()) {
-            return Err(serde_valid::validation::Error::Custom("Port is not valid.".to_owned()));
+            return Err(serde_valid::validation::Error::Custom(
+                "Port is not valid.".to_owned(),
+            ));
         }
     }
 
     Ok(())
 }
-
-
 
 // impl Default for Port{
 //     fn default() -> Self {
@@ -50,10 +50,11 @@ fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation:
 impl TryInto<dctypes::Port> for &Port {
     type Error = String;
     fn try_into(self) -> Result<dctypes::Port, Self::Error> {
-        let cp = self.container_port
+        let cp = self
+            .container_port
             .clone()
             .parse::<u16>()
-            .map_err(|_err| "Could not parse container port".to_string() )?;
+            .map_err(|_err| "Could not parse container port".to_string())?;
 
         let hp = match self.host_port.clone() {
             Some(hp) => {
@@ -69,7 +70,7 @@ impl TryInto<dctypes::Port> for &Port {
                     }
                 }
             }
-            _ => None
+            _ => None,
         };
 
         tracing::debug!("Port conversion result: cp: {:?} hp: {:?}", cp, hp);
