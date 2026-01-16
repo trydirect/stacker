@@ -86,6 +86,7 @@ The core Project model includes:
   - Response: `agent_id`, `agent_token`
 - Agent long-poll for commands: `GET /api/v1/agent/commands/wait/:deployment_hash`
   - Headers: `X-Agent-Id: <agent_id>`, `Authorization: Bearer <agent_token>`
+  - Optional query params: `timeout` (seconds), `interval` (seconds)
 - Agent report command result: `POST /api/v1/agent/commands/report`
   - Headers: `X-Agent-Id`, `Authorization: Bearer <agent_token>`
   - Body: `command_id`, `deployment_hash`, `status` (`completed|failed`), `result`/`error`, optional `started_at`, required `completed_at`
@@ -145,6 +146,18 @@ cargo run --bin console -- Agent rotate-token \
   - vault.agent_path_prefix: KV mount/prefix for agent tokens (e.g., agent or kv/agent)
 - Environment variable overrides (optional): VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
 - Agent tokens are stored at: {vault.agent_path_prefix}/{deployment_hash}/token
+
+### Configuration: Agent Polling & Casbin Reload
+- `agent_command_poll_timeout_secs` (default 30)
+- `agent_command_poll_interval_secs` (default 3)
+- `casbin_reload_enabled` (default true)
+- `casbin_reload_interval_secs` (default 10)
+
+Environment overrides:
+- `STACKER_AGENT_POLL_TIMEOUT_SECS`
+- `STACKER_AGENT_POLL_INTERVAL_SECS`
+- `STACKER_CASBIN_RELOAD_ENABLED`
+- `STACKER_CASBIN_RELOAD_INTERVAL_SECS`
 
 The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
 
