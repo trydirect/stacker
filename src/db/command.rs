@@ -269,6 +269,40 @@ pub async fn fetch_by_deployment(
     })
 }
 
+/// Fetch commands updated after a timestamp for a deployment
+#[tracing::instrument(name = "Fetch command updates", skip(pool))]
+pub async fn fetch_updates_by_deployment(
+    pool: &PgPool,
+    deployment_hash: &str,
+    since: chrono::DateTime<chrono::Utc>,
+    limit: i64,
+) -> Result<Vec<Command>, String> {
+    let query_span = tracing::info_span!("Fetching command updates for deployment");
+    sqlx::query_as!(
+        Command,
+        r#"
+        SELECT id, command_id, deployment_hash, type, status, priority,
+               parameters, result, error, created_by, created_at, updated_at,
+               timeout_seconds, metadata
+        FROM commands
+        WHERE deployment_hash = $1
+          AND updated_at > $2
+        ORDER BY updated_at DESC
+        LIMIT $3
+        "#,
+        deployment_hash,
+        since,
+        limit,
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch command updates: {:?}", err);
+        format!("Failed to fetch command updates: {}", err)
+    })
+}
+
 /// Cancel a command (remove from queue and mark as cancelled)
 #[tracing::instrument(name = "Cancel command", skip(pool))]
 pub async fn cancel(pool: &PgPool, command_id: &str) -> Result<Command, String> {

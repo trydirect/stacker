@@ -63,7 +63,8 @@ fn start_policy_reloader(casbin_service: CasbinService, policy_pool: PgPool) {
 }
 
 async fn fetch_policy_fingerprint(pool: &PgPool) -> Result<(i64, i64), sqlx::Error> {
-    let max_id: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM casbin_rule")
+    let max_id: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0)::bigint FROM casbin_rule")
         .fetch_one(pool)
         .await?;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM casbin_rule")
