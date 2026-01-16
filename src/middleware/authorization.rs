@@ -5,7 +5,7 @@ use actix_casbin_auth::{
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx_adapter::SqlxAdapter;
 use std::io::{Error, ErrorKind};
-use tokio::time::{interval, Duration};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Error> {
@@ -33,26 +33,56 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
         .write()
         .matching_fn(Some(key_match2), None);
 
-    start_policy_reloader(casbin_service.clone(), policy_pool);
+    if std::env::var("STACKER_CASBIN_RELOAD_ENABLED")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+        .unwrap_or(true)
+    {
+        let interval = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(10);
+        start_policy_reloader(casbin_service.clone(), policy_pool, Duration::from_secs(interval));
+    }
 
     Ok(casbin_service)
 }
 
-fn start_policy_reloader(casbin_service: CasbinService, policy_pool: PgPool) {
+fn start_policy_reloader(
+    casbin_service: CasbinService,
+    policy_pool: PgPool,
+    reload_interval: Duration,
+) {
     // Reload Casbin policies only when the underlying rules change.
     actix_web::rt::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(10));
+        let mut ticker = tokio::time::interval(reload_interval);
         let mut last_fingerprint: Option<(i64, i64)> = None;
         loop {
             ticker.tick().await;
             match fetch_policy_fingerprint(&policy_pool).await {
                 Ok(fingerprint) => {
                     if last_fingerprint.map_or(true, |prev| prev != fingerprint) {
-                        if let Err(err) = casbin_service.write().await.load_policy().await {
-                            warn!("Failed to reload Casbin policies: {err:?}");
-                        } else {
-                            debug!("Casbin policies reloaded");
-                            last_fingerprint = Some(fingerprint);
+                        match casbin_service.try_write() {
+                            Ok(mut guard) => {
+                                match timeout(Duration::from_millis(500), guard.load_policy()).await {
+                                    Ok(Ok(())) => {
+                                        guard
+                                            .get_role_manager()
+                                            .write()
+                                            .matching_fn(Some(key_match2), None);
+                                        debug!("Casbin policies reloaded");
+                                        last_fingerprint = Some(fingerprint);
+                                    }
+                                    Ok(Err(err)) => {
+                                        warn!("Failed to reload Casbin policies: {err:?}");
+                                    }
+                                    Err(_) => {
+                                        warn!("Casbin policy reload timed out");
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                warn!("Casbin policy reload skipped (write lock busy)");
+                            }
                         }
                     }
                 }
