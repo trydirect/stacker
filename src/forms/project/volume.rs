@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Volume {
@@ -12,8 +12,7 @@ impl Volume {
     pub fn is_named_docker_volume(&self) -> bool {
         // Docker named volumes typically don't contain special characters or slashes
         // They are alphanumeric and may include underscores or hyphens
-        self
-            .host_path
+        self.host_path
             .as_ref()
             .unwrap()
             .chars()
@@ -56,19 +55,27 @@ impl Into<dctypes::ComposeVolume> for &Volume {
         let mut driver_opts = IndexMap::default();
         let host_path = self.host_path.clone().unwrap_or_else(String::default);
         // @todo check if host_path is required argument
-        driver_opts.insert(String::from("type"), Some(dctypes::SingleValue::String("none".to_string())));
-        driver_opts.insert(String::from("o"), Some(dctypes::SingleValue::String("bind".to_string())));
+        driver_opts.insert(
+            String::from("type"),
+            Some(dctypes::SingleValue::String("none".to_string())),
+        );
+        driver_opts.insert(
+            String::from("o"),
+            Some(dctypes::SingleValue::String("bind".to_string())),
+        );
         // @todo move to config project docroot on host
         let path = format!("/root/project/{}", &host_path);
-        driver_opts.insert(String::from("device"), Some(dctypes::SingleValue::String(path)));
+        driver_opts.insert(
+            String::from("device"),
+            Some(dctypes::SingleValue::String(path)),
+        );
 
         dctypes::ComposeVolume {
             driver: Some(String::from("local")),
             driver_opts: driver_opts,
             external: None,
             labels: Default::default(),
-            name: Some(host_path)
+            name: Some(host_path),
         }
     }
 }
-

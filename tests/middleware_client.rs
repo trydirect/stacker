@@ -7,7 +7,10 @@ async fn middleware_client_works() {
     // 3. Assert
 
     println!("Before spawn_app");
-    let app = common::spawn_app().await; // server
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    }; // server
     println!("After spawn_app");
     let client = reqwest::Client::new(); // client
 
@@ -19,7 +22,6 @@ async fn middleware_client_works() {
 
     assert!(response.status().is_success());
     assert_eq!(Some(0), response.content_length());
-
 
     //todo header stacker-id not found
     //

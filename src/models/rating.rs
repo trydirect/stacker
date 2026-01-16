@@ -1,6 +1,5 @@
-use chrono::{DateTime, Utc};
-use serde::{Serialize};
 use crate::models;
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Default)]
 pub struct Rating {

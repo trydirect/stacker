@@ -1,7 +1,7 @@
-use serde_derive::{Serialize, Deserialize};
-use serde_json::Value;
-use serde_valid::{Validate};
 use crate::models::user::User as UserModel;
+use serde_derive::{Deserialize, Serialize};
+use serde_json::Value;
+use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +56,7 @@ pub struct User {
     pub deployments_left: Value,
     #[serde(rename = "suspension_hints")]
     pub suspension_hints: Option<SuspensionHints>,
-    pub role: String
+    pub role: String,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -125,7 +125,6 @@ pub struct SuspensionHints {
     pub reason: String,
 }
 
-
 impl TryInto<UserModel> for UserForm {
     type Error = String;
     fn try_into(self) -> Result<UserModel, Self::Error> {
@@ -135,8 +134,7 @@ impl TryInto<UserModel> for UserForm {
             last_name: self.user.last_name.unwrap_or("Noname".to_string()),
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
-            role: self.user.role
+            role: self.user.role,
         })
     }
-
 }

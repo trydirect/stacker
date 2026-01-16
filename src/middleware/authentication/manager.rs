@@ -1,12 +1,12 @@
 use crate::middleware::authentication::*;
 
-use std::sync::Arc;
+use std::cell::RefCell;
 use std::future::{ready, Ready};
-use futures::lock::Mutex;
+use std::rc::Rc;
 
-use actix_web::{ 
-    Error,
+use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
+    Error,
 };
 
 pub struct Manager {}
@@ -31,7 +31,7 @@ where
 
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(ManagerMiddleware {
-            service: Arc::new(Mutex::new(service)),
+            service: Rc::new(RefCell::new(service)),
         }))
     }
 }
