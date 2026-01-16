@@ -5,6 +5,8 @@ auth_url: https://dev.try.direct/server/user/oauth_server/api/me
 max_clients_number: 2
 agent_command_poll_timeout_secs: 30
 agent_command_poll_interval_secs: 3
+casbin_reload_enabled: true
+casbin_reload_interval_secs: 10
 database:
   host: 127.0.0.1
   port: 5432

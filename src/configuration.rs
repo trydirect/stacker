@@ -10,6 +10,8 @@ pub struct Settings {
     pub max_clients_number: i64,
     pub agent_command_poll_timeout_secs: u64,
     pub agent_command_poll_interval_secs: u64,
+    pub casbin_reload_enabled: bool,
+    pub casbin_reload_interval_secs: u64,
     pub amqp: AmqpSettings,
     pub vault: VaultSettings,
     #[serde(default)]
@@ -26,6 +28,8 @@ impl Default for Settings {
             max_clients_number: 10,
             agent_command_poll_timeout_secs: 30,
             agent_command_poll_interval_secs: 3,
+            casbin_reload_enabled: true,
+            casbin_reload_interval_secs: 10,
             amqp: AmqpSettings::default(),
             vault: VaultSettings::default(),
             connectors: ConnectorConfig::default(),
@@ -178,6 +182,16 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     if let Ok(interval) = std::env::var("STACKER_AGENT_POLL_INTERVAL_SECS") {
         if let Ok(parsed) = interval.parse::<u64>() {
             config.agent_command_poll_interval_secs = parsed;
+        }
+    }
+
+    if let Ok(enabled) = std::env::var("STACKER_CASBIN_RELOAD_ENABLED") {
+        config.casbin_reload_enabled = matches!(enabled.as_str(), "1" | "true" | "TRUE");
+    }
+
+    if let Ok(interval) = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS") {
+        if let Ok(parsed) = interval.parse::<u64>() {
+            config.casbin_reload_interval_secs = parsed;
         }
     }
 
