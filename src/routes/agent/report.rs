@@ -1,6 +1,7 @@
-use crate::{db, helpers, models};
+use crate::{db, forms::status_panel, helpers, models};
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -8,9 +9,13 @@ use std::sync::Arc;
 pub struct CommandReportRequest {
     pub command_id: String,
     pub deployment_hash: String,
-    pub status: String, // "completed" or "failed"
+    pub status: String, // domain-level status (e.g., ok|unhealthy|failed)
+    #[serde(default)]
+    pub command_status: Option<String>, // explicitly force completed/failed
     pub result: Option<serde_json::Value>,
     pub error: Option<serde_json::Value>,
+    #[serde(default)]
+    pub errors: Option<Vec<serde_json::Value>>, // preferred multi-error payload
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub completed_at: chrono::DateTime<chrono::Utc>,
 }
@@ -36,34 +41,98 @@ pub async fn report_handler(
         ));
     }
 
-    // Validate status
-    if payload.status != "completed" && payload.status != "failed" {
-        return Err(helpers::JsonResponse::bad_request(
-            "Invalid status. Must be 'completed' or 'failed'",
-        ));
-    }
-
     // Update agent heartbeat
     let _ = db::agent::update_heartbeat(pg_pool.get_ref(), agent.id, "online").await;
 
     // Parse status to CommandStatus enum
-    let status = match payload.status.to_lowercase().as_str() {
-        "completed" => models::CommandStatus::Completed,
-        "failed" => models::CommandStatus::Failed,
-        _ => {
-            return Err(helpers::JsonResponse::bad_request(
-                "Invalid status. Must be 'completed' or 'failed'",
-            ));
+    let has_errors = payload
+        .errors
+        .as_ref()
+        .map(|errs| !errs.is_empty())
+        .unwrap_or(false);
+
+    let status = match payload.command_status.as_deref() {
+        Some(value) => match value.to_lowercase().as_str() {
+            "completed" => models::CommandStatus::Completed,
+            "failed" => models::CommandStatus::Failed,
+            _ => {
+                return Err(helpers::JsonResponse::bad_request(
+                    "Invalid command_status. Must be 'completed' or 'failed'",
+                ));
+            }
+        },
+        None => {
+            if payload.status.eq_ignore_ascii_case("failed") || has_errors {
+                models::CommandStatus::Failed
+            } else {
+                models::CommandStatus::Completed
+            }
         }
     };
+
+    let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &payload.command_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch command {}: {}", payload.command_id, err);
+            helpers::JsonResponse::internal_server_error(err)
+        })?;
+
+    let command = match command {
+        Some(cmd) => cmd,
+        None => {
+            tracing::warn!("Command not found for report: {}", payload.command_id);
+            return Err(helpers::JsonResponse::not_found("Command not found"));
+        }
+    };
+
+    if command.deployment_hash != payload.deployment_hash {
+        tracing::warn!(
+            "Deployment hash mismatch for command {}: expected {}, got {}",
+            payload.command_id,
+            command.deployment_hash,
+            payload.deployment_hash
+        );
+        return Err(helpers::JsonResponse::not_found(
+            "Command not found for this deployment",
+        ));
+    }
+
+    let error_payload = if let Some(errors) = payload.errors.as_ref() {
+        if errors.is_empty() {
+            None
+        } else {
+            Some(json!({ "errors": errors }))
+        }
+    } else {
+        payload.error.clone()
+    };
+
+    let mut result_payload = status_panel::validate_command_result(
+        &command.r#type,
+        &payload.deployment_hash,
+        &payload.result,
+    )
+    .map_err(|err| {
+        tracing::warn!(
+            command_type = %command.r#type,
+            command_id = %payload.command_id,
+            "Invalid command result payload: {}",
+            err
+        );
+        helpers::JsonResponse::<()>::build().bad_request(err)
+    })?;
+
+    if result_payload.is_none() && !payload.status.is_empty() {
+        result_payload = Some(json!({ "status": payload.status.clone() }));
+    }
 
     // Update command in database with result
     match db::command::update_result(
         pg_pool.get_ref(),
         &payload.command_id,
         &status,
-        payload.result.clone(),
-        payload.error.clone(),
+        result_payload.clone(),
+        error_payload.clone(),
     )
     .await
     {
@@ -88,8 +157,9 @@ pub async fn report_handler(
             .with_details(serde_json::json!({
                 "command_id": payload.command_id,
                 "status": status.to_string(),
-                "has_result": payload.result.is_some(),
-                "has_error": payload.error.is_some(),
+                "has_result": result_payload.is_some(),
+                "has_error": error_payload.is_some(),
+                "reported_status": payload.status,
             }));
 
             let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;

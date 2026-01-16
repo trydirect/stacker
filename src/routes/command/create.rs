@@ -1,7 +1,7 @@
 use crate::db;
-use crate::helpers::{JsonResponse, VaultClient};
+use crate::forms::status_panel;
+use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
-use crate::services::agent_dispatcher;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -28,14 +28,29 @@ pub struct CreateCommandResponse {
     pub status: String,
 }
 
-#[tracing::instrument(name = "Create command", skip(pg_pool, user, vault_client))]
+#[tracing::instrument(name = "Create command", skip(pg_pool, user))]
 #[post("")]
 pub async fn create_handler(
     user: web::ReqData<Arc<User>>,
     req: web::Json<CreateCommandRequest>,
     pg_pool: web::Data<PgPool>,
-    vault_client: web::Data<VaultClient>,
 ) -> Result<impl Responder> {
+    if req.deployment_hash.trim().is_empty() {
+        return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
+    }
+
+    if req.command_type.trim().is_empty() {
+        return Err(JsonResponse::<()>::build().bad_request("command_type is required"));
+    }
+
+    let validated_parameters =
+        status_panel::validate_command_parameters(&req.command_type, &req.parameters).map_err(
+            |err| {
+                tracing::warn!("Invalid command payload: {}", err);
+                JsonResponse::<()>::build().bad_request(err)
+            },
+        )?;
+
     // Generate unique command ID
     let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
 
@@ -61,7 +76,7 @@ pub async fn create_handler(
     )
     .with_priority(priority.clone());
 
-    if let Some(params) = &req.parameters {
+    if let Some(params) = &validated_parameters {
         command = command.with_parameters(params.clone());
     }
 
@@ -81,7 +96,7 @@ pub async fn create_handler(
             JsonResponse::<()>::build().internal_server_error(err)
         })?;
 
-    // Add to queue
+    // Add to queue - agent will poll and pick it up
     db::command::add_to_queue(
         pg_pool.get_ref(),
         &saved_command.command_id,
@@ -94,49 +109,10 @@ pub async fn create_handler(
         JsonResponse::<()>::build().internal_server_error(err)
     })?;
 
-    // Optional: push to agent immediately if AGENT_BASE_URL is configured
-    if let Ok(agent_base_url) = std::env::var("AGENT_BASE_URL") {
-        let payload = serde_json::json!({
-            "deployment_hash": saved_command.deployment_hash,
-            "command_id": saved_command.command_id,
-            "type": saved_command.r#type,
-            "priority": format!("{}", priority),
-            "parameters": saved_command.parameters,
-            "timeout_seconds": saved_command.timeout_seconds,
-        });
-
-        match agent_dispatcher::enqueue(
-            pg_pool.get_ref(),
-            vault_client.get_ref(),
-            &saved_command.deployment_hash,
-            &agent_base_url,
-            &payload,
-        )
-        .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    "Pushed command {} to agent at {}",
-                    saved_command.command_id,
-                    agent_base_url
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "Agent push failed for command {}: {}",
-                    saved_command.command_id,
-                    err
-                );
-            }
-        }
-    } else {
-        tracing::debug!("AGENT_BASE_URL not set; skipping agent push");
-    }
-
     tracing::info!(
-        "Command created: {} for deployment {}",
-        saved_command.command_id,
-        saved_command.deployment_hash
+        command_id = %saved_command.command_id,
+        deployment_hash = %saved_command.deployment_hash,
+        "Command created and queued, agent will poll"
     );
 
     let response = CreateCommandResponse {

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::protocol::{
-    CallToolRequest, CallToolResponse, InitializeParams, InitializeResult,
-    JsonRpcError, JsonRpcRequest, JsonRpcResponse, ServerCapabilities, ServerInfo,
-    ToolListResponse, ToolsCapability,
+    CallToolRequest, CallToolResponse, InitializeParams, InitializeResult, JsonRpcError,
+    JsonRpcRequest, JsonRpcResponse, ServerCapabilities, ServerInfo, ToolListResponse,
+    ToolsCapability,
 };
 use super::registry::{ToolContext, ToolRegistry};
 use super::session::McpSession;
@@ -95,7 +95,10 @@ impl McpWebSocket {
                 }
             },
             None => {
-                return JsonRpcResponse::error(req.id, JsonRpcError::invalid_params("Missing params"))
+                return JsonRpcResponse::error(
+                    req.id,
+                    JsonRpcError::invalid_params("Missing params"),
+                )
             }
         };
 
@@ -150,7 +153,10 @@ impl McpWebSocket {
                 }
             },
             None => {
-                return JsonRpcResponse::error(req.id, JsonRpcError::invalid_params("Missing params"))
+                return JsonRpcResponse::error(
+                    req.id,
+                    JsonRpcError::invalid_params("Missing params"),
+                )
             }
         };
 
@@ -327,7 +333,10 @@ pub async fn mcp_websocket(
     pg_pool: web::Data<PgPool>,
     settings: web::Data<Settings>,
 ) -> Result<HttpResponse, Error> {
-    tracing::info!("New MCP WebSocket connection request from user: {}", user.id);
+    tracing::info!(
+        "New MCP WebSocket connection request from user: {}",
+        user.id
+    );
 
     let ws = McpWebSocket::new(
         user.into_inner(),

@@ -1,6 +1,6 @@
 [package]
 name = "stacker"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 default-run= "server"
 
@@ -65,7 +65,8 @@ actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"
 casbin = "2.2.0"
 aes-gcm = "0.10.3"
 base64 = "0.22.1"
-redis = { version = "0.27.5", features = ["tokio-comp"] }
+redis = { version = "0.27.5", features = ["tokio-comp", "connection-manager"] }
+urlencoding = "2.1.3"
 
 [dependencies.sqlx]
 version = "0.8.2"

@@ -15,7 +15,7 @@ pub struct Project {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub source_template_id: Option<Uuid>, // marketplace template UUID
-    pub template_version: Option<String>,    // marketplace template version
+    pub template_version: Option<String>, // marketplace template version
 }
 
 impl Project {

@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::mcp::protocol::{Tool, ToolContent};
+use crate::mcp::registry::{ToolContext, ToolHandler};
 use serde::Deserialize;
 
 /// Suggest appropriate resource limits for an application type
@@ -18,8 +18,8 @@ impl ToolHandler for SuggestResourcesTool {
             expected_traffic: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Heuristic-based recommendations
         let (base_cpu, base_ram, base_storage) = match params.app_type.to_lowercase().as_str() {
@@ -266,13 +266,12 @@ impl ToolHandler for ValidateDomainTool {
             domain: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Simple domain validation regex
-        let domain_regex = regex::Regex::new(
-            r"^([a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$"
-        ).unwrap();
+        let domain_regex =
+            regex::Regex::new(r"^([a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$").unwrap();
 
         let is_valid = domain_regex.is_match(&params.domain.to_lowercase());
 

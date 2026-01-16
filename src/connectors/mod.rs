@@ -1,5 +1,5 @@
 //! External Service Connectors
-//! 
+//!
 //! This module provides adapters for communicating with external services (User Service, Payment Service, etc.).
 //! All external integrations must go through connectors to keep Stacker independent and testable.
 //!
@@ -38,18 +38,29 @@
 //! }
 //! ```
 
+pub mod admin_service;
 pub mod config;
+pub mod dockerhub_service;
 pub mod errors;
+pub mod install_service;
 pub mod user_service;
 
-pub use config::{ConnectorConfig, UserServiceConfig, PaymentServiceConfig, EventsConfig};
+pub use admin_service::{
+    extract_bearer_token, parse_jwt_claims, user_from_jwt_claims, validate_jwt_expiration,
+};
+pub use config::{ConnectorConfig, EventsConfig, PaymentServiceConfig, UserServiceConfig};
 pub use errors::ConnectorError;
+pub use install_service::{InstallServiceClient, InstallServiceConnector};
 pub use user_service::{
-    UserServiceConnector, UserServiceClient, StackResponse, UserProfile, UserProduct, ProductInfo,
-    UserPlanInfo, PlanDefinition, CategoryInfo,
-    DeploymentValidator, DeploymentValidationError,
-    MarketplaceWebhookSender, WebhookSenderConfig, MarketplaceWebhookPayload, WebhookResponse,
+    CategoryInfo, DeploymentValidationError, DeploymentValidator, MarketplaceWebhookPayload,
+    MarketplaceWebhookSender, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo,
+    UserProduct, UserProfile, UserServiceClient, UserServiceConnector, WebhookResponse,
+    WebhookSenderConfig,
 };
 
 // Re-export init functions for convenient access
+pub use dockerhub_service::init as init_dockerhub;
+pub use dockerhub_service::{
+    DockerHubClient, DockerHubConnector, NamespaceSummary, RepositorySummary, TagSummary,
+};
 pub use user_service::init as init_user_service;

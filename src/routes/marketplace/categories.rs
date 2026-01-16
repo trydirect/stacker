@@ -6,11 +6,11 @@ use sqlx::PgPool;
 
 #[tracing::instrument(name = "List categories")]
 #[get("/categories")]
-pub async fn list_handler(
-    pg_pool: web::Data<PgPool>,
-) -> Result<impl Responder> {
+pub async fn list_handler(pg_pool: web::Data<PgPool>) -> Result<impl Responder> {
     db::marketplace::get_categories(pg_pool.get_ref())
         .await
-        .map_err(|err| JsonResponse::<Vec<models::StackCategory>>::build().internal_server_error(err))
+        .map_err(|err| {
+            JsonResponse::<Vec<models::StackCategory>>::build().internal_server_error(err)
+        })
         .map(|categories| JsonResponse::build().set_list(categories).ok("OK"))
 }
