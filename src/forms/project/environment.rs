@@ -9,4 +9,3 @@ pub struct EnvVar {
     pub(crate) key: String,
     pub(crate) value: String,
 }
-

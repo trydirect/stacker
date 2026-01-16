@@ -1,9 +1,9 @@
 pub mod add;
-pub mod get;
-mod edit;
 mod delete;
+mod edit;
+pub mod get;
 
 pub use add::*;
-pub use get::*;
-pub use edit::*;
 pub use delete::*;
+pub use edit::*;
+pub use get::*;

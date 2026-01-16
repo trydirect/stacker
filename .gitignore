@@ -5,3 +5,6 @@ access_control.conf
 configuration.yaml
 configuration.yaml.backup
 configuration.yaml.orig
+.vscode/
+.env
+docs/*.sql

@@ -1,0 +1,130 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n            t.id,\n            t.creator_user_id,\n            t.creator_name,\n            t.name,\n            t.slug,\n            t.short_description,\n            t.long_description,\n            c.name AS \"category_code?\",\n            t.product_id,\n            t.tags,\n            t.tech_stack,\n            t.status,\n            t.is_configurable,\n            t.view_count,\n            t.deploy_count,\n            t.created_at,\n            t.updated_at,\n            t.approved_at,\n            t.required_plan_name\n        FROM stack_template t\n        LEFT JOIN stack_category c ON t.category_id = c.id\n        WHERE t.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "creator_user_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "slug",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "short_description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "long_description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "category_code?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "product_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "tags",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "tech_stack",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 11,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "is_configurable",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 13,
+        "name": "view_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "deploy_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "approved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "required_plan_name",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "722e059fca26aa3be81451ef5e266cc32d0e3ebc0611bd69013b6c3aa240b674"
+}
