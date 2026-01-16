@@ -1,13 +1,21 @@
-use serde;
 use crate::connectors::ConnectorConfig;
+use serde;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
     pub app_port: u16,
     pub app_host: String,
     pub auth_url: String,
     pub max_clients_number: i64,
+    #[serde(default = "Settings::default_agent_command_poll_timeout_secs")]
+    pub agent_command_poll_timeout_secs: u64,
+    #[serde(default = "Settings::default_agent_command_poll_interval_secs")]
+    pub agent_command_poll_interval_secs: u64,
+    #[serde(default = "Settings::default_casbin_reload_enabled")]
+    pub casbin_reload_enabled: bool,
+    #[serde(default = "Settings::default_casbin_reload_interval_secs")]
+    pub casbin_reload_interval_secs: u64,
     pub amqp: AmqpSettings,
     pub vault: VaultSettings,
     #[serde(default)]
@@ -22,10 +30,32 @@ impl Default for Settings {
             app_host: "127.0.0.1".to_string(),
             auth_url: "http://localhost:8080/me".to_string(),
             max_clients_number: 10,
+            agent_command_poll_timeout_secs: Self::default_agent_command_poll_timeout_secs(),
+            agent_command_poll_interval_secs: Self::default_agent_command_poll_interval_secs(),
+            casbin_reload_enabled: Self::default_casbin_reload_enabled(),
+            casbin_reload_interval_secs: Self::default_casbin_reload_interval_secs(),
             amqp: AmqpSettings::default(),
             vault: VaultSettings::default(),
             connectors: ConnectorConfig::default(),
         }
+    }
+}
+
+impl Settings {
+    fn default_agent_command_poll_timeout_secs() -> u64 {
+        30
+    }
+
+    fn default_agent_command_poll_interval_secs() -> u64 {
+        3
+    }
+
+    fn default_casbin_reload_enabled() -> bool {
+        true
+    }
+
+    fn default_casbin_reload_interval_secs() -> u64 {
+        10
     }
 }
 
@@ -74,6 +104,8 @@ pub struct VaultSettings {
     pub address: String,
     pub token: String,
     pub agent_path_prefix: String,
+    #[serde(default = "VaultSettings::default_api_prefix")]
+    pub api_prefix: String,
 }
 
 impl Default for VaultSettings {
@@ -82,11 +114,16 @@ impl Default for VaultSettings {
             address: "http://127.0.0.1:8200".to_string(),
             token: "dev-token".to_string(),
             agent_path_prefix: "agent".to_string(),
+            api_prefix: Self::default_api_prefix(),
         }
     }
 }
 
 impl VaultSettings {
+    fn default_api_prefix() -> String {
+        "v1".to_string()
+    }
+
     /// Overlay Vault settings from environment variables, if present.
     /// If an env var is missing, keep the existing file-provided value.
     pub fn overlay_env(self) -> Self {
@@ -94,11 +131,13 @@ impl VaultSettings {
         let token = std::env::var("VAULT_TOKEN").unwrap_or(self.token);
         let agent_path_prefix =
             std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
+        let api_prefix = std::env::var("VAULT_API_PREFIX").unwrap_or(self.api_prefix);
 
         VaultSettings {
             address,
             token,
             agent_path_prefix,
+            api_prefix,
         }
     }
 }
@@ -155,6 +194,28 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
 
     // Overlay Vault settings with environment variables if present
     config.vault = config.vault.overlay_env();
+
+    if let Ok(timeout) = std::env::var("STACKER_AGENT_POLL_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.agent_command_poll_timeout_secs = parsed;
+        }
+    }
+
+    if let Ok(interval) = std::env::var("STACKER_AGENT_POLL_INTERVAL_SECS") {
+        if let Ok(parsed) = interval.parse::<u64>() {
+            config.agent_command_poll_interval_secs = parsed;
+        }
+    }
+
+    if let Ok(enabled) = std::env::var("STACKER_CASBIN_RELOAD_ENABLED") {
+        config.casbin_reload_enabled = matches!(enabled.as_str(), "1" | "true" | "TRUE");
+    }
+
+    if let Ok(interval) = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS") {
+        if let Ok(parsed) = interval.parse::<u64>() {
+            config.casbin_reload_interval_secs = parsed;
+        }
+    }
 
     Ok(config)
 }

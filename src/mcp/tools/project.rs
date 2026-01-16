@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::db;
-use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::mcp::protocol::{Tool, ToolContent};
+use crate::mcp::registry::{ToolContext, ToolHandler};
 use serde::Deserialize;
 
 /// List user's projects
@@ -19,10 +19,14 @@ impl ToolHandler for ListProjectsTool {
                 format!("Database error: {}", e)
             })?;
 
-        let result = serde_json::to_string(&projects)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&projects).map_err(|e| format!("Serialization error: {}", e))?;
 
-        tracing::info!("Listed {} projects for user {}", projects.len(), context.user.id);
+        tracing::info!(
+            "Listed {} projects for user {}",
+            projects.len(),
+            context.user.id
+        );
 
         Ok(ToolContent::Text { text: result })
     }
@@ -51,8 +55,8 @@ impl ToolHandler for GetProjectTool {
             id: i32,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let project = db::project::fetch(&context.pg_pool, params.id)
             .await
@@ -61,8 +65,8 @@ impl ToolHandler for GetProjectTool {
                 format!("Database error: {}", e)
             })?;
 
-        let result = serde_json::to_string(&project)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&project).map_err(|e| format!("Serialization error: {}", e))?;
 
         Ok(ToolContent::Text { text: result })
     }
@@ -100,8 +104,8 @@ impl ToolHandler for CreateProjectTool {
             apps: Vec<Value>,
         }
 
-        let params: CreateArgs = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: CreateArgs =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         if params.name.trim().is_empty() {
             return Err("Project name cannot be empty".to_string());
@@ -126,10 +130,14 @@ impl ToolHandler for CreateProjectTool {
                 format!("Failed to create project: {}", e)
             })?;
 
-        let result = serde_json::to_string(&project)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&project).map_err(|e| format!("Serialization error: {}", e))?;
 
-        tracing::info!("Created project {} for user {}", project.id, context.user.id);
+        tracing::info!(
+            "Created project {} for user {}",
+            project.id,
+            context.user.id
+        );
 
         Ok(ToolContent::Text { text: result })
     }
@@ -137,7 +145,8 @@ impl ToolHandler for CreateProjectTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "create_project".to_string(),
-            description: "Create a new application stack project with services and configuration".to_string(),
+            description: "Create a new application stack project with services and configuration"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -1,6 +1,6 @@
 use crate::configuration::Settings;
-use actix_web::web;
 use crate::models;
+use actix_web::web;
 use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -9,11 +9,10 @@ use std::sync::Arc;
 
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
-    ListProjectsTool, GetProjectTool, CreateProjectTool,
-    SuggestResourcesTool, ListTemplatesTool, ValidateDomainTool,
-    GetDeploymentStatusTool, StartDeploymentTool, CancelDeploymentTool,
-    ListCloudsTool, GetCloudTool, AddCloudTool, DeleteCloudTool,
-    DeleteProjectTool, CloneProjectTool,
+    AddCloudTool, CancelDeploymentTool, CloneProjectTool, CreateProjectTool, DeleteCloudTool,
+    DeleteProjectTool, GetCloudTool, GetDeploymentStatusTool, GetProjectTool, ListCloudsTool,
+    ListProjectsTool, ListTemplatesTool, StartDeploymentTool, SuggestResourcesTool,
+    ValidateDomainTool,
 };
 
 /// Context passed to tool handlers
@@ -27,8 +26,7 @@ pub struct ToolContext {
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
     /// Execute the tool with given arguments
-    async fn execute(&self, args: Value, context: &ToolContext)
-        -> Result<ToolContent, String>;
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String>;
 
     /// Return the tool schema definition
     fn schema(&self) -> Tool;
@@ -55,18 +53,18 @@ impl ToolRegistry {
         registry.register("suggest_resources", Box::new(SuggestResourcesTool));
         registry.register("list_templates", Box::new(ListTemplatesTool));
         registry.register("validate_domain", Box::new(ValidateDomainTool));
-        
+
         // Phase 3: Deployment tools
         registry.register("get_deployment_status", Box::new(GetDeploymentStatusTool));
         registry.register("start_deployment", Box::new(StartDeploymentTool));
         registry.register("cancel_deployment", Box::new(CancelDeploymentTool));
-        
+
         // Phase 3: Cloud tools
         registry.register("list_clouds", Box::new(ListCloudsTool));
         registry.register("get_cloud", Box::new(GetCloudTool));
         registry.register("add_cloud", Box::new(AddCloudTool));
         registry.register("delete_cloud", Box::new(DeleteCloudTool));
-        
+
         // Phase 3: Project management
         registry.register("delete_project", Box::new(DeleteProjectTool));
         registry.register("clone_project", Box::new(CloneProjectTool));

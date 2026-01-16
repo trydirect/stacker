@@ -15,7 +15,9 @@ pub async fn list_handler(
 
     db::marketplace::list_approved(pg_pool.get_ref(), category, tag, sort)
         .await
-        .map_err(|err| JsonResponse::<Vec<crate::models::StackTemplate>>::build().internal_server_error(err))
+        .map_err(|err| {
+            JsonResponse::<Vec<crate::models::StackTemplate>>::build().internal_server_error(err)
+        })
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }
 

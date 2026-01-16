@@ -15,8 +15,8 @@ jobs:
 
   cicd-docker:
     name: Cargo and npm build
-    #runs-on: ubuntu-latest
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    #runs-on: self-hosted
     env:
       SQLX_OFFLINE: true
     steps:

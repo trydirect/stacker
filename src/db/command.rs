@@ -189,8 +189,38 @@ pub async fn update_result(
 
 /// Fetch command by ID
 #[tracing::instrument(name = "Fetch command by ID", skip(pool))]
-pub async fn fetch_by_id(pool: &PgPool, command_id: &str) -> Result<Option<Command>, String> {
+pub async fn fetch_by_id(pool: &PgPool, id: &str) -> Result<Option<Command>, String> {
+
+    let id = uuid::Uuid::parse_str(id).map_err(|err| {
+        tracing::error!("Invalid ID format: {:?}", err);
+        format!("Invalid ID format: {}", err)
+    })?;
+
     let query_span = tracing::info_span!("Fetching command by ID");
+    sqlx::query_as!(
+        Command,
+        r#"
+        SELECT id, command_id, deployment_hash, type, status, priority,
+               parameters, result, error, created_by, created_at, updated_at,
+               timeout_seconds, metadata
+        FROM commands
+        WHERE id = $1
+        "#,
+        id,
+    )
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch command: {:?}", err);
+        format!("Failed to fetch command: {}", err)
+    })
+}
+
+#[tracing::instrument(name = "Fetch command by command_id", skip(pool))]
+pub async fn fetch_by_command_id(pool: &PgPool, command_id: &str) -> Result<Option<Command>, String> {
+
+    let query_span = tracing::info_span!("Fetching command by command_id");
     sqlx::query_as!(
         Command,
         r#"
@@ -236,6 +266,39 @@ pub async fn fetch_by_deployment(
     .map_err(|err| {
         tracing::error!("Failed to fetch commands: {:?}", err);
         format!("Failed to fetch commands: {}", err)
+    })
+}
+
+/// Fetch commands updated after a timestamp for a deployment
+#[tracing::instrument(name = "Fetch command updates", skip(pool))]
+pub async fn fetch_updates_by_deployment(
+    pool: &PgPool,
+    deployment_hash: &str,
+    since: chrono::DateTime<chrono::Utc>,
+    limit: i64,
+) -> Result<Vec<Command>, String> {
+    let query_span = tracing::info_span!("Fetching command updates for deployment");
+    sqlx::query_as::<_, Command>(
+        r#"
+        SELECT id, command_id, deployment_hash, type, status, priority,
+               parameters, result, error, created_by, created_at, updated_at,
+               timeout_seconds, metadata
+        FROM commands
+        WHERE deployment_hash = $1
+          AND updated_at > $2
+        ORDER BY updated_at DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(deployment_hash)
+    .bind(since)
+    .bind(limit)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch command updates: {:?}", err);
+        format!("Failed to fetch command updates: {}", err)
     })
 }
 

@@ -152,15 +152,13 @@ pub async fn update(
 #[tracing::instrument(name = "Delete user's project.")]
 pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     tracing::info!("Delete project {}", id);
-    sqlx::query::<sqlx::Postgres>(
-        "DELETE FROM project WHERE id = $1;",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .map(|_| true)
-    .map_err(|err| {
-        tracing::error!("Failed to delete project: {:?}", err);
-        "Failed to delete project".to_string()
-    })
+    sqlx::query::<sqlx::Postgres>("DELETE FROM project WHERE id = $1;")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map(|_| true)
+        .map_err(|err| {
+            tracing::error!("Failed to delete project: {:?}", err);
+            "Failed to delete project".to_string()
+        })
 }

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::db;
-use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::mcp::protocol::{Tool, ToolContent};
+use crate::mcp::registry::{ToolContext, ToolHandler};
 use serde::Deserialize;
 
 /// Delete a project
@@ -17,8 +17,8 @@ impl ToolHandler for DeleteProjectTool {
             project_id: i32,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let project = db::project::fetch(&context.pg_pool, args.project_id)
             .await
@@ -38,9 +38,15 @@ impl ToolHandler for DeleteProjectTool {
             "message": "Project deleted successfully"
         });
 
-        tracing::info!("Deleted project {} for user {}", args.project_id, context.user.id);
+        tracing::info!(
+            "Deleted project {} for user {}",
+            args.project_id,
+            context.user.id
+        );
 
-        Ok(ToolContent::Text { text: response.to_string() })
+        Ok(ToolContent::Text {
+            text: response.to_string(),
+        })
     }
 
     fn schema(&self) -> Tool {
@@ -73,8 +79,8 @@ impl ToolHandler for CloneProjectTool {
             new_name: String,
         }
 
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         if args.new_name.trim().is_empty() {
             return Err("New project name cannot be empty".to_string());
@@ -112,9 +118,16 @@ impl ToolHandler for CloneProjectTool {
             "message": "Project cloned successfully"
         });
 
-        tracing::info!("Cloned project {} to {} for user {}", args.project_id, cloned_project.id, context.user.id);
+        tracing::info!(
+            "Cloned project {} to {} for user {}",
+            args.project_id,
+            cloned_project.id,
+            context.user.id
+        );
 
-        Ok(ToolContent::Text { text: response.to_string() })
+        Ok(ToolContent::Text {
+            text: response.to_string(),
+        })
     }
 
     fn schema(&self) -> Tool {

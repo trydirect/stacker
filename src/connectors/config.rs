@@ -6,6 +6,7 @@ pub struct ConnectorConfig {
     pub user_service: Option<UserServiceConfig>,
     pub payment_service: Option<PaymentServiceConfig>,
     pub events: Option<EventsConfig>,
+    pub dockerhub_service: Option<DockerHubConnectorConfig>,
 }
 
 /// User Service connector configuration
@@ -91,6 +92,77 @@ impl Default for ConnectorConfig {
             user_service: Some(UserServiceConfig::default()),
             payment_service: Some(PaymentServiceConfig::default()),
             events: Some(EventsConfig::default()),
+            dockerhub_service: Some(DockerHubConnectorConfig::default()),
+        }
+    }
+}
+
+/// Docker Hub caching connector configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerHubConnectorConfig {
+    /// Enable/disable Docker Hub connector
+    pub enabled: bool,
+    /// Docker Hub API base URL
+    pub base_url: String,
+    /// HTTP timeout in seconds
+    pub timeout_secs: u64,
+    /// Number of retry attempts for transient failures
+    pub retry_attempts: usize,
+    /// Page size when fetching namespaces/repositories/tags
+    #[serde(default = "DockerHubConnectorConfig::default_page_size")]
+    pub page_size: u32,
+    /// Optional Redis connection string override
+    #[serde(default)]
+    pub redis_url: Option<String>,
+    /// Cache TTL for namespace search results
+    #[serde(default = "DockerHubConnectorConfig::default_namespaces_ttl")]
+    pub cache_ttl_namespaces_secs: u64,
+    /// Cache TTL for repository listings
+    #[serde(default = "DockerHubConnectorConfig::default_repositories_ttl")]
+    pub cache_ttl_repositories_secs: u64,
+    /// Cache TTL for tag listings
+    #[serde(default = "DockerHubConnectorConfig::default_tags_ttl")]
+    pub cache_ttl_tags_secs: u64,
+    /// Optional Docker Hub username (falls back to DOCKERHUB_USERNAME env)
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Optional Docker Hub personal access token (falls back to DOCKERHUB_TOKEN env)
+    #[serde(default)]
+    pub personal_access_token: Option<String>,
+}
+
+impl DockerHubConnectorConfig {
+    const fn default_page_size() -> u32 {
+        50
+    }
+
+    const fn default_namespaces_ttl() -> u64 {
+        86_400
+    }
+
+    const fn default_repositories_ttl() -> u64 {
+        21_600
+    }
+
+    const fn default_tags_ttl() -> u64 {
+        3_600
+    }
+}
+
+impl Default for DockerHubConnectorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_url: "https://hub.docker.com".to_string(),
+            timeout_secs: 10,
+            retry_attempts: 3,
+            page_size: Self::default_page_size(),
+            redis_url: Some("redis://127.0.0.1/0".to_string()),
+            cache_ttl_namespaces_secs: Self::default_namespaces_ttl(),
+            cache_ttl_repositories_secs: Self::default_repositories_ttl(),
+            cache_ttl_tags_secs: Self::default_tags_ttl(),
+            username: None,
+            personal_access_token: None,
         }
     }
 }

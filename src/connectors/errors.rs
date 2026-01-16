@@ -40,7 +40,9 @@ impl ResponseError for ConnectorError {
         let (status, message) = match self {
             Self::HttpError(_) => (StatusCode::BAD_GATEWAY, "External service error"),
             Self::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "Service unavailable"),
-            Self::InvalidResponse(_) => (StatusCode::BAD_GATEWAY, "Invalid external service response"),
+            Self::InvalidResponse(_) => {
+                (StatusCode::BAD_GATEWAY, "Invalid external service response")
+            }
             Self::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "Resource not found"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded"),

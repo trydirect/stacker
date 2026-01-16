@@ -28,7 +28,7 @@ where
     type Future = LocalBoxFuture<'static, Result<ServiceResponse<B>, Error>>;
 
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if let Some(mut guard) = self.service.try_lock() {
+        if let Some(guard) = self.service.try_lock() {
             guard.poll_ready(ctx)
         } else {
             // Another request is in-flight; signal pending instead of panicking
@@ -40,6 +40,7 @@ where
         let service = self.service.clone();
         async move {
             let _ = method::try_agent(&mut req).await?
+                || method::try_jwt(&mut req).await?
                 || method::try_oauth(&mut req).await?
                 || method::try_cookie(&mut req).await?
                 || method::try_hmac(&mut req).await?

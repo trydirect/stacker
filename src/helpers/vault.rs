@@ -7,6 +7,7 @@ pub struct VaultClient {
     address: String,
     token: String,
     agent_path_prefix: String,
+    api_prefix: String,
 }
 
 impl VaultClient {
@@ -16,6 +17,7 @@ impl VaultClient {
             address: settings.address.clone(),
             token: settings.token.clone(),
             agent_path_prefix: settings.agent_path_prefix.clone(),
+            api_prefix: settings.api_prefix.clone(),
         }
     }
 
@@ -26,10 +28,17 @@ impl VaultClient {
         deployment_hash: &str,
         token: &str,
     ) -> Result<(), String> {
-        let path = format!(
-            "{}/v1/{}/{}/token",
-            self.address, self.agent_path_prefix, deployment_hash
-        );
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/token", base, prefix, deployment_hash)
+        } else {
+            format!(
+                "{}/{}/{}/{}/token",
+                base, api_prefix, prefix, deployment_hash
+            )
+        };
 
         let payload = json!({
             "data": {
@@ -64,10 +73,17 @@ impl VaultClient {
     /// Fetch agent token from Vault
     #[tracing::instrument(name = "Fetch agent token from Vault", skip(self))]
     pub async fn fetch_agent_token(&self, deployment_hash: &str) -> Result<String, String> {
-        let path = format!(
-            "{}/v1/{}/{}/token",
-            self.address, self.agent_path_prefix, deployment_hash
-        );
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/token", base, prefix, deployment_hash)
+        } else {
+            format!(
+                "{}/{}/{}/{}/token",
+                base, api_prefix, prefix, deployment_hash
+            )
+        };
 
         let response = self
             .client
@@ -109,10 +125,17 @@ impl VaultClient {
     /// Delete agent token from Vault
     #[tracing::instrument(name = "Delete agent token from Vault", skip(self))]
     pub async fn delete_agent_token(&self, deployment_hash: &str) -> Result<(), String> {
-        let path = format!(
-            "{}/v1/{}/{}/token",
-            self.address, self.agent_path_prefix, deployment_hash
-        );
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/token", base, prefix, deployment_hash)
+        } else {
+            format!(
+                "{}/{}/{}/{}/token",
+                base, api_prefix, prefix, deployment_hash
+            )
+        };
 
         self.client
             .delete(&path)
