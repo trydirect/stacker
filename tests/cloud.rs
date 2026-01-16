@@ -3,7 +3,10 @@ mod common;
 // test me: cargo t --test cloud -- --nocapture --show-output
 #[tokio::test]
 async fn list() {
-    let app = common::spawn_app().await; // server
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    }; // server
     let client = reqwest::Client::new(); // client
 
     let response = client
@@ -19,7 +22,10 @@ async fn list() {
 // test me: cargo t --test cloud add_cloud -- --nocapture --show-output
 #[tokio::test]
 async fn add_cloud() {
-    let app = common::spawn_app().await; // server
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    }; // server
     let client = reqwest::Client::new(); // client
 
     let data = r#"

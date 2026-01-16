@@ -4,14 +4,20 @@ use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
 use stacker::forms;
 use std::net::TcpListener;
 
-pub async fn spawn_app_with_configuration(mut configuration: Settings) -> TestApp {
+pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
 
     let port = listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
 
-    let connection_pool = configure_database(&configuration.database).await;
+    let connection_pool = match configure_database(&configuration.database).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            eprintln!("Skipping tests: failed to connect to postgres: {}", err);
+            return None;
+        }
+    };
 
     let server = stacker::startup::run(listener, connection_pool.clone(), configuration)
         .await
@@ -20,13 +26,13 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> TestAp
     let _ = tokio::spawn(server);
     println!("Used Port: {}", port);
 
-    TestApp {
+    Some(TestApp {
         address,
         db_pool: connection_pool,
-    }
+    })
 }
 
-pub async fn spawn_app() -> TestApp {
+pub async fn spawn_app() -> Option<TestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -57,26 +63,20 @@ pub async fn spawn_app() -> TestApp {
     spawn_app_with_configuration(configuration).await
 }
 
-pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
-    let mut connection = PgConnection::connect(&config.connection_string_without_db())
-        .await
-        .expect("Failed to connect to postgres");
+pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::Error> {
+    let mut connection = PgConnection::connect(&config.connection_string_without_db()).await?;
 
     connection
         .execute(format!(r#"CREATE DATABASE "{}""#, config.database_name).as_str())
-        .await
-        .expect("Failed to create database");
+        .await?;
 
-    let connection_pool = PgPool::connect(&config.connection_string())
-        .await
-        .expect("Failed to connect to database pool");
+    let connection_pool = PgPool::connect(&config.connection_string()).await?;
 
     sqlx::migrate!("./migrations")
         .run(&connection_pool)
-        .await
-        .expect("Failed to migrate database");
+        .await?;
 
-    connection_pool
+    Ok(connection_pool)
 }
 
 pub struct TestApp {

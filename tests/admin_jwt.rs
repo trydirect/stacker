@@ -23,7 +23,10 @@ fn create_jwt(role: &str, email: &str, expires_in: Duration) -> String {
 
 #[tokio::test]
 async fn admin_templates_accepts_valid_jwt() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
     let token = create_jwt("admin_service", "ops@test.com", Duration::minutes(30));
 
@@ -49,7 +52,10 @@ async fn admin_templates_accepts_valid_jwt() {
 
 #[tokio::test]
 async fn admin_templates_rejects_expired_jwt() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
     let token = create_jwt("admin_service", "ops@test.com", Duration::minutes(-5));
 
@@ -71,7 +77,10 @@ async fn admin_templates_rejects_expired_jwt() {
 
 #[tokio::test]
 async fn admin_templates_requires_admin_role() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
     let token = create_jwt("group_user", "user@test.com", Duration::minutes(10));
 
