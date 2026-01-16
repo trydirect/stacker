@@ -3,6 +3,7 @@ use actix_web::{get, web, HttpRequest, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use serde_json::json;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct WaitQuery {
@@ -83,6 +84,7 @@ pub async fn wait_handler(
 
                 return Ok(helpers::JsonResponse::<Option<models::Command>>::build()
                     .set_item(Some(updated_command))
+                    .set_meta(json!({ "next_poll_secs": interval_seconds }))
                     .ok("Command available"));
             }
             Ok(None) => {
@@ -106,5 +108,6 @@ pub async fn wait_handler(
     );
     Ok(helpers::JsonResponse::<Option<models::Command>>::build()
         .set_item(None)
+        .set_meta(json!({ "next_poll_secs": interval_seconds }))
         .ok("No command available"))
 }

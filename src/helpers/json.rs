@@ -12,6 +12,8 @@ pub(crate) struct JsonResponse<T> {
     pub(crate) item: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) list: Option<Vec<T>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) meta: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Default)]
@@ -23,6 +25,7 @@ where
     id: Option<i32>,
     item: Option<T>,
     list: Option<Vec<T>>,
+    meta: Option<serde_json::Value>,
 }
 
 impl<T> JsonResponseBuilder<T>
@@ -49,12 +52,18 @@ where
         self
     }
 
+    pub(crate) fn set_meta(mut self, meta: serde_json::Value) -> Self {
+        self.meta = Some(meta);
+        self
+    }
+
     fn to_json_response(self) -> JsonResponse<T> {
         JsonResponse {
             message: self.message,
             id: self.id,
             item: self.item,
             list: self.list,
+            meta: self.meta,
         }
     }
 
