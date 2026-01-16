@@ -111,6 +111,7 @@ jobs:
           args: --release --bin server
 
       - name: npm install, build, and test
+        if: ${{ hashFiles('web/package.json') != '' }}
         working-directory: ./web
         run: |
           npm install
@@ -118,6 +119,7 @@ jobs:
       #   npm test
 
       - name: Archive production artifacts
+        if: ${{ hashFiles('web/package.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: dist-without-markdown
@@ -126,13 +128,14 @@ jobs:
             !web/dist/**/*.md
 
       - name: Display structure of downloaded files
+        if: ${{ hashFiles('web/package.json') != '' }}
         run: ls -R web/dist
 
       - name: Copy app files and zip
         run: |
           mkdir -p app/stacker/dist
           cp target/release/server app/stacker/server
-          cp -a web/dist/. app/stacker || true
+          if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
           cd app
           touch .env
