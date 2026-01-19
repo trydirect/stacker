@@ -1,6 +1,5 @@
-use crate::{configuration::Settings, db, helpers, models};
+use crate::{configuration::Settings, db, helpers, helpers::AgentPgPool, models};
 use actix_web::{get, web, HttpRequest, Responder, Result};
-use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use serde_json::json;
@@ -11,13 +10,13 @@ pub struct WaitQuery {
     pub interval: Option<u64>,
 }
 
-#[tracing::instrument(name = "Agent poll for commands", skip(pg_pool, _req))]
+#[tracing::instrument(name = "Agent poll for commands", skip(agent_pool, _req))]
 #[get("/commands/wait/{deployment_hash}")]
 pub async fn wait_handler(
     agent: web::ReqData<Arc<models::Agent>>,
     path: web::Path<String>,
     query: web::Query<WaitQuery>,
-    pg_pool: web::Data<PgPool>,
+    agent_pool: web::Data<AgentPgPool>,
     settings: web::Data<Settings>,
     _req: HttpRequest,
 ) -> Result<impl Responder> {
@@ -31,7 +30,7 @@ pub async fn wait_handler(
     }
 
     // Update agent heartbeat - acquire and release connection quickly
-    let _ = db::agent::update_heartbeat(pg_pool.get_ref(), agent.id, "online").await;
+    let _ = db::agent::update_heartbeat(agent_pool.as_ref(), agent.id, "online").await;
 
     // Log poll event - acquire and release connection quickly
     let audit_log = models::AuditLog::new(
@@ -40,7 +39,7 @@ pub async fn wait_handler(
         "agent.command_polled".to_string(),
         Some("success".to_string()),
     );
-    let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;
+    let _ = db::agent::log_audit(agent_pool.as_ref(), audit_log).await;
 
     // Long-polling: Check for pending commands with retries
     // IMPORTANT: Each check acquires and releases DB connection to avoid pool exhaustion
@@ -57,7 +56,7 @@ pub async fn wait_handler(
 
     for i in 0..max_checks {
         // Acquire connection only for query, then release immediately
-        match db::command::fetch_next_for_deployment(pg_pool.get_ref(), &deployment_hash).await {
+        match db::command::fetch_next_for_deployment(agent_pool.as_ref(), &deployment_hash).await {
             Ok(Some(command)) => {
                 tracing::info!(
                     "Found command {} for agent {} (deployment {})",
@@ -68,7 +67,7 @@ pub async fn wait_handler(
 
                 // Update command status to 'sent' - separate connection
                 let updated_command = db::command::update_status(
-                    pg_pool.get_ref(),
+                    agent_pool.as_ref(),
                     &command.command_id,
                     &models::CommandStatus::Sent,
                 )
@@ -80,7 +79,7 @@ pub async fn wait_handler(
 
                 // Remove from queue - separate connection
                 let _ =
-                    db::command::remove_from_queue(pg_pool.get_ref(), &command.command_id).await;
+                    db::command::remove_from_queue(agent_pool.as_ref(), &command.command_id).await;
 
                 return Ok(helpers::JsonResponse::<Option<models::Command>>::build()
                     .set_item(Some(updated_command))

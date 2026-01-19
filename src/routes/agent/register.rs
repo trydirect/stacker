@@ -1,7 +1,6 @@
-use crate::{db, helpers, models};
+use crate::{db, helpers, helpers::AgentPgPool, models};
 use actix_web::{post, web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterAgentRequest {
@@ -43,17 +42,17 @@ fn generate_agent_token() -> String {
         .collect()
 }
 
-#[tracing::instrument(name = "Register agent", skip(pg_pool, vault_client, req))]
+#[tracing::instrument(name = "Register agent", skip(agent_pool, vault_client, req))]
 #[post("/register")]
 pub async fn register_handler(
     payload: web::Json<RegisterAgentRequest>,
-    pg_pool: web::Data<PgPool>,
+    agent_pool: web::Data<AgentPgPool>,
     vault_client: web::Data<helpers::VaultClient>,
     req: HttpRequest,
 ) -> Result<HttpResponse> {
     // 1. Check if agent already registered (idempotent operation)
     let existing_agent =
-        db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &payload.deployment_hash)
+        db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
             .await
             .map_err(|err| {
                 helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
@@ -111,7 +110,7 @@ pub async fn register_handler(
     let agent_token = generate_agent_token();
 
     // 4. Insert to DB first (source of truth)
-    let saved_agent = db::agent::insert(pg_pool.get_ref(), agent)
+    let saved_agent = db::agent::insert(agent_pool.as_ref(), agent)
         .await
         .map_err(|err| {
             tracing::error!("Failed to save agent to DB: {:?}", err);
@@ -160,7 +159,7 @@ pub async fn register_handler(
             .unwrap_or_default(),
     );
 
-    if let Err(err) = db::agent::log_audit(pg_pool.get_ref(), audit_log).await {
+    if let Err(err) = db::agent::log_audit(agent_pool.as_ref(), audit_log).await {
         tracing::warn!("Failed to log agent registration audit: {:?}", err);
     }
 

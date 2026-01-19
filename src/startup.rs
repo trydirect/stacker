@@ -2,6 +2,7 @@ use crate::configuration::Settings;
 use crate::connectors;
 use crate::health::{HealthChecker, HealthMetrics};
 use crate::helpers;
+use crate::helpers::AgentPgPool;
 use crate::mcp;
 use crate::middleware;
 use crate::routes;
@@ -16,14 +17,16 @@ use tracing_actix_web::TracingLogger;
 
 pub async fn run(
     listener: TcpListener,
-    pg_pool: Pool<Postgres>,
+    api_pool: Pool<Postgres>,
+    agent_pool: AgentPgPool,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
     let settings_arc = Arc::new(settings.clone());
-    let pg_pool_arc = Arc::new(pg_pool.clone());
+    let api_pool_arc = Arc::new(api_pool.clone());
 
     let settings = web::Data::new(settings);
-    let pg_pool = web::Data::new(pg_pool);
+    let api_pool = web::Data::new(api_pool);
+    let agent_pool = web::Data::new(agent_pool);
 
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
@@ -47,7 +50,7 @@ pub async fn run(
 
     // Initialize health checker and metrics
     let health_checker = Arc::new(HealthChecker::new(
-        pg_pool_arc.clone(),
+        api_pool_arc.clone(),
         settings_arc.clone(),
     ));
     let health_checker = web::Data::new(health_checker);
@@ -58,7 +61,7 @@ pub async fn run(
     // Initialize external service connectors (plugin pattern)
     // Connector handles category sync on startup
     let user_service_connector =
-        connectors::init_user_service(&settings.connectors, pg_pool.clone());
+        connectors::init_user_service(&settings.connectors, api_pool.clone());
     let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
     let install_service_connector: web::Data<Arc<dyn connectors::InstallServiceConnector>> =
         web::Data::new(Arc::new(connectors::InstallServiceClient));
@@ -223,7 +226,8 @@ pub async fn run(
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())
-            .app_data(pg_pool.clone())
+            .app_data(api_pool.clone())
+            .app_data(agent_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
             .app_data(mcp_registry.clone())

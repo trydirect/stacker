@@ -1,9 +1,21 @@
-use crate::{db, forms::status_panel, helpers, models};
+use crate::{db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models};
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::PgPool;
 use std::sync::Arc;
+
+/// Event published to RabbitMQ when a command result is reported
+#[derive(Debug, Serialize)]
+pub struct CommandCompletedEvent {
+    pub command_id: String,
+    pub deployment_hash: String,
+    pub command_type: String,
+    pub status: String,
+    pub has_result: bool,
+    pub has_error: bool,
+    pub agent_id: uuid::Uuid,
+    pub completed_at: chrono::DateTime<chrono::Utc>,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CommandReportRequest {
@@ -26,12 +38,13 @@ pub struct CommandReportResponse {
     pub message: String,
 }
 
-#[tracing::instrument(name = "Agent report command result", skip(pg_pool, _req))]
+#[tracing::instrument(name = "Agent report command result", skip(agent_pool, mq_manager, _req))]
 #[post("/commands/report")]
 pub async fn report_handler(
     agent: web::ReqData<Arc<models::Agent>>,
     payload: web::Json<CommandReportRequest>,
-    pg_pool: web::Data<PgPool>,
+    agent_pool: web::Data<AgentPgPool>,
+    mq_manager: web::Data<MqManager>,
     _req: HttpRequest,
 ) -> Result<impl Responder> {
     // Verify agent is authorized for this deployment_hash
@@ -42,7 +55,7 @@ pub async fn report_handler(
     }
 
     // Update agent heartbeat
-    let _ = db::agent::update_heartbeat(pg_pool.get_ref(), agent.id, "online").await;
+    let _ = db::agent::update_heartbeat(agent_pool.as_ref(), agent.id, "online").await;
 
     // Parse status to CommandStatus enum
     let has_errors = payload
@@ -70,7 +83,7 @@ pub async fn report_handler(
         }
     };
 
-    let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &payload.command_id)
+    let command = db::command::fetch_by_command_id(agent_pool.as_ref(), &payload.command_id)
         .await
         .map_err(|err| {
             tracing::error!("Failed to fetch command {}: {}", payload.command_id, err);
@@ -128,7 +141,7 @@ pub async fn report_handler(
 
     // Update command in database with result
     match db::command::update_result(
-        pg_pool.get_ref(),
+        agent_pool.as_ref(),
         &payload.command_id,
         &status,
         result_payload.clone(),
@@ -145,7 +158,7 @@ pub async fn report_handler(
             );
 
             // Remove from queue if still there (shouldn't be, but cleanup)
-            let _ = db::command::remove_from_queue(pg_pool.get_ref(), &payload.command_id).await;
+            let _ = db::command::remove_from_queue(agent_pool.as_ref(), &payload.command_id).await;
 
             // Log audit event
             let audit_log = models::AuditLog::new(
@@ -162,7 +175,43 @@ pub async fn report_handler(
                 "reported_status": payload.status,
             }));
 
-            let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;
+            let _ = db::agent::log_audit(agent_pool.as_ref(), audit_log).await;
+
+            // Publish command completed event to RabbitMQ for dashboard/notifications
+            let event = CommandCompletedEvent {
+                command_id: payload.command_id.clone(),
+                deployment_hash: payload.deployment_hash.clone(),
+                command_type: command.r#type.clone(),
+                status: status.to_string(),
+                has_result: result_payload.is_some(),
+                has_error: error_payload.is_some(),
+                agent_id: agent.id,
+                completed_at: payload.completed_at,
+            };
+
+            let routing_key = format!(
+                "workflow.command.{}.{}",
+                status.to_string().to_lowercase(),
+                payload.deployment_hash
+            );
+
+            if let Err(e) = mq_manager
+                .publish("workflow".to_string(), routing_key.clone(), &event)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to publish command completed event for {}: {}",
+                    payload.command_id,
+                    e
+                );
+                // Don't fail the request if event publishing fails
+            } else {
+                tracing::debug!(
+                    "Published command completed event for {} to {}",
+                    payload.command_id,
+                    routing_key
+                );
+            }
 
             let response = CommandReportResponse {
                 accepted: true,
@@ -192,7 +241,7 @@ pub async fn report_handler(
                 "error": err,
             }));
 
-            let _ = db::agent::log_audit(pg_pool.get_ref(), audit_log).await;
+            let _ = db::agent::log_audit(agent_pool.as_ref(), audit_log).await;
 
             Err(helpers::JsonResponse::internal_server_error(err))
         }

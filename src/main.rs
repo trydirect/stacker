@@ -1,6 +1,7 @@
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use stacker::banner;
 use stacker::configuration::get_configuration;
+use stacker::helpers::AgentPgPool;
 use stacker::startup::run;
 use stacker::telemetry::{get_subscriber, init_subscriber};
 use std::net::TcpListener;
@@ -31,15 +32,45 @@ async fn main() -> std::io::Result<()> {
         .database(&settings.database.database_name)
         .ssl_mode(PgSslMode::Disable);
 
-    let pg_pool = PgPoolOptions::new()
-        .max_connections(50) // Increased from 5 to handle concurrent agent polling + regular requests
-        .min_connections(5) // Keep minimum pool size for quick response
-        .acquire_timeout(Duration::from_secs(10)) // Reduced from 30s - fail faster if pool exhausted
-        .idle_timeout(Duration::from_secs(600)) // Close idle connections after 10 minutes
-        .max_lifetime(Duration::from_secs(1800)) // Recycle connections after 30 minutes
+    // API Pool: For regular user requests (authentication, projects, etc.)
+    // Moderate size, fast timeout - these should be quick queries
+    let api_pool = PgPoolOptions::new()
+        .max_connections(30)
+        .min_connections(5)
+        .acquire_timeout(Duration::from_secs(5)) // Fail fast if pool exhausted
+        .idle_timeout(Duration::from_secs(600))
+        .max_lifetime(Duration::from_secs(1800))
+        .connect_with(connect_options.clone())
+        .await
+        .expect("Failed to connect to database (API pool).");
+
+    tracing::info!(
+        max_connections = 30,
+        min_connections = 5,
+        acquire_timeout_secs = 5,
+        "API connection pool initialized"
+    );
+
+    // Agent Pool: For agent long-polling and command operations
+    // Higher capacity to handle many concurrent agent connections
+    let agent_pool_raw = PgPoolOptions::new()
+        .max_connections(100) // Higher capacity for agent polling
+        .min_connections(10)
+        .acquire_timeout(Duration::from_secs(15)) // Slightly longer for agent ops
+        .idle_timeout(Duration::from_secs(300)) // Shorter idle timeout
+        .max_lifetime(Duration::from_secs(1800))
         .connect_with(connect_options)
         .await
-        .expect("Failed to connect to database.");
+        .expect("Failed to connect to database (Agent pool).");
+
+    let agent_pool = AgentPgPool::new(agent_pool_raw);
+
+    tracing::info!(
+        max_connections = 100,
+        min_connections = 10,
+        acquire_timeout_secs = 15,
+        "Agent connection pool initialized"
+    );
 
     let address = format!("{}:{}", settings.app_host, settings.app_port);
     banner::print_startup_info(&settings.app_host, settings.app_port);
@@ -47,5 +78,5 @@ async fn main() -> std::io::Result<()> {
     let listener =
         TcpListener::bind(address).expect(&format!("failed to bind to {}", settings.app_port));
 
-    run(listener, pg_pool, settings).await?.await
+    run(listener, api_pool, agent_pool, settings).await?.await
 }

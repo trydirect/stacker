@@ -1,10 +1,9 @@
 use crate::db;
 use crate::forms::status_panel;
-use crate::helpers::JsonResponse;
+use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, CommandPriority, User};
 use actix_web::{post, web, Responder, Result};
 use serde::Deserialize;
-use sqlx::PgPool;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -19,12 +18,12 @@ pub struct EnqueueRequest {
     pub timeout_seconds: Option<i32>,
 }
 
-#[tracing::instrument(name = "Agent enqueue command", skip(pg_pool, user))]
+#[tracing::instrument(name = "Agent enqueue command", skip(agent_pool, user))]
 #[post("/commands/enqueue")]
 pub async fn enqueue_handler(
     user: web::ReqData<Arc<User>>,
     payload: web::Json<EnqueueRequest>,
-    pg_pool: web::Data<PgPool>,
+    agent_pool: web::Data<AgentPgPool>,
 ) -> Result<impl Responder> {
     if payload.deployment_hash.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
@@ -73,7 +72,7 @@ pub async fn enqueue_handler(
     }
 
     // Insert command
-    let saved = db::command::insert(pg_pool.get_ref(), &command)
+    let saved = db::command::insert(agent_pool.as_ref(), &command)
         .await
         .map_err(|err| {
             tracing::error!("Failed to insert command: {}", err);
@@ -82,7 +81,7 @@ pub async fn enqueue_handler(
 
     // Add to queue - agent will poll and pick it up
     db::command::add_to_queue(
-        pg_pool.get_ref(),
+        agent_pool.as_ref(),
         &saved.command_id,
         &saved.deployment_hash,
         &priority,

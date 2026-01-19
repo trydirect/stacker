@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Test build without full Docker to save time
-cd /Users/vasilipascal/work/try.direct/stacker
 
 echo "=== Testing Rust compilation ==="
 cargo check --lib 2>&1 | head -100

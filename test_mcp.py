@@ -5,7 +5,7 @@ import json
 async def test_mcp():
     uri = "ws://127.0.0.1:8000/mcp"
     headers = {
-        "Authorization": "Bearer 52Hq6LCh16bIPjHkzQq7WyHz50SUQc"
+        "Authorization": f"Bearer {os.getenv('BEARER_TOKEN')}"
     }
     
     async with websockets.connect(uri, extra_headers=headers) as websocket:

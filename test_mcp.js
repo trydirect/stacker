@@ -2,7 +2,7 @@ const WebSocket = require('ws');
 
 const ws = new WebSocket('ws://127.0.0.1:8000/mcp', {
     headers: {
-        'Authorization': 'Bearer 52Hq6LCh16bIPjHkzQq7WyHz50SUQc'
+        'Authorization': `Bearer ${process.env.BEARER_TOKEN}` // Replace with your actual token
     }
 });
 
