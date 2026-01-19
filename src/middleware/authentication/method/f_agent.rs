@@ -159,6 +159,7 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         last_name: format!("#{}", &agent.id.to_string()[..8]), // First 8 chars of UUID
         email: format!("agent+{}@system.local", agent.deployment_hash),
         email_confirmed: true,
+        access_token: None,
     };
 
     if req.extensions_mut().insert(Arc::new(agent_user)).is_some() {

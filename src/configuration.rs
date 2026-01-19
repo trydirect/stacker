@@ -7,6 +7,8 @@ pub struct Settings {
     pub app_port: u16,
     pub app_host: String,
     pub auth_url: String,
+    #[serde(default = "Settings::default_user_service_url")]
+    pub user_service_url: String,
     pub max_clients_number: i64,
     #[serde(default = "Settings::default_agent_command_poll_timeout_secs")]
     pub agent_command_poll_timeout_secs: u64,
@@ -16,7 +18,9 @@ pub struct Settings {
     pub casbin_reload_enabled: bool,
     #[serde(default = "Settings::default_casbin_reload_interval_secs")]
     pub casbin_reload_interval_secs: u64,
+    #[serde(default)]
     pub amqp: AmqpSettings,
+    #[serde(default)]
     pub vault: VaultSettings,
     #[serde(default)]
     pub connectors: ConnectorConfig,
@@ -29,6 +33,7 @@ impl Default for Settings {
             app_port: 8000,
             app_host: "127.0.0.1".to_string(),
             auth_url: "http://localhost:8080/me".to_string(),
+            user_service_url: Self::default_user_service_url(),
             max_clients_number: 10,
             agent_command_poll_timeout_secs: Self::default_agent_command_poll_timeout_secs(),
             agent_command_poll_interval_secs: Self::default_agent_command_poll_interval_secs(),
@@ -42,6 +47,10 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn default_user_service_url() -> String {
+        "http://user:4100".to_string()
+    }
+
     fn default_agent_command_poll_timeout_secs() -> u64 {
         30
     }

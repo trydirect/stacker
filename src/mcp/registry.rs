@@ -10,8 +10,11 @@ use std::sync::Arc;
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
     AddCloudTool, CancelDeploymentTool, CloneProjectTool, CreateProjectTool, DeleteCloudTool,
-    DeleteProjectTool, GetCloudTool, GetDeploymentStatusTool, GetProjectTool, ListCloudsTool,
-    ListProjectsTool, ListTemplatesTool, StartDeploymentTool, SuggestResourcesTool,
+    DeleteProjectTool, DiagnoseDeploymentTool, EscalateToSupportTool, GetCloudTool,
+    GetContainerHealthTool, GetContainerLogsTool, GetDeploymentStatusTool,
+    GetInstallationDetailsTool, GetLiveChatInfoTool, GetProjectTool, GetSubscriptionPlanTool,
+    GetUserProfileTool, ListCloudsTool, ListInstallationsTool, ListProjectsTool, ListTemplatesTool,
+    RestartContainerTool, SearchApplicationsTool, StartDeploymentTool, SuggestResourcesTool,
     ValidateDomainTool,
 };
 
@@ -68,6 +71,23 @@ impl ToolRegistry {
         // Phase 3: Project management
         registry.register("delete_project", Box::new(DeleteProjectTool));
         registry.register("clone_project", Box::new(CloneProjectTool));
+
+        // Phase 4: User & Account tools (AI Integration)
+        registry.register("get_user_profile", Box::new(GetUserProfileTool));
+        registry.register("get_subscription_plan", Box::new(GetSubscriptionPlanTool));
+        registry.register("list_installations", Box::new(ListInstallationsTool));
+        registry.register("get_installation_details", Box::new(GetInstallationDetailsTool));
+        registry.register("search_applications", Box::new(SearchApplicationsTool));
+
+        // Phase 4: Monitoring & Logs tools (AI Integration)
+        registry.register("get_container_logs", Box::new(GetContainerLogsTool));
+        registry.register("get_container_health", Box::new(GetContainerHealthTool));
+        registry.register("restart_container", Box::new(RestartContainerTool));
+        registry.register("diagnose_deployment", Box::new(DiagnoseDeploymentTool));
+
+        // Phase 4: Support & Escalation tools (AI Integration)
+        registry.register("escalate_to_support", Box::new(EscalateToSupportTool));
+        registry.register("get_live_chat_info", Box::new(GetLiveChatInfoTool));
 
         registry
     }

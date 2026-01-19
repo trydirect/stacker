@@ -1,8 +1,10 @@
 pub mod category_sync;
+pub mod deployment_resolver;
 pub mod deployment_validator;
 pub mod marketplace_webhook;
 
 pub use category_sync::sync_categories_from_user_service;
+pub use deployment_resolver::{ResolvedDeploymentInfo, UserServiceDeploymentResolver};
 pub use deployment_validator::{DeploymentValidationError, DeploymentValidator};
 pub use marketplace_webhook::{
     MarketplaceWebhookPayload, MarketplaceWebhookSender, WebhookResponse, WebhookSenderConfig,

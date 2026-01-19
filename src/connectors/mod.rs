@@ -53,9 +53,9 @@ pub use errors::ConnectorError;
 pub use install_service::{InstallServiceClient, InstallServiceConnector};
 pub use user_service::{
     CategoryInfo, DeploymentValidationError, DeploymentValidator, MarketplaceWebhookPayload,
-    MarketplaceWebhookSender, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo,
-    UserProduct, UserProfile, UserServiceClient, UserServiceConnector, WebhookResponse,
-    WebhookSenderConfig,
+    MarketplaceWebhookSender, PlanDefinition, ProductInfo, ResolvedDeploymentInfo, StackResponse,
+    UserPlanInfo, UserProduct, UserProfile, UserServiceClient, UserServiceConnector,
+    UserServiceDeploymentResolver, WebhookResponse, WebhookSenderConfig,
 };
 
 // Re-export init functions for convenient access

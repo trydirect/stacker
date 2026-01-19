@@ -33,7 +33,7 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
     let http_client = req.app_data::<web::Data<reqwest::Client>>().unwrap();
     let cache = req.app_data::<web::Data<super::f_oauth::OAuthCache>>().unwrap();
     let token = token.unwrap();
-    let user = match cache.get(&token).await {
+    let mut user = match cache.get(&token).await {
         Some(user) => user,
         None => {
             let user = super::f_oauth::fetch_user(
@@ -47,6 +47,9 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
             user
         }
     };
+
+    // Attach the access token to the user for proxy requests to other services
+    user.access_token = Some(token);
 
     // Control access using user role
     tracing::debug!("ACL check for role (cookie auth): {}", user.role.clone());

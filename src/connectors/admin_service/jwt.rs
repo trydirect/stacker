@@ -57,6 +57,7 @@ pub fn user_from_jwt_claims(claims: &JwtClaims) -> models::User {
         email_confirmed: false,
         first_name: "Service".to_string(),
         last_name: "Account".to_string(),
+        access_token: None,
     }
 }
 

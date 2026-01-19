@@ -83,7 +83,7 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let http_client = req.app_data::<web::Data<reqwest::Client>>().unwrap();
     let cache = req.app_data::<web::Data<OAuthCache>>().unwrap();
-    let user = match cache.get(&token).await {
+    let mut user = match cache.get(&token).await {
         Some(user) => user,
         None => {
             let user = fetch_user(http_client.get_ref(), settings.auth_url.as_str(), &token)
@@ -93,6 +93,9 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
             user
         }
     };
+
+    // Attach the access token to the user for proxy requests to other services
+    user.access_token = Some(token);
 
     // control access using user role
     tracing::debug!("ACL check for role: {}", user.role.clone());
@@ -137,6 +140,7 @@ pub async fn fetch_user(
                     email: "test@example.com".to_string(),
                     role: "group_user".to_string(),
                     email_confirmed: true,
+                    access_token: None,
                 };
                 return Ok(user);
             }
