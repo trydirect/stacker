@@ -111,7 +111,7 @@ jobs:
       #   npm test
 
       - name: Archive production artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-without-markdown
           path: |
@@ -133,7 +133,7 @@ jobs:
           cd ..
 
       - name: Upload app archive for Docker job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: artifact-linux-docker
           path: app.tar.gz
@@ -144,7 +144,7 @@ jobs:
     needs: cicd-docker
     steps:
       - name: Download app archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: artifact-linux-docker
 
