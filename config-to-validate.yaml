@@ -1,0 +1,59 @@
+app_host: 0.0.0.0
+app_port: 8000
+#auth_url: http://127.0.0.1:8080/me
+#auth_url: https://dev.try.direct/server/user/oauth_server/api/me
+auth_url: http://user:4100/oauth_server/api/me
+
+database:
+  host: stackerdb
+  port: 5432
+  username: postgres
+  password: postgres
+  database_name: stacker
+
+amqp:
+  host: mq
+  port: 5672
+  username: guest
+  password: rabbitdev2023Password
+
+# Vault configuration (can be overridden by environment variables)
+vault:
+  address: http://37.139.9.187:8200
+  token: s.fA1P5xs7yn2T8axXVIl1ANsF
+  # KV mount/prefix for agent tokens, e.g. 'kv/agent' or 'agent'
+  api_prefix: v1
+  agent_path_prefix: secret/debug/status_panel
+
+# External service connectors
+connectors:
+  user_service:
+    enabled: true
+    base_url: "http://user:4100"
+    timeout_secs: 10
+    retry_attempts: 3
+  payment_service:
+    enabled: false
+    base_url: "http://payment:8000"
+    timeout_secs: 15
+  events:
+    enabled: true
+    amqp_url: "amqp://guest:guest@mq:5672/%2f"
+    exchange: "stacker_events"
+    prefetch: 10
+  dockerhub_service:
+    enabled: true
+    base_url: "https://hub.docker.com"
+    timeout_secs: 10
+    retry_attempts: 3
+    page_size: 50
+    redis_url: "redis://stackerredis:6379/0"
+    cache_ttl_namespaces_secs: 86400
+    cache_ttl_repositories_secs: 21600
+    cache_ttl_tags_secs: 3600
+    username: trydirect
+    personal_access_token: 363322c0-cf6f-4d56-abc2-72e43614c13b
+
+# Env overrides (optional):
+#   VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
+#   USER_SERVICE_AUTH_TOKEN, PAYMENT_SERVICE_AUTH_TOKEN

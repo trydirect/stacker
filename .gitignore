@@ -8,3 +8,4 @@ configuration.yaml.orig
 .vscode/
 .env
 docs/*.sql
+config-to-validate.yaml
