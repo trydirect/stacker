@@ -4,6 +4,7 @@ pub mod log_cache;
 pub mod project;
 mod rating;
 pub mod user_service;
+pub mod vault_service;
 
 pub use deployment_identifier::{
     DeploymentIdentifier, DeploymentIdentifierArgs, DeploymentResolveError,
@@ -11,3 +12,4 @@ pub use deployment_identifier::{
 };
 pub use log_cache::LogCacheService;
 pub use user_service::UserServiceClient;
+pub use vault_service::{VaultService, AppConfig, VaultError};

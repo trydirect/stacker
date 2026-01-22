@@ -1,5 +1,6 @@
 pub mod cloud;
 pub mod compose;
+pub mod config;
 pub mod deployment;
 pub mod monitoring;
 pub mod project;
@@ -9,9 +10,11 @@ pub mod user;
 
 pub use cloud::*;
 pub use compose::*;
+pub use config::*;
 pub use deployment::*;
 pub use monitoring::*;
 pub use project::*;
 pub use support::*;
 pub use templates::*;
 pub use user::*;
+

@@ -16,6 +16,15 @@ use crate::mcp::tools::{
     GetUserProfileTool, ListCloudsTool, ListInstallationsTool, ListProjectsTool, ListTemplatesTool,
     RestartContainerTool, SearchApplicationsTool, StartDeploymentTool, SuggestResourcesTool,
     ValidateDomainTool,
+    // Phase 5: Container Operations tools
+    StopContainerTool, StartContainerTool, GetErrorSummaryTool,
+    // Phase 5: App Configuration tools
+    GetAppEnvVarsTool, SetAppEnvVarTool, DeleteAppEnvVarTool, GetAppConfigTool,
+    UpdateAppPortsTool, UpdateAppDomainTool,
+    // Phase 5: Stack Validation tool
+    ValidateStackConfigTool,
+    // Phase 5: Vault Configuration tools
+    GetVaultConfigTool, SetVaultConfigTool, ListVaultConfigsTool, ApplyVaultConfigTool,
 };
 
 /// Context passed to tool handlers
@@ -88,6 +97,28 @@ impl ToolRegistry {
         // Phase 4: Support & Escalation tools (AI Integration)
         registry.register("escalate_to_support", Box::new(EscalateToSupportTool));
         registry.register("get_live_chat_info", Box::new(GetLiveChatInfoTool));
+
+        // Phase 5: Container Operations tools (Agent-Based Deployment)
+        registry.register("stop_container", Box::new(StopContainerTool));
+        registry.register("start_container", Box::new(StartContainerTool));
+        registry.register("get_error_summary", Box::new(GetErrorSummaryTool));
+
+        // Phase 5: App Configuration Management tools
+        registry.register("get_app_env_vars", Box::new(GetAppEnvVarsTool));
+        registry.register("set_app_env_var", Box::new(SetAppEnvVarTool));
+        registry.register("delete_app_env_var", Box::new(DeleteAppEnvVarTool));
+        registry.register("get_app_config", Box::new(GetAppConfigTool));
+        registry.register("update_app_ports", Box::new(UpdateAppPortsTool));
+        registry.register("update_app_domain", Box::new(UpdateAppDomainTool));
+
+        // Phase 5: Stack Validation tool
+        registry.register("validate_stack_config", Box::new(ValidateStackConfigTool));
+
+        // Phase 5: Vault Configuration tools
+        registry.register("get_vault_config", Box::new(GetVaultConfigTool));
+        registry.register("set_vault_config", Box::new(SetVaultConfigTool));
+        registry.register("list_vault_configs", Box::new(ListVaultConfigsTool));
+        registry.register("apply_vault_config", Box::new(ApplyVaultConfigTool));
 
         registry
     }

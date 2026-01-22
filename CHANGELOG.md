@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-01-23
+
+### Added - Vault Configuration Management
+
+#### Vault Configuration Tools (Phase 5 continuation)
+- `get_vault_config`: Fetch app configuration from HashiCorp Vault by deployment hash and app code
+- `set_vault_config`: Store app configuration in Vault (content, content_type, destination_path, file_mode)
+- `list_vault_configs`: List all app configurations stored in Vault for a deployment
+- `apply_vault_config`: Queue apply_config command to Status Panel agent for config deployment
+
+#### VaultService (`src/services/vault_service.rs`)
+- New service for Vault KV v2 API integration
+- Path template: `{prefix}/{deployment_hash}/apps/{app_name}/config`
+- Methods: `fetch_app_config()`, `store_app_config()`, `list_app_configs()`, `delete_app_config()`
+- Environment config: `VAULT_ADDRESS`, `VAULT_TOKEN`, `VAULT_AGENT_PATH_PREFIX`
+
+### Changed
+- Updated `src/services/mod.rs` to export `VaultService`, `AppConfig`, `VaultError`
+- Updated `src/mcp/registry.rs` to register 4 new Vault config tools (total: 41 tools)
+
+## 2026-01-22
+
+### Added - Phase 5: Agent-Based App Deployment & Configuration Management
+
+#### Container Operations Tools
+- `stop_container`: Gracefully stop a specific container in a deployment with configurable timeout
+- `start_container`: Start a previously stopped container
+- `get_error_summary`: Analyze container logs and return categorized error counts, patterns, and suggestions
+
+#### App Configuration Management Tools (new `config.rs` module)
+- `get_app_env_vars`: View environment variables for an app (with automatic redaction of sensitive values)
+- `set_app_env_var`: Create or update an environment variable
+- `delete_app_env_var`: Remove an environment variable
+- `get_app_config`: Get full app configuration including ports, volumes, domain, SSL, and resource limits
+- `update_app_ports`: Configure port mappings for an app
+- `update_app_domain`: Set domain and SSL configuration for web apps
+
+#### Stack Validation Tool
+- `validate_stack_config`: Pre-deployment validation checking for missing images, port conflicts, database passwords, and common misconfigurations
+
+#### Integration Testing & Documentation
+- Added `stacker/tests/mcp_integration.rs`: Comprehensive User Service integration tests
+- Added `stacker/docs/SLACK_WEBHOOK_SETUP.md`: Production Slack webhook configuration guide
+- Added new environment variables to `env.dist`: `SLACK_SUPPORT_WEBHOOK_URL`, `TAWK_TO_*`, `USER_SERVICE_URL`
+
+### Changed
+- Updated `stacker/src/mcp/tools/mod.rs` to export new `config` module
+- Updated `stacker/src/mcp/registry.rs` to register 10 new MCP tools (total: 37 tools)
+- Updated AI-INTEGRATION-PLAN.md with Phase 5 implementation status and test documentation
+
 ## 2026-01-06
 
 ### Added
