@@ -37,7 +37,7 @@ impl ToolHandler for GetAppEnvVarsTool {
             .map_err(|e| format!("Failed to fetch project: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
 
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string()); // Don't reveal existence to non-owner
         }
 
@@ -126,7 +126,7 @@ impl ToolHandler for SetAppEnvVarTool {
             .map_err(|e| format!("Failed to fetch project: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
 
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
 
@@ -226,7 +226,7 @@ impl ToolHandler for DeleteAppEnvVarTool {
             .map_err(|e| format!("Failed to fetch project: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
 
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
 
@@ -330,7 +330,7 @@ impl ToolHandler for GetAppConfigTool {
             .map_err(|e| format!("Failed to fetch project: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
 
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
 
@@ -359,8 +359,7 @@ impl ToolHandler for GetAppConfigTool {
             "domain": app.domain,
             "ssl_enabled": app.ssl_enabled.unwrap_or(false),
             "restart_policy": app.restart_policy.clone().unwrap_or_else(|| "unless-stopped".to_string()),
-            "cpu_limit": app.cpu_limit,
-            "memory_limit": app.memory_limit,
+            "resources": app.resources,
             "depends_on": app.depends_on,
             "note": "Sensitive environment variable values are redacted for security."
         });
@@ -446,7 +445,7 @@ impl ToolHandler for UpdateAppPortsTool {
             .map_err(|e| format!("Failed to fetch project: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
 
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
 
@@ -575,7 +574,7 @@ impl ToolHandler for UpdateAppDomainTool {
             .map_err(|e| format!("Failed to fetch project: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
 
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
 
@@ -756,12 +755,12 @@ impl ToolHandler for GetVaultConfigTool {
             .map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership via deployment table
-        let deployment = db::deployment::fetch_by_hash(&context.pg_pool, &params.deployment_hash)
+        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
             .await
             .map_err(|e| format!("Failed to fetch deployment: {}", e))?
             .ok_or_else(|| "Deployment not found".to_string())?;
 
-        if deployment.user_id.as_ref() != Some(&context.user.id) {
+        if deployment.user_id.as_deref() != Some(context.user.id.as_str()) {
             return Err("Deployment not found".to_string());
         }
 
@@ -857,12 +856,12 @@ impl ToolHandler for SetVaultConfigTool {
             .map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership
-        let deployment = db::deployment::fetch_by_hash(&context.pg_pool, &params.deployment_hash)
+        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
             .await
             .map_err(|e| format!("Failed to fetch deployment: {}", e))?
             .ok_or_else(|| "Deployment not found".to_string())?;
 
-        if deployment.user_id.as_ref() != Some(&context.user.id) {
+        if deployment.user_id.as_deref() != Some(&context.user.id as &str) {
             return Err("Deployment not found".to_string());
         }
 
@@ -969,12 +968,12 @@ impl ToolHandler for ListVaultConfigsTool {
             .map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership
-        let deployment = db::deployment::fetch_by_hash(&context.pg_pool, &params.deployment_hash)
+        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
             .await
             .map_err(|e| format!("Failed to fetch deployment: {}", e))?
             .ok_or_else(|| "Deployment not found".to_string())?;
 
-        if deployment.user_id.as_ref() != Some(&context.user.id) {
+        if deployment.user_id.as_deref() != Some(&context.user.id as &str) {
             return Err("Deployment not found".to_string());
         }
 
@@ -1044,12 +1043,12 @@ impl ToolHandler for ApplyVaultConfigTool {
             .map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership
-        let deployment = db::deployment::fetch_by_hash(&context.pg_pool, &params.deployment_hash)
+        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
             .await
             .map_err(|e| format!("Failed to fetch deployment: {}", e))?
             .ok_or_else(|| "Deployment not found".to_string())?;
 
-        if deployment.user_id.as_ref() != Some(&context.user.id) {
+        if deployment.user_id.as_deref() != Some(&context.user.id as &str) {
             return Err("Deployment not found".to_string());
         }
 

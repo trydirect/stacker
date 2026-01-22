@@ -1,4 +1,5 @@
 pub mod add;
+pub mod app;
 pub(crate) mod compose;
 pub(crate) mod delete;
 pub mod deploy;

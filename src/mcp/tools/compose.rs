@@ -173,7 +173,7 @@ impl ToolHandler for ValidateStackConfigTool {
             .ok_or_else(|| "Project not found".to_string())?;
 
         // Check ownership
-        if project.user_id.as_ref() != Some(&context.user.id) {
+        if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
 
@@ -202,10 +202,10 @@ impl ToolHandler for ValidateStackConfigTool {
         let mut has_web_app = false;
 
         for app in &apps {
-            let app_code = app.code.as_deref().unwrap_or("unknown");
+            let app_code = &app.code;
             
             // Check for image
-            if app.image.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+            if app.image.is_empty() {
                 errors.push(json!({
                     "code": "MISSING_IMAGE",
                     "app": app_code,
@@ -245,7 +245,7 @@ impl ToolHandler for ValidateStackConfigTool {
             if let Some(env) = &app.environment {
                 if let Some(env_obj) = env.as_object() {
                     // PostgreSQL specific checks
-                    if app_code.contains("postgres") || app.image.as_ref().map(|s| s.contains("postgres")).unwrap_or(false) {
+                    if app_code.contains("postgres") || app.image.contains("postgres") {
                         if !env_obj.contains_key("POSTGRES_PASSWORD") && !env_obj.contains_key("POSTGRES_HOST_AUTH_METHOD") {
                             warnings.push(json!({
                                 "code": "MISSING_DB_PASSWORD",

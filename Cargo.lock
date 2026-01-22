@@ -4335,6 +4335,7 @@ dependencies = [
  "actix-web",
  "actix-web-actors",
  "aes-gcm",
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "brotli 3.5.0",

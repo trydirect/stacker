@@ -122,7 +122,16 @@ pub async fn run(
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item)
-                    .service(crate::routes::project::delete::item),
+                    .service(crate::routes::project::delete::item)
+                    // App configuration routes
+                    .service(crate::routes::project::app::list_apps)
+                    .service(crate::routes::project::app::get_app)
+                    .service(crate::routes::project::app::get_app_config)
+                    .service(crate::routes::project::app::get_env_vars)
+                    .service(crate::routes::project::app::update_env_vars)
+                    .service(crate::routes::project::app::delete_env_var)
+                    .service(crate::routes::project::app::update_ports)
+                    .service(crate::routes::project::app::update_domain),
             )
             .service(
                 web::scope("/dockerhub")

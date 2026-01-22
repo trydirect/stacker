@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-01-24
+
+### Added - App Configuration Editor (Backend)
+
+#### Project App Model & Database (`project_app`)
+- New `ProjectApp` model with fields: environment (JSONB), ports (JSONB), volumes, domain, ssl_enabled, resources, restart_policy, command, entrypoint, networks, depends_on, healthcheck, labels, enabled, deploy_order
+- Database CRUD operations in `src/db/project_app.rs`: fetch, insert, update, delete, fetch_by_project_and_code
+- Migration `20260122120000_create_project_app_table` with indexes and triggers
+
+#### REST API Routes (`/project/{id}/apps/*`)
+- `GET /project/{id}/apps` - List all apps for a project
+- `GET /project/{id}/apps/{code}` - Get single app details
+- `GET /project/{id}/apps/{code}/config` - Get full app configuration
+- `GET /project/{id}/apps/{code}/env` - Get environment variables (sensitive values redacted)
+- `PUT /project/{id}/apps/{code}/env` - Update environment variables
+- `PUT /project/{id}/apps/{code}/ports` - Update port mappings
+- `PUT /project/{id}/apps/{code}/domain` - Update domain/SSL settings
+
+#### Support Documentation
+- Added `docs/SUPPORT_ESCALATION_GUIDE.md` - AI support escalation handling for support team
+
+### Fixed - MCP Tools Type Errors
+- Fixed type comparison errors in `compose.rs` and `config.rs`:
+  - `project.user_id` is `String` (not `Option<String>`) - use direct comparison
+  - `deployment.user_id` is `Option<String>` - use `as_deref()` for comparison
+  - `app.code` and `app.image` are `String` (not `Option<String>`)
+  - Replaced non-existent `cpu_limit`/`memory_limit` fields with `resources` JSONB
+
 ## 2026-01-23
 
 ### Added - Vault Configuration Management
