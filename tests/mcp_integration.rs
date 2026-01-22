@@ -408,16 +408,17 @@ async fn test_slack_webhook_connectivity() {
         .await
         .expect("Slack webhook request failed");
 
-    println!("Slack response status: {}", response.status());
+    let status = response.status();
+    println!("Slack response status: {}", status);
     
-    if response.status().is_success() {
+    if status.is_success() {
         println!("✓ Slack webhook is working correctly");
     } else {
         let body = response.text().await.unwrap_or_default();
         println!("✗ Slack webhook failed: {}", body);
     }
     
-    assert!(response.status().is_success(), "Slack webhook should return success");
+    assert!(status.is_success(), "Slack webhook should return success");
 }
 
 // =============================================================================

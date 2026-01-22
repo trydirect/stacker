@@ -2,6 +2,7 @@ use actix_web::{get, web, App, HttpServer, Responder};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
 use stacker::forms;
+use stacker::helpers::AgentPgPool;
 use std::net::TcpListener;
 
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
@@ -19,7 +20,8 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
         }
     };
 
-    let server = stacker::startup::run(listener, connection_pool.clone(), configuration)
+    let agent_pool = AgentPgPool::new(connection_pool.clone());
+    let server = stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
         .await
         .expect("Failed to bind address.");
 
