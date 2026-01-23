@@ -2,12 +2,14 @@ use crate::configuration::VaultSettings;
 use reqwest::Client;
 use serde_json::json;
 
+#[derive(Debug)]
 pub struct VaultClient {
     client: Client,
     address: String,
     token: String,
     agent_path_prefix: String,
     api_prefix: String,
+    ssh_key_path_prefix: String,
 }
 
 impl VaultClient {
@@ -18,6 +20,7 @@ impl VaultClient {
             token: settings.token.clone(),
             agent_path_prefix: settings.agent_path_prefix.clone(),
             api_prefix: settings.api_prefix.clone(),
+            ssh_key_path_prefix: settings.ssh_key_path_prefix.clone().unwrap_or_else(|| "users".to_string()),
         }
     }
 
@@ -155,6 +158,199 @@ impl VaultClient {
         tracing::info!(
             "Deleted agent token from Vault for deployment_hash: {}",
             deployment_hash
+        );
+        Ok(())
+    }
+
+    // ============ SSH Key Management Methods ============
+
+    /// Build the Vault path for SSH keys: secret/data/users/{user_id}/ssh_keys/{server_id}
+    fn ssh_key_path(&self, user_id: &str, server_id: i32) -> String {
+        let base = self.address.trim_end_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let prefix = self.ssh_key_path_prefix.trim_matches('/');
+        
+        if api_prefix.is_empty() {
+            format!("{}/{}/{}/ssh_keys/{}", base, prefix, user_id, server_id)
+        } else {
+            format!("{}/{}/{}/{}/ssh_keys/{}", base, api_prefix, prefix, user_id, server_id)
+        }
+    }
+
+    /// Generate an SSH keypair (ed25519) and return (public_key, private_key)
+    pub fn generate_ssh_keypair() -> Result<(String, String), String> {
+        use ssh_key::{Algorithm, LineEnding, PrivateKey};
+        
+        let private_key = PrivateKey::random(&mut rand::thread_rng(), Algorithm::Ed25519)
+            .map_err(|e| format!("Failed to generate SSH key: {}", e))?;
+        
+        let private_key_pem = private_key
+            .to_openssh(LineEnding::LF)
+            .map_err(|e| format!("Failed to encode private key: {}", e))?
+            .to_string();
+        
+        let public_key = private_key.public_key();
+        let public_key_openssh = public_key.to_openssh()
+            .map_err(|e| format!("Failed to encode public key: {}", e))?;
+        
+        Ok((public_key_openssh, private_key_pem))
+    }
+
+    /// Store SSH keypair in Vault at users/{user_id}/ssh_keys/{server_id}
+    #[tracing::instrument(name = "Store SSH key in Vault", skip(self, private_key))]
+    pub async fn store_ssh_key(
+        &self,
+        user_id: &str,
+        server_id: i32,
+        public_key: &str,
+        private_key: &str,
+    ) -> Result<String, String> {
+        let path = self.ssh_key_path(user_id, server_id);
+
+        let payload = json!({
+            "data": {
+                "public_key": public_key,
+                "private_key": private_key,
+                "user_id": user_id,
+                "server_id": server_id,
+                "created_at": chrono::Utc::now().to_rfc3339()
+            }
+        });
+
+        self.client
+            .post(&path)
+            .header("X-Vault-Token", &self.token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to store SSH key in Vault: {:?}", e);
+                format!("Vault store error: {}", e)
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?;
+
+        // Return the vault path for storage in database
+        let vault_key_path = format!("secret/data/{}/{}/ssh_keys/{}", 
+            self.ssh_key_path_prefix.trim_matches('/'), user_id, server_id);
+        
+        tracing::info!(
+            "Stored SSH key in Vault for user: {}, server: {}",
+            user_id, server_id
+        );
+        Ok(vault_key_path)
+    }
+
+    /// Fetch SSH private key from Vault
+    #[tracing::instrument(name = "Fetch SSH key from Vault", skip(self))]
+    pub async fn fetch_ssh_key(&self, user_id: &str, server_id: i32) -> Result<String, String> {
+        let path = self.ssh_key_path(user_id, server_id);
+
+        let response = self
+            .client
+            .get(&path)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch SSH key from Vault: {:?}", e);
+                format!("Vault fetch error: {}", e)
+            })?;
+
+        if response.status() == 404 {
+            return Err("SSH key not found in Vault".to_string());
+        }
+
+        let vault_response: serde_json::Value = response
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?
+            .json()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to parse Vault response: {:?}", e);
+                format!("Vault parse error: {}", e)
+            })?;
+
+        vault_response["data"]["data"]["private_key"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                tracing::error!("SSH key not found in Vault response");
+                "SSH key not in Vault response".to_string()
+            })
+    }
+
+    /// Fetch SSH public key from Vault
+    #[tracing::instrument(name = "Fetch SSH public key from Vault", skip(self))]
+    pub async fn fetch_ssh_public_key(&self, user_id: &str, server_id: i32) -> Result<String, String> {
+        let path = self.ssh_key_path(user_id, server_id);
+
+        let response = self
+            .client
+            .get(&path)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch SSH public key from Vault: {:?}", e);
+                format!("Vault fetch error: {}", e)
+            })?;
+
+        if response.status() == 404 {
+            return Err("SSH key not found in Vault".to_string());
+        }
+
+        let vault_response: serde_json::Value = response
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?
+            .json()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to parse Vault response: {:?}", e);
+                format!("Vault parse error: {}", e)
+            })?;
+
+        vault_response["data"]["data"]["public_key"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                tracing::error!("SSH public key not found in Vault response");
+                "SSH public key not in Vault response".to_string()
+            })
+    }
+
+    /// Delete SSH key from Vault (disconnect)
+    #[tracing::instrument(name = "Delete SSH key from Vault", skip(self))]
+    pub async fn delete_ssh_key(&self, user_id: &str, server_id: i32) -> Result<(), String> {
+        let path = self.ssh_key_path(user_id, server_id);
+
+        self.client
+            .delete(&path)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to delete SSH key from Vault: {:?}", e);
+                format!("Vault delete error: {}", e)
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?;
+
+        tracing::info!(
+            "Deleted SSH key from Vault for user: {}, server: {}",
+            user_id, server_id
         );
         Ok(())
     }

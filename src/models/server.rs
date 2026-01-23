@@ -33,4 +33,23 @@ pub struct Server {
     #[validate(min_length = 3)]
     #[validate(max_length = 50)]
     pub ssh_user: Option<String>,
+    /// Path in Vault where SSH key is stored (e.g., "users/{user_id}/servers/{server_id}/ssh")
+    pub vault_key_path: Option<String>,
+    /// Connection mode: "ssh" (default) or "password"
+    #[serde(default = "default_connection_mode")]
+    pub connection_mode: String,
+    /// SSH key status: "none", "pending", "active", "failed"
+    #[serde(default = "default_key_status")]
+    pub key_status: String,
+    /// Optional friendly name for the server
+    #[validate(max_length = 100)]
+    pub name: Option<String>,
+}
+
+fn default_connection_mode() -> String {
+    "ssh".to_string()
+}
+
+fn default_key_status() -> String {
+    "none".to_string()
 }

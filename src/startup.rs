@@ -224,8 +224,13 @@ pub async fn run(
                 web::scope("/server")
                     .service(crate::routes::server::get::item)
                     .service(crate::routes::server::get::list)
+                    .service(crate::routes::server::get::list_by_project)
                     .service(crate::routes::server::update::item)
-                    .service(crate::routes::server::delete::item),
+                    .service(crate::routes::server::delete::item)
+                    .service(crate::routes::server::ssh_key::generate_key)
+                    .service(crate::routes::server::ssh_key::upload_key)
+                    .service(crate::routes::server::ssh_key::get_public_key)
+                    .service(crate::routes::server::ssh_key::delete_key),
             )
             .service(
                 web::scope("/agreement")

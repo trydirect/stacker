@@ -1,6 +1,7 @@
 pub mod add;
 pub(crate) mod delete;
 pub(crate) mod get;
+pub(crate) mod ssh_key;
 pub(crate) mod update;
 
 // pub use get::*;

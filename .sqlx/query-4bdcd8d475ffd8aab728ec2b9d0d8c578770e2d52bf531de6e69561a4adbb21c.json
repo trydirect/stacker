@@ -67,6 +67,26 @@
         "ordinal": 12,
         "name": "ssh_port",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "vault_key_path",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "connection_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "key_status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 16,
+        "name": "name",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -87,6 +107,10 @@
       false,
       true,
       true,
+      true,
+      true,
+      false,
+      false,
       true
     ]
   },

@@ -82,9 +82,13 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         updated_at,
         srv_ip,
         ssh_user,
-        ssh_port
+        ssh_port,
+        vault_key_path,
+        connection_mode,
+        key_status,
+        name
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc',NOW() at time zone 'utc', $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc',NOW() at time zone 'utc', $8, $9, $10, $11, $12, $13, $14)
         RETURNING id;
         "#,
         server.user_id,
@@ -96,7 +100,11 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         server.disk_type,
         server.srv_ip,
         server.ssh_user,
-        server.ssh_port
+        server.ssh_port,
+        server.vault_key_path,
+        server.connection_mode,
+        server.key_status,
+        server.name
     )
         .fetch_one(pool)
         .instrument(query_span)
@@ -137,7 +145,11 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
             updated_at=NOW() at time zone 'utc',
             srv_ip=$9,
             ssh_user=$10,
-            ssh_port=$11
+            ssh_port=$11,
+            vault_key_path=$12,
+            connection_mode=$13,
+            key_status=$14,
+            name=$15
         WHERE id = $1
         RETURNING *
         "#,
@@ -151,7 +163,11 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
         server.disk_type,
         server.srv_ip,
         server.ssh_user,
-        server.ssh_port
+        server.ssh_port,
+        server.vault_key_path,
+        server.connection_mode,
+        server.key_status,
+        server.name
     )
     .fetch_one(pool)
     .instrument(query_span)
@@ -164,6 +180,65 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
     .map_err(|err| {
         tracing::error!("Failed to execute query: {:?}", err);
         "".to_string()
+    })
+}
+
+/// Update SSH key status and vault path for a server
+#[tracing::instrument(name = "Update server SSH key status.")]
+pub async fn update_ssh_key_status(
+    pool: &PgPool,
+    server_id: i32,
+    vault_key_path: Option<String>,
+    key_status: &str,
+) -> Result<models::Server, String> {
+    sqlx::query_as!(
+        models::Server,
+        r#"
+        UPDATE server
+        SET
+            vault_key_path = $2,
+            key_status = $3,
+            updated_at = NOW() at time zone 'utc'
+        WHERE id = $1
+        RETURNING *
+        "#,
+        server_id,
+        vault_key_path,
+        key_status
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to update SSH key status: {:?}", err);
+        "Failed to update SSH key status".to_string()
+    })
+}
+
+/// Update connection mode for a server
+#[tracing::instrument(name = "Update server connection mode.")]
+pub async fn update_connection_mode(
+    pool: &PgPool,
+    server_id: i32,
+    connection_mode: &str,
+) -> Result<models::Server, String> {
+    sqlx::query_as!(
+        models::Server,
+        r#"
+        UPDATE server
+        SET
+            connection_mode = $2,
+            updated_at = NOW() at time zone 'utc'
+        WHERE id = $1
+        RETURNING *
+        "#,
+        server_id,
+        connection_mode
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to update connection mode: {:?}", err);
+        "Failed to update connection mode".to_string()
     })
 }
 

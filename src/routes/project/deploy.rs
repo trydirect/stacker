@@ -125,11 +125,13 @@ pub async fn item(
         json_request,
     );
 
-    db::deployment::insert(pg_pool.get_ref(), deployment)
+    let saved_deployment = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
         })?;
+
+    let deployment_id = saved_deployment.id;
 
     // Delegate to install service connector
     install_service
@@ -148,6 +150,7 @@ pub async fn item(
         .map(|project_id| {
             JsonResponse::<models::Project>::build()
                 .set_id(project_id)
+                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
                 .ok("Success")
         })
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
@@ -320,7 +323,9 @@ pub async fn saved_item(
         })
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
-        });
+        })?;
+
+    let deployment_id = result.id;
 
     tracing::debug!("Save deployment result: {:?}", result);
     tracing::debug!("Send project data <<<>>>{:?}", payload);
@@ -337,6 +342,7 @@ pub async fn saved_item(
         .map(|_| {
             JsonResponse::<models::Project>::build()
                 .set_id(id)
+                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
                 .ok("Success")
         })
 }

@@ -115,6 +115,8 @@ pub struct VaultSettings {
     pub agent_path_prefix: String,
     #[serde(default = "VaultSettings::default_api_prefix")]
     pub api_prefix: String,
+    #[serde(default)]
+    pub ssh_key_path_prefix: Option<String>,
 }
 
 impl Default for VaultSettings {
@@ -124,6 +126,7 @@ impl Default for VaultSettings {
             token: "dev-token".to_string(),
             agent_path_prefix: "agent".to_string(),
             api_prefix: Self::default_api_prefix(),
+            ssh_key_path_prefix: Some("users".to_string()),
         }
     }
 }
@@ -141,12 +144,15 @@ impl VaultSettings {
         let agent_path_prefix =
             std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
         let api_prefix = std::env::var("VAULT_API_PREFIX").unwrap_or(self.api_prefix);
+        let ssh_key_path_prefix = std::env::var("VAULT_SSH_KEY_PATH_PREFIX")
+            .unwrap_or(self.ssh_key_path_prefix.unwrap_or_else(|| "users".to_string()));
 
         VaultSettings {
             address,
             token,
             agent_path_prefix,
             api_prefix,
+            ssh_key_path_prefix: Some(ssh_key_path_prefix),
         }
     }
 }
