@@ -10,4 +10,5 @@ VALUES
     ('p', 'root', '/api/v1/commands', 'GET', '', '', ''),
     ('p', 'root', '/api/v1/commands/:deployment_hash', 'GET', '', '', ''),
     ('p', 'root', '/api/v1/commands/:deployment_hash/:command_id', 'GET', '', '', ''),
-    ('p', 'root', '/api/v1/commands/:deployment_hash/:command_id/cancel', 'POST', '', '', '');
+    ('p', 'root', '/api/v1/commands/:deployment_hash/:command_id/cancel', 'POST', '', '', '')
+ON CONFLICT DO NOTHING;
