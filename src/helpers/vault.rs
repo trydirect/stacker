@@ -164,16 +164,17 @@ impl VaultClient {
 
     // ============ SSH Key Management Methods ============
 
-    /// Build the Vault path for SSH keys: secret/data/users/{user_id}/ssh_keys/{server_id}
+    /// Build the Vault path for SSH keys: {base}/v1/secret/data/users/{user_id}/ssh_keys/{server_id}
     fn ssh_key_path(&self, user_id: &str, server_id: i32) -> String {
         let base = self.address.trim_end_matches('/');
         let api_prefix = self.api_prefix.trim_matches('/');
         let prefix = self.ssh_key_path_prefix.trim_matches('/');
         
+        // For KV v2, the path must include 'secret/data/'
         if api_prefix.is_empty() {
-            format!("{}/{}/{}/ssh_keys/{}", base, prefix, user_id, server_id)
+            format!("{}/secret/data/{}/{}/ssh_keys/{}", base, prefix, user_id, server_id)
         } else {
-            format!("{}/{}/{}/{}/ssh_keys/{}", base, api_prefix, prefix, user_id, server_id)
+            format!("{}/{}/secret/data/{}/{}/ssh_keys/{}", base, api_prefix, prefix, user_id, server_id)
         }
     }
 
