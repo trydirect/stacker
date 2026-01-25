@@ -3,7 +3,6 @@ use crate::forms::project::Stack;
 use crate::helpers::{compressor::compress, MqManager};
 use crate::models;
 use async_trait::async_trait;
-use uuid::Uuid;
 
 /// Real implementation that publishes deployment requests through RabbitMQ
 pub struct InstallServiceClient;
@@ -15,6 +14,8 @@ impl InstallServiceConnector for InstallServiceClient {
         user_id: String,
         user_email: String,
         project_id: i32,
+        deployment_id: i32,
+        deployment_hash: String,
         project: &models::Project,
         cloud_creds: models::Cloud,
         server: models::Server,
@@ -26,6 +27,10 @@ impl InstallServiceConnector for InstallServiceClient {
         let mut payload = crate::forms::project::Payload::try_from(project)
             .map_err(|err| format!("Failed to build payload: {}", err))?;
 
+
+        payload.id = Some(deployment_id);
+        // Force-set deployment_hash in case deserialization overwrote it
+        payload.deployment_hash = Some(deployment_hash.clone());
         payload.server = Some(server.into());
         payload.cloud = Some(cloud_creds.into());
         payload.stack = form_stack.clone().into();
@@ -33,20 +38,7 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
 
-        // Prepare deployment metadata
-        let json_request = project.metadata.clone();
-        let deployment_hash = format!("deployment_{}", Uuid::new_v4());
-        let _deployment = models::Deployment::new(
-            project.id,
-            payload.user_token.clone(),
-            deployment_hash.clone(),
-            String::from("pending"),
-            json_request,
-        );
-
-        let _deployment_id = Uuid::new_v4();
-
-        tracing::debug!("Send project data: {:?}", payload);
+        tracing::debug!("Send project data (deployment_hash = {:?}): {:?}", payload.deployment_hash, payload);
 
         let provider = payload
             .cloud

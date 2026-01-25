@@ -111,8 +111,14 @@ impl std::fmt::Debug for CloudForm {
 fn encrypt_field(secret: &mut Secret, field_name: &str, value: Option<String>) -> Option<String> {
     if let Some(val) = value {
         secret.field = field_name.to_owned();
-        if let Ok(encrypted) = secret.encrypt(val) {
-            return Some(Secret::b64_encode(&encrypted));
+        match secret.encrypt(val) {
+            Ok(encrypted) => {
+                return Some(Secret::b64_encode(&encrypted));
+            }
+            Err(err) => {
+                tracing::error!("Failed to encrypt field {}: {}", field_name, err);
+                return None;
+            }
         }
     }
     None

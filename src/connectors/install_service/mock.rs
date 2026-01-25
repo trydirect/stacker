@@ -13,6 +13,8 @@ impl InstallServiceConnector for MockInstallServiceConnector {
         _user_id: String,
         _user_email: String,
         project_id: i32,
+        _deployment_id: i32,
+        _deployment_hash: String,
         _project: &models::Project,
         _cloud_creds: models::Cloud,
         _server: models::Server,

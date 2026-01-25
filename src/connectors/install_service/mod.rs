@@ -23,6 +23,8 @@ pub trait InstallServiceConnector: Send + Sync {
         user_id: String,
         user_email: String,
         project_id: i32,
+        deployment_id: i32,
+        deployment_hash: String,
         project: &models::Project,
         cloud_creds: models::Cloud,
         server: models::Server,
