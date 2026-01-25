@@ -139,6 +139,8 @@ pub async fn item(
             user.id.clone(),
             user.email.clone(),
             id,
+            deployment_id,
+            deployment_hash,
             &dc.project,
             cloud_creds,
             server,
@@ -310,7 +312,7 @@ pub async fn saved_item(
     let deployment = models::Deployment::new(
         dc.project.id,
         Some(user.id.clone()),
-        deployment_hash,
+        deployment_hash.clone(),
         String::from("pending"),
         json_request,
     );
@@ -327,8 +329,11 @@ pub async fn saved_item(
 
     let deployment_id = result.id;
 
+    // Set deployment_hash in payload before publishing to RabbitMQ
+    payload.deployment_hash = Some(deployment_hash);
+
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<>>>{:?}", payload);
+    tracing::debug!("Send project data (deployment_hash = {:?}): {:?}", payload.deployment_hash, payload);
 
     // Send Payload
     mq_manager

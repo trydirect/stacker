@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-01-26
+
+### Fixed - Deployment Hash Not Sent to Install Service
+
+#### Bug Fix: `saved_item()` endpoint missing `deployment_hash` in RabbitMQ payload
+- **Issue**: The `POST /{id}/deploy/{cloud_id}` endpoint (for deployments with saved cloud credentials) was generating a `deployment_hash` and saving it to the database, but NOT including it in the RabbitMQ message payload sent to the install service.
+- **Root Cause**: In `src/routes/project/deploy.rs`, the `saved_item()` function published the payload without setting `payload.deployment_hash`, unlike the `item()` function which correctly delegates to `InstallServiceClient.deploy()`.
+- **Fix**: Added `payload.deployment_hash = Some(deployment_hash.clone())` before publishing to RabbitMQ.
+- **Files Changed**: `src/routes/project/deploy.rs`
+
 ## 2026-01-24
 
 ### Added - App Configuration Editor (Backend)
