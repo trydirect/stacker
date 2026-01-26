@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::services::{DeploymentIdentifier, DeploymentResolver};
 use serde::Deserialize;
 
 /// Get deployment status
@@ -14,24 +16,41 @@ impl ToolHandler for GetDeploymentStatusTool {
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
         #[derive(Deserialize)]
         struct Args {
-            deployment_id: i32,
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
         }
 
         let args: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let deployment = db::deployment::fetch(&context.pg_pool, args.deployment_id)
+        // Create identifier from args (prefers hash if both provided)
+        let identifier = DeploymentIdentifier::try_from_options(
+            args.deployment_hash.clone(),
+            args.deployment_id,
+        )?;
+
+        // Resolve to deployment_hash
+        let resolver = UserServiceDeploymentResolver::from_context(
+            &context.settings.user_service_url,
+            context.user.access_token.as_deref(),
+        );
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        // Fetch deployment by hash
+        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash)
             .await
             .map_err(|e| {
                 tracing::error!("Failed to fetch deployment: {}", e);
                 format!("Database error: {}", e)
             })?
-            .ok_or_else(|| "Deployment not found".to_string())?;
+            .ok_or_else(|| format!("Deployment not found with hash: {}", deployment_hash))?;
 
         let result = serde_json::to_string(&deployment)
             .map_err(|e| format!("Serialization error: {}", e))?;
 
-        tracing::info!("Got deployment status: {}", args.deployment_id);
+        tracing::info!("Got deployment status for hash: {}", deployment_hash);
 
         Ok(ToolContent::Text { text: result })
     }
@@ -40,17 +59,21 @@ impl ToolHandler for GetDeploymentStatusTool {
         Tool {
             name: "get_deployment_status".to_string(),
             description:
-                "Get the current status of a deployment (pending, running, completed, failed)"
+                "Get the current status of a deployment (pending, running, completed, failed). Provide either deployment_hash or deployment_id."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "Deployment hash (preferred, e.g., 'deployment_abc123')"
+                    },
                     "deployment_id": {
                         "type": "number",
-                        "description": "Deployment ID"
+                        "description": "Deployment ID (legacy numeric ID from User Service)"
                     }
                 },
-                "required": ["deployment_id"]
+                "required": []
             }),
         }
     }
