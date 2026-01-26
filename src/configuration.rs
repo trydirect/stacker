@@ -232,5 +232,21 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         }
     }
 
+    // Overlay AMQP settings with environment variables if present
+    if let Ok(host) = std::env::var("AMQP_HOST") {
+        config.amqp.host = host;
+    }
+    if let Ok(port) = std::env::var("AMQP_PORT") {
+        if let Ok(parsed) = port.parse::<u16>() {
+            config.amqp.port = parsed;
+        }
+    }
+    if let Ok(username) = std::env::var("AMQP_USERNAME") {
+        config.amqp.username = username;
+    }
+    if let Ok(password) = std::env::var("AMQP_PASSWORD") {
+        config.amqp.password = password;
+    }
+
     Ok(config)
 }

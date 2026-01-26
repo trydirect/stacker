@@ -10,6 +10,10 @@ volumes:
 networks:
   stacker-network:
     driver: bridge
+  # Connect to the main TryDirect network for RabbitMQ access
+  trydirect-network:
+    external: true
+    name: try.direct_default
 
 services:
   stacker:
@@ -18,6 +22,7 @@ services:
     restart: always
     networks:
       - stacker-network
+      - trydirect-network
     volumes:
       # Mount local compiled binary for fast iteration
       - ./target/debug/server:/app/server:ro
@@ -38,6 +43,33 @@ services:
       stackerdb:
         condition: service_healthy
     entrypoint: ["/app/server"]
+
+  # MQ Listener - Consumes deployment progress messages from Install Service
+  # and updates deployment status in Stacker database
+  stacker-mq-listener:
+    image: trydirect/stacker:0.0.9
+    container_name: stacker-mq-listener-dev
+    restart: always
+    networks:
+      - stacker-network
+      - trydirect-network
+    volumes:
+      # Mount local compiled console binary for fast iteration
+      - ./target/debug/console:/app/console:ro
+      # Project configuration and assets
+      - ./docker/local/configuration.yaml:/app/configuration.yaml
+      - ./docker/local/.env:/app/.env
+    env_file:
+      - ./docker/local/.env
+    environment:
+      - RUST_LOG=info,stacker=debug
+      - RUST_BACKTRACE=1
+      # Override AMQP host to connect to main TryDirect RabbitMQ
+      - AMQP_HOST=mq
+    depends_on:
+      stackerdb:
+        condition: service_healthy
+    entrypoint: ["/app/console", "mq", "listen"]
 
   redis:
     container_name: redis-dev
