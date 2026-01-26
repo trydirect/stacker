@@ -50,6 +50,27 @@ pub struct RestartCommandRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DeployAppCommandRequest {
+    pub app_code: String,
+    /// Optional: specific image to use (overrides compose file)
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Optional: environment variables to set
+    #[serde(default)]
+    pub env_vars: Option<std::collections::HashMap<String, String>>,
+    /// Whether to pull the image before starting (default: true)
+    #[serde(default = "default_deploy_pull")]
+    pub pull: bool,
+    /// Whether to remove existing container before deploying
+    #[serde(default)]
+    pub force_recreate: bool,
+}
+
+fn default_deploy_pull() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum HealthStatus {
     Ok,
@@ -217,6 +238,16 @@ pub fn validate_command_parameters(
             serde_json::to_value(params)
                 .map(Some)
                 .map_err(|err| format!("Failed to encode restart parameters: {}", err))
+        }
+        "deploy_app" => {
+            let value = parameters.clone().unwrap_or_else(|| json!({}));
+            let params: DeployAppCommandRequest = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid deploy_app parameters: {}", err))?;
+            ensure_app_code("deploy_app", &params.app_code)?;
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode deploy_app parameters: {}", err))
         }
         _ => Ok(parameters.clone()),
     }
