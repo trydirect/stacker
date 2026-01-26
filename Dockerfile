@@ -1,4 +1,4 @@
-FROM rust:bookworm as builder
+FROM rust:bookworm AS builder
 
 #RUN apt-get update; \
 #    apt-get install --no-install-recommends -y libssl-dev; \
@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
 #RUN ls -la /app/target/release/ >&2
 
 # deploy production
-FROM debian:bookworm-slim as production
+FROM debian:bookworm-slim AS production
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev ca-certificates;
 # create app directory
