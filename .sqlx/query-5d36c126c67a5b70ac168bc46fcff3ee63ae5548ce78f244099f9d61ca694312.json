@@ -112,6 +112,26 @@
         "ordinal": 21,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 22,
+        "name": "config_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 23,
+        "name": "vault_synced_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 24,
+        "name": "vault_sync_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 25,
+        "name": "config_hash",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -142,7 +162,11 @@
       true,
       true,
       false,
-      false
+      false,
+      false,
+      true,
+      true,
+      true
     ]
   },
   "hash": "5d36c126c67a5b70ac168bc46fcff3ee63ae5548ce78f244099f9d61ca694312"

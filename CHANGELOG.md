@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-01-29
+
+### Added - Unified Configuration Management System
+
+#### ConfigRenderer Service (`src/services/config_renderer.rs`)
+- New `ConfigRenderer` service that converts `ProjectApp` records to deployable configuration files
+- Tera template engine integration for rendering docker-compose.yml and .env files
+- Embedded templates: `docker-compose.yml.tera`, `env.tera`, `service.tera`
+- Support for multiple input formats: JSON object, JSON array, string (docker-compose style)
+- Automatic Vault sync via `sync_to_vault()` and `sync_app_to_vault()` methods
+
+#### ProjectAppService (`src/services/project_app_service.rs`)
+- High-level service wrapping database operations with automatic Vault sync
+- Create/Update/Delete operations trigger config rendering and Vault storage
+- `sync_all_to_vault()` for bulk deployment sync
+- `preview_bundle()` for config preview without syncing
+- Validation for app code format, required fields
+
+#### Config Versioning (`project_app` table)
+- New columns: `config_version`, `vault_synced_at`, `vault_sync_version`, `config_hash`
+- `needs_vault_sync()` method to detect out-of-sync configs
+- `increment_version()` and `mark_synced()` helper methods
+- Migration: `20260129120000_add_config_versioning`
+
+#### Dependencies
+- Added `tera = "1.19.1"` for template rendering
+
 ## 2026-01-26
 
 ### Fixed - Deployment Hash Not Sent to Install Service

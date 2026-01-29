@@ -31,7 +31,7 @@ COPY ./src ./src
 #RUN ls -la /app/ >&2
 #RUN sqlx migrate run
 #RUN cargo sqlx prepare -- --bin stacker
-ENV SQLX_OFFLINE true
+ENV SQLX_OFFLINE=true
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
     cargo build --release --bin server; \

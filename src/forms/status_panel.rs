@@ -18,6 +18,10 @@ fn default_log_redact() -> bool {
     true
 }
 
+fn default_delete_config() -> bool {
+    true
+}
+
 fn default_restart_force() -> bool {
     false
 }
@@ -68,6 +72,17 @@ pub struct DeployAppCommandRequest {
 
 fn default_deploy_pull() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RemoveAppCommandRequest {
+    pub app_code: String,
+    #[serde(default = "default_delete_config")]
+    pub delete_config: bool,
+    #[serde(default)]
+    pub remove_volumes: bool,
+    #[serde(default)]
+    pub remove_image: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -248,6 +263,16 @@ pub fn validate_command_parameters(
             serde_json::to_value(params)
                 .map(Some)
                 .map_err(|err| format!("Failed to encode deploy_app parameters: {}", err))
+        }
+        "remove_app" => {
+            let value = parameters.clone().unwrap_or_else(|| json!({}));
+            let params: RemoveAppCommandRequest = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid remove_app parameters: {}", err))?;
+            ensure_app_code("remove_app", &params.app_code)?;
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode remove_app parameters: {}", err))
         }
         _ => Ok(parameters.clone()),
     }

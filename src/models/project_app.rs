@@ -6,6 +6,7 @@
 //! - Volume mounts
 //! - Domain/SSL settings
 //! - Resource limits
+//! - Config versioning for Vault sync
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,18 @@ pub struct ProjectApp {
     pub deploy_order: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Config version (incrementing on each change)
+    #[sqlx(default)]
+    pub config_version: Option<i32>,
+    /// Last time config was synced to Vault
+    #[sqlx(default)]
+    pub vault_synced_at: Option<DateTime<Utc>>,
+    /// Config version that was last synced to Vault
+    #[sqlx(default)]
+    pub vault_sync_version: Option<i32>,
+    /// SHA256 hash of rendered config for drift detection
+    #[sqlx(default)]
+    pub config_hash: Option<String>,
 }
 
 impl ProjectApp {
@@ -101,6 +114,10 @@ impl ProjectApp {
             deploy_order: None,
             created_at: now,
             updated_at: now,
+            config_version: Some(1),
+            vault_synced_at: None,
+            vault_sync_version: None,
+            config_hash: None,
         }
     }
 
@@ -116,6 +133,26 @@ impl ProjectApp {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Check if config needs to be synced to Vault
+    pub fn needs_vault_sync(&self) -> bool {
+        match (self.config_version, self.vault_sync_version) {
+            (Some(current), Some(synced)) => current > synced,
+            (Some(_), None) => true, // Never synced
+            _ => false,
+        }
+    }
+
+    /// Increment config version (call before saving changes)
+    pub fn increment_version(&mut self) {
+        self.config_version = Some(self.config_version.unwrap_or(0) + 1);
+    }
+
+    /// Mark as synced to Vault
+    pub fn mark_synced(&mut self) {
+        self.vault_synced_at = Some(Utc::now());
+        self.vault_sync_version = self.config_version;
     }
 }
 
@@ -144,6 +181,10 @@ impl Default for ProjectApp {
             deploy_order: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            config_version: Some(1),
+            vault_synced_at: None,
+            vault_sync_version: None,
+            config_hash: None,
         }
     }
 }
