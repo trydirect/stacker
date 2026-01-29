@@ -48,7 +48,7 @@ impl ResolvedDeploymentInfo {
 }
 
 /// Deployment resolver that fetches deployment information from User Service.
-/// 
+///
 /// This resolver handles both:
 /// - Direct hashes (Stack Builder) - returned immediately without HTTP call
 /// - Installation IDs (User Service) - looked up via HTTP to User Service
@@ -88,7 +88,7 @@ impl UserServiceDeploymentResolver {
             DeploymentIdentifier::InstallationId(id) => {
                 // Legacy installation - fetch full details from User Service
                 let client = UserServiceClient::new(&self.user_service_url);
-                
+
                 let installation = client
                     .get_installation(&self.user_token, *id)
                     .await
@@ -115,7 +115,10 @@ impl UserServiceDeploymentResolver {
 
 #[async_trait]
 impl DeploymentResolver for UserServiceDeploymentResolver {
-    async fn resolve(&self, identifier: &DeploymentIdentifier) -> Result<String, DeploymentResolveError> {
+    async fn resolve(
+        &self,
+        identifier: &DeploymentIdentifier,
+    ) -> Result<String, DeploymentResolveError> {
         match identifier {
             DeploymentIdentifier::Hash(hash) => {
                 // Stack Builder deployment - hash is already known
@@ -124,7 +127,7 @@ impl DeploymentResolver for UserServiceDeploymentResolver {
             DeploymentIdentifier::InstallationId(id) => {
                 // Legacy installation - fetch from User Service
                 let client = UserServiceClient::new(&self.user_service_url);
-                
+
                 let installation = client
                     .get_installation(&self.user_token, *id)
                     .await
@@ -155,7 +158,7 @@ mod tests {
         // Hash identifiers are returned immediately without HTTP calls
         let resolver = UserServiceDeploymentResolver::new("http://unused", "unused_token");
         let id = DeploymentIdentifier::from_hash("test_hash_123");
-        
+
         let result = resolver.resolve(&id).await;
         assert_eq!(result.unwrap(), "test_hash_123");
     }
@@ -164,10 +167,10 @@ mod tests {
     async fn test_resolve_with_info_hash() {
         let resolver = UserServiceDeploymentResolver::new("http://unused", "unused_token");
         let id = DeploymentIdentifier::from_hash("test_hash_456");
-        
+
         let result = resolver.resolve_with_info(&id).await;
         let info = result.unwrap();
-        
+
         assert_eq!(info.deployment_hash, "test_hash_456");
         assert_eq!(info.status, "unknown"); // No User Service call for hash
         assert!(info.domain.is_none());
@@ -179,7 +182,7 @@ mod tests {
         // Edge case: empty string is technically a valid hash
         let resolver = UserServiceDeploymentResolver::new("http://unused", "unused_token");
         let id = DeploymentIdentifier::from_hash("");
-        
+
         let result = resolver.resolve(&id).await;
         assert_eq!(result.unwrap(), "");
     }
@@ -188,7 +191,7 @@ mod tests {
     async fn test_hash_with_special_characters() {
         let resolver = UserServiceDeploymentResolver::new("http://unused", "unused_token");
         let id = DeploymentIdentifier::from_hash("hash-with_special.chars/123");
-        
+
         let result = resolver.resolve(&id).await;
         assert_eq!(result.unwrap(), "hash-with_special.chars/123");
     }
@@ -201,7 +204,7 @@ mod tests {
     async fn test_stacker_resolver_hash_success() {
         let resolver = StackerDeploymentResolver::new();
         let id = DeploymentIdentifier::from_hash("native_hash");
-        
+
         let result = resolver.resolve(&id).await;
         assert_eq!(result.unwrap(), "native_hash");
     }
@@ -211,10 +214,10 @@ mod tests {
         // StackerDeploymentResolver doesn't support installation IDs
         let resolver = StackerDeploymentResolver::new();
         let id = DeploymentIdentifier::from_id(12345);
-        
+
         let result = resolver.resolve(&id).await;
         assert!(result.is_err());
-        
+
         let err = result.unwrap_err();
         match err {
             DeploymentResolveError::NotSupported(msg) => {
@@ -259,7 +262,7 @@ mod tests {
         let id = DeploymentIdentifier::from_id(123);
         let result = id.into_hash();
         assert!(result.is_err());
-        
+
         // The error returns the original identifier
         let returned_id = result.unwrap_err();
         assert_eq!(returned_id.as_installation_id(), Some(123));
@@ -268,11 +271,9 @@ mod tests {
     #[test]
     fn test_try_from_options_prefers_hash() {
         // When both are provided, hash takes priority
-        let id = DeploymentIdentifier::try_from_options(
-            Some("my_hash".to_string()),
-            Some(999),
-        ).unwrap();
-        
+        let id =
+            DeploymentIdentifier::try_from_options(Some("my_hash".to_string()), Some(999)).unwrap();
+
         assert!(id.is_hash());
         assert_eq!(id.as_hash(), Some("my_hash"));
     }
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn test_try_from_options_uses_id_when_no_hash() {
         let id = DeploymentIdentifier::try_from_options(None, Some(42)).unwrap();
-        
+
         assert!(!id.is_hash());
         assert_eq!(id.as_installation_id(), Some(42));
     }
@@ -289,7 +290,10 @@ mod tests {
     fn test_try_from_options_fails_when_both_none() {
         let result = DeploymentIdentifier::try_from_options(None, None);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Either deployment_hash or deployment_id is required");
+        assert_eq!(
+            result.unwrap_err(),
+            "Either deployment_hash or deployment_id is required"
+        );
     }
 
     #[test]
@@ -319,7 +323,7 @@ mod tests {
     #[test]
     fn test_resolved_info_from_hash() {
         let info = ResolvedDeploymentInfo::from_hash("test_hash".to_string());
-        
+
         assert_eq!(info.deployment_hash, "test_hash");
         assert_eq!(info.status, "unknown");
         assert!(info.domain.is_none());
@@ -330,10 +334,9 @@ mod tests {
     #[test]
     fn test_resolved_info_default() {
         let info = ResolvedDeploymentInfo::default();
-        
+
         assert!(info.deployment_hash.is_empty());
         assert!(info.status.is_empty());
         assert!(info.domain.is_none());
     }
 }
-

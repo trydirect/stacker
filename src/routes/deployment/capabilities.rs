@@ -174,7 +174,8 @@ mod tests {
         ];
 
         let commands = filter_commands(&capabilities);
-        let command_types: HashSet<&str> = commands.iter().map(|c| c.command_type.as_str()).collect();
+        let command_types: HashSet<&str> =
+            commands.iter().map(|c| c.command_type.as_str()).collect();
 
         assert!(command_types.contains("restart"));
         assert!(command_types.contains("logs"));

@@ -52,7 +52,7 @@ pub async fn list_by_project(
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let project_id = path.0;
-    
+
     // Verify user owns the project
     let project = db::project::fetch(pg_pool.get_ref(), project_id)
         .await

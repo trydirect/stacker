@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// App configuration stored in the database.
-/// 
+///
 /// Apps belong to projects and contain all the configuration
 /// needed to deploy a container (env vars, ports, volumes, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

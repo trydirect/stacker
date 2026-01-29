@@ -1,6 +1,5 @@
 /// Unit tests for VaultClient SSH key methods
 /// Run: cargo t vault_ssh -- --nocapture --show-output
-
 use stacker::helpers::VaultClient;
 
 #[test]

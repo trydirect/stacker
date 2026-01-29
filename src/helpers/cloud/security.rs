@@ -1,8 +1,6 @@
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    Aes256Gcm,
-    Key,
-    Nonce,
+    Aes256Gcm, Key, Nonce,
 };
 use base64::{engine::general_purpose, Engine as _};
 

@@ -9,22 +9,50 @@ use std::sync::Arc;
 
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
-    AddCloudTool, CancelDeploymentTool, CloneProjectTool, CreateProjectTool, DeleteCloudTool,
-    DeleteProjectTool, DiagnoseDeploymentTool, EscalateToSupportTool, GetCloudTool,
-    GetContainerHealthTool, GetContainerLogsTool, GetDeploymentStatusTool,
-    GetInstallationDetailsTool, GetLiveChatInfoTool, GetProjectTool, GetSubscriptionPlanTool,
-    GetUserProfileTool, ListCloudsTool, ListInstallationsTool, ListProjectsTool, ListTemplatesTool,
-    RestartContainerTool, SearchApplicationsTool, StartDeploymentTool, SuggestResourcesTool,
-    ValidateDomainTool,
-    // Phase 5: Container Operations tools
-    StopContainerTool, StartContainerTool, GetErrorSummaryTool,
+    AddCloudTool,
+    ApplyVaultConfigTool,
+    CancelDeploymentTool,
+    CloneProjectTool,
+    CreateProjectTool,
+    DeleteAppEnvVarTool,
+    DeleteCloudTool,
+    DeleteProjectTool,
+    DiagnoseDeploymentTool,
+    EscalateToSupportTool,
+    GetAppConfigTool,
     // Phase 5: App Configuration tools
-    GetAppEnvVarsTool, SetAppEnvVarTool, DeleteAppEnvVarTool, GetAppConfigTool,
-    UpdateAppPortsTool, UpdateAppDomainTool,
+    GetAppEnvVarsTool,
+    GetCloudTool,
+    GetContainerHealthTool,
+    GetContainerLogsTool,
+    GetDeploymentStatusTool,
+    GetErrorSummaryTool,
+    GetInstallationDetailsTool,
+    GetLiveChatInfoTool,
+    GetProjectTool,
+    GetSubscriptionPlanTool,
+    GetUserProfileTool,
+    // Phase 5: Vault Configuration tools
+    GetVaultConfigTool,
+    ListCloudsTool,
+    ListInstallationsTool,
+    ListProjectsTool,
+    ListTemplatesTool,
+    ListVaultConfigsTool,
+    RestartContainerTool,
+    SearchApplicationsTool,
+    SetAppEnvVarTool,
+    SetVaultConfigTool,
+    StartContainerTool,
+    StartDeploymentTool,
+    // Phase 5: Container Operations tools
+    StopContainerTool,
+    SuggestResourcesTool,
+    UpdateAppDomainTool,
+    UpdateAppPortsTool,
+    ValidateDomainTool,
     // Phase 5: Stack Validation tool
     ValidateStackConfigTool,
-    // Phase 5: Vault Configuration tools
-    GetVaultConfigTool, SetVaultConfigTool, ListVaultConfigsTool, ApplyVaultConfigTool,
 };
 
 /// Context passed to tool handlers
@@ -85,7 +113,10 @@ impl ToolRegistry {
         registry.register("get_user_profile", Box::new(GetUserProfileTool));
         registry.register("get_subscription_plan", Box::new(GetSubscriptionPlanTool));
         registry.register("list_installations", Box::new(ListInstallationsTool));
-        registry.register("get_installation_details", Box::new(GetInstallationDetailsTool));
+        registry.register(
+            "get_installation_details",
+            Box::new(GetInstallationDetailsTool),
+        );
         registry.register("search_applications", Box::new(SearchApplicationsTool));
 
         // Phase 4: Monitoring & Logs tools (AI Integration)

@@ -34,9 +34,12 @@ impl UserServiceClient {
     }
 
     /// Get current user profile
-    pub async fn get_user_profile(&self, bearer_token: &str) -> Result<UserProfile, UserServiceError> {
+    pub async fn get_user_profile(
+        &self,
+        bearer_token: &str,
+    ) -> Result<UserProfile, UserServiceError> {
         let url = format!("{}/auth/me", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
@@ -48,7 +51,10 @@ impl UserServiceClient {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(UserServiceError::Api { status, message: body });
+            return Err(UserServiceError::Api {
+                status,
+                message: body,
+            });
         }
 
         response
@@ -58,10 +64,13 @@ impl UserServiceClient {
     }
 
     /// Get user's subscription plan and limits
-    pub async fn get_subscription_plan(&self, bearer_token: &str) -> Result<SubscriptionPlan, UserServiceError> {
+    pub async fn get_subscription_plan(
+        &self,
+        bearer_token: &str,
+    ) -> Result<SubscriptionPlan, UserServiceError> {
         // Use the /oauth_server/api/me endpoint which returns user profile including plan info
         let url = format!("{}/oauth_server/api/me", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
@@ -73,7 +82,10 @@ impl UserServiceClient {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(UserServiceError::Api { status, message: body });
+            return Err(UserServiceError::Api {
+                status,
+                message: body,
+            });
         }
 
         // The response includes the user profile with "plan" field
@@ -81,19 +93,23 @@ impl UserServiceClient {
             .json()
             .await
             .map_err(|e| UserServiceError::Parse(e.to_string()))?;
-        
+
         // Extract the "plan" field from the user profile
-        let plan_value = user_profile.get("plan")
+        let plan_value = user_profile
+            .get("plan")
             .ok_or_else(|| UserServiceError::Parse("No plan field in user profile".to_string()))?;
-        
+
         serde_json::from_value(plan_value.clone())
             .map_err(|e| UserServiceError::Parse(format!("Failed to parse plan: {}", e)))
     }
 
     /// List user's installations (deployments)
-    pub async fn list_installations(&self, bearer_token: &str) -> Result<Vec<Installation>, UserServiceError> {
+    pub async fn list_installations(
+        &self,
+        bearer_token: &str,
+    ) -> Result<Vec<Installation>, UserServiceError> {
         let url = format!("{}/installations", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
@@ -105,7 +121,10 @@ impl UserServiceClient {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(UserServiceError::Api { status, message: body });
+            return Err(UserServiceError::Api {
+                status,
+                message: body,
+            });
         }
 
         // User Service returns { "_items": [...], "_meta": {...} }
@@ -118,9 +137,13 @@ impl UserServiceClient {
     }
 
     /// Get specific installation details
-    pub async fn get_installation(&self, bearer_token: &str, installation_id: i64) -> Result<InstallationDetails, UserServiceError> {
+    pub async fn get_installation(
+        &self,
+        bearer_token: &str,
+        installation_id: i64,
+    ) -> Result<InstallationDetails, UserServiceError> {
         let url = format!("{}/installations/{}", self.base_url, installation_id);
-        
+
         let response = self
             .client
             .get(&url)
@@ -132,7 +155,10 @@ impl UserServiceClient {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(UserServiceError::Api { status, message: body });
+            return Err(UserServiceError::Api {
+                status,
+                message: body,
+            });
         }
 
         response
@@ -142,12 +168,16 @@ impl UserServiceClient {
     }
 
     /// Search available applications/stacks
-    pub async fn search_applications(&self, bearer_token: &str, query: Option<&str>) -> Result<Vec<Application>, UserServiceError> {
+    pub async fn search_applications(
+        &self,
+        bearer_token: &str,
+        query: Option<&str>,
+    ) -> Result<Vec<Application>, UserServiceError> {
         let mut url = format!("{}/applications", self.base_url);
         if let Some(q) = query {
             url = format!("{}?where={{\"name\":{{\"{}\"}}}}", url, q);
         }
-        
+
         let response = self
             .client
             .get(&url)
@@ -159,7 +189,10 @@ impl UserServiceClient {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(UserServiceError::Api { status, message: body });
+            return Err(UserServiceError::Api {
+                status,
+                message: body,
+            });
         }
 
         // User Service returns { "_items": [...], "_meta": {...} }
@@ -214,31 +247,31 @@ pub struct UserProfile {
 pub struct SubscriptionPlan {
     /// Plan name (e.g., "Free", "Basic", "Plus")
     pub name: Option<String>,
-    
+
     /// Plan code (e.g., "plan-free-periodically", "plan-basic-monthly")
     pub code: Option<String>,
-    
+
     /// Plan features and limits (array of strings)
     pub includes: Option<Vec<String>>,
-    
+
     /// Expiration date (null for active subscriptions)
     pub date_end: Option<String>,
-    
+
     /// Whether the plan is active (date_end is null)
     pub active: Option<bool>,
-    
+
     /// Price of the plan
     pub price: Option<String>,
-    
+
     /// Currency (e.g., "USD")
     pub currency: Option<String>,
-    
+
     /// Billing period ("month" or "year")
     pub period: Option<String>,
-    
+
     /// Date of purchase
     pub date_of_purchase: Option<String>,
-    
+
     /// Billing agreement ID
     pub billing_id: Option<String>,
 }

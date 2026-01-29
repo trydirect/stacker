@@ -333,7 +333,11 @@ pub async fn saved_item(
     payload.deployment_hash = Some(deployment_hash);
 
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data (deployment_hash = {:?}): {:?}", payload.deployment_hash, payload);
+    tracing::debug!(
+        "Send project data (deployment_hash = {:?}): {:?}",
+        payload.deployment_hash,
+        payload
+    );
 
     // Send Payload
     mq_manager

@@ -144,8 +144,10 @@ impl VaultSettings {
         let agent_path_prefix =
             std::env::var("VAULT_AGENT_PATH_PREFIX").unwrap_or(self.agent_path_prefix);
         let api_prefix = std::env::var("VAULT_API_PREFIX").unwrap_or(self.api_prefix);
-        let ssh_key_path_prefix = std::env::var("VAULT_SSH_KEY_PATH_PREFIX")
-            .unwrap_or(self.ssh_key_path_prefix.unwrap_or_else(|| "users".to_string()));
+        let ssh_key_path_prefix = std::env::var("VAULT_SSH_KEY_PATH_PREFIX").unwrap_or(
+            self.ssh_key_path_prefix
+                .unwrap_or_else(|| "users".to_string()),
+        );
 
         VaultSettings {
             address,

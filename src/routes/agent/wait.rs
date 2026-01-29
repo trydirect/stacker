@@ -1,8 +1,8 @@
 use crate::{configuration::Settings, db, helpers, helpers::AgentPgPool, models};
 use actix_web::{get, web, HttpRequest, Responder, Result};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use serde_json::json;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct WaitQuery {

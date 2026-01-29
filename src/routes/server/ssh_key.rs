@@ -61,8 +61,9 @@ pub async fn generate_key(
 
     // Check if server already has an active key
     if server.key_status == "active" {
-        return Err(JsonResponse::<GenerateKeyResponse>::build()
-            .bad_request("Server already has an active SSH key. Delete it first to generate a new one."));
+        return Err(JsonResponse::<GenerateKeyResponse>::build().bad_request(
+            "Server already has an active SSH key. Delete it first to generate a new one.",
+        ));
     }
 
     // Update status to pending
@@ -71,15 +72,18 @@ pub async fn generate_key(
         .map_err(|e| JsonResponse::<GenerateKeyResponse>::build().internal_server_error(&e))?;
 
     // Generate SSH key pair
-    let (public_key, private_key) = VaultClient::generate_ssh_keypair()
-        .map_err(|e| {
-            tracing::error!("Failed to generate SSH keypair: {}", e);
-            // Reset status on failure
-            let _ = futures::executor::block_on(
-                db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, None, "failed")
-            );
-            JsonResponse::<GenerateKeyResponse>::build().internal_server_error("Failed to generate SSH key")
-        })?;
+    let (public_key, private_key) = VaultClient::generate_ssh_keypair().map_err(|e| {
+        tracing::error!("Failed to generate SSH keypair: {}", e);
+        // Reset status on failure
+        let _ = futures::executor::block_on(db::server::update_ssh_key_status(
+            pg_pool.get_ref(),
+            server_id,
+            None,
+            "failed",
+        ));
+        JsonResponse::<GenerateKeyResponse>::build()
+            .internal_server_error("Failed to generate SSH key")
+    })?;
 
     // Store in Vault
     let vault_path = vault_client
@@ -88,10 +92,14 @@ pub async fn generate_key(
         .await
         .map_err(|e| {
             tracing::error!("Failed to store SSH key in Vault: {}", e);
-            let _ = futures::executor::block_on(
-                db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, None, "failed")
-            );
-            JsonResponse::<GenerateKeyResponse>::build().internal_server_error("Failed to store SSH key")
+            let _ = futures::executor::block_on(db::server::update_ssh_key_status(
+                pg_pool.get_ref(),
+                server_id,
+                None,
+                "failed",
+            ));
+            JsonResponse::<GenerateKeyResponse>::build()
+                .internal_server_error("Failed to store SSH key")
         })?;
 
     // Update server with vault path and active status
@@ -102,10 +110,14 @@ pub async fn generate_key(
     let response = GenerateKeyResponse {
         public_key,
         fingerprint: None, // TODO: Calculate fingerprint
-        message: "SSH key generated successfully. Copy the public key to your server's authorized_keys.".to_string(),
+        message:
+            "SSH key generated successfully. Copy the public key to your server's authorized_keys."
+                .to_string(),
     };
 
-    Ok(JsonResponse::build().set_item(Some(response)).ok("SSH key generated"))
+    Ok(JsonResponse::build()
+        .set_item(Some(response))
+        .ok("SSH key generated"))
 }
 
 /// Upload an existing SSH key pair for a server
@@ -124,8 +136,9 @@ pub async fn upload_key(
 
     // Check if server already has an active key
     if server.key_status == "active" {
-        return Err(JsonResponse::<models::Server>::build()
-            .bad_request("Server already has an active SSH key. Delete it first to upload a new one."));
+        return Err(JsonResponse::<models::Server>::build().bad_request(
+            "Server already has an active SSH key. Delete it first to upload a new one.",
+        ));
     }
 
     // Validate keys (basic check)
@@ -151,21 +164,20 @@ pub async fn upload_key(
         .await
         .map_err(|e| {
             tracing::error!("Failed to store SSH key in Vault: {}", e);
-            let _ = futures::executor::block_on(
-                db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, None, "failed")
-            );
+            let _ = futures::executor::block_on(db::server::update_ssh_key_status(
+                pg_pool.get_ref(),
+                server_id,
+                None,
+                "failed",
+            ));
             JsonResponse::<models::Server>::build().internal_server_error("Failed to store SSH key")
         })?;
 
     // Update server with vault path and active status
-    let updated_server = db::server::update_ssh_key_status(
-        pg_pool.get_ref(),
-        server_id,
-        Some(vault_path),
-        "active",
-    )
-    .await
-    .map_err(|e| JsonResponse::<models::Server>::build().internal_server_error(&e))?;
+    let updated_server =
+        db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, Some(vault_path), "active")
+            .await
+            .map_err(|e| JsonResponse::<models::Server>::build().internal_server_error(&e))?;
 
     Ok(JsonResponse::build()
         .set_item(Some(updated_server))
@@ -196,7 +208,8 @@ pub async fn get_public_key(
         .await
         .map_err(|e| {
             tracing::error!("Failed to fetch public key from Vault: {}", e);
-            JsonResponse::<PublicKeyResponse>::build().internal_server_error("Failed to retrieve public key")
+            JsonResponse::<PublicKeyResponse>::build()
+                .internal_server_error("Failed to retrieve public key")
         })?;
 
     let response = PublicKeyResponse {
@@ -226,15 +239,20 @@ pub async fn delete_key(
     }
 
     // Delete from Vault
-    if let Err(e) = vault_client.get_ref().delete_ssh_key(&user.id, server_id).await {
+    if let Err(e) = vault_client
+        .get_ref()
+        .delete_ssh_key(&user.id, server_id)
+        .await
+    {
         tracing::warn!("Failed to delete SSH key from Vault (may not exist): {}", e);
         // Continue anyway - the key might not exist in Vault
     }
 
     // Update server status
-    let updated_server = db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, None, "none")
-        .await
-        .map_err(|e| JsonResponse::<models::Server>::build().internal_server_error(&e))?;
+    let updated_server =
+        db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, None, "none")
+            .await
+            .map_err(|e| JsonResponse::<models::Server>::build().internal_server_error(&e))?;
 
     Ok(JsonResponse::build()
         .set_item(Some(updated_server))

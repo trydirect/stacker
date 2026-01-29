@@ -31,7 +31,9 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
     // Use same OAuth validation as Bearer token
     let settings = req.app_data::<web::Data<Settings>>().unwrap();
     let http_client = req.app_data::<web::Data<reqwest::Client>>().unwrap();
-    let cache = req.app_data::<web::Data<super::f_oauth::OAuthCache>>().unwrap();
+    let cache = req
+        .app_data::<web::Data<super::f_oauth::OAuthCache>>()
+        .unwrap();
     let token = token.unwrap();
     let mut user = match cache.get(&token).await {
         Some(user) => user,

@@ -187,7 +187,7 @@ impl ToolHandler for ValidateStackConfigTool {
         let mut info: Vec<Value> = Vec::new();
 
         // Validation checks
-        
+
         // 1. Check if project has any apps
         if apps.is_empty() {
             errors.push(json!({
@@ -198,12 +198,13 @@ impl ToolHandler for ValidateStackConfigTool {
         }
 
         // 2. Check each app for required configuration
-        let mut used_ports: std::collections::HashMap<u16, String> = std::collections::HashMap::new();
+        let mut used_ports: std::collections::HashMap<u16, String> =
+            std::collections::HashMap::new();
         let mut has_web_app = false;
 
         for app in &apps {
             let app_code = &app.code;
-            
+
             // Check for image
             if app.image.is_empty() {
                 errors.push(json!({
@@ -231,7 +232,7 @@ impl ToolHandler for ValidateStackConfigTool {
                             } else {
                                 used_ports.insert(host_port, app_code.to_string());
                             }
-                            
+
                             // Check for common ports
                             if host_port == 80 || host_port == 443 {
                                 has_web_app = true;
@@ -246,7 +247,9 @@ impl ToolHandler for ValidateStackConfigTool {
                 if let Some(env_obj) = env.as_object() {
                     // PostgreSQL specific checks
                     if app_code.contains("postgres") || app.image.contains("postgres") {
-                        if !env_obj.contains_key("POSTGRES_PASSWORD") && !env_obj.contains_key("POSTGRES_HOST_AUTH_METHOD") {
+                        if !env_obj.contains_key("POSTGRES_PASSWORD")
+                            && !env_obj.contains_key("POSTGRES_HOST_AUTH_METHOD")
+                        {
                             warnings.push(json!({
                                 "code": "MISSING_DB_PASSWORD",
                                 "app": app_code,
@@ -259,7 +262,9 @@ impl ToolHandler for ValidateStackConfigTool {
 
                     // MySQL/MariaDB specific checks
                     if app_code.contains("mysql") || app_code.contains("mariadb") {
-                        if !env_obj.contains_key("MYSQL_ROOT_PASSWORD") && !env_obj.contains_key("MYSQL_ALLOW_EMPTY_PASSWORD") {
+                        if !env_obj.contains_key("MYSQL_ROOT_PASSWORD")
+                            && !env_obj.contains_key("MYSQL_ALLOW_EMPTY_PASSWORD")
+                        {
                             warnings.push(json!({
                                 "code": "MISSING_DB_PASSWORD",
                                 "app": app_code,
@@ -273,8 +278,11 @@ impl ToolHandler for ValidateStackConfigTool {
             }
 
             // Check for domain configuration on web apps
-            if (app_code.contains("nginx") || app_code.contains("apache") || app_code.contains("traefik")) 
-                && app.domain.is_none() {
+            if (app_code.contains("nginx")
+                || app_code.contains("apache")
+                || app_code.contains("traefik"))
+                && app.domain.is_none()
+            {
                 info.push(json!({
                     "code": "NO_DOMAIN",
                     "app": app_code,

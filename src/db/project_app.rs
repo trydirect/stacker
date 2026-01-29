@@ -26,7 +26,10 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::ProjectApp>,
 }
 
 /// Fetch all apps for a project
-pub async fn fetch_by_project(pool: &PgPool, project_id: i32) -> Result<Vec<models::ProjectApp>, String> {
+pub async fn fetch_by_project(
+    pool: &PgPool,
+    project_id: i32,
+) -> Result<Vec<models::ProjectApp>, String> {
     let query_span = tracing::info_span!("Fetch apps by project id");
     sqlx::query_as!(
         models::ProjectApp,

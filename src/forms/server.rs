@@ -35,7 +35,10 @@ impl From<&ServerForm> for models::Server {
         server.ssh_port = val.ssh_port.clone();
         server.ssh_user = val.ssh_user.clone();
         server.name = val.name.clone();
-        server.connection_mode = val.connection_mode.clone().unwrap_or_else(|| "ssh".to_string());
+        server.connection_mode = val
+            .connection_mode
+            .clone()
+            .unwrap_or_else(|| "ssh".to_string());
         server.vault_key_path = val.vault_key_path.clone();
 
         server

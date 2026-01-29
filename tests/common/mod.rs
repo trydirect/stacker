@@ -21,9 +21,10 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
     };
 
     let agent_pool = AgentPgPool::new(connection_pool.clone());
-    let server = stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
-        .await
-        .expect("Failed to bind address.");
+    let server =
+        stacker::startup::run(listener, connection_pool.clone(), agent_pool, configuration)
+            .await
+            .expect("Failed to bind address.");
 
     let _ = tokio::spawn(server);
     println!("Used Port: {}", port);
@@ -74,9 +75,7 @@ pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sql
 
     let connection_pool = PgPool::connect(&config.connection_string()).await?;
 
-    sqlx::migrate!("./migrations")
-        .run(&connection_pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&connection_pool).await?;
 
     Ok(connection_pool)
 }

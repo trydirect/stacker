@@ -54,10 +54,11 @@ pub async fn snapshot_handler(
 
     tracing::debug!("[SNAPSHOT HANDLER] Commands : {:?}", commands);
     // Fetch deployment to get project_id
-    let deployment = db::deployment::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
-        .await
-        .ok()
-        .flatten();
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
+            .await
+            .ok()
+            .flatten();
 
     tracing::debug!("[SNAPSHOT HANDLER] Deployment : {:?}", deployment);
     // Fetch apps for the project
@@ -90,5 +91,7 @@ pub async fn snapshot_handler(
     };
 
     tracing::info!("[SNAPSHOT HANDLER] Snapshot response prepared: {:?}", resp);
-    Ok(JsonResponse::build().set_item(resp).ok("Snapshot fetched successfully"))
+    Ok(JsonResponse::build()
+        .set_item(resp)
+        .ok("Snapshot fetched successfully"))
 }

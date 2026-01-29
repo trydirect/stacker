@@ -20,7 +20,10 @@ impl VaultClient {
             token: settings.token.clone(),
             agent_path_prefix: settings.agent_path_prefix.clone(),
             api_prefix: settings.api_prefix.clone(),
-            ssh_key_path_prefix: settings.ssh_key_path_prefix.clone().unwrap_or_else(|| "users".to_string()),
+            ssh_key_path_prefix: settings
+                .ssh_key_path_prefix
+                .clone()
+                .unwrap_or_else(|| "users".to_string()),
         }
     }
 
@@ -169,31 +172,38 @@ impl VaultClient {
         let base = self.address.trim_end_matches('/');
         let api_prefix = self.api_prefix.trim_matches('/');
         let prefix = self.ssh_key_path_prefix.trim_matches('/');
-        
+
         // For KV v2, the path must include 'secret/data/'
         if api_prefix.is_empty() {
-            format!("{}/secret/data/{}/{}/ssh_keys/{}", base, prefix, user_id, server_id)
+            format!(
+                "{}/secret/data/{}/{}/ssh_keys/{}",
+                base, prefix, user_id, server_id
+            )
         } else {
-            format!("{}/{}/secret/data/{}/{}/ssh_keys/{}", base, api_prefix, prefix, user_id, server_id)
+            format!(
+                "{}/{}/secret/data/{}/{}/ssh_keys/{}",
+                base, api_prefix, prefix, user_id, server_id
+            )
         }
     }
 
     /// Generate an SSH keypair (ed25519) and return (public_key, private_key)
     pub fn generate_ssh_keypair() -> Result<(String, String), String> {
         use ssh_key::{Algorithm, LineEnding, PrivateKey};
-        
+
         let private_key = PrivateKey::random(&mut rand::thread_rng(), Algorithm::Ed25519)
             .map_err(|e| format!("Failed to generate SSH key: {}", e))?;
-        
+
         let private_key_pem = private_key
             .to_openssh(LineEnding::LF)
             .map_err(|e| format!("Failed to encode private key: {}", e))?
             .to_string();
-        
+
         let public_key = private_key.public_key();
-        let public_key_openssh = public_key.to_openssh()
+        let public_key_openssh = public_key
+            .to_openssh()
             .map_err(|e| format!("Failed to encode public key: {}", e))?;
-        
+
         Ok((public_key_openssh, private_key_pem))
     }
 
@@ -235,12 +245,17 @@ impl VaultClient {
             })?;
 
         // Return the vault path for storage in database
-        let vault_key_path = format!("secret/data/{}/{}/ssh_keys/{}", 
-            self.ssh_key_path_prefix.trim_matches('/'), user_id, server_id);
-        
+        let vault_key_path = format!(
+            "secret/data/{}/{}/ssh_keys/{}",
+            self.ssh_key_path_prefix.trim_matches('/'),
+            user_id,
+            server_id
+        );
+
         tracing::info!(
             "Stored SSH key in Vault for user: {}, server: {}",
-            user_id, server_id
+            user_id,
+            server_id
         );
         Ok(vault_key_path)
     }
@@ -289,7 +304,11 @@ impl VaultClient {
 
     /// Fetch SSH public key from Vault
     #[tracing::instrument(name = "Fetch SSH public key from Vault", skip(self))]
-    pub async fn fetch_ssh_public_key(&self, user_id: &str, server_id: i32) -> Result<String, String> {
+    pub async fn fetch_ssh_public_key(
+        &self,
+        user_id: &str,
+        server_id: i32,
+    ) -> Result<String, String> {
         let path = self.ssh_key_path(user_id, server_id);
 
         let response = self
@@ -351,7 +370,8 @@ impl VaultClient {
 
         tracing::info!(
             "Deleted SSH key from Vault for user: {}, server: {}",
-            user_id, server_id
+            user_id,
+            server_id
         );
         Ok(())
     }

@@ -16,8 +16,12 @@ use serde::Deserialize;
 /// Slack configuration
 fn get_slack_config() -> Option<SlackConfig> {
     let webhook_url = std::env::var("SLACK_SUPPORT_WEBHOOK_URL").ok()?;
-    let channel = std::env::var("SLACK_SUPPORT_CHANNEL").unwrap_or_else(|_| "#trydirectflow".to_string());
-    Some(SlackConfig { webhook_url, channel })
+    let channel =
+        std::env::var("SLACK_SUPPORT_CHANNEL").unwrap_or_else(|_| "#trydirectflow".to_string());
+    Some(SlackConfig {
+        webhook_url,
+        channel,
+    })
 }
 
 struct SlackConfig {
@@ -42,8 +46,8 @@ impl ToolHandler for EscalateToSupportTool {
             conversation_summary: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let urgency = params.urgency.unwrap_or_else(|| "normal".to_string());
         let urgency_emoji = match urgency.as_str() {

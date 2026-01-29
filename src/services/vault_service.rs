@@ -108,7 +108,9 @@ impl VaultService {
                 let http_client = Client::builder()
                     .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
                     .build()
-                    .map_err(|e| VaultError::Other(format!("Failed to create HTTP client: {}", e)))?;
+                    .map_err(|e| {
+                        VaultError::Other(format!("Failed to create HTTP client: {}", e))
+                    })?;
 
                 tracing::debug!("Vault service initialized with base_url={}", base);
 
@@ -154,17 +156,26 @@ impl VaultService {
             .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
 
         if response.status() == 404 {
-            return Err(VaultError::NotFound(format!("{}/{}", deployment_hash, app_name)));
+            return Err(VaultError::NotFound(format!(
+                "{}/{}",
+                deployment_hash, app_name
+            )));
         }
 
         if response.status() == 403 {
-            return Err(VaultError::Forbidden(format!("{}/{}", deployment_hash, app_name)));
+            return Err(VaultError::Forbidden(format!(
+                "{}/{}",
+                deployment_hash, app_name
+            )));
         }
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(VaultError::Other(format!("Vault returned {}: {}", status, body)));
+            return Err(VaultError::Other(format!(
+                "Vault returned {}: {}",
+                status, body
+            )));
         }
 
         let vault_resp: VaultKvResponse = response
@@ -189,7 +200,9 @@ impl VaultService {
         let destination_path = data
             .get("destination_path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| VaultError::Other("destination_path not found in Vault response".into()))?
+            .ok_or_else(|| {
+                VaultError::Other("destination_path not found in Vault response".into())
+            })?
             .to_string();
 
         let file_mode = data
@@ -198,8 +211,14 @@ impl VaultService {
             .unwrap_or("0644")
             .to_string();
 
-        let owner = data.get("owner").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let group = data.get("group").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let owner = data
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let group = data
+            .get("group")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         tracing::info!(
             "Fetched config for {}/{} from Vault (type: {}, dest: {})",
@@ -251,13 +270,19 @@ impl VaultService {
             .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
 
         if response.status() == 403 {
-            return Err(VaultError::Forbidden(format!("{}/{}", deployment_hash, app_name)));
+            return Err(VaultError::Forbidden(format!(
+                "{}/{}",
+                deployment_hash, app_name
+            )));
         }
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(VaultError::Other(format!("Vault store failed with {}: {}", status, body)));
+            return Err(VaultError::Other(format!(
+                "Vault store failed with {}: {}",
+                status, body
+            )));
         }
 
         tracing::info!(
@@ -282,7 +307,10 @@ impl VaultService {
         // Vault uses LIST method for listing keys
         let response = self
             .http_client
-            .request(reqwest::Method::from_bytes(b"LIST").unwrap_or(reqwest::Method::GET), &url)
+            .request(
+                reqwest::Method::from_bytes(b"LIST").unwrap_or(reqwest::Method::GET),
+                &url,
+            )
             .header("X-Vault-Token", &self.token)
             .send()
             .await
@@ -296,7 +324,10 @@ impl VaultService {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(VaultError::Other(format!("Vault list failed with {}: {}", status, body)));
+            return Err(VaultError::Other(format!(
+                "Vault list failed with {}: {}",
+                status, body
+            )));
         }
 
         #[derive(Deserialize)]
@@ -322,7 +353,11 @@ impl VaultService {
             .filter(|k| !k.ends_with('/'))
             .collect();
 
-        tracing::info!("Found {} app configs for deployment {}", apps.len(), deployment_hash);
+        tracing::info!(
+            "Found {} app configs for deployment {}",
+            apps.len(),
+            deployment_hash
+        );
         Ok(apps)
     }
 
@@ -354,7 +389,11 @@ impl VaultService {
             );
         }
 
-        tracing::info!("Config deleted from Vault for {}/{}", deployment_hash, app_name);
+        tracing::info!(
+            "Config deleted from Vault for {}/{}",
+            deployment_hash,
+            app_name
+        );
         Ok(())
     }
 }

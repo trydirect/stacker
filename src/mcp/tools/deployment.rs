@@ -39,13 +39,14 @@ impl ToolHandler for GetDeploymentStatusTool {
         let deployment_hash = resolver.resolve(&identifier).await?;
 
         // Fetch deployment by hash
-        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to fetch deployment: {}", e);
-                format!("Database error: {}", e)
-            })?
-            .ok_or_else(|| format!("Deployment not found with hash: {}", deployment_hash))?;
+        let deployment =
+            db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to fetch deployment: {}", e);
+                    format!("Database error: {}", e)
+                })?
+                .ok_or_else(|| format!("Deployment not found with hash: {}", deployment_hash))?;
 
         let result = serde_json::to_string(&deployment)
             .map_err(|e| format!("Serialization error: {}", e))?;

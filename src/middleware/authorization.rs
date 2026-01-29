@@ -41,7 +41,11 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(10);
-        start_policy_reloader(casbin_service.clone(), policy_pool, Duration::from_secs(interval));
+        start_policy_reloader(
+            casbin_service.clone(),
+            policy_pool,
+            Duration::from_secs(interval),
+        );
     }
 
     Ok(casbin_service)
@@ -63,7 +67,8 @@ fn start_policy_reloader(
                     if last_fingerprint.map_or(true, |prev| prev != fingerprint) {
                         match casbin_service.try_write() {
                             Ok(mut guard) => {
-                                match timeout(Duration::from_millis(500), guard.load_policy()).await {
+                                match timeout(Duration::from_millis(500), guard.load_policy()).await
+                                {
                                     Ok(Ok(())) => {
                                         guard
                                             .get_role_manager()
@@ -93,8 +98,7 @@ fn start_policy_reloader(
 }
 
 async fn fetch_policy_fingerprint(pool: &PgPool) -> Result<(i64, i64), sqlx::Error> {
-    let max_id: i64 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0)::bigint FROM casbin_rule")
+    let max_id: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0)::bigint FROM casbin_rule")
         .fetch_one(pool)
         .await?;
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM casbin_rule")

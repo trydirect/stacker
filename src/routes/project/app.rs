@@ -168,7 +168,10 @@ pub async fn get_app_config(
         domain: app.domain.clone(),
         ssl_enabled: app.ssl_enabled.unwrap_or(false),
         resources: app.resources.clone().unwrap_or(json!({})),
-        restart_policy: app.restart_policy.clone().unwrap_or("unless-stopped".to_string()),
+        restart_policy: app
+            .restart_policy
+            .clone()
+            .unwrap_or("unless-stopped".to_string()),
     };
 
     Ok(JsonResponse::build().set_item(Some(config)).ok("OK"))
@@ -262,11 +265,13 @@ pub async fn update_env_vars(
         "Updated environment variables"
     );
 
-    Ok(JsonResponse::build().set_item(Some(json!({
-        "success": true,
-        "message": "Environment variables updated. Changes will take effect on next restart.",
-        "updated_at": updated.updated_at
-    }))).ok("OK"))
+    Ok(JsonResponse::build()
+        .set_item(Some(json!({
+            "success": true,
+            "message": "Environment variables updated. Changes will take effect on next restart.",
+            "updated_at": updated.updated_at
+        })))
+        .ok("OK"))
 }
 
 /// Delete a specific environment variable
@@ -321,10 +326,12 @@ pub async fn delete_env_var(
         "Deleted environment variable"
     );
 
-    Ok(JsonResponse::build().set_item(Some(json!({
-        "success": true,
-        "message": format!("Environment variable '{}' deleted", var_name)
-    }))).ok("OK"))
+    Ok(JsonResponse::build()
+        .set_item(Some(json!({
+            "success": true,
+            "message": format!("Environment variable '{}' deleted", var_name)
+        })))
+        .ok("OK"))
 }
 
 /// Update port mappings for an app
@@ -370,12 +377,14 @@ pub async fn update_ports(
         "Updated port mappings"
     );
 
-    Ok(JsonResponse::build().set_item(Some(json!({
-        "success": true,
-        "message": "Port mappings updated. Changes will take effect on next restart.",
-        "ports": updated.ports,
-        "updated_at": updated.updated_at
-    }))).ok("OK"))
+    Ok(JsonResponse::build()
+        .set_item(Some(json!({
+            "success": true,
+            "message": "Port mappings updated. Changes will take effect on next restart.",
+            "ports": updated.ports,
+            "updated_at": updated.updated_at
+        })))
+        .ok("OK"))
 }
 
 /// Update domain and SSL settings for an app
@@ -423,20 +432,33 @@ pub async fn update_domain(
         "Updated domain settings"
     );
 
-    Ok(JsonResponse::build().set_item(Some(json!({
-        "success": true,
-        "message": "Domain settings updated. Changes will take effect on next restart.",
-        "domain": updated.domain,
-        "ssl_enabled": updated.ssl_enabled,
-        "updated_at": updated.updated_at
-    }))).ok("OK"))
+    Ok(JsonResponse::build()
+        .set_item(Some(json!({
+            "success": true,
+            "message": "Domain settings updated. Changes will take effect on next restart.",
+            "domain": updated.domain,
+            "ssl_enabled": updated.ssl_enabled,
+            "updated_at": updated.updated_at
+        })))
+        .ok("OK"))
 }
 
 /// Redact sensitive environment variables for display
 fn redact_sensitive_env_vars(env: Value) -> Value {
     const SENSITIVE_PATTERNS: &[&str] = &[
-        "password", "passwd", "secret", "token", "key", "api_key", "apikey",
-        "auth", "credential", "private", "cert", "ssl", "tls",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "key",
+        "api_key",
+        "apikey",
+        "auth",
+        "credential",
+        "private",
+        "cert",
+        "ssl",
+        "tls",
     ];
 
     if let Some(obj) = env.as_object() {

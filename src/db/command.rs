@@ -190,7 +190,6 @@ pub async fn update_result(
 /// Fetch command by ID
 #[tracing::instrument(name = "Fetch command by ID", skip(pool))]
 pub async fn fetch_by_id(pool: &PgPool, id: &str) -> Result<Option<Command>, String> {
-
     let id = uuid::Uuid::parse_str(id).map_err(|err| {
         tracing::error!("Invalid ID format: {:?}", err);
         format!("Invalid ID format: {}", err)
@@ -218,8 +217,10 @@ pub async fn fetch_by_id(pool: &PgPool, id: &str) -> Result<Option<Command>, Str
 }
 
 #[tracing::instrument(name = "Fetch command by command_id", skip(pool))]
-pub async fn fetch_by_command_id(pool: &PgPool, command_id: &str) -> Result<Option<Command>, String> {
-
+pub async fn fetch_by_command_id(
+    pool: &PgPool,
+    command_id: &str,
+) -> Result<Option<Command>, String> {
     let query_span = tracing::info_span!("Fetching command by command_id");
     sqlx::query_as!(
         Command,

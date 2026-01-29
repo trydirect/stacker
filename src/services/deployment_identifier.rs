@@ -13,7 +13,7 @@
 //!
 //! // From deployment_hash (Stack Builder - native)
 //! let id = DeploymentIdentifier::from_hash("abc123");
-//! 
+//!
 //! // Direct resolution for Stack Builder (no external service needed)
 //! let hash = id.into_hash().expect("Stack Builder always has hash");
 //! ```
@@ -35,7 +35,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 /// Represents a deployment identifier that can be resolved to a deployment_hash.
-/// 
+///
 /// This enum abstracts the difference between:
 /// - Stack Builder deployments (identified by hash directly)
 /// - Legacy User Service installations (identified by numeric ID)
@@ -60,10 +60,7 @@ impl DeploymentIdentifier {
 
     /// Try to create from optional hash and id.
     /// Prefers hash if both are provided (Stack Builder takes priority).
-    pub fn try_from_options(
-        hash: Option<String>,
-        id: Option<i64>,
-    ) -> Result<Self, &'static str> {
+    pub fn try_from_options(hash: Option<String>, id: Option<i64>) -> Result<Self, &'static str> {
         match (hash, id) {
             (Some(h), _) => Ok(Self::Hash(h)),
             (None, Some(i)) => Ok(Self::InstallationId(i)),
@@ -168,14 +165,17 @@ impl From<DeploymentResolveError> for String {
 }
 
 /// Trait for resolving deployment identifiers to deployment hashes.
-/// 
+///
 /// Different implementations can resolve from different sources:
 /// - `StackerDeploymentResolver`: Native Stack Builder (hash-only, no external deps)
 /// - `UserServiceDeploymentResolver`: Resolves via User Service (in connectors/)
 #[async_trait]
 pub trait DeploymentResolver: Send + Sync {
     /// Resolve a deployment identifier to its deployment_hash
-    async fn resolve(&self, identifier: &DeploymentIdentifier) -> Result<String, DeploymentResolveError>;
+    async fn resolve(
+        &self,
+        identifier: &DeploymentIdentifier,
+    ) -> Result<String, DeploymentResolveError>;
 }
 
 /// Native Stack Builder resolver - no external dependencies.
@@ -197,7 +197,10 @@ impl Default for StackerDeploymentResolver {
 
 #[async_trait]
 impl DeploymentResolver for StackerDeploymentResolver {
-    async fn resolve(&self, identifier: &DeploymentIdentifier) -> Result<String, DeploymentResolveError> {
+    async fn resolve(
+        &self,
+        identifier: &DeploymentIdentifier,
+    ) -> Result<String, DeploymentResolveError> {
         match identifier {
             DeploymentIdentifier::Hash(hash) => Ok(hash.clone()),
             DeploymentIdentifier::InstallationId(id) => {
@@ -281,10 +284,8 @@ mod tests {
 
     #[test]
     fn test_try_from_options_prefers_hash() {
-        let id = DeploymentIdentifier::try_from_options(
-            Some("hash".to_string()),
-            Some(123),
-        ).unwrap();
+        let id =
+            DeploymentIdentifier::try_from_options(Some("hash".to_string()), Some(123)).unwrap();
         assert!(id.is_hash());
     }
 

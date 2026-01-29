@@ -27,7 +27,6 @@ impl InstallServiceConnector for InstallServiceClient {
         let mut payload = crate::forms::project::Payload::try_from(project)
             .map_err(|err| format!("Failed to build payload: {}", err))?;
 
-
         payload.id = Some(deployment_id);
         // Force-set deployment_hash in case deserialization overwrote it
         payload.deployment_hash = Some(deployment_hash.clone());
@@ -38,7 +37,11 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
 
-        tracing::debug!("Send project data (deployment_hash = {:?}): {:?}", payload.deployment_hash, payload);
+        tracing::debug!(
+            "Send project data (deployment_hash = {:?}): {:?}",
+            payload.deployment_hash,
+            payload
+        );
 
         let provider = payload
             .cloud

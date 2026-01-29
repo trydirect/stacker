@@ -38,7 +38,7 @@ impl IntegrationConfig {
 /// Helper to authenticate and get a bearer token
 async fn get_auth_token(config: &IntegrationConfig) -> Result<String, String> {
     let client = reqwest::Client::new();
-    
+
     let response = client
         .post(&format!("{}/oauth_server/token", config.user_service_url))
         .form(&[
@@ -96,10 +96,16 @@ async fn test_get_user_profile() {
     assert!(response.status().is_success(), "Expected success status");
 
     let profile: Value = response.json().await.expect("Failed to parse JSON");
-    
-    println!("User Profile: {}", serde_json::to_string_pretty(&profile).unwrap());
-    
-    assert!(profile.get("email").is_some(), "Profile should contain email");
+
+    println!(
+        "User Profile: {}",
+        serde_json::to_string_pretty(&profile).unwrap()
+    );
+
+    assert!(
+        profile.get("email").is_some(),
+        "Profile should contain email"
+    );
     assert!(profile.get("_id").is_some(), "Profile should contain _id");
 }
 
@@ -127,9 +133,12 @@ async fn test_get_subscription_plan() {
     assert!(response.status().is_success(), "Expected success status");
 
     let user_data: Value = response.json().await.expect("Failed to parse JSON");
-    
-    println!("User Data: {}", serde_json::to_string_pretty(&user_data).unwrap());
-    
+
+    println!(
+        "User Data: {}",
+        serde_json::to_string_pretty(&user_data).unwrap()
+    );
+
     // User profile should include plan information
     let plan = user_data.get("plan");
     println!("Subscription Plan: {:?}", plan);
@@ -163,22 +172,36 @@ async fn test_list_installations() {
     assert!(response.status().is_success(), "Expected success status");
 
     let installations: Value = response.json().await.expect("Failed to parse JSON");
-    
-    println!("Installations: {}", serde_json::to_string_pretty(&installations).unwrap());
-    
+
+    println!(
+        "Installations: {}",
+        serde_json::to_string_pretty(&installations).unwrap()
+    );
+
     // Response should have _items array
-    assert!(installations.get("_items").is_some(), "Response should have _items");
-    
-    let items = installations["_items"].as_array().expect("_items should be array");
+    assert!(
+        installations.get("_items").is_some(),
+        "Response should have _items"
+    );
+
+    let items = installations["_items"]
+        .as_array()
+        .expect("_items should be array");
     println!("Found {} installations", items.len());
-    
+
     for (i, installation) in items.iter().enumerate() {
         println!(
             "  [{}] ID: {}, Status: {}, Stack: {}",
             i,
             installation["_id"],
-            installation.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
-            installation.get("stack_code").and_then(|v| v.as_str()).unwrap_or("unknown")
+            installation
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown"),
+            installation
+                .get("stack_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
         );
     }
 }
@@ -206,7 +229,10 @@ async fn test_get_installation_details() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/installations/{}", config.user_service_url, deployment_id))
+        .get(&format!(
+            "{}/installations/{}",
+            config.user_service_url, deployment_id
+        ))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -215,8 +241,11 @@ async fn test_get_installation_details() {
     assert!(response.status().is_success(), "Expected success status");
 
     let details: Value = response.json().await.expect("Failed to parse JSON");
-    
-    println!("Installation Details: {}", serde_json::to_string_pretty(&details).unwrap());
+
+    println!(
+        "Installation Details: {}",
+        serde_json::to_string_pretty(&details).unwrap()
+    );
 }
 
 // =============================================================================
@@ -247,7 +276,7 @@ async fn test_search_applications() {
     assert!(response.status().is_success(), "Expected success status");
 
     let applications: Value = response.json().await.expect("Failed to parse JSON");
-    
+
     // Response should have _items array
     let items = applications["_items"].as_array();
     if let Some(apps) = items {
@@ -256,8 +285,12 @@ async fn test_search_applications() {
             println!(
                 "  [{}] {}: {}",
                 i,
-                app.get("name").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                app.get("description").and_then(|v| v.as_str()).unwrap_or("")
+                app.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown"),
+                app.get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
             );
         }
     }
@@ -300,10 +333,16 @@ async fn test_mcp_workflow_stack_configuration() {
         .send()
         .await
         .expect("Profile request failed");
-    
+
     assert!(profile_resp.status().is_success());
     let profile: Value = profile_resp.json().await.unwrap();
-    println!("  ✓ User: {}", profile.get("email").and_then(|v| v.as_str()).unwrap_or("unknown"));
+    println!(
+        "  ✓ User: {}",
+        profile
+            .get("email")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+    );
 
     // Step 2: Get subscription plan
     println!("Step 2: get_subscription_plan");
@@ -313,11 +352,16 @@ async fn test_mcp_workflow_stack_configuration() {
         .send()
         .await
         .expect("Plan request failed");
-    
+
     assert!(plan_resp.status().is_success());
     let user_data: Value = plan_resp.json().await.unwrap();
     if let Some(plan) = user_data.get("plan") {
-        println!("  ✓ Plan: {}", plan.get("name").and_then(|v| v.as_str()).unwrap_or("unknown"));
+        println!(
+            "  ✓ Plan: {}",
+            plan.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        );
     } else {
         println!("  ✓ Plan: (not specified in response)");
     }
@@ -330,7 +374,7 @@ async fn test_mcp_workflow_stack_configuration() {
         .send()
         .await
         .expect("Installations request failed");
-    
+
     assert!(installs_resp.status().is_success());
     let installs: Value = installs_resp.json().await.unwrap();
     let count = installs["_items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -344,7 +388,7 @@ async fn test_mcp_workflow_stack_configuration() {
         .send()
         .await
         .expect("Applications request failed");
-    
+
     assert!(apps_resp.status().is_success());
     let apps: Value = apps_resp.json().await.unwrap();
     let app_count = apps["_items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -370,7 +414,7 @@ async fn test_slack_webhook_connectivity() {
     };
 
     let client = reqwest::Client::new();
-    
+
     // Send a test message to Slack
     let test_message = json!({
         "blocks": [
@@ -410,14 +454,14 @@ async fn test_slack_webhook_connectivity() {
 
     let status = response.status();
     println!("Slack response status: {}", status);
-    
+
     if status.is_success() {
         println!("✓ Slack webhook is working correctly");
     } else {
         let body = response.text().await.unwrap_or_default();
         println!("✗ Slack webhook failed: {}", body);
     }
-    
+
     assert!(status.is_success(), "Slack webhook should return success");
 }
 
@@ -433,12 +477,12 @@ async fn test_confirmation_flow_restart_container() {
     //! 2. Returns confirmation prompt
     //! 3. AI calls restart_container with requires_confirmation: true (execute)
     //! 4. Returns result
-    
-    let stacker_url = env::var("STACKER_URL")
-        .unwrap_or_else(|_| "http://localhost:8000".to_string());
-    
+
+    let stacker_url =
+        env::var("STACKER_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+
     println!("\n=== Confirmation Flow Test: restart_container ===\n");
-    
+
     // This test requires MCP WebSocket connection which is complex to simulate
     // In practice, this is tested via the frontend AI assistant
     println!("Note: Full confirmation flow requires WebSocket MCP client");
@@ -456,7 +500,7 @@ async fn test_confirmation_flow_restart_container() {
 #[ignore = "requires live Stacker service"]
 async fn test_confirmation_flow_stop_container() {
     println!("\n=== Confirmation Flow Test: stop_container ===\n");
-    
+
     println!("Test scenario:");
     println!("  1. User: 'Stop the redis container'");
     println!("  2. AI: Calls stop_container(container='redis', deployment_id=X)");
@@ -471,7 +515,7 @@ async fn test_confirmation_flow_stop_container() {
 #[ignore = "requires live Stacker service"]
 async fn test_confirmation_flow_delete_project() {
     println!("\n=== Confirmation Flow Test: delete_project ===\n");
-    
+
     println!("Test scenario:");
     println!("  1. User: 'Delete my test-project'");
     println!("  2. AI: Calls delete_project(project_id=X)");

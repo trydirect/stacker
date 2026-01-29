@@ -38,7 +38,10 @@ pub struct CommandReportResponse {
     pub message: String,
 }
 
-#[tracing::instrument(name = "Agent report command result", skip(agent_pool, mq_manager, _req))]
+#[tracing::instrument(
+    name = "Agent report command result",
+    skip(agent_pool, mq_manager, _req)
+)]
 #[post("/commands/report")]
 pub async fn report_handler(
     agent: web::ReqData<Arc<models::Agent>>,

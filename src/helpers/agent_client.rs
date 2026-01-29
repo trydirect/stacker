@@ -1,7 +1,7 @@
 use reqwest::{Client, Response};
 
 /// AgentClient for agent-initiated connections only.
-/// 
+///
 /// In the pull-only architecture, agents poll Stacker (not the other way around).
 /// This client is kept for potential Compose Agent sidecar use cases where
 /// Stacker may need to communicate with a local control plane.

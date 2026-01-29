@@ -121,7 +121,10 @@ impl ProjectAppService {
 
         // Sync to Vault if enabled
         if self.vault_sync_enabled {
-            if let Err(e) = self.sync_app_to_vault(&created, project, deployment_hash).await {
+            if let Err(e) = self
+                .sync_app_to_vault(&created, project, deployment_hash)
+                .await
+            {
                 tracing::warn!(
                     app_code = %app.code,
                     error = %e,
@@ -151,7 +154,10 @@ impl ProjectAppService {
 
         // Sync to Vault if enabled
         if self.vault_sync_enabled {
-            if let Err(e) = self.sync_app_to_vault(&updated, project, deployment_hash).await {
+            if let Err(e) = self
+                .sync_app_to_vault(&updated, project, deployment_hash)
+                .await
+            {
                 tracing::warn!(
                     app_code = %app.code,
                     error = %e,
@@ -195,13 +201,10 @@ impl ProjectAppService {
         deployment_hash: &str,
     ) -> Result<ProjectApp> {
         // Check if app exists
-        let exists = db::project_app::exists_by_project_and_code(
-            &self.pool,
-            app.project_id,
-            &app.code,
-        )
-        .await
-        .map_err(ProjectAppError::Database)?;
+        let exists =
+            db::project_app::exists_by_project_and_code(&self.pool, app.project_id, &app.code)
+                .await
+                .map_err(ProjectAppError::Database)?;
 
         if exists {
             // Fetch existing to get ID
@@ -229,9 +232,7 @@ impl ProjectAppService {
             .map_err(|e| ProjectAppError::ConfigRender(e.to_string()))?;
 
         // Sync to Vault
-        let sync_result = renderer
-            .sync_to_vault(&bundle)
-            .await?;
+        let sync_result = renderer.sync_to_vault(&bundle).await?;
 
         Ok(SyncSummary {
             total_apps: apps.len(),
@@ -260,9 +261,7 @@ impl ProjectAppService {
     async fn delete_from_vault(&self, app_code: &str, deployment_hash: &str) -> Result<()> {
         let vault = VaultService::from_env()
             .map_err(|e| ProjectAppError::VaultSync(e))?
-            .ok_or_else(|| {
-                ProjectAppError::VaultSync(VaultError::NotConfigured)
-            })?;
+            .ok_or_else(|| ProjectAppError::VaultSync(VaultError::NotConfigured))?;
 
         vault
             .delete_app_config(deployment_hash, app_code)
@@ -279,7 +278,9 @@ impl ProjectAppService {
             return Err(ProjectAppError::Validation("App name is required".into()));
         }
         if app.image.is_empty() {
-            return Err(ProjectAppError::Validation("Docker image is required".into()));
+            return Err(ProjectAppError::Validation(
+                "Docker image is required".into(),
+            ));
         }
         // Validate code format (alphanumeric, dash, underscore)
         if !app
@@ -332,8 +333,13 @@ mod tests {
     #[test]
     fn test_validate_app_empty_code() {
         // Can't easily test without a real pool, but we can test validation logic
-        let app = ProjectApp::new(1, "".to_string(), "Test".to_string(), "nginx:latest".to_string());
-        
+        let app = ProjectApp::new(
+            1,
+            "".to_string(),
+            "Test".to_string(),
+            "nginx:latest".to_string(),
+        );
+
         // Validation would fail for empty code
         assert!(app.code.is_empty());
     }
@@ -348,7 +354,10 @@ mod tests {
         );
 
         // This code contains invalid characters
-        let has_invalid = app.code.chars().any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+        let has_invalid = app
+            .code
+            .chars()
+            .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
         assert!(has_invalid);
     }
 }

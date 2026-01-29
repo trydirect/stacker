@@ -56,13 +56,15 @@ pub struct LogCacheService {
 impl LogCacheService {
     /// Create a new log cache service
     pub fn new() -> Result<Self, String> {
-        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
         let ttl_seconds = std::env::var("LOG_CACHE_TTL_SECONDS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_LOG_TTL_SECONDS);
 
-        let client = RedisClient::open(redis_url).map_err(|e| format!("Failed to connect to Redis: {}", e))?;
+        let client = RedisClient::open(redis_url)
+            .map_err(|e| format!("Failed to connect to Redis: {}", e))?;
 
         Ok(Self {
             client,
@@ -85,27 +87,33 @@ impl LogCacheService {
         container: Option<&str>,
         entries: &[LogEntry],
     ) -> Result<(), String> {
-        let mut conn = self.client.get_multiplexed_async_connection().await
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
             .map_err(|e| format!("Redis connection error: {}", e))?;
 
         let key = Self::cache_key(deployment_id, container);
 
         // Serialize entries as JSON array
         for entry in entries {
-            let entry_json = serde_json::to_string(entry)
-                .map_err(|e| format!("Serialization error: {}", e))?;
+            let entry_json =
+                serde_json::to_string(entry).map_err(|e| format!("Serialization error: {}", e))?;
 
             // Push to list
-            conn.rpush::<_, _, ()>(&key, entry_json).await
+            conn.rpush::<_, _, ()>(&key, entry_json)
+                .await
                 .map_err(|e| format!("Redis rpush error: {}", e))?;
         }
 
         // Trim to max entries
-        conn.ltrim::<_, ()>(&key, -MAX_LOG_ENTRIES as isize, -1).await
+        conn.ltrim::<_, ()>(&key, -MAX_LOG_ENTRIES as isize, -1)
+            .await
             .map_err(|e| format!("Redis ltrim error: {}", e))?;
 
         // Set TTL
-        conn.expire::<_, ()>(&key, self.ttl.as_secs() as i64).await
+        conn.expire::<_, ()>(&key, self.ttl.as_secs() as i64)
+            .await
             .map_err(|e| format!("Redis expire error: {}", e))?;
 
         tracing::debug!(
@@ -126,7 +134,10 @@ impl LogCacheService {
         limit: usize,
         offset: usize,
     ) -> Result<LogCacheResult, String> {
-        let mut conn = self.client.get_multiplexed_async_connection().await
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
             .map_err(|e| format!("Redis connection error: {}", e))?;
 
         let key = Self::cache_key(deployment_id, container);
@@ -147,7 +158,8 @@ impl LogCacheService {
         let start = -(offset as isize) - (limit as isize);
         let stop = -(offset as isize) - 1;
 
-        let raw_entries: Vec<String> = conn.lrange(&key, start.max(0), stop)
+        let raw_entries: Vec<String> = conn
+            .lrange(&key, start.max(0), stop)
             .await
             .unwrap_or_default();
 
@@ -178,7 +190,10 @@ impl LogCacheService {
         deployment_id: i32,
         container: Option<&str>,
     ) -> Result<LogSummary, String> {
-        let mut conn = self.client.get_multiplexed_async_connection().await
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
             .map_err(|e| format!("Redis connection error: {}", e))?;
 
         let key = Self::cache_key(deployment_id, container);
@@ -204,13 +219,25 @@ impl LogCacheService {
         }
 
         // Count by level
-        let error_count = entries.iter().filter(|e| e.level.to_lowercase() == "error").count();
-        let warning_count = entries.iter().filter(|e| e.level.to_lowercase() == "warn" || e.level.to_lowercase() == "warning").count();
+        let error_count = entries
+            .iter()
+            .filter(|e| e.level.to_lowercase() == "error")
+            .count();
+        let warning_count = entries
+            .iter()
+            .filter(|e| e.level.to_lowercase() == "warn" || e.level.to_lowercase() == "warning")
+            .count();
 
         // Get time range
         let time_range = if !entries.is_empty() {
-            let oldest = entries.first().map(|e| e.timestamp.clone()).unwrap_or_default();
-            let newest = entries.last().map(|e| e.timestamp.clone()).unwrap_or_default();
+            let oldest = entries
+                .first()
+                .map(|e| e.timestamp.clone())
+                .unwrap_or_default();
+            let newest = entries
+                .last()
+                .map(|e| e.timestamp.clone())
+                .unwrap_or_default();
             Some((oldest, newest))
         } else {
             None
@@ -242,7 +269,9 @@ impl LogCacheService {
 
             // Common error patterns to track
             if msg.contains("connection refused") || msg.contains("ECONNREFUSED") {
-                *patterns.entry("Connection refused".to_string()).or_insert(0) += 1;
+                *patterns
+                    .entry("Connection refused".to_string())
+                    .or_insert(0) += 1;
             }
             if msg.contains("timeout") || msg.contains("ETIMEDOUT") {
                 *patterns.entry("Timeout".to_string()).or_insert(0) += 1;
@@ -257,10 +286,15 @@ impl LogCacheService {
                 *patterns.entry("Disk full".to_string()).or_insert(0) += 1;
             }
             if msg.contains("not found") || msg.contains("ENOENT") {
-                *patterns.entry("Resource not found".to_string()).or_insert(0) += 1;
+                *patterns
+                    .entry("Resource not found".to_string())
+                    .or_insert(0) += 1;
             }
-            if msg.contains("authentication") || msg.contains("unauthorized") || msg.contains("401") {
-                *patterns.entry("Authentication error".to_string()).or_insert(0) += 1;
+            if msg.contains("authentication") || msg.contains("unauthorized") || msg.contains("401")
+            {
+                *patterns
+                    .entry("Authentication error".to_string())
+                    .or_insert(0) += 1;
             }
             if msg.contains("certificate") || msg.contains("SSL") || msg.contains("TLS") {
                 *patterns.entry("SSL/TLS error".to_string()).or_insert(0) += 1;
@@ -271,7 +305,11 @@ impl LogCacheService {
         let mut sorted: Vec<_> = patterns.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
-        sorted.into_iter().take(5).map(|(pattern, count)| format!("{} ({}x)", pattern, count)).collect()
+        sorted
+            .into_iter()
+            .take(5)
+            .map(|(pattern, count)| format!("{} ({}x)", pattern, count))
+            .collect()
     }
 
     /// Clear cached logs for a deployment
@@ -280,11 +318,15 @@ impl LogCacheService {
         deployment_id: i32,
         container: Option<&str>,
     ) -> Result<(), String> {
-        let mut conn = self.client.get_multiplexed_async_connection().await
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
             .map_err(|e| format!("Redis connection error: {}", e))?;
 
         let key = Self::cache_key(deployment_id, container);
-        conn.del::<_, ()>(&key).await
+        conn.del::<_, ()>(&key)
+            .await
             .map_err(|e| format!("Redis del error: {}", e))?;
 
         tracing::info!(
@@ -302,11 +344,15 @@ impl LogCacheService {
         deployment_id: i32,
         container: Option<&str>,
     ) -> Result<(), String> {
-        let mut conn = self.client.get_multiplexed_async_connection().await
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
             .map_err(|e| format!("Redis connection error: {}", e))?;
 
         let key = Self::cache_key(deployment_id, container);
-        conn.expire::<_, ()>(&key, self.ttl.as_secs() as i64).await
+        conn.expire::<_, ()>(&key, self.ttl.as_secs() as i64)
+            .await
             .map_err(|e| format!("Redis expire error: {}", e))?;
 
         Ok(())

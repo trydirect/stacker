@@ -56,6 +56,10 @@ pub struct RestartCommandRequest {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeployAppCommandRequest {
     pub app_code: String,
+    /// Optional: docker-compose.yml content (generated from J2 template)
+    /// If provided, will be written to disk before deploying
+    #[serde(default)]
+    pub compose_content: Option<String>,
     /// Optional: specific image to use (overrides compose file)
     #[serde(default)]
     pub image: Option<String>,

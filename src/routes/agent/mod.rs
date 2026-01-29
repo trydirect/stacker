@@ -1,12 +1,11 @@
-
-mod register;
 mod enqueue;
+mod register;
 mod report;
-mod wait;
 mod snapshot;
+mod wait;
 
 pub use enqueue::*;
 pub use register::*;
 pub use report::*;
-pub use wait::*;
 pub use snapshot::*;
+pub use wait::*;

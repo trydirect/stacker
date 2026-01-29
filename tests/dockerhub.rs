@@ -62,11 +62,11 @@ async fn test_docker_hub_successful_login() {
     if common::spawn_app().await.is_none() {
         return;
     } // server
-                               // let username = env::var("TEST_DOCKER_USERNAME")
-                               //     .expect("username environment variable is not set");
-                               //
-                               // let password= env::var("TEST_DOCKER_PASSWORD")
-                               //     .expect("password environment variable is not set");
+      // let username = env::var("TEST_DOCKER_USERNAME")
+      //     .expect("username environment variable is not set");
+      //
+      // let password= env::var("TEST_DOCKER_PASSWORD")
+      //     .expect("password environment variable is not set");
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")),
         dockerhub_name: Some(String::from("nginx-waf")),

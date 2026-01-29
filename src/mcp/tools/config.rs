@@ -28,8 +28,8 @@ impl ToolHandler for GetAppEnvVarsTool {
             app_code: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify project ownership
         let project = db::project::fetch(&context.pg_pool, params.project_id)
@@ -112,8 +112,8 @@ impl ToolHandler for SetAppEnvVarTool {
             value: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Validate env var name
         if !is_valid_env_var_name(&params.name) {
@@ -217,8 +217,8 @@ impl ToolHandler for DeleteAppEnvVarTool {
             name: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify project ownership
         let project = db::project::fetch(&context.pg_pool, params.project_id)
@@ -321,8 +321,8 @@ impl ToolHandler for GetAppConfigTool {
             app_code: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify project ownership
         let project = db::project::fetch(&context.pg_pool, params.project_id)
@@ -423,8 +423,8 @@ impl ToolHandler for UpdateAppPortsTool {
             ports: Vec<PortMapping>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Validate ports
         for port in &params.ports {
@@ -435,7 +435,10 @@ impl ToolHandler for UpdateAppPortsTool {
                 return Err(format!("Invalid container port: {}", port.container));
             }
             if port.protocol != "tcp" && port.protocol != "udp" {
-                return Err(format!("Invalid protocol '{}'. Must be 'tcp' or 'udp'.", port.protocol));
+                return Err(format!(
+                    "Invalid protocol '{}'. Must be 'tcp' or 'udp'.",
+                    port.protocol
+                ));
             }
         }
 
@@ -560,8 +563,8 @@ impl ToolHandler for UpdateAppDomainTool {
             enable_ssl: Option<bool>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Basic domain validation
         if !is_valid_domain(&params.domain) {
@@ -660,9 +663,21 @@ impl ToolHandler for UpdateAppDomainTool {
 /// Redact sensitive environment variable values
 fn redact_sensitive_env_vars(env: &Value) -> Value {
     const SENSITIVE_PATTERNS: &[&str] = &[
-        "password", "passwd", "secret", "token", "key", "auth",
-        "credential", "api_key", "apikey", "private", "cert",
-        "jwt", "bearer", "access_token", "refresh_token",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "key",
+        "auth",
+        "credential",
+        "api_key",
+        "apikey",
+        "private",
+        "cert",
+        "jwt",
+        "bearer",
+        "access_token",
+        "refresh_token",
     ];
 
     if let Some(obj) = env.as_object() {
@@ -694,7 +709,7 @@ fn is_valid_env_var_name(name: &str) -> bool {
     }
 
     let mut chars = name.chars();
-    
+
     // First character must be a letter or underscore
     if let Some(first) = chars.next() {
         if !first.is_ascii_alphabetic() && first != '_' {
@@ -751,14 +766,15 @@ impl ToolHandler for GetVaultConfigTool {
             app_code: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership via deployment table
-        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
-            .await
-            .map_err(|e| format!("Failed to fetch deployment: {}", e))?
-            .ok_or_else(|| "Deployment not found".to_string())?;
+        let deployment =
+            db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
+                .await
+                .map_err(|e| format!("Failed to fetch deployment: {}", e))?
+                .ok_or_else(|| "Deployment not found".to_string())?;
 
         if deployment.user_id.as_deref() != Some(context.user.id.as_str()) {
             return Err("Deployment not found".to_string());
@@ -767,10 +783,15 @@ impl ToolHandler for GetVaultConfigTool {
         // Initialize Vault service
         let vault = VaultService::from_env()
             .map_err(|e| format!("Vault error: {}", e))?
-            .ok_or_else(|| "Vault not configured. Contact support to enable config management.".to_string())?;
+            .ok_or_else(|| {
+                "Vault not configured. Contact support to enable config management.".to_string()
+            })?;
 
         // Fetch config from Vault
-        match vault.fetch_app_config(&params.deployment_hash, &params.app_code).await {
+        match vault
+            .fetch_app_config(&params.deployment_hash, &params.app_code)
+            .await
+        {
             Ok(config) => {
                 let result = json!({
                     "deployment_hash": params.deployment_hash,
@@ -794,7 +815,8 @@ impl ToolHandler for GetVaultConfigTool {
                 );
 
                 Ok(ToolContent::Text {
-                    text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+                    text: serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| result.to_string()),
                 })
             }
             Err(crate::services::VaultError::NotFound(_)) => {
@@ -805,7 +827,8 @@ impl ToolHandler for GetVaultConfigTool {
                     "message": format!("No configuration found in Vault for app '{}'", params.app_code),
                 });
                 Ok(ToolContent::Text {
-                    text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+                    text: serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| result.to_string()),
                 })
             }
             Err(e) => Err(format!("Failed to fetch config from Vault: {}", e)),
@@ -852,14 +875,15 @@ impl ToolHandler for SetVaultConfigTool {
             file_mode: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership
-        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
-            .await
-            .map_err(|e| format!("Failed to fetch deployment: {}", e))?
-            .ok_or_else(|| "Deployment not found".to_string())?;
+        let deployment =
+            db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
+                .await
+                .map_err(|e| format!("Failed to fetch deployment: {}", e))?
+                .ok_or_else(|| "Deployment not found".to_string())?;
 
         if deployment.user_id.as_deref() != Some(&context.user.id as &str) {
             return Err("Deployment not found".to_string());
@@ -873,7 +897,9 @@ impl ToolHandler for SetVaultConfigTool {
         // Initialize Vault service
         let vault = VaultService::from_env()
             .map_err(|e| format!("Vault error: {}", e))?
-            .ok_or_else(|| "Vault not configured. Contact support to enable config management.".to_string())?;
+            .ok_or_else(|| {
+                "Vault not configured. Contact support to enable config management.".to_string()
+            })?;
 
         let config = AppConfig {
             content: params.content.clone(),
@@ -885,7 +911,8 @@ impl ToolHandler for SetVaultConfigTool {
         };
 
         // Store in Vault
-        vault.store_app_config(&params.deployment_hash, &params.app_code, &config)
+        vault
+            .store_app_config(&params.deployment_hash, &params.app_code, &config)
             .await
             .map_err(|e| format!("Failed to store config in Vault: {}", e))?;
 
@@ -964,14 +991,15 @@ impl ToolHandler for ListVaultConfigsTool {
             deployment_hash: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership
-        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
-            .await
-            .map_err(|e| format!("Failed to fetch deployment: {}", e))?
-            .ok_or_else(|| "Deployment not found".to_string())?;
+        let deployment =
+            db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
+                .await
+                .map_err(|e| format!("Failed to fetch deployment: {}", e))?
+                .ok_or_else(|| "Deployment not found".to_string())?;
 
         if deployment.user_id.as_deref() != Some(&context.user.id as &str) {
             return Err("Deployment not found".to_string());
@@ -980,10 +1008,13 @@ impl ToolHandler for ListVaultConfigsTool {
         // Initialize Vault service
         let vault = VaultService::from_env()
             .map_err(|e| format!("Vault error: {}", e))?
-            .ok_or_else(|| "Vault not configured. Contact support to enable config management.".to_string())?;
+            .ok_or_else(|| {
+                "Vault not configured. Contact support to enable config management.".to_string()
+            })?;
 
         // List configs
-        let apps = vault.list_app_configs(&params.deployment_hash)
+        let apps = vault
+            .list_app_configs(&params.deployment_hash)
             .await
             .map_err(|e| format!("Failed to list configs: {}", e))?;
 
@@ -1008,7 +1039,8 @@ impl ToolHandler for ListVaultConfigsTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "list_vault_configs".to_string(),
-            description: "List all app configurations stored in Vault for a deployment.".to_string(),
+            description: "List all app configurations stored in Vault for a deployment."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1039,14 +1071,15 @@ impl ToolHandler for ApplyVaultConfigTool {
             restart_after: bool,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Verify deployment ownership
-        let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
-            .await
-            .map_err(|e| format!("Failed to fetch deployment: {}", e))?
-            .ok_or_else(|| "Deployment not found".to_string())?;
+        let deployment =
+            db::deployment::fetch_by_deployment_hash(&context.pg_pool, &params.deployment_hash)
+                .await
+                .map_err(|e| format!("Failed to fetch deployment: {}", e))?
+                .ok_or_else(|| "Deployment not found".to_string())?;
 
         if deployment.user_id.as_deref() != Some(&context.user.id as &str) {
             return Err("Deployment not found".to_string());
@@ -1061,11 +1094,7 @@ impl ToolHandler for ApplyVaultConfigTool {
 
         let dispatcher = AgentDispatcher::new(&context.pg_pool);
         let command_id = dispatcher
-            .queue_command(
-                deployment.id,
-                "apply_config",
-                command_payload,
-            )
+            .queue_command(deployment.id, "apply_config", command_payload)
             .await
             .map_err(|e| format!("Failed to queue command: {}", e))?;
 

@@ -1,6 +1,5 @@
 /// Unit tests for Server model
 /// Run: cargo t model_server -- --nocapture --show-output
-
 use stacker::models::Server;
 
 #[test]
@@ -8,13 +7,22 @@ fn test_server_default_values() {
     let server = Server::default();
 
     // Check default connection mode
-    assert_eq!(server.connection_mode, "ssh", "Default connection mode should be 'ssh'");
+    assert_eq!(
+        server.connection_mode, "ssh",
+        "Default connection mode should be 'ssh'"
+    );
 
     // Check default key status
-    assert_eq!(server.key_status, "none", "Default key status should be 'none'");
+    assert_eq!(
+        server.key_status, "none",
+        "Default key status should be 'none'"
+    );
 
     // Check optional fields are None
-    assert!(server.vault_key_path.is_none(), "vault_key_path should be None by default");
+    assert!(
+        server.vault_key_path.is_none(),
+        "vault_key_path should be None by default"
+    );
     assert!(server.name.is_none(), "name should be None by default");
 }
 

@@ -21,17 +21,17 @@ pub struct GetUserProfileTool;
 impl ToolHandler for GetUserProfileTool {
     async fn execute(&self, _args: Value, context: &ToolContext) -> Result<ToolContent, String> {
         let client = UserServiceClient::new(&context.settings.user_service_url);
-        
+
         // Use the user's token from context to call User Service
         let token = context.user.access_token.as_deref().unwrap_or("");
-        
+
         let profile = client
             .get_user_profile(token)
             .await
             .map_err(|e| format!("Failed to fetch user profile: {}", e))?;
 
-        let result = serde_json::to_string(&profile)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&profile).map_err(|e| format!("Serialization error: {}", e))?;
 
         tracing::info!(user_id = %context.user.id, "Fetched user profile via MCP");
 
@@ -41,7 +41,9 @@ impl ToolHandler for GetUserProfileTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "get_user_profile".to_string(),
-            description: "Get the current user's profile information including email, name, and roles".to_string(),
+            description:
+                "Get the current user's profile information including email, name, and roles"
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -59,14 +61,14 @@ impl ToolHandler for GetSubscriptionPlanTool {
     async fn execute(&self, _args: Value, context: &ToolContext) -> Result<ToolContent, String> {
         let client = UserServiceClient::new(&context.settings.user_service_url);
         let token = context.user.access_token.as_deref().unwrap_or("");
-        
+
         let plan = client
             .get_subscription_plan(token)
             .await
             .map_err(|e| format!("Failed to fetch subscription plan: {}", e))?;
 
-        let result = serde_json::to_string(&plan)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let result =
+            serde_json::to_string(&plan).map_err(|e| format!("Serialization error: {}", e))?;
 
         tracing::info!(user_id = %context.user.id, "Fetched subscription plan via MCP");
 
@@ -94,7 +96,7 @@ impl ToolHandler for ListInstallationsTool {
     async fn execute(&self, _args: Value, context: &ToolContext) -> Result<ToolContent, String> {
         let client = UserServiceClient::new(&context.settings.user_service_url);
         let token = context.user.access_token.as_deref().unwrap_or("");
-        
+
         let installations = client
             .list_installations(token)
             .await
@@ -136,12 +138,12 @@ impl ToolHandler for GetInstallationDetailsTool {
             installation_id: i64,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let client = UserServiceClient::new(&context.settings.user_service_url);
         let token = context.user.access_token.as_deref().unwrap_or("");
-        
+
         let installation = client
             .get_installation(token, params.installation_id)
             .await
@@ -189,12 +191,12 @@ impl ToolHandler for SearchApplicationsTool {
             query: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let client = UserServiceClient::new(&context.settings.user_service_url);
         let token = context.user.access_token.as_deref().unwrap_or("");
-        
+
         let applications = client
             .search_applications(token, params.query.as_deref())
             .await

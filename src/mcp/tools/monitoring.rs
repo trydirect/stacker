@@ -6,7 +6,7 @@
 //! - Deployment-wide container status
 //!
 //! Commands are dispatched to Status Agent via Stacker's agent communication layer.
-//! 
+//!
 //! Deployment resolution is handled via `DeploymentIdentifier` which supports:
 //! - Stack Builder deployments (deployment_hash directly)
 //! - User Service installations (deployment_id → lookup hash via connector)
@@ -54,14 +54,12 @@ impl ToolHandler for GetContainerLogsTool {
             cursor: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier from args (prefers hash if both provided)
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
 
         // Resolve to deployment_hash
         let resolver = create_resolver(context);
@@ -175,14 +173,12 @@ impl ToolHandler for GetContainerHealthTool {
             app_code: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier and resolve to hash
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
         let resolver = create_resolver(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
@@ -279,18 +275,16 @@ impl ToolHandler for RestartContainerTool {
             force: bool,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         if params.app_code.trim().is_empty() {
             return Err("app_code is required to restart a specific container".to_string());
         }
 
         // Create identifier and resolve to hash
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
         let resolver = create_resolver(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
@@ -302,7 +296,7 @@ impl ToolHandler for RestartContainerTool {
             "restart".to_string(),
             context.user.id.clone(),
         )
-        .with_priority(CommandPriority::High)  // Restart is high priority
+        .with_priority(CommandPriority::High) // Restart is high priority
         .with_parameters(json!({
             "name": "stacker.restart",
             "params": {
@@ -390,14 +384,12 @@ impl ToolHandler for DiagnoseDeploymentTool {
             deployment_hash: Option<String>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier and resolve with full info
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
         let resolver = create_resolver(context);
         let info = resolver.resolve_with_info(&identifier).await?;
 
@@ -420,7 +412,9 @@ impl ToolHandler for DiagnoseDeploymentTool {
             }
             "pending" => {
                 issues.push("Deployment is still PENDING".to_string());
-                recommendations.push("Wait for deployment to complete or check for stuck processes".to_string());
+                recommendations.push(
+                    "Wait for deployment to complete or check for stuck processes".to_string(),
+                );
             }
             "running" | "completed" => {
                 // Deployment looks healthy from our perspective
@@ -431,18 +425,26 @@ impl ToolHandler for DiagnoseDeploymentTool {
         }
 
         // Check if agent is connected (check last heartbeat)
-        if let Ok(Some(agent)) = db::agent::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash).await {
+        if let Ok(Some(agent)) =
+            db::agent::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash).await
+        {
             if let Some(last_seen) = agent.last_heartbeat {
                 let now = chrono::Utc::now();
                 let diff = now.signed_duration_since(last_seen);
                 if diff.num_minutes() > 5 {
-                    issues.push(format!("Agent last seen {} minutes ago - may be offline", diff.num_minutes()));
-                    recommendations.push("Check if server is running and has network connectivity".to_string());
+                    issues.push(format!(
+                        "Agent last seen {} minutes ago - may be offline",
+                        diff.num_minutes()
+                    ));
+                    recommendations.push(
+                        "Check if server is running and has network connectivity".to_string(),
+                    );
                 }
             }
         } else {
             issues.push("No agent registered for this deployment".to_string());
-            recommendations.push("Ensure the Status Agent is installed and running on the server".to_string());
+            recommendations
+                .push("Ensure the Status Agent is installed and running on the server".to_string());
         }
 
         let result = json!({
@@ -514,18 +516,16 @@ impl ToolHandler for StopContainerTool {
             timeout: Option<u32>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         if params.app_code.trim().is_empty() {
             return Err("app_code is required to stop a specific container".to_string());
         }
 
         // Create identifier and resolve to hash
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
         let resolver = create_resolver(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
@@ -628,18 +628,16 @@ impl ToolHandler for StartContainerTool {
             app_code: String,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         if params.app_code.trim().is_empty() {
             return Err("app_code is required to start a specific container".to_string());
         }
 
         // Create identifier and resolve to hash
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
         let resolver = create_resolver(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
@@ -738,14 +736,12 @@ impl ToolHandler for GetErrorSummaryTool {
             hours: Option<u32>,
         }
 
-        let params: Args = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier and resolve to hash
-        let identifier = DeploymentIdentifier::try_from_options(
-            params.deployment_hash,
-            params.deployment_id,
-        )?;
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
         let resolver = create_resolver(context);
         let deployment_hash = resolver.resolve(&identifier).await?;
 
@@ -833,4 +829,3 @@ impl ToolHandler for GetErrorSummaryTool {
         }
     }
 }
-

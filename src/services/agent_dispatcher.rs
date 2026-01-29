@@ -1,4 +1,7 @@
-use crate::{db, helpers, models::{Command, CommandPriority}};
+use crate::{
+    db, helpers,
+    models::{Command, CommandPriority},
+};
 use helpers::VaultClient;
 use serde_json::Value;
 use sqlx::PgPool;

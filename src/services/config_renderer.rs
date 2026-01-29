@@ -115,8 +115,8 @@ impl ConfigRenderer {
             .context("Failed to add service template")?;
 
         // Initialize Vault service if configured
-        let vault_service = VaultService::from_env()
-            .map_err(|e| anyhow::anyhow!("Vault init error: {}", e))?;
+        let vault_service =
+            VaultService::from_env().map_err(|e| anyhow::anyhow!("Vault init error: {}", e))?;
 
         Ok(Self {
             tera,
@@ -154,10 +154,7 @@ impl ConfigRenderer {
             let config = AppConfig {
                 content: env_content,
                 content_type: "env".to_string(),
-                destination_path: format!(
-                    "/home/trydirect/{}/{}.env",
-                    deployment_hash, app.code
-                ),
+                destination_path: format!("/home/trydirect/{}/{}.env", deployment_hash, app.code),
                 file_mode: "0640".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -215,7 +212,10 @@ impl ConfigRenderer {
             ssl_enabled: app.ssl_enabled.unwrap_or(false),
             networks,
             depends_on,
-            restart_policy: app.restart_policy.clone().unwrap_or_else(|| "unless-stopped".to_string()),
+            restart_policy: app
+                .restart_policy
+                .clone()
+                .unwrap_or_else(|| "unless-stopped".to_string()),
             resources,
             labels,
             healthcheck,
@@ -262,14 +262,9 @@ impl ConfigRenderer {
                 let mut result = Vec::new();
                 for item in arr {
                     if let Value::Object(map) = item {
-                        let host = map
-                            .get("host")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u16;
-                        let container = map
-                            .get("container")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u16;
+                        let host = map.get("host").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                        let container =
+                            map.get("container").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
                         let protocol = map
                             .get("protocol")
                             .and_then(|v| v.as_str())
@@ -358,12 +353,10 @@ impl ConfigRenderer {
     /// Parse JSON array to Vec<String>
     fn parse_string_array(&self, value: &Option<Value>) -> Result<Vec<String>> {
         match value {
-            Some(Value::Array(arr)) => {
-                Ok(arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect())
-            }
+            Some(Value::Array(arr)) => Ok(arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()),
             None => Ok(Vec::new()),
             _ => Ok(Vec::new()),
         }
@@ -372,14 +365,24 @@ impl ConfigRenderer {
     /// Parse resources JSON to ResourceLimits
     fn parse_resources(&self, resources: &Option<Value>) -> Result<ResourceLimits> {
         match resources {
-            Some(Value::Object(map)) => {
-                Ok(ResourceLimits {
-                    cpu_limit: map.get("cpu_limit").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    memory_limit: map.get("memory_limit").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    cpu_reservation: map.get("cpu_reservation").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    memory_reservation: map.get("memory_reservation").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                })
-            }
+            Some(Value::Object(map)) => Ok(ResourceLimits {
+                cpu_limit: map
+                    .get("cpu_limit")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                memory_limit: map
+                    .get("memory_limit")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                cpu_reservation: map
+                    .get("cpu_reservation")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                memory_reservation: map
+                    .get("memory_reservation")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            }),
             None => Ok(ResourceLimits::default()),
             _ => Ok(ResourceLimits::default()),
         }
@@ -422,10 +425,22 @@ impl ConfigRenderer {
 
                 Ok(Some(HealthCheck {
                     test,
-                    interval: map.get("interval").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    timeout: map.get("timeout").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    retries: map.get("retries").and_then(|v| v.as_u64()).map(|n| n as u32),
-                    start_period: map.get("start_period").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    interval: map
+                        .get("interval")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    timeout: map
+                        .get("timeout")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    retries: map
+                        .get("retries")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as u32),
+                    start_period: map
+                        .get("start_period")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 }))
             }
             None => Ok(None),
@@ -434,11 +449,7 @@ impl ConfigRenderer {
     }
 
     /// Render docker-compose.yml from app contexts
-    fn render_compose(
-        &self,
-        apps: &[AppRenderContext],
-        project: &Project,
-    ) -> Result<String> {
+    fn render_compose(&self, apps: &[AppRenderContext], project: &Project) -> Result<String> {
         let mut context = TeraContext::new();
         context.insert("apps", apps);
         context.insert("project_name", &project.name);
@@ -555,10 +566,7 @@ impl ConfigRenderer {
         let config = AppConfig {
             content: env_content,
             content_type: "env".to_string(),
-            destination_path: format!(
-                "/home/trydirect/{}/{}.env",
-                deployment_hash, app.code
-            ),
+            destination_path: format!("/home/trydirect/{}/{}.env", deployment_hash, app.code),
             file_mode: "0640".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
@@ -744,7 +752,10 @@ mod tests {
             "DEBUG": true
         }));
         let result = renderer.parse_environment(&env).unwrap();
-        assert_eq!(result.get("DATABASE_URL").unwrap(), "postgres://localhost/db");
+        assert_eq!(
+            result.get("DATABASE_URL").unwrap(),
+            "postgres://localhost/db"
+        );
         assert_eq!(result.get("PORT").unwrap(), "8080");
         assert_eq!(result.get("DEBUG").unwrap(), "true");
     }
@@ -754,7 +765,10 @@ mod tests {
         let renderer = ConfigRenderer::new().unwrap();
         let env = Some(json!(["DATABASE_URL=postgres://localhost/db", "PORT=8080"]));
         let result = renderer.parse_environment(&env).unwrap();
-        assert_eq!(result.get("DATABASE_URL").unwrap(), "postgres://localhost/db");
+        assert_eq!(
+            result.get("DATABASE_URL").unwrap(),
+            "postgres://localhost/db"
+        );
         assert_eq!(result.get("PORT").unwrap(), "8080");
     }
 
