@@ -211,59 +211,118 @@ fn project_app_from_post(app_code: &str, project_id: i32, params: &serde_json::V
     (app, compose_content)
 }
 
-/// Extract compose content from config_files and store directly to Vault
-/// Used when deployment_id is not available but config_files contains compose
+/// Extract compose content and config files from parameters and store to Vault
+/// Used when deployment_id is not available but config_files contains compose/configs
 /// Falls back to generating compose from params if no compose file is provided
-async fn store_compose_to_vault_from_config_files(
+async fn store_configs_to_vault_from_params(
     params: &serde_json::Value,
     deployment_hash: &str,
     app_code: &str,
     vault_settings: &crate::configuration::VaultSettings,
 ) {
-    // First try to extract compose content from config_files
-    let compose_content = params.get("config_files")
-        .and_then(|v| v.as_array())
-        .and_then(|files| {
-            files.iter().find_map(|file| {
-                let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                if file_name == "compose" || file_name == "docker-compose.yml" || file_name == "docker-compose.yaml" {
-                    file.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
-                } else {
-                    None
-                }
-            })
-        })
-        // Fall back to generating compose from params using the builder
-        .or_else(|| {
-            tracing::info!("No compose in config_files, generating from params for app_code: {}", app_code);
-            generate_single_app_compose(app_code, params).ok()
-        });
+    let vault = match VaultService::from_settings(vault_settings) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Failed to initialize Vault: {}", e);
+            return;
+        }
+    };
 
+    // Process config_files array
+    let config_files = params.get("config_files").and_then(|v| v.as_array());
+    
+    let mut compose_content: Option<String> = None;
+    let mut app_configs: Vec<(String, crate::services::AppConfig)> = Vec::new();
+
+    if let Some(files) = config_files {
+        for file in files {
+            let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let content = file.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            
+            if file_name == "compose" || file_name == "docker-compose.yml" || file_name == "docker-compose.yaml" {
+                // This is the compose file
+                compose_content = Some(content.to_string());
+            } else if !content.is_empty() {
+                // This is an app config file (e.g., telegraf.conf)
+                let destination_path = file.get("destination_path")
+                    .and_then(|p| p.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("/root/{}/{}", app_code, file_name));
+                
+                let file_mode = file.get("file_mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("0644")
+                    .to_string();
+                
+                let content_type = if file_name.ends_with(".json") {
+                    "application/json"
+                } else if file_name.ends_with(".yml") || file_name.ends_with(".yaml") {
+                    "text/yaml"
+                } else if file_name.ends_with(".toml") {
+                    "text/toml"
+                } else if file_name.ends_with(".conf") {
+                    "text/plain"
+                } else {
+                    "text/plain"
+                };
+
+                let config = crate::services::AppConfig {
+                    content: content.to_string(),
+                    content_type: content_type.to_string(),
+                    destination_path,
+                    file_mode,
+                    owner: file.get("owner").and_then(|o| o.as_str()).map(|s| s.to_string()),
+                    group: file.get("group").and_then(|g| g.as_str()).map(|s| s.to_string()),
+                };
+                
+                // Store under "{app_code}_config" key for retrieval by status panel
+                let config_key = format!("{}_config", app_code);
+                app_configs.push((config_key, config));
+            }
+        }
+    }
+
+    // Fall back to generating compose from params if not found in config_files
+    if compose_content.is_none() {
+        tracing::info!("No compose in config_files, generating from params for app_code: {}", app_code);
+        compose_content = generate_single_app_compose(app_code, params).ok();
+    }
+
+    // Store compose to Vault
     if let Some(compose) = compose_content {
         tracing::info!(
             "Storing compose to Vault for deployment_hash: {}, app_code: {}",
             deployment_hash,
             app_code
         );
-        match VaultService::from_settings(vault_settings) {
-            Ok(vault) => {
-                let config = crate::services::AppConfig {
-                    content: compose,
-                    content_type: "text/yaml".to_string(),
-                    destination_path: format!("/app/{}/docker-compose.yml", app_code),
-                    file_mode: "0644".to_string(),
-                    owner: None,
-                    group: None,
-                };
-                match vault.store_app_config(deployment_hash, app_code, &config).await {
-                    Ok(_) => tracing::info!("Compose content stored in Vault for {}", app_code),
-                    Err(e) => tracing::warn!("Failed to store compose in Vault: {}", e),
-                }
-            }
-            Err(e) => tracing::warn!("Failed to initialize Vault for compose storage: {}", e),
+        let config = crate::services::AppConfig {
+            content: compose,
+            content_type: "text/yaml".to_string(),
+            destination_path: format!("/app/{}/docker-compose.yml", app_code),
+            file_mode: "0644".to_string(),
+            owner: None,
+            group: None,
+        };
+        match vault.store_app_config(deployment_hash, app_code, &config).await {
+            Ok(_) => tracing::info!("Compose content stored in Vault for {}", app_code),
+            Err(e) => tracing::warn!("Failed to store compose in Vault: {}", e),
         }
     } else {
         tracing::warn!("Could not extract or generate compose for app_code: {} - missing image parameter", app_code);
+    }
+
+    // Store app config files to Vault
+    for (config_key, config) in app_configs {
+        tracing::info!(
+            "Storing app config to Vault: deployment_hash={}, key={}, dest={}",
+            deployment_hash,
+            config_key,
+            config.destination_path
+        );
+        match vault.store_app_config(deployment_hash, &config_key, &config).await {
+            Ok(_) => tracing::info!("App config stored in Vault for {}", config_key),
+            Err(e) => tracing::warn!("Failed to store app config in Vault: {}", e),
+        }
     }
 }
 
@@ -382,9 +441,9 @@ pub async fn create_handler(
         if let (Some(deployment_id), Some(app_code), Some(app_params)) = (deployment_id, app_code, app_params) {
             upsert_app_config_for_deploy(pg_pool.get_ref(), deployment_id, app_code, app_params, &req.deployment_hash).await;
         } else if let Some(app_code) = app_code {
-            // Even without deployment_id, try to store compose from config_files directly to Vault
+            // Even without deployment_id, try to store compose and config files directly to Vault
             if let Some(params) = req.parameters.as_ref() {
-                store_compose_to_vault_from_config_files(params, &req.deployment_hash, app_code, &settings.vault).await;
+                store_configs_to_vault_from_params(params, &req.deployment_hash, app_code, &settings.vault).await;
             }
         } else {
             tracing::warn!("Missing app_code in deploy_app arguments");
@@ -470,7 +529,7 @@ pub async fn create_handler(
         .created("Command created successfully"))
 }
 
-/// Enrich deploy_app command parameters with compose_content from Vault
+/// Enrich deploy_app command parameters with compose_content and config_files from Vault
 /// If compose_content is already provided in the request, keep it as-is
 async fn enrich_deploy_app_with_compose(
     deployment_hash: &str,
@@ -479,25 +538,15 @@ async fn enrich_deploy_app_with_compose(
 ) -> Option<serde_json::Value> {
     let mut params = params.unwrap_or_else(|| json!({}));
 
-    // If compose_content is already provided, use it as-is
-    if params.get("compose_content").and_then(|v| v.as_str()).is_some() {
-        tracing::debug!("deploy_app already has compose_content, skipping Vault fetch");
-        return Some(params);
-    }
-
     // Get app_code from parameters - compose is stored under app_code key in Vault
+    // Clone to avoid borrowing params while we need to mutate it later
     let app_code = params
         .get("app_code")
         .and_then(|v| v.as_str())
-        .unwrap_or("_compose");  // Fallback for backwards compatibility
+        .unwrap_or("_compose")
+        .to_string();
 
-    tracing::debug!(
-        deployment_hash = %deployment_hash,
-        app_code = %app_code,
-        "Looking up compose content in Vault"
-    );
-
-    // Try to fetch compose content from Vault using settings
+    // Initialize Vault client
     let vault = match VaultService::from_settings(vault_settings) {
         Ok(v) => v,
         Err(e) => {
@@ -506,25 +555,78 @@ async fn enrich_deploy_app_with_compose(
         }
     };
 
-    // Fetch compose config - stored under app_code key (e.g., "telegraf")
-    match vault.fetch_app_config(deployment_hash, app_code).await {
-        Ok(compose_config) => {
-            tracing::info!(
-                deployment_hash = %deployment_hash,
-                app_code = %app_code,
-                "Enriched deploy_app command with compose_content from Vault"
-            );
-            if let Some(obj) = params.as_object_mut() {
-                obj.insert("compose_content".to_string(), json!(compose_config.content));
+    // If compose_content is not already provided, fetch from Vault
+    if params.get("compose_content").and_then(|v| v.as_str()).is_none() {
+        tracing::debug!(
+            deployment_hash = %deployment_hash,
+            app_code = %app_code,
+            "Looking up compose content in Vault"
+        );
+
+        // Fetch compose config - stored under app_code key (e.g., "telegraf")
+        match vault.fetch_app_config(deployment_hash, &app_code).await {
+            Ok(compose_config) => {
+                tracing::info!(
+                    deployment_hash = %deployment_hash,
+                    app_code = %app_code,
+                    "Enriched deploy_app command with compose_content from Vault"
+                );
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("compose_content".to_string(), json!(compose_config.content));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    deployment_hash = %deployment_hash,
+                    app_code = %app_code,
+                    error = %e,
+                    "Failed to fetch compose from Vault, deploy_app may fail if compose not on disk"
+                );
             }
         }
-        Err(e) => {
-            tracing::warn!(
-                deployment_hash = %deployment_hash,
-                app_code = %app_code,
-                error = %e,
-                "Failed to fetch compose from Vault, deploy_app may fail if compose not on disk"
-            );
+    } else {
+        tracing::debug!("deploy_app already has compose_content, skipping Vault fetch");
+    }
+
+    // If config_files not provided, try to fetch app-specific config from Vault
+    // This fetches configs like telegraf.conf, nginx.conf etc. stored under "{app_code}_config" key
+    if params.get("config_files").is_none() {
+        let config_key = format!("{}_config", app_code);
+        tracing::debug!(
+            deployment_hash = %deployment_hash,
+            config_key = %config_key,
+            "Looking up app config files in Vault"
+        );
+
+        match vault.fetch_app_config(deployment_hash, &config_key).await {
+            Ok(app_config) => {
+                tracing::info!(
+                    deployment_hash = %deployment_hash,
+                    app_code = %app_code,
+                    destination = %app_config.destination_path,
+                    "Enriched deploy_app command with config_files from Vault"
+                );
+                // Convert AppConfig to the format expected by status panel
+                let config_file = json!({
+                    "content": app_config.content,
+                    "content_type": app_config.content_type,
+                    "destination_path": app_config.destination_path,
+                    "file_mode": app_config.file_mode,
+                    "owner": app_config.owner,
+                    "group": app_config.group,
+                });
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("config_files".to_string(), json!([config_file]));
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    deployment_hash = %deployment_hash,
+                    config_key = %config_key,
+                    error = %e,
+                    "No app config found in Vault (this is normal for apps without config files)"
+                );
+            }
         }
     }
 
@@ -764,9 +866,9 @@ mod tests {
 
     #[test]
     fn test_extract_compose_from_config_files_for_vault() {
-        // This tests the extraction logic used in store_compose_to_vault_from_config_files
+        // This tests the extraction logic used in store_configs_to_vault_from_params
         
-        // Helper to extract compose the same way as store_compose_to_vault_from_config_files
+        // Helper to extract compose the same way as store_configs_to_vault_from_params
         fn extract_compose(params: &serde_json::Value) -> Option<String> {
             params.get("config_files")
                 .and_then(|v| v.as_array())
