@@ -1,8 +1,9 @@
 use crate::db;
 use crate::forms::status_panel;
+use crate::helpers::project::builder::generate_single_app_compose;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
-use crate::services::VaultService;
+use crate::services::{VaultService, ProjectAppService};
 use crate::configuration::Settings;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,305 @@ pub struct CreateCommandResponse {
     pub status: String,
 }
 
+/// Intermediate struct for mapping POST parameters to ProjectApp fields
+#[derive(Debug, Default)]
+struct ProjectAppPostArgs {
+    name: Option<String>,
+    image: Option<String>,
+    environment: Option<serde_json::Value>,
+    ports: Option<serde_json::Value>,
+    volumes: Option<serde_json::Value>,
+    config_files: Option<serde_json::Value>,
+    compose_content: Option<String>,
+    domain: Option<String>,
+    ssl_enabled: Option<bool>,
+    resources: Option<serde_json::Value>,
+    restart_policy: Option<String>,
+    command: Option<String>,
+    entrypoint: Option<String>,
+    networks: Option<serde_json::Value>,
+    depends_on: Option<serde_json::Value>,
+    healthcheck: Option<serde_json::Value>,
+    labels: Option<serde_json::Value>,
+    enabled: Option<bool>,
+    deploy_order: Option<i32>,
+}
+
+impl From<&serde_json::Value> for ProjectAppPostArgs {
+    fn from(params: &serde_json::Value) -> Self {
+        let mut args = ProjectAppPostArgs::default();
+
+        // Basic fields
+        if let Some(name) = params.get("name").and_then(|v| v.as_str()) {
+            args.name = Some(name.to_string());
+        }
+        if let Some(image) = params.get("image").and_then(|v| v.as_str()) {
+            args.image = Some(image.to_string());
+        }
+
+        // Environment variables
+        if let Some(env) = params.get("env") {
+            args.environment = Some(env.clone());
+        }
+
+        // Port mappings
+        if let Some(ports) = params.get("ports") {
+            args.ports = Some(ports.clone());
+        }
+
+        // Volume mounts (separate from config_files)
+        if let Some(volumes) = params.get("volumes") {
+            args.volumes = Some(volumes.clone());
+        }
+
+        // Config files - extract compose content and store remaining files
+        if let Some(config_files) = params.get("config_files").and_then(|v| v.as_array()) {
+            let mut non_compose_files = Vec::new();
+            for file in config_files {
+                let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if file_name == "compose" || file_name == "docker-compose.yml" || file_name == "docker-compose.yaml" {
+                    // Extract compose content
+                    if let Some(content) = file.get("content").and_then(|c| c.as_str()) {
+                        args.compose_content = Some(content.to_string());
+                    }
+                } else {
+                    non_compose_files.push(file.clone());
+                }
+            }
+            if !non_compose_files.is_empty() {
+                args.config_files = Some(serde_json::Value::Array(non_compose_files));
+            }
+        }
+
+        // Domain and SSL
+        if let Some(domain) = params.get("domain").and_then(|v| v.as_str()) {
+            args.domain = Some(domain.to_string());
+        }
+        if let Some(ssl) = params.get("ssl_enabled").and_then(|v| v.as_bool()) {
+            args.ssl_enabled = Some(ssl);
+        }
+
+        // Resources
+        if let Some(resources) = params.get("resources") {
+            args.resources = Some(resources.clone());
+        }
+
+        // Container settings
+        if let Some(restart_policy) = params.get("restart_policy").and_then(|v| v.as_str()) {
+            args.restart_policy = Some(restart_policy.to_string());
+        }
+        if let Some(command) = params.get("command").and_then(|v| v.as_str()) {
+            args.command = Some(command.to_string());
+        }
+        if let Some(entrypoint) = params.get("entrypoint").and_then(|v| v.as_str()) {
+            args.entrypoint = Some(entrypoint.to_string());
+        }
+
+        // Networks and dependencies
+        if let Some(networks) = params.get("networks") {
+            args.networks = Some(networks.clone());
+        }
+        if let Some(depends_on) = params.get("depends_on") {
+            args.depends_on = Some(depends_on.clone());
+        }
+
+        // Healthcheck
+        if let Some(healthcheck) = params.get("healthcheck") {
+            args.healthcheck = Some(healthcheck.clone());
+        }
+
+        // Labels
+        if let Some(labels) = params.get("labels") {
+            args.labels = Some(labels.clone());
+        }
+
+        // Deployment settings
+        if let Some(enabled) = params.get("enabled").and_then(|v| v.as_bool()) {
+            args.enabled = Some(enabled);
+        }
+        if let Some(deploy_order) = params.get("deploy_order").and_then(|v| v.as_i64()) {
+            args.deploy_order = Some(deploy_order as i32);
+        }
+
+        args
+    }
+}
+
+/// Context for converting ProjectAppPostArgs to ProjectApp
+struct ProjectAppContext<'a> {
+    app_code: &'a str,
+    project_id: i32,
+}
+
+impl ProjectAppPostArgs {
+    /// Convert to ProjectApp with the given context
+    fn into_project_app(self, ctx: ProjectAppContext<'_>) -> crate::models::ProjectApp {
+        let mut app = crate::models::ProjectApp::default();
+        app.project_id = ctx.project_id;
+        app.code = ctx.app_code.to_string();
+        app.name = self.name.unwrap_or_else(|| ctx.app_code.to_string());
+        app.image = self.image.unwrap_or_default();
+        app.environment = self.environment;
+        app.ports = self.ports;
+        app.volumes = self.volumes;
+        app.domain = self.domain;
+        app.ssl_enabled = self.ssl_enabled;
+        app.resources = self.resources;
+        app.restart_policy = self.restart_policy;
+        app.command = self.command;
+        app.entrypoint = self.entrypoint;
+        app.networks = self.networks;
+        app.depends_on = self.depends_on;
+        app.healthcheck = self.healthcheck;
+        app.labels = self.labels;
+        app.enabled = self.enabled.or(Some(true));
+        app.deploy_order = self.deploy_order;
+
+        // Store non-compose config files in labels
+        if let Some(config_files) = self.config_files {
+            let mut labels = app.labels.clone().unwrap_or(json!({}));
+            if let Some(obj) = labels.as_object_mut() {
+                obj.insert("config_files".to_string(), config_files);
+            }
+            app.labels = Some(labels);
+        }
+
+        app
+    }
+}
+
+/// Map POST parameters to ProjectApp
+/// Also returns the compose_content separately for Vault storage
+fn project_app_from_post(app_code: &str, project_id: i32, params: &serde_json::Value) -> (crate::models::ProjectApp, Option<String>) {
+    let args = ProjectAppPostArgs::from(params);
+    let compose_content = args.compose_content.clone();
+
+    let ctx = ProjectAppContext { app_code, project_id };
+    let app = args.into_project_app(ctx);
+
+    (app, compose_content)
+}
+
+/// Extract compose content from config_files and store directly to Vault
+/// Used when deployment_id is not available but config_files contains compose
+/// Falls back to generating compose from params if no compose file is provided
+async fn store_compose_to_vault_from_config_files(
+    params: &serde_json::Value,
+    deployment_hash: &str,
+    app_code: &str,
+    vault_settings: &crate::configuration::VaultSettings,
+) {
+    // First try to extract compose content from config_files
+    let compose_content = params.get("config_files")
+        .and_then(|v| v.as_array())
+        .and_then(|files| {
+            files.iter().find_map(|file| {
+                let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if file_name == "compose" || file_name == "docker-compose.yml" || file_name == "docker-compose.yaml" {
+                    file.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        // Fall back to generating compose from params using the builder
+        .or_else(|| {
+            tracing::info!("No compose in config_files, generating from params for app_code: {}", app_code);
+            generate_single_app_compose(app_code, params).ok()
+        });
+
+    if let Some(compose) = compose_content {
+        tracing::info!(
+            "Storing compose to Vault for deployment_hash: {}, app_code: {}",
+            deployment_hash,
+            app_code
+        );
+        match VaultService::from_settings(vault_settings) {
+            Ok(vault) => {
+                let config = crate::services::AppConfig {
+                    content: compose,
+                    content_type: "text/yaml".to_string(),
+                    destination_path: format!("/app/{}/docker-compose.yml", app_code),
+                    file_mode: "0644".to_string(),
+                    owner: None,
+                    group: None,
+                };
+                match vault.store_app_config(deployment_hash, app_code, &config).await {
+                    Ok(_) => tracing::info!("Compose content stored in Vault for {}", app_code),
+                    Err(e) => tracing::warn!("Failed to store compose in Vault: {}", e),
+                }
+            }
+            Err(e) => tracing::warn!("Failed to initialize Vault for compose storage: {}", e),
+        }
+    } else {
+        tracing::warn!("Could not extract or generate compose for app_code: {} - missing image parameter", app_code);
+    }
+}
+
+/// Upsert app config and sync to Vault for deploy_app
+async fn upsert_app_config_for_deploy(
+    pg_pool: &sqlx::PgPool,
+    deployment_id: i32,
+    app_code: &str,
+    parameters: &serde_json::Value,
+    deployment_hash: &str,
+) {
+    // Fetch project from DB
+    let project = match crate::db::project::fetch(pg_pool, deployment_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            tracing::warn!("Project not found for deployment_id: {}", deployment_id);
+            return;
+        },
+        Err(e) => {
+            tracing::warn!("Failed to fetch project: {}", e);
+            return;
+        }
+    };
+
+    // Map parameters to ProjectApp using From trait
+    let (project_app, compose_content) = project_app_from_post(app_code, project.id, parameters);
+
+    // Upsert app config and sync to Vault
+    let app_service = match ProjectAppService::new(Arc::new(pg_pool.clone())) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to create ProjectAppService: {}", e);
+            return;
+        }
+    };
+    match app_service.upsert(&project_app, &project, deployment_hash).await {
+        Ok(_) => tracing::info!("App config upserted and synced to Vault for {}", app_code),
+        Err(e) => tracing::warn!("Failed to upsert app config: {}", e),
+    }
+
+    // Store compose_content in Vault separately if provided
+    if let Some(compose) = compose_content {
+        let vault_settings = crate::configuration::get_configuration()
+            .map(|s| s.vault)
+            .ok();
+        if let Some(vault_settings) = vault_settings {
+            match VaultService::from_settings(&vault_settings) {
+                Ok(vault) => {
+                    let config = crate::services::AppConfig {
+                        content: compose,
+                        content_type: "text/yaml".to_string(),
+                        destination_path: format!("/app/{}/docker-compose.yml", app_code),
+                        file_mode: "0644".to_string(),
+                        owner: None,
+                        group: None,
+                    };
+                    match vault.store_app_config(deployment_hash, app_code, &config).await {
+                        Ok(_) => tracing::info!("Compose content stored in Vault for {}", app_code),
+                        Err(e) => tracing::warn!("Failed to store compose in Vault: {}", e),
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to initialize Vault for compose storage: {}", e),
+            }
+        }
+    }
+}
+
 #[tracing::instrument(name = "Create command", skip(pg_pool, user, settings))]
 #[post("")]
 pub async fn create_handler(
@@ -39,6 +339,12 @@ pub async fn create_handler(
     pg_pool: web::Data<PgPool>,
     settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
+    tracing::info!(
+        "[CREATE COMMAND HANDLER] User: {}, Deployment: {}, Command Type: {}",
+        user.id,
+        req.deployment_hash,
+        req.command_type
+    );
     if req.deployment_hash.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
     }
@@ -55,8 +361,35 @@ pub async fn create_handler(
             },
         )?;
 
-    // For deploy_app commands, enrich with compose_content from Vault if not provided
+
+    // For deploy_app commands, upsert app config and sync to Vault before enriching parameters
     let final_parameters = if req.command_type == "deploy_app" {
+        let deployment_id = req.parameters.as_ref()
+            .and_then(|p| p.get("deployment_id"))
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+        let app_code = req.parameters.as_ref()
+            .and_then(|p| p.get("app_code"))
+            .and_then(|v| v.as_str());
+        let app_params = req.parameters.as_ref()
+            .and_then(|p| p.get("parameters"));
+
+        tracing::debug!(
+            "deploy_app command detected, upserting app config for deployment_id: {:?}, app_code: {:?}",
+            deployment_id,
+            app_code
+        );
+        if let (Some(deployment_id), Some(app_code), Some(app_params)) = (deployment_id, app_code, app_params) {
+            upsert_app_config_for_deploy(pg_pool.get_ref(), deployment_id, app_code, app_params, &req.deployment_hash).await;
+        } else if let Some(app_code) = app_code {
+            // Even without deployment_id, try to store compose from config_files directly to Vault
+            if let Some(params) = req.parameters.as_ref() {
+                store_compose_to_vault_from_config_files(params, &req.deployment_hash, app_code, &settings.vault).await;
+            }
+        } else {
+            tracing::warn!("Missing app_code in deploy_app arguments");
+        }
+
         enrich_deploy_app_with_compose(&req.deployment_hash, validated_parameters, &settings.vault).await
     } else {
         validated_parameters
@@ -152,6 +485,18 @@ async fn enrich_deploy_app_with_compose(
         return Some(params);
     }
 
+    // Get app_code from parameters - compose is stored under app_code key in Vault
+    let app_code = params
+        .get("app_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("_compose");  // Fallback for backwards compatibility
+
+    tracing::debug!(
+        deployment_hash = %deployment_hash,
+        app_code = %app_code,
+        "Looking up compose content in Vault"
+    );
+
     // Try to fetch compose content from Vault using settings
     let vault = match VaultService::from_settings(vault_settings) {
         Ok(v) => v,
@@ -161,11 +506,12 @@ async fn enrich_deploy_app_with_compose(
         }
     };
 
-    // Fetch compose config (stored under "_compose" key)
-    match vault.fetch_app_config(deployment_hash, "_compose").await {
+    // Fetch compose config - stored under app_code key (e.g., "telegraf")
+    match vault.fetch_app_config(deployment_hash, app_code).await {
         Ok(compose_config) => {
             tracing::info!(
                 deployment_hash = %deployment_hash,
+                app_code = %app_code,
                 "Enriched deploy_app command with compose_content from Vault"
             );
             if let Some(obj) = params.as_object_mut() {
@@ -175,6 +521,7 @@ async fn enrich_deploy_app_with_compose(
         Err(e) => {
             tracing::warn!(
                 deployment_hash = %deployment_hash,
+                app_code = %app_code,
                 error = %e,
                 "Failed to fetch compose from Vault, deploy_app may fail if compose not on disk"
             );
@@ -182,4 +529,399 @@ async fn enrich_deploy_app_with_compose(
     }
 
     Some(params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Example payload from the user's request
+    fn example_deploy_app_payload() -> serde_json::Value {
+        json!({
+            "deployment_id": 13513,
+            "app_code": "telegraf",
+            "parameters": {
+                "env": {
+                    "ansible_telegraf_influx_token": "FFolbg71mZjhKisMpAxYD5eEfxPtW3HRpTZHtv3XEYZRgzi3VGOxgLDhCYEvovMppvYuqSsbSTI8UFZqFwOx5Q==",
+                    "ansible_telegraf_influx_bucket": "srv_localhost",
+                    "ansible_telegraf_influx_org": "telegraf_org_4",
+                    "telegraf_flush_interval": "10s",
+                    "telegraf_interval": "10s",
+                    "telegraf_role": "server"
+                },
+                "ports": [
+                    {"port": null, "protocol": ["8200"]}
+                ],
+                "config_files": [
+                    {
+                        "name": "telegraf.conf",
+                        "content": "# Telegraf configuration\n[agent]\n  interval = \"10s\"",
+                        "variables": {}
+                    },
+                    {
+                        "name": "compose",
+                        "content": "services:\n  telegraf:\n    image: telegraf:latest\n    container_name: telegraf",
+                        "variables": {}
+                    }
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn test_project_app_post_args_from_params() {
+        let payload = example_deploy_app_payload();
+        let params = payload.get("parameters").unwrap();
+
+        let args = ProjectAppPostArgs::from(params);
+
+        // Check environment is extracted
+        assert!(args.environment.is_some());
+        let env = args.environment.as_ref().unwrap();
+        assert_eq!(env.get("telegraf_role").and_then(|v| v.as_str()), Some("server"));
+        assert_eq!(env.get("telegraf_interval").and_then(|v| v.as_str()), Some("10s"));
+
+        // Check ports are extracted
+        assert!(args.ports.is_some());
+        let ports = args.ports.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(ports.len(), 1);
+
+        // Check compose_content is extracted from config_files
+        assert!(args.compose_content.is_some());
+        let compose = args.compose_content.as_ref().unwrap();
+        assert!(compose.contains("telegraf:latest"));
+
+        // Check non-compose config files are preserved
+        assert!(args.config_files.is_some());
+        let config_files = args.config_files.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(config_files.len(), 1);
+        assert_eq!(config_files[0].get("name").and_then(|v| v.as_str()), Some("telegraf.conf"));
+    }
+
+    #[test]
+    fn test_project_app_from_post_basic() {
+        let payload = example_deploy_app_payload();
+        let params = payload.get("parameters").unwrap();
+        let app_code = "telegraf";
+        let project_id = 42;
+
+        let (app, compose_content) = project_app_from_post(app_code, project_id, params);
+
+        // Check basic fields
+        assert_eq!(app.project_id, project_id);
+        assert_eq!(app.code, "telegraf");
+        assert_eq!(app.name, "telegraf"); // Defaults to app_code
+
+        // Check environment is set
+        assert!(app.environment.is_some());
+        let env = app.environment.as_ref().unwrap();
+        assert_eq!(env.get("telegraf_role").and_then(|v| v.as_str()), Some("server"));
+
+        // Check ports are set
+        assert!(app.ports.is_some());
+
+        // Check enabled defaults to true
+        assert_eq!(app.enabled, Some(true));
+
+        // Check compose_content is returned separately
+        assert!(compose_content.is_some());
+        assert!(compose_content.as_ref().unwrap().contains("telegraf:latest"));
+
+        // Check config_files are stored in labels
+        assert!(app.labels.is_some());
+        let labels = app.labels.as_ref().unwrap();
+        assert!(labels.get("config_files").is_some());
+    }
+
+    #[test]
+    fn test_project_app_from_post_with_all_fields() {
+        let params = json!({
+            "name": "My Telegraf App",
+            "image": "telegraf:1.28",
+            "env": {"KEY": "value"},
+            "ports": [{"host": 8080, "container": 80}],
+            "volumes": ["/data:/app/data"],
+            "domain": "telegraf.example.com",
+            "ssl_enabled": true,
+            "resources": {"cpu_limit": "1", "memory_limit": "512m"},
+            "restart_policy": "always",
+            "command": "/bin/sh -c 'telegraf'",
+            "entrypoint": "/entrypoint.sh",
+            "networks": ["default_network"],
+            "depends_on": ["influxdb"],
+            "healthcheck": {"test": ["CMD", "curl", "-f", "http://localhost"]},
+            "labels": {"app": "telegraf"},
+            "enabled": false,
+            "deploy_order": 5,
+            "config_files": [
+                {"name": "docker-compose.yml", "content": "version: '3'", "variables": {}}
+            ]
+        });
+
+        let (app, compose_content) = project_app_from_post("telegraf", 100, &params);
+
+        assert_eq!(app.name, "My Telegraf App");
+        assert_eq!(app.image, "telegraf:1.28");
+        assert_eq!(app.domain, Some("telegraf.example.com".to_string()));
+        assert_eq!(app.ssl_enabled, Some(true));
+        assert_eq!(app.restart_policy, Some("always".to_string()));
+        assert_eq!(app.command, Some("/bin/sh -c 'telegraf'".to_string()));
+        assert_eq!(app.entrypoint, Some("/entrypoint.sh".to_string()));
+        assert_eq!(app.enabled, Some(false));
+        assert_eq!(app.deploy_order, Some(5));
+
+        // docker-compose.yml should be extracted as compose_content
+        assert!(compose_content.is_some());
+        assert_eq!(compose_content.as_ref().unwrap(), "version: '3'");
+    }
+
+    #[test]
+    fn test_compose_extraction_from_different_names() {
+        // Test "compose" name
+        let params1 = json!({
+            "config_files": [{"name": "compose", "content": "compose-content"}]
+        });
+        let args1 = ProjectAppPostArgs::from(&params1);
+        assert_eq!(args1.compose_content, Some("compose-content".to_string()));
+
+        // Test "docker-compose.yml" name
+        let params2 = json!({
+            "config_files": [{"name": "docker-compose.yml", "content": "docker-compose-content"}]
+        });
+        let args2 = ProjectAppPostArgs::from(&params2);
+        assert_eq!(args2.compose_content, Some("docker-compose-content".to_string()));
+
+        // Test "docker-compose.yaml" name
+        let params3 = json!({
+            "config_files": [{"name": "docker-compose.yaml", "content": "yaml-content"}]
+        });
+        let args3 = ProjectAppPostArgs::from(&params3);
+        assert_eq!(args3.compose_content, Some("yaml-content".to_string()));
+    }
+
+    #[test]
+    fn test_non_compose_files_preserved() {
+        let params = json!({
+            "config_files": [
+                {"name": "telegraf.conf", "content": "telegraf config"},
+                {"name": "nginx.conf", "content": "nginx config"},
+                {"name": "compose", "content": "compose content"}
+            ]
+        });
+
+        let args = ProjectAppPostArgs::from(&params);
+
+        // Compose is extracted
+        assert_eq!(args.compose_content, Some("compose content".to_string()));
+
+        // Other files are preserved
+        let config_files = args.config_files.unwrap();
+        let files = config_files.as_array().unwrap();
+        assert_eq!(files.len(), 2);
+
+        let names: Vec<&str> = files.iter()
+            .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert!(names.contains(&"telegraf.conf"));
+        assert!(names.contains(&"nginx.conf"));
+        assert!(!names.contains(&"compose"));
+    }
+
+    #[test]
+    fn test_empty_params() {
+        let params = json!({});
+        let (app, compose_content) = project_app_from_post("myapp", 1, &params);
+
+        assert_eq!(app.code, "myapp");
+        assert_eq!(app.name, "myapp"); // Defaults to app_code
+        assert_eq!(app.image, ""); // Empty default
+        assert_eq!(app.enabled, Some(true)); // Default enabled
+        assert!(compose_content.is_none());
+    }
+
+    #[test]
+    fn test_into_project_app_preserves_context() {
+        let args = ProjectAppPostArgs {
+            name: Some("Custom Name".to_string()),
+            image: Some("nginx:latest".to_string()),
+            environment: Some(json!({"FOO": "bar"})),
+            ..Default::default()
+        };
+
+        let ctx = ProjectAppContext {
+            app_code: "nginx",
+            project_id: 999,
+        };
+
+        let app = args.into_project_app(ctx);
+
+        assert_eq!(app.project_id, 999);
+        assert_eq!(app.code, "nginx");
+        assert_eq!(app.name, "Custom Name");
+        assert_eq!(app.image, "nginx:latest");
+    }
+
+    #[test]
+    fn test_extract_compose_from_config_files_for_vault() {
+        // This tests the extraction logic used in store_compose_to_vault_from_config_files
+        
+        // Helper to extract compose the same way as store_compose_to_vault_from_config_files
+        fn extract_compose(params: &serde_json::Value) -> Option<String> {
+            params.get("config_files")
+                .and_then(|v| v.as_array())
+                .and_then(|files| {
+                    files.iter().find_map(|file| {
+                        let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        if file_name == "compose" || file_name == "docker-compose.yml" || file_name == "docker-compose.yaml" {
+                            file.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                })
+        }
+
+        // Test with "compose" name
+        let params1 = json!({
+            "app_code": "telegraf",
+            "config_files": [
+                {"name": "telegraf.conf", "content": "config content"},
+                {"name": "compose", "content": "services:\n  telegraf:\n    image: telegraf:latest"}
+            ]
+        });
+        let compose1 = extract_compose(&params1);
+        assert!(compose1.is_some());
+        assert!(compose1.unwrap().contains("telegraf:latest"));
+
+        // Test with "docker-compose.yml" name
+        let params2 = json!({
+            "app_code": "nginx",
+            "config_files": [
+                {"name": "docker-compose.yml", "content": "version: '3'\nservices:\n  nginx:\n    image: nginx:alpine"}
+            ]
+        });
+        let compose2 = extract_compose(&params2);
+        assert!(compose2.is_some());
+        assert!(compose2.unwrap().contains("nginx:alpine"));
+
+        // Test with no compose file
+        let params3 = json!({
+            "app_code": "myapp",
+            "config_files": [
+                {"name": "app.conf", "content": "some config"}
+            ]
+        });
+        let compose3 = extract_compose(&params3);
+        assert!(compose3.is_none());
+
+        // Test with empty config_files
+        let params4 = json!({
+            "app_code": "myapp",
+            "config_files": []
+        });
+        let compose4 = extract_compose(&params4);
+        assert!(compose4.is_none());
+
+        // Test with no config_files key
+        let params5 = json!({
+            "app_code": "myapp"
+        });
+        let compose5 = extract_compose(&params5);
+        assert!(compose5.is_none());
+    }
+
+    #[test]
+    fn test_generate_single_app_compose() {
+        // Test with full parameters
+        let params = json!({
+            "image": "nginx:latest",
+            "restart_policy": "always",
+            "env": {
+                "ENV_VAR1": "value1",
+                "ENV_VAR2": "value2"
+            },
+            "ports": [
+                {"host": 80, "container": 80},
+                {"host": 443, "container": 443}
+            ],
+            "volumes": [
+                {"source": "/data/nginx", "target": "/usr/share/nginx/html"}
+            ],
+            "networks": ["my_network"],
+            "depends_on": ["postgres"],
+            "labels": {
+                "traefik.enable": "true"
+            }
+        });
+        
+        let compose = generate_single_app_compose("nginx", &params);
+        assert!(compose.is_ok());
+        let content = compose.unwrap();
+        
+        // Verify key elements (using docker_compose_types serialization format)
+        assert!(content.contains("image: nginx:latest"));
+        assert!(content.contains("restart: always"));
+        assert!(content.contains("ENV_VAR1"));
+        assert!(content.contains("value1"));
+        assert!(content.contains("80:80"));
+        assert!(content.contains("443:443"));
+        assert!(content.contains("/data/nginx:/usr/share/nginx/html"));
+        assert!(content.contains("my_network"));
+        assert!(content.contains("postgres"));
+        assert!(content.contains("traefik.enable"));
+
+        // Test with minimal parameters (just image)
+        let minimal_params = json!({
+            "image": "redis:alpine"
+        });
+        let minimal_compose = generate_single_app_compose("redis", &minimal_params);
+        assert!(minimal_compose.is_ok());
+        let minimal_content = minimal_compose.unwrap();
+        assert!(minimal_content.contains("image: redis:alpine"));
+        assert!(minimal_content.contains("restart: unless-stopped")); // default
+        assert!(minimal_content.contains("trydirect_network")); // default network
+
+        // Test with no image - should return Err
+        let no_image_params = json!({
+            "env": {"KEY": "value"}
+        });
+        let no_image_compose = generate_single_app_compose("app", &no_image_params);
+        assert!(no_image_compose.is_err());
+
+        // Test with string-style ports
+        let string_ports_params = json!({
+            "image": "app:latest",
+            "ports": ["8080:80", "9000:9000"]
+        });
+        let string_ports_compose = generate_single_app_compose("app", &string_ports_params);
+        assert!(string_ports_compose.is_ok());
+        let string_ports_content = string_ports_compose.unwrap();
+        assert!(string_ports_content.contains("8080:80"));
+        assert!(string_ports_content.contains("9000:9000"));
+
+        // Test with array-style environment variables
+        let array_env_params = json!({
+            "image": "app:latest",
+            "env": ["KEY1=val1", "KEY2=val2"]
+        });
+        let array_env_compose = generate_single_app_compose("app", &array_env_params);
+        assert!(array_env_compose.is_ok());
+        let array_env_content = array_env_compose.unwrap();
+        assert!(array_env_content.contains("KEY1"));
+        assert!(array_env_content.contains("val1"));
+        assert!(array_env_content.contains("KEY2"));
+        assert!(array_env_content.contains("val2"));
+
+        // Test with string-style volumes
+        let string_vol_params = json!({
+            "image": "app:latest",
+            "volumes": ["/host/path:/container/path", "named_vol:/data"]
+        });
+        let string_vol_compose = generate_single_app_compose("app", &string_vol_params);
+        assert!(string_vol_compose.is_ok());
+        let string_vol_content = string_vol_compose.unwrap();
+        assert!(string_vol_content.contains("/host/path:/container/path"));
+        assert!(string_vol_content.contains("named_vol:/data"));
+    }
 }

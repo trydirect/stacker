@@ -448,6 +448,7 @@ mod tests {
             token: "dev-token".to_string(),
             agent_path_prefix: prefix.clone(),
             api_prefix: "v1".to_string(),
+            ssh_key_path_prefix: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_test_abc";

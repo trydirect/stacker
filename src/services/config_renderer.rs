@@ -554,6 +554,11 @@ impl ConfigRenderer {
         project: &Project,
         deployment_hash: &str,
     ) -> Result<(), VaultError> {
+        tracing::debug!(
+            "Syncing config for app {} (deployment {}) to Vault",
+            app.code,
+            deployment_hash
+        );
         let vault = match &self.vault_service {
             Some(v) => v,
             None => return Err(VaultError::NotConfigured),
@@ -572,6 +577,11 @@ impl ConfigRenderer {
             group: Some("docker".to_string()),
         };
 
+        tracing::debug!(
+            "Storing config for app {} at path {} in Vault",
+            app.code,
+            config.destination_path
+        );
         vault
             .store_app_config(deployment_hash, &app.code, &config)
             .await
