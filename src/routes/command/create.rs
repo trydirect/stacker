@@ -3,6 +3,7 @@ use crate::forms::status_panel;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
 use crate::services::VaultService;
+use crate::configuration::Settings;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,12 +31,13 @@ pub struct CreateCommandResponse {
     pub status: String,
 }
 
-#[tracing::instrument(name = "Create command", skip(pg_pool, user))]
+#[tracing::instrument(name = "Create command", skip(pg_pool, user, settings))]
 #[post("")]
 pub async fn create_handler(
     user: web::ReqData<Arc<User>>,
     req: web::Json<CreateCommandRequest>,
     pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     if req.deployment_hash.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
@@ -55,7 +57,7 @@ pub async fn create_handler(
 
     // For deploy_app commands, enrich with compose_content from Vault if not provided
     let final_parameters = if req.command_type == "deploy_app" {
-        enrich_deploy_app_with_compose(&req.deployment_hash, validated_parameters).await
+        enrich_deploy_app_with_compose(&req.deployment_hash, validated_parameters, &settings.vault).await
     } else {
         validated_parameters
     };
@@ -140,6 +142,7 @@ pub async fn create_handler(
 async fn enrich_deploy_app_with_compose(
     deployment_hash: &str,
     params: Option<serde_json::Value>,
+    vault_settings: &crate::configuration::VaultSettings,
 ) -> Option<serde_json::Value> {
     let mut params = params.unwrap_or_else(|| json!({}));
 
@@ -149,13 +152,9 @@ async fn enrich_deploy_app_with_compose(
         return Some(params);
     }
 
-    // Try to fetch compose content from Vault
-    let vault = match VaultService::from_env() {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            tracing::warn!("Vault not configured, cannot enrich deploy_app with compose_content");
-            return Some(params);
-        }
+    // Try to fetch compose content from Vault using settings
+    let vault = match VaultService::from_settings(vault_settings) {
+        Ok(v) => v,
         Err(e) => {
             tracing::warn!("Failed to initialize Vault: {}, cannot enrich deploy_app", e);
             return Some(params);

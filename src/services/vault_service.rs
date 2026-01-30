@@ -90,6 +90,29 @@ impl std::fmt::Display for VaultError {
 impl std::error::Error for VaultError {}
 
 impl VaultService {
+    /// Create a new Vault service from VaultSettings (configuration.yaml)
+    pub fn from_settings(settings: &crate::configuration::VaultSettings) -> Result<Self, VaultError> {
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .build()
+            .map_err(|e| {
+                VaultError::Other(format!("Failed to create HTTP client: {}", e))
+            })?;
+
+        tracing::debug!(
+            "Vault service initialized from settings: base_url={}, prefix={}",
+            settings.address,
+            settings.agent_path_prefix
+        );
+
+        Ok(VaultService {
+            base_url: settings.address.clone(),
+            token: settings.token.clone(),
+            prefix: settings.agent_path_prefix.clone(),
+            http_client,
+        })
+    }
+
     /// Create a new Vault service from environment variables
     ///
     /// Environment variables:
@@ -129,10 +152,11 @@ impl VaultService {
     }
 
     /// Build the Vault path for app configuration
-    /// Path template: {prefix}/{deployment_hash}/apps/{app_name}/config
+    /// For KV v1 API: {base}/v1/{prefix}/{deployment_hash}/apps/{app_name}
+    /// The prefix already includes the mount (e.g., "secret/debug/status_panel")
     fn config_path(&self, deployment_hash: &str, app_name: &str) -> String {
         format!(
-            "{}/v1/{}/{}/apps/{}/config",
+            "{}/v1/{}/{}/apps/{}",
             self.base_url, self.prefix, deployment_hash, app_name
         )
     }
