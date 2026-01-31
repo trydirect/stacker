@@ -24,6 +24,8 @@ pub struct Settings {
     pub vault: VaultSettings,
     #[serde(default)]
     pub connectors: ConnectorConfig,
+    #[serde(default)]
+    pub deployment: DeploymentSettings,
 }
 
 impl Default for Settings {
@@ -42,6 +44,7 @@ impl Default for Settings {
             amqp: AmqpSettings::default(),
             vault: VaultSettings::default(),
             connectors: ConnectorConfig::default(),
+            deployment: DeploymentSettings::default(),
         }
     }
 }
@@ -105,6 +108,29 @@ impl Default for AmqpSettings {
             host: "127.0.0.1".to_string(),
             port: 5672,
         }
+    }
+}
+
+/// Deployment-related settings for app configuration paths
+#[derive(Debug, serde::Deserialize, Clone)]
+pub struct DeploymentSettings {
+    /// Base path for app config files on the deployment server
+    /// Default: /home/trydirect
+    #[serde(default = "DeploymentSettings::default_config_base_path")]
+    pub config_base_path: String,
+}
+
+impl Default for DeploymentSettings {
+    fn default() -> Self {
+        Self {
+            config_base_path: Self::default_config_base_path(),
+        }
+    }
+}
+
+impl DeploymentSettings {
+    fn default_config_base_path() -> String {
+        "/home/trydirect".to_string()
     }
 }
 
@@ -248,6 +274,11 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     }
     if let Ok(password) = std::env::var("AMQP_PASSWORD") {
         config.amqp.password = password;
+    }
+
+    // Overlay Deployment settings with environment variables if present
+    if let Ok(base_path) = std::env::var("DEPLOYMENT_CONFIG_BASE_PATH") {
+        config.deployment.config_base_path = base_path;
     }
 
     Ok(config)

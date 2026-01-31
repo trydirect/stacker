@@ -152,12 +152,25 @@ impl VaultService {
     }
 
     /// Build the Vault path for app configuration
-    /// For KV v1 API: {base}/v1/{prefix}/{deployment_hash}/apps/{app_name}
+    /// For KV v1 API: {base}/v1/{prefix}/{deployment_hash}/apps/{app_code}/{config_type}
     /// The prefix already includes the mount (e.g., "secret/debug/status_panel")
+    /// app_name format: "{app_code}" for compose, "{app_code}_config" for app config
     fn config_path(&self, deployment_hash: &str, app_name: &str) -> String {
+        // Parse app_name to determine app_code and config_type
+        // "telegraf" -> apps/telegraf/_compose
+        // "telegraf_config" -> apps/telegraf/_config  
+        // "_compose" -> apps/_compose (legacy global compose)
+        let (app_code, config_type) = if app_name == "_compose" {
+            ("_compose".to_string(), "_compose".to_string())
+        } else if let Some(app_code) = app_name.strip_suffix("_config") {
+            (app_code.to_string(), "_config".to_string())
+        } else {
+            (app_name.to_string(), "_compose".to_string())
+        };
+
         format!(
-            "{}/v1/{}/{}/apps/{}",
-            self.base_url, self.prefix, deployment_hash, app_name
+            "{}/v1/{}/{}/apps/{}/{}",
+            self.base_url, self.prefix, deployment_hash, app_code, config_type
         )
     }
 

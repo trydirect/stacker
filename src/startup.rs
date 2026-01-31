@@ -87,7 +87,17 @@ pub async fn run(
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Compress::default())
-            .wrap(Cors::permissive())
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allow_any_method()
+                    .allowed_headers(vec![
+                        actix_web::http::header::AUTHORIZATION,
+                        actix_web::http::header::CONTENT_TYPE,
+                        actix_web::http::header::ACCEPT,
+                    ])
+                    .supports_credentials()
+            )
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
             .app_data(oauth_http_client.clone())

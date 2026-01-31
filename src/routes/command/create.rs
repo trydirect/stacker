@@ -219,6 +219,7 @@ async fn store_configs_to_vault_from_params(
     deployment_hash: &str,
     app_code: &str,
     vault_settings: &crate::configuration::VaultSettings,
+    deployment_settings: &crate::configuration::DeploymentSettings,
 ) {
     let vault = match VaultService::from_settings(vault_settings) {
         Ok(v) => v,
@@ -227,6 +228,8 @@ async fn store_configs_to_vault_from_params(
             return;
         }
     };
+
+    let config_base_path = &deployment_settings.config_base_path;
 
     // Process config_files array
     let config_files = params.get("config_files").and_then(|v| v.as_array());
@@ -244,10 +247,11 @@ async fn store_configs_to_vault_from_params(
                 compose_content = Some(content.to_string());
             } else if !content.is_empty() {
                 // This is an app config file (e.g., telegraf.conf)
+                // Use config_base_path from settings to avoid mounting /root
                 let destination_path = file.get("destination_path")
                     .and_then(|p| p.as_str())
                     .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("/root/{}/{}", app_code, file_name));
+                    .unwrap_or_else(|| format!("{}/{}/config/{}", config_base_path, app_code, file_name));
                 
                 let file_mode = file.get("file_mode")
                     .and_then(|m| m.as_str())
@@ -443,7 +447,7 @@ pub async fn create_handler(
         } else if let Some(app_code) = app_code {
             // Even without deployment_id, try to store compose and config files directly to Vault
             if let Some(params) = req.parameters.as_ref() {
-                store_configs_to_vault_from_params(params, &req.deployment_hash, app_code, &settings.vault).await;
+                store_configs_to_vault_from_params(params, &req.deployment_hash, app_code, &settings.vault, &settings.deployment).await;
             }
         } else {
             tracing::warn!("Missing app_code in deploy_app arguments");
