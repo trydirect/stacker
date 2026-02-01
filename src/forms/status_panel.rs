@@ -26,6 +26,14 @@ fn default_restart_force() -> bool {
     false
 }
 
+fn default_ssl_enabled() -> bool {
+    true
+}
+
+fn default_create_action() -> String {
+    "create".to_string()
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HealthCommandRequest {
     pub app_code: String,
@@ -87,6 +95,31 @@ pub struct RemoveAppCommandRequest {
     pub remove_volumes: bool,
     #[serde(default)]
     pub remove_image: bool,
+}
+
+/// Request to configure nginx proxy manager for an app
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ConfigureProxyCommandRequest {
+    pub app_code: String,
+    /// Domain name(s) to proxy (e.g., ["komodo.example.com"])
+    pub domain_names: Vec<String>,
+    /// Container/service name to forward to (defaults to app_code)
+    #[serde(default)]
+    pub forward_host: Option<String>,
+    /// Port on the container to forward to
+    pub forward_port: u16,
+    /// Enable SSL with Let's Encrypt
+    #[serde(default = "default_ssl_enabled")]
+    pub ssl_enabled: bool,
+    /// Force HTTPS redirect
+    #[serde(default = "default_ssl_enabled")]
+    pub ssl_forced: bool,
+    /// HTTP/2 support
+    #[serde(default = "default_ssl_enabled")]
+    pub http2_support: bool,
+    /// Action: "create", "update", "delete"
+    #[serde(default = "default_create_action")]
+    pub action: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -277,6 +310,27 @@ pub fn validate_command_parameters(
             serde_json::to_value(params)
                 .map(Some)
                 .map_err(|err| format!("Failed to encode remove_app parameters: {}", err))
+        }
+        "configure_proxy" => {
+            let value = parameters.clone().unwrap_or_else(|| json!({}));
+            let params: ConfigureProxyCommandRequest = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid configure_proxy parameters: {}", err))?;
+            ensure_app_code("configure_proxy", &params.app_code)?;
+            
+            // Validate required fields
+            if params.domain_names.is_empty() {
+                return Err("configure_proxy: at least one domain_name is required".to_string());
+            }
+            if params.forward_port == 0 {
+                return Err("configure_proxy: forward_port is required and must be > 0".to_string());
+            }
+            if !["create", "update", "delete"].contains(&params.action.as_str()) {
+                return Err("configure_proxy: action must be one of: create, update, delete".to_string());
+            }
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode configure_proxy parameters: {}", err))
         }
         _ => Ok(parameters.clone()),
     }
