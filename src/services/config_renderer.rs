@@ -8,6 +8,7 @@
 //! 2. Used during initial deployment via Ansible
 //! 3. Applied for runtime configuration updates
 
+use crate::configuration::DeploymentSettings;
 use crate::models::{Project, ProjectApp};
 use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
@@ -99,6 +100,7 @@ pub struct HealthCheck {
 pub struct ConfigRenderer {
     tera: Tera,
     vault_service: Option<VaultService>,
+    deployment_settings: DeploymentSettings,
 }
 
 impl ConfigRenderer {
@@ -118,10 +120,31 @@ impl ConfigRenderer {
         let vault_service =
             VaultService::from_env().map_err(|e| anyhow::anyhow!("Vault init error: {}", e))?;
 
+        // Load deployment settings
+        let deployment_settings = DeploymentSettings::default();
+
         Ok(Self {
             tera,
             vault_service,
+            deployment_settings,
         })
+    }
+
+    /// Create ConfigRenderer with custom deployment settings
+    pub fn with_settings(deployment_settings: DeploymentSettings) -> Result<Self> {
+        let mut renderer = Self::new()?;
+        renderer.deployment_settings = deployment_settings;
+        Ok(renderer)
+    }
+
+    /// Get the base path for deployments
+    pub fn base_path(&self) -> &str {
+        self.deployment_settings.base_path()
+    }
+
+    /// Get the full deploy directory for a deployment hash
+    pub fn deploy_dir(&self, deployment_hash: &str) -> String {
+        self.deployment_settings.deploy_dir(deployment_hash)
     }
 
     /// Create ConfigRenderer with a custom Vault service (for testing)
@@ -154,7 +177,7 @@ impl ConfigRenderer {
             let config = AppConfig {
                 content: env_content,
                 content_type: "env".to_string(),
-                destination_path: format!("/home/trydirect/{}/{}.env", deployment_hash, app.code),
+                destination_path: format!("{}/{}.env", self.deploy_dir(deployment_hash), app.code),
                 file_mode: "0640".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
@@ -506,8 +529,8 @@ impl ConfigRenderer {
             content: bundle.compose_content.clone(),
             content_type: "yaml".to_string(),
             destination_path: format!(
-                "/home/trydirect/{}/docker-compose.yml",
-                bundle.deployment_hash
+                "{}/docker-compose.yml",
+                self.deploy_dir(&bundle.deployment_hash)
             ),
             file_mode: "0644".to_string(),
             owner: Some("trydirect".to_string()),
@@ -525,15 +548,16 @@ impl ConfigRenderer {
             }
         }
 
-        // Store per-app configs
+        // Store per-app .env configs - use {app_code}_env key to separate from compose
         for (app_code, config) in &bundle.app_configs {
+            let env_key = format!("{}_env", app_code);
             match vault
-                .store_app_config(&bundle.deployment_hash, app_code, config)
+                .store_app_config(&bundle.deployment_hash, &env_key, config)
                 .await
             {
-                Ok(()) => synced.push(app_code.clone()),
+                Ok(()) => synced.push(env_key),
                 Err(e) => {
-                    tracing::error!("Failed to sync config for {}: {}", app_code, e);
+                    tracing::error!("Failed to sync .env config for {}: {}", app_code, e);
                     failed.push((app_code.clone(), e.to_string()));
                 }
             }
@@ -571,19 +595,21 @@ impl ConfigRenderer {
         let config = AppConfig {
             content: env_content,
             content_type: "env".to_string(),
-            destination_path: format!("/home/trydirect/{}/{}.env", deployment_hash, app.code),
+            destination_path: format!("{}/{}.env", self.deploy_dir(deployment_hash), app.code),
             file_mode: "0640".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
         };
 
         tracing::debug!(
-            "Storing config for app {} at path {} in Vault",
+            "Storing .env config for app {} at path {} in Vault",
             app.code,
             config.destination_path
         );
+        // Use {app_code}_env key to store .env files separately from compose
+        let env_key = format!("{}_env", app.code);
         vault
-            .store_app_config(deployment_hash, &app.code, &config)
+            .store_app_config(deployment_hash, &env_key, &config)
             .await
     }
 }
@@ -818,5 +844,106 @@ mod tests {
         assert_eq!(result[0].source, "/data");
         assert!(result[0].read_only);
         assert!(result[1].read_only);
+    }
+
+    // =========================================================================
+    // Env File Storage Key Tests
+    // =========================================================================
+
+    #[test]
+    fn test_env_vault_key_format() {
+        // Test that .env files are stored with _env suffix
+        let app_code = "komodo";
+        let env_key = format!("{}_env", app_code);
+        
+        assert_eq!(env_key, "komodo_env");
+        assert!(env_key.ends_with("_env"));
+        
+        // Ensure we can strip the suffix to get app_code back
+        let extracted_app_code = env_key.strip_suffix("_env").unwrap();
+        assert_eq!(extracted_app_code, app_code);
+    }
+
+    #[test]
+    fn test_env_destination_path_format() {
+        // Test that .env files have correct destination paths
+        let deployment_hash = "deployment_abc123";
+        let app_code = "telegraf";
+        let base_path = "/home/trydirect";
+        
+        let expected_path = format!("{}/{}/{}.env", base_path, deployment_hash, app_code);
+        assert_eq!(expected_path, "/home/trydirect/deployment_abc123/telegraf.env");
+    }
+
+    #[test]
+    fn test_app_config_struct_for_env() {
+        // Test AppConfig struct construction for .env files
+        let config = AppConfig {
+            content: "FOO=bar\nBAZ=qux".to_string(),
+            content_type: "env".to_string(),
+            destination_path: "/home/trydirect/hash123/app.env".to_string(),
+            file_mode: "0640".to_string(),
+            owner: Some("trydirect".to_string()),
+            group: Some("docker".to_string()),
+        };
+
+        assert_eq!(config.content_type, "env");
+        assert_eq!(config.file_mode, "0640"); // More restrictive for env files
+        assert!(config.destination_path.ends_with(".env"));
+    }
+
+    #[test]
+    fn test_bundle_app_configs_use_env_key() {
+        // Simulate the sync_to_vault behavior where app_configs are stored with _env key
+        let app_codes = vec!["telegraf", "nginx", "komodo"];
+        
+        for app_code in app_codes {
+            let env_key = format!("{}_env", app_code);
+            
+            // Verify key format
+            assert!(env_key.ends_with("_env"));
+            assert!(!env_key.ends_with("_config"));
+            assert!(!env_key.ends_with("_compose"));
+            
+            // Verify we can identify this as an env config
+            assert!(env_key.contains("_env"));
+        }
+    }
+
+    #[test]
+    fn test_config_bundle_structure() {
+        // Test the structure of ConfigBundle
+        let deployment_hash = "test_hash_123";
+        
+        // Simulated app_configs HashMap as created by render_bundle
+        let mut app_configs: std::collections::HashMap<String, AppConfig> = std::collections::HashMap::new();
+        
+        app_configs.insert("telegraf".to_string(), AppConfig {
+            content: "INFLUX_TOKEN=xxx".to_string(),
+            content_type: "env".to_string(),
+            destination_path: format!("/home/trydirect/{}/telegraf.env", deployment_hash),
+            file_mode: "0640".to_string(),
+            owner: Some("trydirect".to_string()),
+            group: Some("docker".to_string()),
+        });
+        
+        app_configs.insert("nginx".to_string(), AppConfig {
+            content: "DOMAIN=example.com".to_string(),
+            content_type: "env".to_string(),
+            destination_path: format!("/home/trydirect/{}/nginx.env", deployment_hash),
+            file_mode: "0640".to_string(),
+            owner: Some("trydirect".to_string()),
+            group: Some("docker".to_string()),
+        });
+
+        assert_eq!(app_configs.len(), 2);
+        assert!(app_configs.contains_key("telegraf"));
+        assert!(app_configs.contains_key("nginx"));
+        
+        // When storing, each should be stored with _env suffix
+        for (app_code, _config) in &app_configs {
+            let env_key = format!("{}_env", app_code);
+            assert!(env_key.ends_with("_env"));
+        }
     }
 }

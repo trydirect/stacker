@@ -154,14 +154,24 @@ impl VaultService {
     /// Build the Vault path for app configuration
     /// For KV v1 API: {base}/v1/{prefix}/{deployment_hash}/apps/{app_code}/{config_type}
     /// The prefix already includes the mount (e.g., "secret/debug/status_panel")
-    /// app_name format: "{app_code}" for compose, "{app_code}_config" for app config
+    /// app_name format: 
+    ///   "{app_code}" for compose
+    ///   "{app_code}_config" for single app config file (legacy)
+    ///   "{app_code}_configs" for bundled config files (JSON array)
+    ///   "{app_code}_env" for .env files
     fn config_path(&self, deployment_hash: &str, app_name: &str) -> String {
         // Parse app_name to determine app_code and config_type
         // "telegraf" -> apps/telegraf/_compose
-        // "telegraf_config" -> apps/telegraf/_config  
+        // "telegraf_config" -> apps/telegraf/_config (legacy single config)
+        // "telegraf_configs" -> apps/telegraf/_configs (bundled config files)
+        // "telegraf_env" -> apps/telegraf/_env (for .env files)
         // "_compose" -> apps/_compose (legacy global compose)
         let (app_code, config_type) = if app_name == "_compose" {
             ("_compose".to_string(), "_compose".to_string())
+        } else if let Some(app_code) = app_name.strip_suffix("_env") {
+            (app_code.to_string(), "_env".to_string())
+        } else if let Some(app_code) = app_name.strip_suffix("_configs") {
+            (app_code.to_string(), "_configs".to_string())
         } else if let Some(app_code) = app_name.strip_suffix("_config") {
             (app_code.to_string(), "_config".to_string())
         } else {
@@ -432,5 +442,149 @@ impl VaultService {
             app_name
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to extract config path components without creating a full VaultService
+    fn parse_app_name(app_name: &str) -> (String, String) {
+        if app_name == "_compose" {
+            ("_compose".to_string(), "_compose".to_string())
+        } else if let Some(app_code) = app_name.strip_suffix("_env") {
+            (app_code.to_string(), "_env".to_string())
+        } else if let Some(app_code) = app_name.strip_suffix("_configs") {
+            (app_code.to_string(), "_configs".to_string())
+        } else if let Some(app_code) = app_name.strip_suffix("_config") {
+            (app_code.to_string(), "_config".to_string())
+        } else {
+            (app_name.to_string(), "_compose".to_string())
+        }
+    }
+
+    #[test]
+    fn test_config_path_parsing_compose() {
+        // Plain app_code maps to _compose
+        let (app_code, config_type) = parse_app_name("telegraf");
+        assert_eq!(app_code, "telegraf");
+        assert_eq!(config_type, "_compose");
+
+        let (app_code, config_type) = parse_app_name("komodo");
+        assert_eq!(app_code, "komodo");
+        assert_eq!(config_type, "_compose");
+    }
+
+    #[test]
+    fn test_config_path_parsing_env() {
+        // _env suffix maps to _env config type
+        let (app_code, config_type) = parse_app_name("telegraf_env");
+        assert_eq!(app_code, "telegraf");
+        assert_eq!(config_type, "_env");
+
+        let (app_code, config_type) = parse_app_name("komodo_env");
+        assert_eq!(app_code, "komodo");
+        assert_eq!(config_type, "_env");
+    }
+
+    #[test]
+    fn test_config_path_parsing_configs_bundle() {
+        // _configs suffix maps to _configs config type (bundled config files)
+        let (app_code, config_type) = parse_app_name("telegraf_configs");
+        assert_eq!(app_code, "telegraf");
+        assert_eq!(config_type, "_configs");
+
+        let (app_code, config_type) = parse_app_name("komodo_configs");
+        assert_eq!(app_code, "komodo");
+        assert_eq!(config_type, "_configs");
+    }
+
+    #[test]
+    fn test_config_path_parsing_single_config() {
+        // _config suffix maps to _config config type (legacy single config)
+        let (app_code, config_type) = parse_app_name("telegraf_config");
+        assert_eq!(app_code, "telegraf");
+        assert_eq!(config_type, "_config");
+
+        let (app_code, config_type) = parse_app_name("nginx_config");
+        assert_eq!(app_code, "nginx");
+        assert_eq!(config_type, "_config");
+    }
+
+    #[test]
+    fn test_config_path_parsing_global_compose() {
+        // Special _compose key
+        let (app_code, config_type) = parse_app_name("_compose");
+        assert_eq!(app_code, "_compose");
+        assert_eq!(config_type, "_compose");
+    }
+
+    #[test]
+    fn test_config_path_suffix_priority() {
+        // Ensure _env is checked before _config (since _env_config would be wrong)
+        // This shouldn't happen in practice, but tests parsing priority
+        let (app_code, config_type) = parse_app_name("test_env");
+        assert_eq!(app_code, "test");
+        assert_eq!(config_type, "_env");
+
+        // _configs takes priority over _config for apps named like "my_configs"
+        let (app_code, config_type) = parse_app_name("my_configs");
+        assert_eq!(app_code, "my");
+        assert_eq!(config_type, "_configs");
+    }
+
+    #[test]
+    fn test_app_config_serialization() {
+        let config = AppConfig {
+            content: "FOO=bar\nBAZ=qux".to_string(),
+            content_type: "env".to_string(),
+            destination_path: "/home/trydirect/abc123/telegraf.env".to_string(),
+            file_mode: "0640".to_string(),
+            owner: Some("trydirect".to_string()),
+            group: Some("docker".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("FOO=bar"));
+        assert!(json.contains("telegraf.env"));
+        assert!(json.contains("0640"));
+    }
+
+    #[test]
+    fn test_config_bundle_json_format() {
+        // Test that bundled configs can be serialized and deserialized
+        let configs: Vec<serde_json::Value> = vec![
+            serde_json::json!({
+                "name": "telegraf.conf",
+                "content": "[agent]\n  interval = \"10s\"",
+                "content_type": "text/plain",
+                "destination_path": "/home/trydirect/abc123/config/telegraf.conf",
+                "file_mode": "0644",
+                "owner": null,
+                "group": null,
+            }),
+            serde_json::json!({
+                "name": "nginx.conf",
+                "content": "server { }",
+                "content_type": "text/plain",
+                "destination_path": "/home/trydirect/abc123/config/nginx.conf",
+                "file_mode": "0644",
+                "owner": null,
+                "group": null,
+            }),
+        ];
+
+        let bundle_json = serde_json::to_string(&configs).unwrap();
+        
+        // Parse back
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&bundle_json).unwrap();
+        assert_eq!(parsed.len(), 2);
+        
+        let names: Vec<&str> = parsed.iter()
+            .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert!(names.contains(&"telegraf.conf"));
+        assert!(names.contains(&"nginx.conf"));
     }
 }

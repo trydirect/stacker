@@ -13,10 +13,12 @@ use crate::mcp::tools::{
     ApplyVaultConfigTool,
     CancelDeploymentTool,
     CloneProjectTool,
+    ConfigureProxyTool,
     CreateProjectTool,
     DeleteAppEnvVarTool,
     DeleteCloudTool,
     DeleteProjectTool,
+    DeleteProxyTool,
     DiagnoseDeploymentTool,
     EscalateToSupportTool,
     GetAppConfigTool,
@@ -37,6 +39,7 @@ use crate::mcp::tools::{
     ListCloudsTool,
     ListInstallationsTool,
     ListProjectsTool,
+    ListProxiesTool,
     ListTemplatesTool,
     ListVaultConfigsTool,
     RestartContainerTool,
@@ -150,6 +153,11 @@ impl ToolRegistry {
         registry.register("set_vault_config", Box::new(SetVaultConfigTool));
         registry.register("list_vault_configs", Box::new(ListVaultConfigsTool));
         registry.register("apply_vault_config", Box::new(ApplyVaultConfigTool));
+
+        // Phase 6: Proxy Management tools (Nginx Proxy Manager)
+        registry.register("configure_proxy", Box::new(ConfigureProxyTool));
+        registry.register("delete_proxy", Box::new(DeleteProxyTool));
+        registry.register("list_proxies", Box::new(ListProxiesTool));
 
         registry
     }

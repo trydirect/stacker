@@ -62,3 +62,10 @@ connectors:
 # Env overrides (optional):
 #   VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
 #   USER_SERVICE_AUTH_TOKEN, PAYMENT_SERVICE_AUTH_TOKEN
+#   DEFAULT_DEPLOY_DIR - Base directory for deployments (default: /home/trydirect)
+
+# Deployment settings
+# deployment:
+#   # Base path for app config files on the deployment server
+#   # Can also be set via DEFAULT_DEPLOY_DIR environment variable
+#   config_base_path: /home/trydirect

@@ -116,6 +116,7 @@ impl Default for AmqpSettings {
 pub struct DeploymentSettings {
     /// Base path for app config files on the deployment server
     /// Default: /home/trydirect
+    /// Can be overridden via DEFAULT_DEPLOY_DIR env var
     #[serde(default = "DeploymentSettings::default_config_base_path")]
     pub config_base_path: String,
 }
@@ -130,7 +131,18 @@ impl Default for DeploymentSettings {
 
 impl DeploymentSettings {
     fn default_config_base_path() -> String {
-        "/home/trydirect".to_string()
+        std::env::var("DEFAULT_DEPLOY_DIR")
+            .unwrap_or_else(|_| "/home/trydirect".to_string())
+    }
+
+    /// Get the full deploy directory for a given project name or deployment hash
+    pub fn deploy_dir(&self, name: &str) -> String {
+        format!("{}/{}", self.config_base_path.trim_end_matches('/'), name)
+    }
+
+    /// Get the base path (for backwards compatibility)
+    pub fn base_path(&self) -> &str {
+        &self.config_base_path
     }
 }
 
