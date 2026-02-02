@@ -31,55 +31,62 @@ pub(crate) async fn store_configs_to_vault_from_params(
 
     if let Some(files) = config_files {
         for file in files {
-            let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let content = file.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            let file_name = get_str(file, "name").unwrap_or("");
+            let content = get_str(file, "content").unwrap_or("");
 
-            // Check for .env file in config_files
             if is_env_filename(file_name) {
                 env_content = Some(content.to_string());
                 continue;
             }
 
-            if super::is_compose_filename(file_name) {
-                // This is the compose file
+            if content.is_empty() {
+                continue;
+            }
+
+            let content_type = get_str(file, "content_type")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| detect_content_type(file_name).to_string());
+
+            if is_compose_file(file_name, &content_type) {
                 compose_content = Some(content.to_string());
-            } else if !content.is_empty() {
-                // This is an app config file (e.g., telegraf.conf)
-                // Use config_base_path from settings to avoid mounting /root
-                let destination_path = file
-                    .get("destination_path")
-                    .and_then(|p| p.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| {
-                        format!("{}/{}/config/{}", config_base_path, app_code, file_name)
-                    });
 
-                let file_mode = file
-                    .get("file_mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("0644")
-                    .to_string();
+                let compose_filename = normalize_compose_filename(file_name);
+                let destination_path = resolve_destination_path(
+                    file,
+                    format!("{}/{}/{}", config_base_path, app_code, compose_filename),
+                );
 
-                let content_type = detect_content_type(file_name).to_string();
-
-                let config = AppConfig {
-                    content: content.to_string(),
-                    content_type,
-                    destination_path,
-                    file_mode,
-                    owner: file
-                        .get("owner")
-                        .and_then(|o| o.as_str())
-                        .map(|s| s.to_string()),
-                    group: file
-                        .get("group")
-                        .and_then(|g| g.as_str())
-                        .map(|s| s.to_string()),
+                let compose_type = if content_type == "text/plain" {
+                    "text/yaml".to_string()
+                } else {
+                    content_type
                 };
 
-                // Collect configs for later storage
-                app_configs.push((file_name.to_string(), config));
+                let config = build_app_config(
+                    content,
+                    compose_type,
+                    destination_path,
+                    file,
+                    "0644",
+                );
+
+                app_configs.push((compose_filename, config));
+                continue;
             }
+
+            let destination_path = resolve_destination_path(
+                file,
+                format!("{}/{}/config/{}", config_base_path, app_code, file_name),
+            );
+            let config = build_app_config(
+                content,
+                content_type,
+                destination_path,
+                file,
+                "0644",
+            );
+
+            app_configs.push((file_name.to_string(), config));
         }
     }
 
@@ -116,7 +123,7 @@ pub(crate) async fn store_configs_to_vault_from_params(
         }
     }
 
-    // Store compose to Vault
+    // Store compose to Vault with correct destination path
     if let Some(compose) = compose_content {
         tracing::info!(
             "Storing compose to Vault for deployment_hash: {}, app_code: {}",
@@ -126,7 +133,8 @@ pub(crate) async fn store_configs_to_vault_from_params(
         let config = AppConfig {
             content: compose,
             content_type: "text/yaml".to_string(),
-            destination_path: format!("/app/{}/docker-compose.yml", app_code),
+            // Use config_base_path for consistent deployment root path
+            destination_path: format!("{}/{}/docker-compose.yml", config_base_path, app_code),
             file_mode: "0644".to_string(),
             owner: None,
             group: None,
@@ -219,6 +227,51 @@ pub(crate) async fn store_configs_to_vault_from_params(
 
 fn is_env_filename(file_name: &str) -> bool {
     matches!(file_name, ".env" | "env")
+}
+
+fn is_compose_file(file_name: &str, content_type: &str) -> bool {
+    if super::is_compose_filename(file_name) {
+        return true;
+    }
+
+    content_type == "text/yaml" && matches!(file_name, "docker-compose" | "compose")
+}
+
+fn normalize_compose_filename(file_name: &str) -> String {
+    if file_name.ends_with(".yml") || file_name.ends_with(".yaml") {
+        return file_name.to_string();
+    }
+
+    format!("{}.yml", file_name)
+}
+
+fn resolve_destination_path(file: &serde_json::Value, default_path: String) -> String {
+    get_str(file, "destination_path")
+        .map(|s| s.to_string())
+        .unwrap_or(default_path)
+}
+
+fn build_app_config(
+    content: &str,
+    content_type: String,
+    destination_path: String,
+    file: &serde_json::Value,
+    default_mode: &str,
+) -> AppConfig {
+    let file_mode = get_str(file, "file_mode").unwrap_or(default_mode).to_string();
+
+    AppConfig {
+        content: content.to_string(),
+        content_type,
+        destination_path,
+        file_mode,
+        owner: get_str(file, "owner").map(|s| s.to_string()),
+        group: get_str(file, "group").map(|s| s.to_string()),
+    }
+}
+
+fn get_str<'a>(file: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    file.get(key).and_then(|v| v.as_str())
 }
 
 pub(crate) fn detect_content_type(file_name: &str) -> &'static str {
