@@ -1,10 +1,11 @@
 use crate::configuration::Settings;
 use crate::db;
 use crate::forms::status_panel;
+use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
-use crate::services::VaultService;
 use crate::project_app::{store_configs_to_vault_from_params, upsert_app_config_for_deploy};
+use crate::services::VaultService;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -62,34 +63,49 @@ pub async fn create_handler(
             },
         )?;
 
-
     // For deploy_app commands, upsert app config and sync to Vault before enriching parameters
     let final_parameters = if req.command_type == "deploy_app" {
         // Try to get deployment_id from parameters, or look it up by deployment_hash
         // If no deployment exists, auto-create project and deployment records
-        let deployment_id = match req.parameters.as_ref()
+        let deployment_id = match req
+            .parameters
+            .as_ref()
             .and_then(|p| p.get("deployment_id"))
             .and_then(|v| v.as_i64())
-            .map(|v| v as i32) 
+            .map(|v| v as i32)
         {
             Some(id) => Some(id),
             None => {
                 // Auto-lookup project_id from deployment_hash
-                match crate::db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &req.deployment_hash).await {
+                match crate::db::deployment::fetch_by_deployment_hash(
+                    pg_pool.get_ref(),
+                    &req.deployment_hash,
+                )
+                .await
+                {
                     Ok(Some(deployment)) => {
-                        tracing::debug!("Auto-resolved project_id {} from deployment_hash {}", deployment.project_id, &req.deployment_hash);
+                        tracing::debug!(
+                            "Auto-resolved project_id {} from deployment_hash {}",
+                            deployment.project_id,
+                            &req.deployment_hash
+                        );
                         Some(deployment.project_id)
-                    },
+                    }
                     Ok(None) => {
                         // No deployment found - auto-create project and deployment
-                        tracing::info!("No deployment found for hash {}, auto-creating project and deployment", &req.deployment_hash);
-                        
+                        tracing::info!(
+                            "No deployment found for hash {}, auto-creating project and deployment",
+                            &req.deployment_hash
+                        );
+
                         // Get app_code to use as project name
-                        let app_code_for_name = req.parameters.as_ref()
+                        let app_code_for_name = req
+                            .parameters
+                            .as_ref()
                             .and_then(|p| p.get("app_code"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("project");
-                        
+
                         // Create project
                         let project = crate::models::Project::new(
                             user.id.clone(),
@@ -97,12 +113,16 @@ pub async fn create_handler(
                             serde_json::json!({"auto_created": true, "deployment_hash": &req.deployment_hash}),
                             req.parameters.clone().unwrap_or(serde_json::json!({})),
                         );
-                        
+
                         match crate::db::project::insert(pg_pool.get_ref(), project).await {
                             Ok(created_project) => {
-                                tracing::info!("Auto-created project {} (id={}) for deployment_hash {}", 
-                                    created_project.name, created_project.id, &req.deployment_hash);
-                                
+                                tracing::info!(
+                                    "Auto-created project {} (id={}) for deployment_hash {}",
+                                    created_project.name,
+                                    created_project.id,
+                                    &req.deployment_hash
+                                );
+
                                 // Create deployment linked to this project
                                 let deployment = crate::models::Deployment::new(
                                     created_project.id,
@@ -111,26 +131,31 @@ pub async fn create_handler(
                                     "pending".to_string(),
                                     serde_json::json!({"auto_created": true}),
                                 );
-                                
-                                match crate::db::deployment::insert(pg_pool.get_ref(), deployment).await {
+
+                                match crate::db::deployment::insert(pg_pool.get_ref(), deployment)
+                                    .await
+                                {
                                     Ok(created_deployment) => {
-                                        tracing::info!("Auto-created deployment (id={}) linked to project {}", 
-                                            created_deployment.id, created_project.id);
+                                        tracing::info!(
+                                            "Auto-created deployment (id={}) linked to project {}",
+                                            created_deployment.id,
+                                            created_project.id
+                                        );
                                         Some(created_project.id)
-                                    },
+                                    }
                                     Err(e) => {
                                         tracing::warn!("Failed to auto-create deployment: {}", e);
                                         // Project was created, return its ID anyway
                                         Some(created_project.id)
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
                                 tracing::warn!("Failed to auto-create project: {}", e);
                                 None
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         tracing::warn!("Failed to lookup deployment by hash: {}", e);
                         None
@@ -138,35 +163,109 @@ pub async fn create_handler(
                 }
             }
         };
-        
-        let app_code = req.parameters.as_ref()
+
+        let app_code = req
+            .parameters
+            .as_ref()
             .and_then(|p| p.get("app_code"))
             .and_then(|v| v.as_str());
-        let app_params = req.parameters.as_ref()
-            .and_then(|p| p.get("parameters"));
+        let app_params = req.parameters.as_ref().and_then(|p| p.get("parameters"));
+
+        // CRITICAL: Log incoming parameters for debugging env/config save issues
+        tracing::info!(
+            "[DEPLOY_APP] deployment_id: {:?}, app_code: {:?}, has_app_params: {}, raw_params: {}",
+            deployment_id,
+            app_code,
+            app_params.is_some(),
+            req.parameters
+                .as_ref()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "None".to_string())
+        );
+
+        if let Some(params) = app_params.or(req.parameters.as_ref()) {
+            tracing::info!(
+                "[DEPLOY_APP] Parameters contain - env: {}, config_files: {}, image: {}",
+                params
+                    .get("env")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "None".to_string()),
+                params
+                    .get("config_files")
+                    .map(|v| format!("{} files", v.as_array().map(|a| a.len()).unwrap_or(0)))
+                    .unwrap_or_else(|| "None".to_string()),
+                params
+                    .get("image")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "None".to_string())
+            );
+        }
 
         tracing::debug!(
             "deploy_app command detected, upserting app config for deployment_id: {:?}, app_code: {:?}",
             deployment_id,
             app_code
         );
-        if let (Some(deployment_id), Some(app_code), Some(app_params)) = (deployment_id, app_code, app_params) {
-            upsert_app_config_for_deploy(pg_pool.get_ref(), deployment_id, app_code, app_params, &req.deployment_hash).await;
+        if let (Some(deployment_id), Some(app_code), Some(app_params)) =
+            (deployment_id, app_code, app_params)
+        {
+            upsert_app_config_for_deploy(
+                pg_pool.get_ref(),
+                deployment_id,
+                app_code,
+                app_params,
+                &req.deployment_hash,
+            )
+            .await;
         } else if let (Some(deployment_id), Some(app_code)) = (deployment_id, app_code) {
             // Have deployment_id and app_code but no nested parameters - use top-level parameters
             if let Some(params) = req.parameters.as_ref() {
-                upsert_app_config_for_deploy(pg_pool.get_ref(), deployment_id, app_code, params, &req.deployment_hash).await;
+                upsert_app_config_for_deploy(
+                    pg_pool.get_ref(),
+                    deployment_id,
+                    app_code,
+                    params,
+                    &req.deployment_hash,
+                )
+                .await;
             }
         } else if let Some(app_code) = app_code {
             // No deployment_id available (auto-create failed), just store to Vault
             if let Some(params) = req.parameters.as_ref() {
-                store_configs_to_vault_from_params(params, &req.deployment_hash, app_code, &settings.vault, &settings.deployment).await;
+                store_configs_to_vault_from_params(
+                    params,
+                    &req.deployment_hash,
+                    app_code,
+                    &settings.vault,
+                    &settings.deployment,
+                )
+                .await;
             }
         } else {
             tracing::warn!("Missing app_code in deploy_app arguments");
         }
 
-        enrich_deploy_app_with_compose(&req.deployment_hash, validated_parameters, &settings.vault).await
+        let enriched_params = enrich_deploy_app_with_compose(&req.deployment_hash, validated_parameters, &settings.vault)
+            .await;
+
+        // Auto-discover child services from multi-service compose files
+        if let (Some(project_id), Some(app_code)) = (deployment_id, app_code) {
+            if let Some(compose_content) = enriched_params
+                .as_ref()
+                .and_then(|p| p.get("compose_content"))
+                .and_then(|c| c.as_str())
+            {
+                discover_and_register_child_services(
+                    pg_pool.get_ref(),
+                    project_id,
+                    app_code,
+                    compose_content,
+                )
+                .await;
+            }
+        }
+
+        enriched_params
     } else {
         validated_parameters
     };
@@ -268,13 +367,20 @@ async fn enrich_deploy_app_with_compose(
     let vault = match VaultService::from_settings(vault_settings) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("Failed to initialize Vault: {}, cannot enrich deploy_app", e);
+            tracing::warn!(
+                "Failed to initialize Vault: {}, cannot enrich deploy_app",
+                e
+            );
             return Some(params);
         }
     };
 
     // If compose_content is not already provided, fetch from Vault
-    if params.get("compose_content").and_then(|v| v.as_str()).is_none() {
+    if params
+        .get("compose_content")
+        .and_then(|v| v.as_str())
+        .is_none()
+    {
         tracing::debug!(
             deployment_hash = %deployment_hash,
             app_code = %app_code,
@@ -308,7 +414,7 @@ async fn enrich_deploy_app_with_compose(
 
     // Collect config files from Vault (bundled configs, legacy single config, and .env files)
     let mut config_files: Vec<serde_json::Value> = Vec::new();
-    
+
     // If config_files already provided, use them
     if let Some(existing_configs) = params.get("config_files").and_then(|v| v.as_array()) {
         config_files.extend(existing_configs.iter().cloned());
@@ -325,7 +431,9 @@ async fn enrich_deploy_app_with_compose(
     match vault.fetch_app_config(deployment_hash, &configs_key).await {
         Ok(bundle_config) => {
             // Parse the JSON array of configs
-            if let Ok(configs_array) = serde_json::from_str::<Vec<serde_json::Value>>(&bundle_config.content) {
+            if let Ok(configs_array) =
+                serde_json::from_str::<Vec<serde_json::Value>>(&bundle_config.content)
+            {
                 tracing::info!(
                     deployment_hash = %deployment_hash,
                     app_code = %app_code,
@@ -349,7 +457,7 @@ async fn enrich_deploy_app_with_compose(
                 config_key = %config_key,
                 "Looking up legacy single config file in Vault"
             );
-            
+
             match vault.fetch_app_config(deployment_hash, &config_key).await {
                 Ok(app_config) => {
                     tracing::info!(
@@ -434,3 +542,160 @@ async fn enrich_deploy_app_with_compose(
     Some(params)
 }
 
+/// Discover child services from a multi-service compose file and register them as project_apps.
+/// This is called after deploy_app enrichment to auto-create entries for stacks like Komodo
+/// that have multiple services (core, ferretdb, periphery).
+///
+/// Returns the number of child services discovered and registered.
+pub async fn discover_and_register_child_services(
+    pg_pool: &PgPool,
+    project_id: i32,
+    parent_app_code: &str,
+    compose_content: &str,
+) -> usize {
+    // Parse the compose file to extract services
+    let services = match parse_compose_services(compose_content) {
+        Ok(svcs) => svcs,
+        Err(e) => {
+            tracing::debug!(
+                parent_app = %parent_app_code,
+                error = %e,
+                "Failed to parse compose for service discovery (may be single-service)"
+            );
+            return 0;
+        }
+    };
+
+    // If only 1 service, no child discovery needed
+    if services.len() <= 1 {
+        tracing::debug!(
+            parent_app = %parent_app_code,
+            services_count = services.len(),
+            "Single service compose, no child discovery needed"
+        );
+        return 0;
+    }
+
+    tracing::info!(
+        parent_app = %parent_app_code,
+        services_count = services.len(),
+        services = ?services.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        "Multi-service compose detected, auto-discovering child services"
+    );
+
+    let mut registered_count = 0;
+
+    for svc in &services {
+        // Generate unique code: parent_code-service_name
+        let app_code = format!("{}-{}", parent_app_code, svc.name);
+
+        // Check if already exists
+        match db::project_app::fetch_by_project_and_code(pg_pool, project_id, &app_code).await {
+            Ok(Some(_)) => {
+                tracing::debug!(
+                    app_code = %app_code,
+                    "Child service already registered, skipping"
+                );
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    app_code = %app_code,
+                    error = %e,
+                    "Failed to check if child service exists"
+                );
+                continue;
+            }
+        }
+
+        // Create new project_app for this service
+        let mut new_app = crate::models::ProjectApp::new(
+            project_id,
+            app_code.clone(),
+            svc.name.clone(),
+            svc.image.clone().unwrap_or_else(|| "unknown".to_string()),
+        );
+
+        // Set parent reference
+        new_app.parent_app_code = Some(parent_app_code.to_string());
+
+        // Convert environment to JSON object
+        if !svc.environment.is_empty() {
+            let mut env_map = serde_json::Map::new();
+            for env_str in &svc.environment {
+                if let Some((k, v)) = env_str.split_once('=') {
+                    env_map.insert(k.to_string(), json!(v));
+                }
+            }
+            new_app.environment = Some(json!(env_map));
+        }
+
+        // Convert ports to JSON array
+        if !svc.ports.is_empty() {
+            new_app.ports = Some(json!(svc.ports));
+        }
+
+        // Convert volumes to JSON array
+        if !svc.volumes.is_empty() {
+            new_app.volumes = Some(json!(svc.volumes));
+        }
+
+        // Set networks
+        if !svc.networks.is_empty() {
+            new_app.networks = Some(json!(svc.networks));
+        }
+
+        // Set depends_on
+        if !svc.depends_on.is_empty() {
+            new_app.depends_on = Some(json!(svc.depends_on));
+        }
+
+        // Set command and entrypoint
+        new_app.command = svc.command.clone();
+        new_app.entrypoint = svc.entrypoint.clone();
+        new_app.restart_policy = svc.restart.clone();
+
+        // Convert labels to JSON
+        if !svc.labels.is_empty() {
+            let labels_map: serde_json::Map<String, serde_json::Value> = svc
+                .labels
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(v)))
+                .collect();
+            new_app.labels = Some(json!(labels_map));
+        }
+
+        // Insert into database
+        match db::project_app::insert(pg_pool, &new_app).await {
+            Ok(created) => {
+                tracing::info!(
+                    app_code = %app_code,
+                    id = created.id,
+                    service = %svc.name,
+                    image = ?svc.image,
+                    "Auto-registered child service from compose"
+                );
+                registered_count += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    app_code = %app_code,
+                    service = %svc.name,
+                    error = %e,
+                    "Failed to register child service"
+                );
+            }
+        }
+    }
+
+    if registered_count > 0 {
+        tracing::info!(
+            parent_app = %parent_app_code,
+            registered_count = registered_count,
+            "Successfully auto-registered child services"
+        );
+    }
+
+    registered_count
+}

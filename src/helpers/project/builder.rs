@@ -2,8 +2,157 @@ use crate::forms;
 use crate::models;
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use serde_yaml;
 // use crate::helpers::project::*;
+
+/// Extracted service info from a docker-compose file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedService {
+    /// Service name (key in services section)
+    pub name: String,
+    /// Docker image
+    pub image: Option<String>,
+    /// Port mappings as strings (e.g., "8080:80")
+    pub ports: Vec<String>,
+    /// Volume mounts as strings
+    pub volumes: Vec<String>,
+    /// Environment variables as key=value
+    pub environment: Vec<String>,
+    /// Networks the service connects to
+    pub networks: Vec<String>,
+    /// Services this depends on
+    pub depends_on: Vec<String>,
+    /// Restart policy
+    pub restart: Option<String>,
+    /// Container command
+    pub command: Option<String>,
+    /// Container entrypoint
+    pub entrypoint: Option<String>,
+    /// Labels
+    pub labels: IndexMap<String, String>,
+}
+
+/// Parse a docker-compose.yml string and extract all service definitions
+pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService>, String> {
+    let compose: dctypes::Compose = serde_yaml::from_str(compose_yaml)
+        .map_err(|e| format!("Failed to parse compose YAML: {}", e))?;
+
+    let mut services = Vec::new();
+
+    for (name, service_opt) in compose.services.0.iter() {
+        let Some(service) = service_opt else {
+            continue;
+        };
+
+        let image = service.image.clone();
+
+        // Extract ports
+        let ports = match &service.ports {
+            dctypes::Ports::Short(list) => list.clone(),
+            dctypes::Ports::Long(list) => list
+                .iter()
+                .map(|p| {
+                    let host = p.host_ip.as_ref().map(|h| format!("{}:", h)).unwrap_or_default();
+                    let published = p.published.as_ref().map(|pp| match pp {
+                        dctypes::PublishedPort::Single(n) => n.to_string(),
+                        dctypes::PublishedPort::Range(s) => s.clone(),
+                    }).unwrap_or_default();
+                    format!("{}{}:{}", host, published, p.target)
+                })
+                .collect(),
+        };
+
+        // Extract volumes
+        let volumes: Vec<String> = service
+            .volumes
+            .iter()
+            .filter_map(|v| match v {
+                dctypes::Volumes::Simple(s) => Some(s.clone()),
+                dctypes::Volumes::Advanced(adv) => {
+                    Some(format!("{}:{}", adv.source.as_deref().unwrap_or(""), &adv.target))
+                }
+            })
+            .collect();
+
+        // Extract environment
+        let environment: Vec<String> = match &service.environment {
+            dctypes::Environment::List(list) => list.clone(),
+            dctypes::Environment::KvPair(map) => map
+                .iter()
+                .map(|(k, v)| {
+                    let val = v.as_ref().map(|sv| match sv {
+                        dctypes::SingleValue::String(s) => s.clone(),
+                        dctypes::SingleValue::Bool(b) => b.to_string(),
+                        dctypes::SingleValue::Unsigned(n) => n.to_string(),
+                        dctypes::SingleValue::Signed(n) => n.to_string(),
+                        dctypes::SingleValue::Float(f) => f.to_string(),
+                    }).unwrap_or_default();
+                    format!("{}={}", k, val)
+                })
+                .collect(),
+        };
+
+        // Extract networks
+        let networks: Vec<String> = match &service.networks {
+            dctypes::Networks::Simple(list) => list.clone(),
+            dctypes::Networks::Advanced(adv) => adv.0.keys().cloned().collect(),
+        };
+
+        // Extract depends_on
+        let depends_on: Vec<String> = match &service.depends_on {
+            dctypes::DependsOnOptions::Simple(list) => list.clone(),
+            dctypes::DependsOnOptions::Conditional(map) => map.keys().cloned().collect(),
+        };
+
+        // Extract restart
+        let restart = service.restart.clone();
+
+        // Extract command
+        let command = match &service.command {
+            Some(dctypes::Command::Simple(s)) => Some(s.clone()),
+            Some(dctypes::Command::Args(args)) => Some(args.join(" ")),
+            None => None,
+        };
+
+        // Extract entrypoint
+        let entrypoint = match &service.entrypoint {
+            Some(dctypes::Entrypoint::Simple(s)) => Some(s.clone()),
+            Some(dctypes::Entrypoint::List(list)) => Some(list.join(" ")),
+            None => None,
+        };
+
+        // Extract labels
+        let labels: IndexMap<String, String> = match &service.labels {
+            dctypes::Labels::List(list) => {
+                let mut map = IndexMap::new();
+                for item in list {
+                    if let Some((k, v)) = item.split_once('=') {
+                        map.insert(k.to_string(), v.to_string());
+                    }
+                }
+                map
+            }
+            dctypes::Labels::Map(map) => map.clone(),
+        };
+
+        services.push(ExtractedService {
+            name: name.clone(),
+            image,
+            ports,
+            volumes,
+            environment,
+            networks,
+            depends_on,
+            restart,
+            command,
+            entrypoint,
+            labels,
+        });
+    }
+
+    Ok(services)
+}
 
 /// A builder for constructing docker compose.
 #[derive(Clone, Debug)]

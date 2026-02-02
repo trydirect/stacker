@@ -66,8 +66,10 @@ impl ToolHandler for ConfigureProxyTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier from args (prefers hash if both provided)
-        let identifier =
-            DeploymentIdentifier::try_from_options(params.deployment_hash.clone(), params.deployment_id)?;
+        let identifier = DeploymentIdentifier::try_from_options(
+            params.deployment_hash.clone(),
+            params.deployment_id,
+        )?;
 
         // Resolve to deployment_hash
         let resolver = create_resolver(context);
@@ -138,7 +140,7 @@ impl ToolHandler for ConfigureProxyTool {
             "forward_port": params.forward_port,
             "ssl_enabled": params.ssl_enabled,
             "message": format!(
-                "Proxy configuration command queued. Domain(s) {} will be configured to forward to {}:{}", 
+                "Proxy configuration command queued. Domain(s) {} will be configured to forward to {}:{}",
                 params.domain_names.join(", "),
                 params.forward_host.as_ref().unwrap_or(&params.app_code),
                 params.forward_port
@@ -225,8 +227,10 @@ impl ToolHandler for DeleteProxyTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier from args (prefers hash if both provided)
-        let identifier =
-            DeploymentIdentifier::try_from_options(params.deployment_hash.clone(), params.deployment_id)?;
+        let identifier = DeploymentIdentifier::try_from_options(
+            params.deployment_hash.clone(),
+            params.deployment_id,
+        )?;
 
         // Resolve to deployment_hash
         let resolver = create_resolver(context);
@@ -234,7 +238,9 @@ impl ToolHandler for DeleteProxyTool {
 
         // Validate domain names
         if params.domain_names.is_empty() {
-            return Err("At least one domain_name is required to identify the proxy to delete".to_string());
+            return Err(
+                "At least one domain_name is required to identify the proxy to delete".to_string(),
+            );
         }
 
         // Create command for agent
@@ -285,7 +291,7 @@ impl ToolHandler for DeleteProxyTool {
             "app_code": params.app_code,
             "domain_names": params.domain_names,
             "message": format!(
-                "Delete proxy command queued. Proxy for domain(s) {} will be removed.", 
+                "Delete proxy command queued. Proxy for domain(s) {} will be removed.",
                 params.domain_names.join(", ")
             )
         });
@@ -298,7 +304,8 @@ impl ToolHandler for DeleteProxyTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "delete_proxy".to_string(),
-            description: "Delete a reverse proxy configuration from Nginx Proxy Manager.".to_string(),
+            description: "Delete a reverse proxy configuration from Nginx Proxy Manager."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -349,8 +356,10 @@ impl ToolHandler for ListProxiesTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier from args (prefers hash if both provided)
-        let identifier =
-            DeploymentIdentifier::try_from_options(params.deployment_hash.clone(), params.deployment_id)?;
+        let identifier = DeploymentIdentifier::try_from_options(
+            params.deployment_hash.clone(),
+            params.deployment_id,
+        )?;
 
         // Resolve to deployment_hash
         let resolver = create_resolver(context);

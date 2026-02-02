@@ -3,8 +3,8 @@ use uuid::Uuid;
 use crate::connectors::errors::ConnectorError;
 
 use super::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct, UserProfile,
-    UserServiceConnector,
+    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct,
+    UserProfile, UserServiceConnector,
 };
 
 /// Mock User Service for testing - always succeeds
@@ -30,7 +30,11 @@ impl UserServiceConnector for MockUserServiceConnector {
         })
     }
 
-    async fn get_stack(&self, stack_id: i32, user_id: &str) -> Result<StackResponse, ConnectorError> {
+    async fn get_stack(
+        &self,
+        stack_id: i32,
+        user_id: &str,
+    ) -> Result<StackResponse, ConnectorError> {
         Ok(StackResponse {
             id: stack_id,
             user_id: user_id.to_string(),

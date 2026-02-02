@@ -50,9 +50,29 @@ impl std::error::Error for ProjectNameError {}
 
 /// Reserved directory names that should not be used as project names
 const RESERVED_NAMES: &[&str] = &[
-    ".", "..", "root", "home", "etc", "var", "tmp", "usr", "bin", "sbin",
-    "lib", "lib64", "opt", "proc", "sys", "dev", "boot", "mnt", "media",
-    "srv", "run", "lost+found", "trydirect",
+    ".",
+    "..",
+    "root",
+    "home",
+    "etc",
+    "var",
+    "tmp",
+    "usr",
+    "bin",
+    "sbin",
+    "lib",
+    "lib64",
+    "opt",
+    "proc",
+    "sys",
+    "dev",
+    "boot",
+    "mnt",
+    "media",
+    "srv",
+    "run",
+    "lost+found",
+    "trydirect",
 ];
 
 /// Validate a project name for use as a Unix directory name
@@ -171,16 +191,16 @@ impl Project {
     /// Get the full deploy directory path for this project
     /// Uses the provided base_dir, or DEFAULT_DEPLOY_DIR env var, or defaults to /home/trydirect
     pub fn deploy_dir(&self, base_dir: Option<&str>) -> String {
-        let default_base = std::env::var("DEFAULT_DEPLOY_DIR")
-            .unwrap_or_else(|_| "/home/trydirect".to_string());
+        let default_base =
+            std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
         let base = base_dir.unwrap_or(&default_base);
         format!("{}/{}", base.trim_end_matches('/'), self.safe_dir_name())
     }
 
     /// Get the deploy directory using deployment_hash (for backwards compatibility)
     pub fn deploy_dir_with_hash(&self, base_dir: Option<&str>, deployment_hash: &str) -> String {
-        let default_base = std::env::var("DEFAULT_DEPLOY_DIR")
-            .unwrap_or_else(|_| "/home/trydirect".to_string());
+        let default_base =
+            std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
         let base = base_dir.unwrap_or(&default_base);
         format!("{}/{}", base.trim_end_matches('/'), deployment_hash)
     }

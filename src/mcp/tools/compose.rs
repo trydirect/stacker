@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::db;
+use crate::helpers::project::builder::{parse_compose_services, ExtractedService};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 use serde::Deserialize;
@@ -354,6 +355,258 @@ impl ToolHandler for ValidateStackConfigTool {
                     }
                 },
                 "required": ["project_id"]
+            }),
+        }
+    }
+}
+
+/// Discover all services from a multi-service docker-compose stack
+/// Parses the compose file and creates individual project_app entries for each service
+pub struct DiscoverStackServicesTool;
+
+#[async_trait]
+impl ToolHandler for DiscoverStackServicesTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            /// Project ID containing the parent app
+            project_id: i32,
+            /// App code of the parent stack (e.g., "komodo")
+            parent_app_code: String,
+            /// Compose content (YAML string). If not provided, fetches from project_app's compose
+            compose_content: Option<String>,
+            /// Whether to create project_app entries for discovered services
+            #[serde(default)]
+            create_apps: bool,
+        }
+
+        let args: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        // Verify project ownership
+        let project = db::project::fetch(&context.pg_pool, args.project_id)
+            .await
+            .map_err(|e| format!("Project not found: {}", e))?
+            .ok_or_else(|| "Project not found".to_string())?;
+
+        if project.user_id != context.user.id {
+            return Err("Unauthorized: You do not own this project".to_string());
+        }
+
+        // Get compose content - either from args or from existing project_app
+        let compose_yaml = if let Some(content) = args.compose_content {
+            content
+        } else {
+            // Fetch parent app to get its compose
+            let _parent_app = db::project_app::fetch_by_project_and_code(
+                &context.pg_pool,
+                args.project_id,
+                &args.parent_app_code,
+            )
+            .await
+            .map_err(|e| format!("Failed to fetch parent app: {}", e))?
+            .ok_or_else(|| format!("Parent app '{}' not found in project", args.parent_app_code))?;;
+
+            // Try to get compose from config_files or stored compose
+            // For now, require compose_content to be provided
+            return Err(
+                "compose_content is required when parent app doesn't have stored compose. \
+                Please provide the docker-compose.yml content."
+                    .to_string(),
+            );
+        };
+
+        // Parse the compose file to extract services
+        let services: Vec<ExtractedService> = parse_compose_services(&compose_yaml)?;
+
+        if services.is_empty() {
+            return Ok(ToolContent::Text {
+                text: json!({
+                    "success": false,
+                    "message": "No services found in compose file",
+                    "services": []
+                })
+                .to_string(),
+            });
+        }
+
+        let mut created_apps: Vec<Value> = Vec::new();
+        let mut discovered_services: Vec<Value> = Vec::new();
+
+        for svc in &services {
+            let service_info = json!({
+                "name": svc.name,
+                "image": svc.image,
+                "ports": svc.ports,
+                "volumes": svc.volumes,
+                "networks": svc.networks,
+                "depends_on": svc.depends_on,
+                "environment_count": svc.environment.len(),
+                "has_command": svc.command.is_some(),
+                "has_entrypoint": svc.entrypoint.is_some(),
+                "labels_count": svc.labels.len(),
+            });
+            discovered_services.push(service_info);
+
+            // Create project_app entries if requested
+            if args.create_apps {
+                // Generate unique code: parent_code-service_name
+                let app_code = format!("{}-{}", args.parent_app_code, svc.name);
+
+                // Check if already exists
+                let existing = db::project_app::fetch_by_project_and_code(
+                    &context.pg_pool,
+                    args.project_id,
+                    &app_code,
+                )
+                .await
+                .ok()
+                .flatten();
+
+                if existing.is_some() {
+                    created_apps.push(json!({
+                        "code": app_code,
+                        "status": "already_exists",
+                        "service": svc.name,
+                    }));
+                    continue;
+                }
+
+                // Create new project_app for this service
+                let mut new_app = crate::models::ProjectApp::new(
+                    args.project_id,
+                    app_code.clone(),
+                    svc.name.clone(),
+                    svc.image.clone().unwrap_or_else(|| "unknown".to_string()),
+                );
+
+                // Set parent reference
+                new_app.parent_app_code = Some(args.parent_app_code.clone());
+
+                // Convert environment to JSON object
+                if !svc.environment.is_empty() {
+                    let mut env_map = serde_json::Map::new();
+                    for env_str in &svc.environment {
+                        if let Some((k, v)) = env_str.split_once('=') {
+                            env_map.insert(k.to_string(), json!(v));
+                        }
+                    }
+                    new_app.environment = Some(json!(env_map));
+                }
+
+                // Convert ports to JSON array
+                if !svc.ports.is_empty() {
+                    new_app.ports = Some(json!(svc.ports));
+                }
+
+                // Convert volumes to JSON array
+                if !svc.volumes.is_empty() {
+                    new_app.volumes = Some(json!(svc.volumes));
+                }
+
+                // Set networks
+                if !svc.networks.is_empty() {
+                    new_app.networks = Some(json!(svc.networks));
+                }
+
+                // Set depends_on
+                if !svc.depends_on.is_empty() {
+                    new_app.depends_on = Some(json!(svc.depends_on));
+                }
+
+                // Set command
+                new_app.command = svc.command.clone();
+                new_app.entrypoint = svc.entrypoint.clone();
+                new_app.restart_policy = svc.restart.clone();
+
+                // Convert labels to JSON
+                if !svc.labels.is_empty() {
+                    let labels_map: serde_json::Map<String, Value> = svc
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), json!(v)))
+                        .collect();
+                    new_app.labels = Some(json!(labels_map));
+                }
+
+                // Insert into database
+                match db::project_app::insert(&context.pg_pool, &new_app).await {
+                    Ok(created) => {
+                        created_apps.push(json!({
+                            "code": app_code,
+                            "id": created.id,
+                            "status": "created",
+                            "service": svc.name,
+                            "image": svc.image,
+                        }));
+                    }
+                    Err(e) => {
+                        created_apps.push(json!({
+                            "code": app_code,
+                            "status": "error",
+                            "error": e.to_string(),
+                            "service": svc.name,
+                        }));
+                    }
+                }
+            }
+        }
+
+        let result = json!({
+            "success": true,
+            "project_id": args.project_id,
+            "parent_app_code": args.parent_app_code,
+            "services_count": services.len(),
+            "discovered_services": discovered_services,
+            "created_apps": if args.create_apps { Some(created_apps) } else { None },
+            "message": format!(
+                "Discovered {} services from compose file{}",
+                services.len(),
+                if args.create_apps { ", created project_app entries" } else { "" }
+            )
+        });
+
+        tracing::info!(
+            user_id = %context.user.id,
+            project_id = args.project_id,
+            parent_app = %args.parent_app_code,
+            services_count = services.len(),
+            create_apps = args.create_apps,
+            "Discovered stack services via MCP"
+        );
+
+        Ok(ToolContent::Text {
+            text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "discover_stack_services".to_string(),
+            description: "Parse a docker-compose file to discover all services in a multi-service stack. \
+                Can optionally create individual project_app entries for each service, linked to a parent app. \
+                Use this for complex stacks like Komodo that have multiple containers (core, ferretdb, periphery).".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "number",
+                        "description": "Project ID containing the stack"
+                    },
+                    "parent_app_code": {
+                        "type": "string",
+                        "description": "App code of the parent stack (e.g., 'komodo')"
+                    },
+                    "compose_content": {
+                        "type": "string",
+                        "description": "Docker-compose YAML content to parse. If not provided, attempts to fetch from parent app."
+                    },
+                    "create_apps": {
+                        "type": "boolean",
+                        "description": "If true, creates project_app entries for each discovered service with parent_app_code reference"
+                    }
+                },
+                "required": ["project_id", "parent_app_code"]
             }),
         }
     }

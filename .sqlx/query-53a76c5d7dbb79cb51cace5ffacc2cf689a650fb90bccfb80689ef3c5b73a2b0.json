@@ -132,6 +132,21 @@
         "ordinal": 25,
         "name": "config_hash",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 26,
+        "name": "config_files",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 27,
+        "name": "template_source",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 28,
+        "name": "parent_app_code",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -163,6 +178,9 @@
       false,
       false,
       false,
+      true,
+      true,
+      true,
       true,
       true,
       true

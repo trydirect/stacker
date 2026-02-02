@@ -19,7 +19,7 @@ use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::models::{Command, CommandPriority};
-use crate::services::{DeploymentIdentifier, DeploymentResolver};
+use crate::services::{DeploymentIdentifier, DeploymentResolver, VaultService};
 use serde::Deserialize;
 
 const DEFAULT_LOG_LIMIT: usize = 100;
@@ -825,6 +825,470 @@ impl ToolHandler for GetErrorSummaryTool {
                     }
                 },
                 "required": []
+            }),
+        }
+    }
+}
+
+/// List all containers in a deployment
+/// This tool discovers running containers and their status, which is essential
+/// for subsequent operations like proxy configuration, log retrieval, etc.
+pub struct ListContainersTool;
+
+#[async_trait]
+impl ToolHandler for ListContainersTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        // Create identifier and resolve to hash
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+        let resolver = create_resolver(context);
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        // Create list_containers command for agent
+        let command_id = uuid::Uuid::new_v4().to_string();
+        let command = Command::new(
+            command_id.clone(),
+            deployment_hash.clone(),
+            "list_containers".to_string(),
+            context.user.id.clone(),
+        )
+        .with_parameters(json!({
+            "name": "stacker.list_containers",
+            "params": {
+                "deployment_hash": deployment_hash.clone(),
+            }
+        }));
+
+        let command = db::command::insert(&context.pg_pool, &command)
+            .await
+            .map_err(|e| format!("Failed to create command: {}", e))?;
+
+        db::command::add_to_queue(
+            &context.pg_pool,
+            &command.command_id,
+            &deployment_hash,
+            &CommandPriority::High, // High priority for quick discovery
+        )
+        .await
+        .map_err(|e| format!("Failed to queue command: {}", e))?;
+
+        // Also try to get containers from project_app table if we have a project
+        let mut known_apps: Vec<serde_json::Value> = Vec::new();
+        if let Ok(Some(deployment)) =
+            db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash).await
+        {
+            if let Ok(apps) =
+                db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id).await
+            {
+                for app in apps {
+                    known_apps.push(json!({
+                        "code": app.code,
+                        "name": app.name,
+                        "image": app.image,
+                        "parent_app_code": app.parent_app_code,
+                        "enabled": app.enabled,
+                        "ports": app.ports,
+                        "domain": app.domain,
+                    }));
+                }
+            }
+        }
+
+        let result = json!({
+            "status": "queued",
+            "command_id": command.command_id,
+            "deployment_hash": deployment_hash,
+            "message": "Container listing queued. Agent will respond with running containers shortly.",
+            "known_apps": known_apps,
+            "hint": if !known_apps.is_empty() {
+                format!("Found {} registered apps in this deployment. Use these app codes for logs, health, restart, or proxy commands.", known_apps.len())
+            } else {
+                "No registered apps found yet. Agent will discover running containers.".to_string()
+            }
+        });
+
+        tracing::info!(
+            user_id = %context.user.id,
+            deployment_hash = %deployment_hash,
+            known_apps_count = known_apps.len(),
+            "Queued list_containers command via MCP"
+        );
+
+        Ok(ToolContent::Text {
+            text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "list_containers".to_string(),
+            description: "List all containers running in a deployment. Returns container names, status, and registered app configurations. Use this to discover available containers before configuring proxies, viewing logs, or checking health.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "The deployment/installation ID (for legacy User Service deployments)"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "The deployment hash (for Stack Builder deployments). Use this if available in context."
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+}
+
+/// Get the docker-compose.yml configuration for a deployment
+/// Retrieves the compose file from Vault for analysis and troubleshooting
+pub struct GetDockerComposeYamlTool;
+
+#[async_trait]
+impl ToolHandler for GetDockerComposeYamlTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+            #[serde(default)]
+            app_code: Option<String>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        // Create identifier and resolve to hash
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+        let resolver = create_resolver(context);
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        // Initialize Vault service
+        let vault = VaultService::from_settings(&context.settings.vault)
+            .map_err(|e| format!("Vault service not configured: {}", e))?;
+
+        // Determine what to fetch: specific app compose or global compose
+        let app_name = params.app_code.clone().unwrap_or_else(|| "_compose".to_string());
+        
+        match vault.fetch_app_config(&deployment_hash, &app_name).await {
+            Ok(config) => {
+                let result = json!({
+                    "deployment_hash": deployment_hash,
+                    "app_code": params.app_code,
+                    "content_type": config.content_type,
+                    "destination_path": config.destination_path,
+                    "compose_yaml": config.content,
+                    "message": if params.app_code.is_some() {
+                        format!("Docker compose for app '{}' retrieved successfully", app_name)
+                    } else {
+                        "Docker compose configuration retrieved successfully".to_string()
+                    }
+                });
+
+                tracing::info!(
+                    user_id = %context.user.id,
+                    deployment_hash = %deployment_hash,
+                    app_code = ?params.app_code,
+                    "Retrieved docker-compose.yml via MCP"
+                );
+
+                Ok(ToolContent::Text {
+                    text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    user_id = %context.user.id,
+                    deployment_hash = %deployment_hash,
+                    error = %e,
+                    "Failed to fetch docker-compose.yml from Vault"
+                );
+                Err(format!("Failed to retrieve docker-compose.yml: {}", e))
+            }
+        }
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "get_docker_compose_yaml".to_string(),
+            description: "Retrieve the docker-compose.yml configuration for a deployment. This shows the actual service definitions, volumes, networks, and environment variables. Useful for troubleshooting configuration issues.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "The deployment/installation ID (for legacy User Service deployments)"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "The deployment hash (for Stack Builder deployments). Use this if available in context."
+                    },
+                    "app_code": {
+                        "type": "string",
+                        "description": "Specific app code to get compose for. If omitted, returns the main docker-compose.yml for the entire stack."
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+}
+
+/// Get server resource metrics (CPU, RAM, disk) from a deployment
+/// Dispatches a command to the status agent to collect system metrics
+pub struct GetServerResourcesTool;
+
+#[async_trait]
+impl ToolHandler for GetServerResourcesTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        // Create identifier and resolve to hash
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+        let resolver = create_resolver(context);
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        // Create server_resources command for agent
+        let command_id = uuid::Uuid::new_v4().to_string();
+        let command = Command::new(
+            command_id.clone(),
+            deployment_hash.clone(),
+            "server_resources".to_string(),
+            context.user.id.clone(),
+        )
+        .with_parameters(json!({
+            "name": "stacker.server_resources",
+            "params": {
+                "deployment_hash": deployment_hash.clone(),
+                "include_disk": true,
+                "include_network": true
+            }
+        }));
+
+        let command = db::command::insert(&context.pg_pool, &command)
+            .await
+            .map_err(|e| format!("Failed to create command: {}", e))?;
+
+        db::command::add_to_queue(
+            &context.pg_pool,
+            &command.command_id,
+            &deployment_hash,
+            &CommandPriority::Normal,
+        )
+        .await
+        .map_err(|e| format!("Failed to queue command: {}", e))?;
+
+        let result = json!({
+            "status": "queued",
+            "command_id": command.command_id,
+            "deployment_hash": deployment_hash,
+            "message": "Server resources request queued. Agent will collect CPU, RAM, disk, and network metrics shortly.",
+            "metrics_included": ["cpu_percent", "memory_used", "memory_total", "disk_used", "disk_total", "network_io"]
+        });
+
+        tracing::info!(
+            user_id = %context.user.id,
+            deployment_hash = %deployment_hash,
+            "Queued server_resources command via MCP"
+        );
+
+        Ok(ToolContent::Text {
+            text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "get_server_resources".to_string(),
+            description: "Get server resource metrics including CPU usage, RAM usage, disk space, and network I/O. Useful for diagnosing resource exhaustion issues or capacity planning.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "The deployment/installation ID (for legacy User Service deployments)"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "The deployment hash (for Stack Builder deployments). Use this if available in context."
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+}
+
+/// Execute a command inside a running container
+/// Allows running diagnostic commands for troubleshooting
+pub struct GetContainerExecTool;
+
+#[async_trait]
+impl ToolHandler for GetContainerExecTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+            app_code: String,
+            command: String,
+            #[serde(default)]
+            timeout: Option<u32>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        if params.app_code.trim().is_empty() {
+            return Err("app_code is required to execute a command in a container".to_string());
+        }
+
+        if params.command.trim().is_empty() {
+            return Err("command is required".to_string());
+        }
+
+        // Security: Block dangerous commands
+        let blocked_patterns = [
+            "rm -rf /",
+            "mkfs",
+            "dd if=",
+            ":(){",  // Fork bomb
+            "shutdown",
+            "reboot",
+            "halt",
+            "poweroff",
+            "init 0",
+            "init 6",
+        ];
+        
+        let cmd_lower = params.command.to_lowercase();
+        for pattern in &blocked_patterns {
+            if cmd_lower.contains(pattern) {
+                return Err(format!("Command '{}' is not allowed for security reasons", pattern));
+            }
+        }
+
+        // Create identifier and resolve to hash
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+        let resolver = create_resolver(context);
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        let timeout = params.timeout.unwrap_or(30).min(120); // Max 2 minutes
+
+        // Create exec command for agent
+        let command_id = uuid::Uuid::new_v4().to_string();
+        let command = Command::new(
+            command_id.clone(),
+            deployment_hash.clone(),
+            "exec".to_string(),
+            context.user.id.clone(),
+        )
+        .with_priority(CommandPriority::High)
+        .with_timeout(timeout as i32)
+        .with_parameters(json!({
+            "name": "stacker.exec",
+            "params": {
+                "deployment_hash": deployment_hash.clone(),
+                "app_code": params.app_code.clone(),
+                "command": params.command.clone(),
+                "timeout": timeout,
+                "redact_output": true  // Always redact sensitive data
+            }
+        }));
+
+        let command = db::command::insert(&context.pg_pool, &command)
+            .await
+            .map_err(|e| format!("Failed to create command: {}", e))?;
+
+        db::command::add_to_queue(
+            &context.pg_pool,
+            &command.command_id,
+            &deployment_hash,
+            &CommandPriority::High,
+        )
+        .await
+        .map_err(|e| format!("Failed to queue command: {}", e))?;
+
+        let result = json!({
+            "status": "queued",
+            "command_id": command.command_id,
+            "deployment_hash": deployment_hash,
+            "app_code": params.app_code,
+            "command": params.command,
+            "timeout": timeout,
+            "message": format!("Exec command queued for container '{}'. Output will be redacted for security.", params.app_code)
+        });
+
+        tracing::warn!(
+            user_id = %context.user.id,
+            deployment_hash = %deployment_hash,
+            app_code = %params.app_code,
+            command = %params.command,
+            "Queued EXEC command via MCP"
+        );
+
+        Ok(ToolContent::Text {
+            text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "get_container_exec".to_string(),
+            description: "Execute a command inside a running container for troubleshooting. Output is automatically redacted to remove sensitive information. Use for diagnostics like checking disk space, memory, running processes, or verifying config files.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "The deployment/installation ID (for legacy User Service deployments)"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "The deployment hash (for Stack Builder deployments). Use this if available in context."
+                    },
+                    "app_code": {
+                        "type": "string",
+                        "description": "The app/container code to execute command in (e.g., 'nginx', 'postgres')"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "The command to execute (e.g., 'df -h', 'free -m', 'ps aux', 'cat /etc/nginx/nginx.conf')"
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds (default: 30, max: 120)"
+                    }
+                },
+                "required": ["app_code", "command"]
             }),
         }
     }

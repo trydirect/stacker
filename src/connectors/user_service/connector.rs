@@ -20,8 +20,11 @@ pub trait UserServiceConnector: Send + Sync {
     ) -> Result<StackResponse, ConnectorError>;
 
     /// Fetch stack details from User Service
-    async fn get_stack(&self, stack_id: i32, user_id: &str)
-        -> Result<StackResponse, ConnectorError>;
+    async fn get_stack(
+        &self,
+        stack_id: i32,
+        user_id: &str,
+    ) -> Result<StackResponse, ConnectorError>;
 
     /// List user's stacks
     async fn list_stacks(&self, user_id: &str) -> Result<Vec<StackResponse>, ConnectorError>;

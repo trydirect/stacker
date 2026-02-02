@@ -60,13 +60,13 @@ impl Volume {
     /// Convert to ComposeVolume with optional custom base directory
     /// If base_dir is None, uses DEFAULT_DEPLOY_DIR env var or "/home/trydirect"
     pub fn to_compose_volume(&self, base_dir: Option<&str>) -> dctypes::ComposeVolume {
-        let default_base = std::env::var("DEFAULT_DEPLOY_DIR")
-            .unwrap_or_else(|_| "/home/trydirect".to_string());
+        let default_base =
+            std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
         let base = base_dir.unwrap_or(&default_base);
-        
+
         let mut driver_opts = IndexMap::default();
         let host_path = self.host_path.clone().unwrap_or_else(String::default);
-        
+
         driver_opts.insert(
             String::from("type"),
             Some(dctypes::SingleValue::String("none".to_string())),
@@ -75,7 +75,7 @@ impl Volume {
             String::from("o"),
             Some(dctypes::SingleValue::String("bind".to_string())),
         );
-        
+
         // Use configurable base directory instead of hardcoded /root/project
         let path = format!("{}/{}", base.trim_end_matches('/'), &host_path);
         driver_opts.insert(

@@ -50,7 +50,9 @@ pub(crate) async fn store_configs_to_vault_from_params(
                     .get("destination_path")
                     .and_then(|p| p.as_str())
                     .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("{}/{}/config/{}", config_base_path, app_code, file_name));
+                    .unwrap_or_else(|| {
+                        format!("{}/{}/config/{}", config_base_path, app_code, file_name)
+                    });
 
                 let file_mode = file
                     .get("file_mode")
@@ -65,8 +67,14 @@ pub(crate) async fn store_configs_to_vault_from_params(
                     content_type,
                     destination_path,
                     file_mode,
-                    owner: file.get("owner").and_then(|o| o.as_str()).map(|s| s.to_string()),
-                    group: file.get("group").and_then(|g| g.as_str()).map(|s| s.to_string()),
+                    owner: file
+                        .get("owner")
+                        .and_then(|o| o.as_str())
+                        .map(|s| s.to_string()),
+                    group: file
+                        .get("group")
+                        .and_then(|g| g.as_str())
+                        .map(|s| s.to_string()),
                 };
 
                 // Collect configs for later storage
@@ -123,7 +131,10 @@ pub(crate) async fn store_configs_to_vault_from_params(
             owner: None,
             group: None,
         };
-        match vault.store_app_config(deployment_hash, app_code, &config).await {
+        match vault
+            .store_app_config(deployment_hash, app_code, &config)
+            .await
+        {
             Ok(_) => tracing::info!("Compose content stored in Vault for {}", app_code),
             Err(e) => tracing::warn!("Failed to store compose in Vault: {}", e),
         }
@@ -145,12 +156,16 @@ pub(crate) async fn store_configs_to_vault_from_params(
         let config = AppConfig {
             content: env,
             content_type: "text/plain".to_string(),
-            destination_path: format!("{}/{}/app/.env", config_base_path, app_code),
+            // Path must match docker-compose env_file: "/home/trydirect/{app_code}/.env"
+            destination_path: format!("{}/{}/.env", config_base_path, app_code),
             file_mode: "0600".to_string(),
             owner: None,
             group: None,
         };
-        match vault.store_app_config(deployment_hash, &env_key, &config).await {
+        match vault
+            .store_app_config(deployment_hash, &env_key, &config)
+            .await
+        {
             Ok(_) => tracing::info!(".env stored in Vault under key {}", env_key),
             Err(e) => tracing::warn!("Failed to store .env in Vault: {}", e),
         }

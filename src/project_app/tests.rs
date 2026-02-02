@@ -1,7 +1,7 @@
 use crate::helpers::project::builder::generate_single_app_compose;
 
-use super::project_app_from_post;
 use super::mapping::{ProjectAppContext, ProjectAppPostArgs};
+use super::project_app_from_post;
 use serde_json::json;
 
 /// Example payload from the user's request
@@ -47,8 +47,14 @@ fn test_project_app_post_args_from_params() {
     // Check environment is extracted
     assert!(args.environment.is_some());
     let env = args.environment.as_ref().unwrap();
-    assert_eq!(env.get("telegraf_role").and_then(|v| v.as_str()), Some("server"));
-    assert_eq!(env.get("telegraf_interval").and_then(|v| v.as_str()), Some("10s"));
+    assert_eq!(
+        env.get("telegraf_role").and_then(|v| v.as_str()),
+        Some("server")
+    );
+    assert_eq!(
+        env.get("telegraf_interval").and_then(|v| v.as_str()),
+        Some("10s")
+    );
 
     // Check ports are extracted
     assert!(args.ports.is_some());
@@ -64,7 +70,10 @@ fn test_project_app_post_args_from_params() {
     assert!(args.config_files.is_some());
     let config_files = args.config_files.as_ref().unwrap().as_array().unwrap();
     assert_eq!(config_files.len(), 1);
-    assert_eq!(config_files[0].get("name").and_then(|v| v.as_str()), Some("telegraf.conf"));
+    assert_eq!(
+        config_files[0].get("name").and_then(|v| v.as_str()),
+        Some("telegraf.conf")
+    );
 }
 
 #[test]
@@ -84,7 +93,10 @@ fn test_project_app_from_post_basic() {
     // Check environment is set
     assert!(app.environment.is_some());
     let env = app.environment.as_ref().unwrap();
-    assert_eq!(env.get("telegraf_role").and_then(|v| v.as_str()), Some("server"));
+    assert_eq!(
+        env.get("telegraf_role").and_then(|v| v.as_str()),
+        Some("server")
+    );
 
     // Check ports are set
     assert!(app.ports.is_some());
@@ -94,7 +106,10 @@ fn test_project_app_from_post_basic() {
 
     // Check compose_content is returned separately
     assert!(compose_content.is_some());
-    assert!(compose_content.as_ref().unwrap().contains("telegraf:latest"));
+    assert!(compose_content
+        .as_ref()
+        .unwrap()
+        .contains("telegraf:latest"));
 
     // Check config_files are stored in labels
     assert!(app.labels.is_some());
@@ -158,7 +173,10 @@ fn test_compose_extraction_from_different_names() {
         "config_files": [{"name": "docker-compose.yml", "content": "docker-compose-content"}]
     });
     let args2 = ProjectAppPostArgs::from(&params2);
-    assert_eq!(args2.compose_content, Some("docker-compose-content".to_string()));
+    assert_eq!(
+        args2.compose_content,
+        Some("docker-compose-content".to_string())
+    );
 
     // Test "docker-compose.yaml" name
     let params3 = json!({
@@ -244,7 +262,9 @@ fn test_extract_compose_from_config_files_for_vault() {
                 files.iter().find_map(|file| {
                     let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     if super::is_compose_filename(file_name) {
-                        file.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
+                        file.get("content")
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.to_string())
                     } else {
                         None
                     }
@@ -620,22 +640,25 @@ fn test_env_generation_from_params_env() {
     // Test that .env content can be generated from params.env object
     // This mimics the logic in store_configs_to_vault_from_params
     fn generate_env_from_params(params: &serde_json::Value) -> Option<String> {
-        params.get("env").and_then(|v| v.as_object()).and_then(|env_obj| {
-            if env_obj.is_empty() {
-                return None;
-            }
-            let env_lines: Vec<String> = env_obj
-                .iter()
-                .map(|(k, v)| {
-                    let val = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    format!("{}={}", k, val)
-                })
-                .collect();
-            Some(env_lines.join("\n"))
-        })
+        params
+            .get("env")
+            .and_then(|v| v.as_object())
+            .and_then(|env_obj| {
+                if env_obj.is_empty() {
+                    return None;
+                }
+                let env_lines: Vec<String> = env_obj
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        format!("{}={}", k, val)
+                    })
+                    .collect();
+                Some(env_lines.join("\n"))
+            })
     }
 
     // Test with string values
@@ -696,7 +719,9 @@ fn test_env_file_extraction_from_config_files() {
                 files.iter().find_map(|file| {
                     let file_name = file.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     if file_name == ".env" || file_name == "env" {
-                        file.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
+                        file.get("content")
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.to_string())
                     } else {
                         None
                     }
@@ -735,4 +760,235 @@ fn test_env_file_extraction_from_config_files() {
     });
     let env3 = extract_env_from_config_files(&params3);
     assert!(env3.is_none());
+}
+/// Test: .env config file content is parsed into project_app.environment
+/// This is the CRITICAL fix for the bug where user-edited .env files were not saved
+#[test]
+fn test_env_config_file_parsed_into_environment() {
+    // User data from the bug report - env is empty but .env config file has content
+    let params = json!({
+        "env": {},  // Empty - user didn't use the form fields
+        "config_files": [
+            {
+                "name": ".env",
+                "content": "# Core config\nKOMODO_FIRST_SERVER: http://periphery:8120\nKOMODO_DATABASE_ADDRESS: ferretdb\nKOMODO_ENABLE_NEW_USERS: true\nKOMODO_LOCAL_AUTH: true\nKOMODO_JWT_SECRET: a_random_secret",
+                "variables": {}
+            },
+            {
+                "name": "compose",
+                "content": "services:\n  core:\n    image: trydirect/komodo-core:unstable",
+                "variables": {}
+            }
+        ]
+    });
+
+    let (app, compose_content) = project_app_from_post("komodo", 1, &params);
+
+    // Environment should be populated from .env config file
+    assert!(
+        app.environment.is_some(),
+        "environment should be parsed from .env file"
+    );
+    let env = app.environment.as_ref().unwrap();
+
+    // Check individual vars were parsed (YAML-like KEY: value format)
+    assert_eq!(
+        env.get("KOMODO_FIRST_SERVER").and_then(|v| v.as_str()),
+        Some("http://periphery:8120"),
+        "KOMODO_FIRST_SERVER should be parsed"
+    );
+    assert_eq!(
+        env.get("KOMODO_DATABASE_ADDRESS").and_then(|v| v.as_str()),
+        Some("ferretdb"),
+        "KOMODO_DATABASE_ADDRESS should be parsed"
+    );
+    assert_eq!(
+        env.get("KOMODO_JWT_SECRET").and_then(|v| v.as_str()),
+        Some("a_random_secret"),
+        "KOMODO_JWT_SECRET should be parsed"
+    );
+
+    // Compose content should also be extracted
+    assert!(compose_content.is_some());
+    assert!(compose_content.as_ref().unwrap().contains("komodo-core"));
+}
+
+/// Test: Standard KEY=value .env format
+#[test]
+fn test_env_config_file_standard_format() {
+    let params = json!({
+        "env": {},
+        "config_files": [
+            {
+                "name": ".env",
+                "content": "# Database\nDB_HOST=localhost\nDB_PORT=5432\nDB_PASSWORD=secret123\nDEBUG=true",
+                "variables": {}
+            }
+        ]
+    });
+
+    let (app, _) = project_app_from_post("myapp", 1, &params);
+
+    assert!(app.environment.is_some());
+    let env = app.environment.as_ref().unwrap();
+
+    assert_eq!(
+        env.get("DB_HOST").and_then(|v| v.as_str()),
+        Some("localhost")
+    );
+    assert_eq!(env.get("DB_PORT").and_then(|v| v.as_str()), Some("5432"));
+    assert_eq!(
+        env.get("DB_PASSWORD").and_then(|v| v.as_str()),
+        Some("secret123")
+    );
+    assert_eq!(env.get("DEBUG").and_then(|v| v.as_str()), Some("true"));
+}
+
+/// Test: params.env takes precedence over .env config file
+#[test]
+fn test_params_env_takes_precedence() {
+    let params = json!({
+        "env": {
+            "MY_VAR": "from_form"
+        },
+        "config_files": [
+            {
+                "name": ".env",
+                "content": "MY_VAR=from_file\nOTHER_VAR=value",
+                "variables": {}
+            }
+        ]
+    });
+
+    let (app, _) = project_app_from_post("myapp", 1, &params);
+
+    assert!(app.environment.is_some());
+    let env = app.environment.as_ref().unwrap();
+
+    // Form values take precedence
+    assert_eq!(
+        env.get("MY_VAR").and_then(|v| v.as_str()),
+        Some("from_form")
+    );
+    // Other vars from file should NOT be included (form env is used entirely)
+    assert!(env.get("OTHER_VAR").is_none());
+}
+
+/// Test: Empty .env file doesn't set environment
+#[test]
+fn test_empty_env_file_ignored() {
+    let params = json!({
+        "env": {},
+        "config_files": [
+            {
+                "name": ".env",
+                "content": "# Just comments\n\n",
+                "variables": {}
+            }
+        ]
+    });
+
+    let (app, _) = project_app_from_post("myapp", 1, &params);
+
+    // No environment should be set since .env file only has comments
+    assert!(
+        app.environment.is_none()
+            || app
+                .environment
+                .as_ref()
+                .map(|e| e.as_object().map(|o| o.is_empty()).unwrap_or(true))
+                .unwrap_or(true),
+        "empty .env file should not set environment"
+    );
+}
+
+/// Test: Custom config files (telegraf.conf, etc.) are preserved in project_app.labels
+#[test]
+fn test_custom_config_files_saved_to_labels() {
+    let params = json!({
+        "env": {},
+        "config_files": [
+            {
+                "name": "telegraf.conf",
+                "content": "[agent]\n  interval = \"10s\"\n  flush_interval = \"10s\"",
+                "variables": {},
+                "destination_path": "/etc/telegraf/telegraf.conf"
+            },
+            {
+                "name": "nginx.conf",
+                "content": "server {\n  listen 80;\n  server_name example.com;\n}",
+                "variables": {}
+            },
+            {
+                "name": ".env",
+                "content": "DB_HOST=localhost\nDB_PORT=5432",
+                "variables": {}
+            },
+            {
+                "name": "compose",
+                "content": "services:\n  app:\n    image: myapp:latest",
+                "variables": {}
+            }
+        ]
+    });
+
+    let (app, compose_content) = project_app_from_post("myapp", 1, &params);
+
+    // Compose should be extracted
+    assert!(compose_content.is_some());
+    assert!(compose_content.as_ref().unwrap().contains("myapp:latest"));
+
+    // Environment should be parsed from .env
+    assert!(app.environment.is_some());
+    let env = app.environment.as_ref().unwrap();
+    assert_eq!(
+        env.get("DB_HOST").and_then(|v| v.as_str()),
+        Some("localhost")
+    );
+
+    // Config files should be stored in labels (excluding compose, including .env and others)
+    assert!(app.labels.is_some(), "labels should be set");
+    let labels = app.labels.as_ref().unwrap();
+    let config_files = labels
+        .get("config_files")
+        .expect("config_files should be in labels");
+    let files = config_files
+        .as_array()
+        .expect("config_files should be an array");
+
+    // Should have 3 files: telegraf.conf, nginx.conf, .env (compose is extracted separately)
+    assert_eq!(files.len(), 3, "should have 3 config files in labels");
+
+    let file_names: Vec<&str> = files
+        .iter()
+        .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(
+        file_names.contains(&"telegraf.conf"),
+        "telegraf.conf should be preserved"
+    );
+    assert!(
+        file_names.contains(&"nginx.conf"),
+        "nginx.conf should be preserved"
+    );
+    assert!(file_names.contains(&".env"), ".env should be preserved");
+    assert!(
+        !file_names.contains(&"compose"),
+        "compose should NOT be in config_files"
+    );
+
+    // Verify content is preserved
+    let telegraf_file = files
+        .iter()
+        .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("telegraf.conf"))
+        .unwrap();
+    let telegraf_content = telegraf_file
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap();
+    assert!(
+        telegraf_content.contains("interval = \"10s\""),
+        "telegraf.conf content should be preserved"
+    );
 }

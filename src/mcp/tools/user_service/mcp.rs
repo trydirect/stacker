@@ -9,9 +9,9 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::connectors::user_service::UserServiceClient;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
-use crate::connectors::user_service::UserServiceClient;
 use serde::Deserialize;
 
 /// Get current user's profile information

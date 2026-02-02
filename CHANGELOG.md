@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-02-02
+
+### Added - Advanced Monitoring & Troubleshooting MCP Tools (Phase 7)
+
+#### New MCP Tools (`src/mcp/tools/monitoring.rs`)
+- `GetDockerComposeYamlTool`: Fetch docker-compose.yml from Vault for a deployment
+  - Parameters: deployment_hash
+  - Retrieves `_compose` key from Vault KV path
+  - Returns compose content or meaningful error if not found
+
+- `GetServerResourcesTool`: Collect server resource metrics from agent
+  - Parameters: deployment_hash, include_disk, include_network, include_processes
+  - Queues `stacker.server_resources` command to Status Panel agent
+  - Returns command_id for async result polling
+  - Uses existing command queue infrastructure
+
+- `GetContainerExecTool`: Execute commands inside running containers
+  - Parameters: deployment_hash, app_code, command, timeout (1-120s)
+  - **Security**: Blocks dangerous commands at MCP level before agent dispatch
+  - Blocked patterns: `rm -rf /`, `mkfs`, `dd if`, `shutdown`, `reboot`, `poweroff`, `halt`, `init 0`, `init 6`, fork bombs, `:()`
+  - Case-insensitive pattern matching
+  - Queues `stacker.exec` command to agent with security-approved commands only
+  - Returns command_id for async result polling
+
+#### Registry Updates (`src/mcp/registry.rs`)
+- Added Phase 7 imports and registration for all 3 new monitoring tools
+- Total MCP tools now: 48+
+
+### Fixed - CRITICAL: .env config file content not saved to project_app.environment
+
+#### Bug Fix: User-edited .env files were not parsed into project_app.environment
+- **Issue**: When users edited the `.env` file in the Config Files tab (instead of using the Environment form fields), the `params.env` was empty `{}`. The `.env` file content was stored in `config_files` but never parsed into `project_app.environment`, causing deployed apps to not receive user-configured environment variables.
+- **Root Cause**: `ProjectAppPostArgs::from()` in `mapping.rs` only looked at `params.env`, not at `.env` file content in `config_files`.
+- **Fix**:
+  1. Added `parse_env_file_content()` function to parse `.env` file content
+  2. Supports both `KEY=value` (standard) and `KEY: value` (YAML-like) formats
+  3. Modified `ProjectAppPostArgs::from()` to extract and parse `.env` file from `config_files`
+  4. If `params.env` is empty, use parsed `.env` values for `project_app.environment`
+  5. `params.env` (form fields) takes precedence if non-empty
+- **Files Changed**: `src/project_app/mapping.rs`
+- **Tests Added**: 
+  - `test_env_config_file_parsed_into_environment`
+  - `test_env_config_file_standard_format`
+  - `test_params_env_takes_precedence`
+  - `test_empty_env_file_ignored`
+
 ## 2026-01-29
 
 ### Added - Unified Configuration Management System

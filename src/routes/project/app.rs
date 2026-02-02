@@ -182,10 +182,7 @@ pub async fn create_app(
     let mut app = models::ProjectApp::default();
     app.project_id = project_id;
     app.code = code.to_string();
-    app.name = payload
-        .name
-        .clone()
-        .unwrap_or_else(|| code.to_string());
+    app.name = payload.name.clone().unwrap_or_else(|| code.to_string());
     app.image = image.to_string();
     app.environment = payload.env.clone();
     app.ports = payload.ports.clone();

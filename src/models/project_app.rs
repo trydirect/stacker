@@ -65,6 +65,12 @@ pub struct ProjectApp {
     /// Labels for the container
     #[sqlx(default)]
     pub labels: Option<Value>,
+    /// Configuration file templates as JSON array
+    #[sqlx(default)]
+    pub config_files: Option<Value>,
+    /// Source template for this app configuration (e.g., marketplace template URL)
+    #[sqlx(default)]
+    pub template_source: Option<String>,
     /// App is enabled (will be deployed)
     #[sqlx(default)]
     pub enabled: Option<bool>,
@@ -85,6 +91,10 @@ pub struct ProjectApp {
     /// SHA256 hash of rendered config for drift detection
     #[sqlx(default)]
     pub config_hash: Option<String>,
+    /// Parent app code for multi-service stacks (e.g., "komodo" for komodo-core, komodo-ferretdb)
+    /// When set, this app is a child service discovered from parent's compose file
+    #[sqlx(default)]
+    pub parent_app_code: Option<String>,
 }
 
 impl ProjectApp {
@@ -110,6 +120,8 @@ impl ProjectApp {
             depends_on: None,
             healthcheck: None,
             labels: None,
+            config_files: None,
+            template_source: None,
             enabled: Some(true),
             deploy_order: None,
             created_at: now,
@@ -118,6 +130,7 @@ impl ProjectApp {
             vault_synced_at: None,
             vault_sync_version: None,
             config_hash: None,
+            parent_app_code: None,
         }
     }
 
@@ -177,6 +190,8 @@ impl Default for ProjectApp {
             depends_on: None,
             healthcheck: None,
             labels: None,
+            config_files: None,
+            template_source: None,
             enabled: None,
             deploy_order: None,
             created_at: Utc::now(),
@@ -185,6 +200,7 @@ impl Default for ProjectApp {
             vault_synced_at: None,
             vault_sync_version: None,
             config_hash: None,
+            parent_app_code: None,
         }
     }
 }

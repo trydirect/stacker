@@ -2,6 +2,67 @@
 
 > Canonical note: keep all Stacker TODO updates in this file (`stacker/TODO.md`); do not create or update a separate `STACKER_TODO.md` going forward.
 
+---
+
+## 🚨 CRITICAL BUGS - ENV VARS NOT SAVED TO project_app
+
+> **Date Identified**: 2026-02-02  
+> **Priority**: P0 - Blocks user deployments  
+> **Status**: ✅ FIXED (2026-02-02)
+
+### Bug 1: .env config file content not parsed into project_app.environment
+
+**File**: `src/project_app/mapping.rs`
+
+**Problem**: When users edited the `.env` file in the Config Files tab (instead of using the Environment form fields), the `params.env` was empty `{}`. The `.env` file content in `config_files` was never parsed into `project_app.environment`.
+
+**Fix Applied**:
+1. Added `parse_env_file_content()` function to parse `.env` file content
+2. Supports both `KEY=value` (standard) and `KEY: value` (YAML-like) formats
+3. Modified `ProjectAppPostArgs::from()` to:
+   - Extract and parse `.env` file content from `config_files`
+   - If `params.env` is empty, use parsed `.env` values for `project_app.environment`
+   - `params.env` (form fields) takes precedence if non-empty
+
+### Bug 2: `create.rs` looks for nested `parameters.parameters`
+
+**File**: `src/routes/command/create.rs` lines 145-146
+
+**Status**: ⚠️ MITIGATED - The fallback path at lines 155-158 uses `req.parameters` directly which now works with the mapping.rs fix. Full fix would simplify the code but is lower priority.
+
+### Bug 3: Image not provided in parameters - validation fails
+
+**File**: `src/services/project_app_service.rs` validate_app()
+
+**Problem**: When user edits config files via the modal, parameters don't include `image`. The `validate_app()` function requires non-empty `image`, causing saves to fail with "Docker image is required".
+
+**Root Cause**: The app's `dockerhub_image` is stored in User Service's `app` table and `request_dump`, but was never passed to Stacker.
+
+**Fix Applied (2026-02-02)**:
+1. **User Service** (`app/deployments/services.py`):
+   - Added `_get_app_image_from_installation()` helper to extract image from `request_dump.apps`
+   - Modified `trigger_action()` to enrich parameters with `image` before calling Stacker
+   - Logs when image is enriched or cannot be found
+
+2. **Stacker** (`src/project_app/mapping.rs`):
+   - Added `parse_image_from_compose()` as fallback to extract image from docker-compose.yml
+   - If no image in params and compose content provided, extracts from compose
+
+3. **Comprehensive logging** added throughout:
+   - `create.rs`: Logs incoming parameters, env, config_files, image
+   - `upsert.rs`: Logs project lookup, app exists/merge, final project_app
+   - `mapping.rs`: Logs image extraction from compose
+   - `project_app_service.rs`: Logs validation failures with details
+
+### Verification Tests Added:
+- [x] `test_env_config_file_parsed_into_environment` - YAML-like format
+- [x] `test_env_config_file_standard_format` - Standard KEY=value format
+- [x] `test_params_env_takes_precedence` - Form fields override file
+- [x] `test_empty_env_file_ignored` - Empty files don't break
+- [x] `test_custom_config_files_saved_to_labels` - Config files preserved
+
+---
+
 ## Context
 Per [PAYMENT_MODEL.md](/PAYMENT_MODEL.md), Stacker now sends webhooks to User Service when templates are published/updated. User Service owns the `products` table for monetization, while Stacker owns `stack_template` (template definitions only).
 

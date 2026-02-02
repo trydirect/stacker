@@ -131,8 +131,7 @@ impl Default for DeploymentSettings {
 
 impl DeploymentSettings {
     fn default_config_base_path() -> String {
-        std::env::var("DEFAULT_DEPLOY_DIR")
-            .unwrap_or_else(|_| "/home/trydirect".to_string())
+        std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string())
     }
 
     /// Get the full deploy directory for a given project name or deployment hash

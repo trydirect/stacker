@@ -16,15 +16,36 @@ pub(crate) async fn upsert_app_config_for_deploy(
     parameters: &serde_json::Value,
     deployment_hash: &str,
 ) {
+    tracing::info!(
+        "[UPSERT_APP_CONFIG] START - deployment_id: {}, app_code: {}, deployment_hash: {}",
+        deployment_id,
+        app_code,
+        deployment_hash
+    );
+    tracing::info!(
+        "[UPSERT_APP_CONFIG] Parameters: {}",
+        serde_json::to_string_pretty(parameters).unwrap_or_else(|_| parameters.to_string())
+    );
+
     // Fetch project from DB
     let project = match crate::db::project::fetch(pg_pool, deployment_id).await {
-        Ok(Some(p)) => p,
+        Ok(Some(p)) => {
+            tracing::info!(
+                "[UPSERT_APP_CONFIG] Found project id={}, name={}",
+                p.id,
+                p.name
+            );
+            p
+        }
         Ok(None) => {
-            tracing::warn!("Project not found for deployment_id: {}", deployment_id);
+            tracing::warn!(
+                "[UPSERT_APP_CONFIG] Project not found for deployment_id: {}",
+                deployment_id
+            );
             return;
         }
         Err(e) => {
-            tracing::warn!("Failed to fetch project: {}", e);
+            tracing::warn!("[UPSERT_APP_CONFIG] Failed to fetch project: {}", e);
             return;
         }
     };
@@ -33,7 +54,10 @@ pub(crate) async fn upsert_app_config_for_deploy(
     let app_service = match ProjectAppService::new(Arc::new(pg_pool.clone())) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("Failed to create ProjectAppService: {}", e);
+            tracing::warn!(
+                "[UPSERT_APP_CONFIG] Failed to create ProjectAppService: {}",
+                e
+            );
             return;
         }
     };
@@ -42,25 +66,69 @@ pub(crate) async fn upsert_app_config_for_deploy(
     let (project_app, compose_content) = match app_service.get_by_code(project.id, app_code).await {
         Ok(existing_app) => {
             tracing::info!(
-                "App {} exists (id={}), merging with incoming parameters",
+                "[UPSERT_APP_CONFIG] App {} exists (id={}, image={}), merging with incoming parameters",
                 app_code,
-                existing_app.id
+                existing_app.id,
+                existing_app.image
             );
             // Merge incoming parameters with existing app data
-            let (incoming_app, compose_content) = project_app_from_post(app_code, project.id, parameters);
+            let (incoming_app, compose_content) =
+                project_app_from_post(app_code, project.id, parameters);
+            tracing::info!(
+                "[UPSERT_APP_CONFIG] Incoming app parsed - image: {}, env: {:?}",
+                incoming_app.image,
+                incoming_app.environment
+            );
             let merged = merge_project_app(existing_app, incoming_app);
+            tracing::info!(
+                "[UPSERT_APP_CONFIG] Merged app - image: {}, env: {:?}",
+                merged.image,
+                merged.environment
+            );
             (merged, compose_content)
         }
-        Err(_) => {
-            tracing::info!("App {} does not exist, creating from parameters", app_code);
-            project_app_from_post(app_code, project.id, parameters)
+        Err(e) => {
+            tracing::info!(
+                "[UPSERT_APP_CONFIG] App {} does not exist ({}), creating from parameters",
+                app_code,
+                e
+            );
+            let (new_app, compose_content) =
+                project_app_from_post(app_code, project.id, parameters);
+            tracing::info!(
+                "[UPSERT_APP_CONFIG] New app parsed - image: {}, env: {:?}, compose_content: {}",
+                new_app.image,
+                new_app.environment,
+                compose_content.is_some()
+            );
+            (new_app, compose_content)
         }
     };
 
+    // Log final project_app before upsert
+    tracing::info!(
+        "[UPSERT_APP_CONFIG] Final project_app - code: {}, name: {}, image: {}, env: {:?}",
+        project_app.code,
+        project_app.name,
+        project_app.image,
+        project_app.environment
+    );
+
     // Upsert app config and sync to Vault
-    match app_service.upsert(&project_app, &project, deployment_hash).await {
-        Ok(_) => tracing::info!("App config upserted and synced to Vault for {}", app_code),
-        Err(e) => tracing::warn!("Failed to upsert app config: {}", e),
+    match app_service
+        .upsert(&project_app, &project, deployment_hash)
+        .await
+    {
+        Ok(saved) => tracing::info!(
+            "[UPSERT_APP_CONFIG] SUCCESS - App {} saved with id={}, synced to Vault",
+            app_code,
+            saved.id
+        ),
+        Err(e) => tracing::error!(
+            "[UPSERT_APP_CONFIG] FAILED to upsert app {}: {}",
+            app_code,
+            e
+        ),
     }
 
     // If config files or env were provided in parameters, ensure they are stored to Vault
@@ -96,7 +164,10 @@ pub(crate) async fn upsert_app_config_for_deploy(
                         owner: None,
                         group: None,
                     };
-                    match vault.store_app_config(deployment_hash, app_code, &config).await {
+                    match vault
+                        .store_app_config(deployment_hash, app_code, &config)
+                        .await
+                    {
                         Ok(_) => tracing::info!("Compose content stored in Vault for {}", app_code),
                         Err(e) => tracing::warn!("Failed to store compose in Vault: {}", e),
                     }

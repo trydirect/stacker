@@ -316,7 +316,7 @@ pub fn validate_command_parameters(
             let params: ConfigureProxyCommandRequest = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid configure_proxy parameters: {}", err))?;
             ensure_app_code("configure_proxy", &params.app_code)?;
-            
+
             // Validate required fields
             if params.domain_names.is_empty() {
                 return Err("configure_proxy: at least one domain_name is required".to_string());
@@ -325,7 +325,9 @@ pub fn validate_command_parameters(
                 return Err("configure_proxy: forward_port is required and must be > 0".to_string());
             }
             if !["create", "update", "delete"].contains(&params.action.as_str()) {
-                return Err("configure_proxy: action must be one of: create, update, delete".to_string());
+                return Err(
+                    "configure_proxy: action must be one of: create, update, delete".to_string(),
+                );
             }
 
             serde_json::to_value(params)

@@ -317,8 +317,9 @@ impl ToolHandler for CreateProjectAppTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "create_project_app".to_string(),
-            description: "Create or update a custom app/service within a project (writes to project_app)."
-                .to_string(),
+            description:
+                "Create or update a custom app/service within a project (writes to project_app)."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -328,17 +329,44 @@ impl ToolHandler for CreateProjectAppTool {
                     "name": { "type": "string", "description": "Display name" },
                     "image": { "type": "string", "description": "Docker image" },
                     "env": { "type": "object", "description": "Environment variables" },
-                    "ports": { "type": "array", "description": "Port mappings" },
-                    "volumes": { "type": "array", "description": "Volume mounts" },
-                    "config_files": { "type": "array", "description": "Additional config files" },
+                    "ports": { 
+                        "type": "array", 
+                        "description": "Port mappings",
+                        "items": { "type": "string" }
+                    },
+                    "volumes": { 
+                        "type": "array", 
+                        "description": "Volume mounts",
+                        "items": { "type": "string" }
+                    },
+                    "config_files": { 
+                        "type": "array", 
+                        "description": "Additional config files",
+                        "items": { 
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "content": { "type": "string" },
+                                "destination_path": { "type": "string" }
+                            }
+                        }
+                    },
                     "domain": { "type": "string", "description": "Domain name" },
                     "ssl_enabled": { "type": "boolean", "description": "Enable SSL" },
                     "resources": { "type": "object", "description": "Resource limits" },
                     "restart_policy": { "type": "string", "description": "Restart policy" },
                     "command": { "type": "string", "description": "Command override" },
                     "entrypoint": { "type": "string", "description": "Entrypoint override" },
-                    "networks": { "type": "array", "description": "Networks" },
-                    "depends_on": { "type": "array", "description": "Dependencies" },
+                    "networks": { 
+                        "type": "array", 
+                        "description": "Networks",
+                        "items": { "type": "string" }
+                    },
+                    "depends_on": { 
+                        "type": "array", 
+                        "description": "Dependencies",
+                        "items": { "type": "string" }
+                    },
                     "healthcheck": { "type": "object", "description": "Healthcheck" },
                     "labels": { "type": "object", "description": "Container labels" },
                     "enabled": { "type": "boolean", "description": "Enable app" },
@@ -346,6 +374,341 @@ impl ToolHandler for CreateProjectAppTool {
                     "deployment_hash": { "type": "string", "description": "Optional: sync to Vault" }
                 },
                 "required": ["project_id", "code", "image"]
+            }),
+        }
+    }
+}
+
+/// List all project apps (containers) for the current user
+/// Returns apps across all user's projects with their configuration
+pub struct ListProjectAppsTool;
+
+#[async_trait]
+impl ToolHandler for ListProjectAppsTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            /// Optional: filter by project ID
+            #[serde(default)]
+            project_id: Option<i32>,
+            /// Optional: filter by deployment hash
+            #[serde(default)]
+            deployment_hash: Option<String>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let mut all_apps: Vec<serde_json::Value> = Vec::new();
+
+        // If project_id is provided, fetch apps for that project
+        if let Some(project_id) = params.project_id {
+            // Verify user owns this project
+            let project = db::project::fetch(&context.pg_pool, project_id)
+                .await
+                .map_err(|e| format!("Failed to fetch project: {}", e))?
+                .ok_or_else(|| "Project not found".to_string())?;
+
+            if project.user_id != context.user.id {
+                return Err("Unauthorized: You do not own this project".to_string());
+            }
+
+            let apps = db::project_app::fetch_by_project(&context.pg_pool, project_id)
+                .await
+                .map_err(|e| format!("Failed to fetch apps: {}", e))?;
+
+            for app in apps {
+                all_apps.push(json!({
+                    "project_id": app.project_id,
+                    "project_name": project.name,
+                    "code": app.code,
+                    "name": app.name,
+                    "image": app.image,
+                    "ports": app.ports,
+                    "volumes": app.volumes,
+                    "networks": app.networks,
+                    "domain": app.domain,
+                    "ssl_enabled": app.ssl_enabled,
+                    "environment": app.environment,
+                    "enabled": app.enabled,
+                    "parent_app_code": app.parent_app_code,
+                    "config_version": app.config_version,
+                }));
+            }
+        } else if let Some(deployment_hash) = &params.deployment_hash {
+            // Fetch by deployment hash
+            if let Ok(Some(deployment)) =
+                db::deployment::fetch_by_deployment_hash(&context.pg_pool, deployment_hash).await
+            {
+                let project = db::project::fetch(&context.pg_pool, deployment.project_id)
+                    .await
+                    .map_err(|e| format!("Failed to fetch project: {}", e))?
+                    .ok_or_else(|| "Project not found".to_string())?;
+
+                if project.user_id != context.user.id {
+                    return Err("Unauthorized: You do not own this deployment".to_string());
+                }
+
+                let apps = db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id)
+                    .await
+                    .map_err(|e| format!("Failed to fetch apps: {}", e))?;
+
+                for app in apps {
+                    all_apps.push(json!({
+                        "project_id": app.project_id,
+                        "project_name": project.name,
+                        "deployment_hash": deployment_hash,
+                        "code": app.code,
+                        "name": app.name,
+                        "image": app.image,
+                        "ports": app.ports,
+                        "volumes": app.volumes,
+                        "networks": app.networks,
+                        "domain": app.domain,
+                        "ssl_enabled": app.ssl_enabled,
+                        "environment": app.environment,
+                        "enabled": app.enabled,
+                        "parent_app_code": app.parent_app_code,
+                        "config_version": app.config_version,
+                    }));
+                }
+            }
+        } else {
+            // Fetch all projects and their apps for the user
+            let projects = db::project::fetch_by_user(&context.pg_pool, &context.user.id)
+                .await
+                .map_err(|e| format!("Failed to fetch projects: {}", e))?;
+
+            for project in projects {
+                let apps = db::project_app::fetch_by_project(&context.pg_pool, project.id)
+                    .await
+                    .unwrap_or_default();
+
+                // Get deployment hash if exists
+                let deployment_hash = db::deployment::fetch_by_project_id(&context.pg_pool, project.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|d| d.deployment_hash);
+
+                for app in apps {
+                    all_apps.push(json!({
+                        "project_id": app.project_id,
+                        "project_name": project.name.clone(),
+                        "deployment_hash": deployment_hash,
+                        "code": app.code,
+                        "name": app.name,
+                        "image": app.image,
+                        "ports": app.ports,
+                        "volumes": app.volumes,
+                        "networks": app.networks,
+                        "domain": app.domain,
+                        "ssl_enabled": app.ssl_enabled,
+                        "environment": app.environment,
+                        "enabled": app.enabled,
+                        "parent_app_code": app.parent_app_code,
+                        "config_version": app.config_version,
+                    }));
+                }
+            }
+        }
+
+        let result = json!({
+            "apps_count": all_apps.len(),
+            "apps": all_apps,
+        });
+
+        tracing::info!(
+            user_id = %context.user.id,
+            apps_count = all_apps.len(),
+            "Listed project apps via MCP"
+        );
+
+        Ok(ToolContent::Text {
+            text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "list_project_apps".to_string(),
+            description: "List all app configurations (containers) for the current user. Returns apps with their ports, volumes, networks, domains, and environment variables. Can filter by project_id or deployment_hash.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "number",
+                        "description": "Filter by specific project ID"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "Filter by deployment hash"
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+}
+
+/// Get detailed resource configuration (volumes, networks, ports) for a deployment
+pub struct GetDeploymentResourcesTool;
+
+#[async_trait]
+impl ToolHandler for GetDeploymentResourcesTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+            #[serde(default)]
+            project_id: Option<i32>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        // Determine project_id from various sources
+        let project_id = if let Some(pid) = params.project_id {
+            // Verify ownership
+            let project = db::project::fetch(&context.pg_pool, pid)
+                .await
+                .map_err(|e| format!("Failed to fetch project: {}", e))?
+                .ok_or_else(|| "Project not found".to_string())?;
+
+            if project.user_id != context.user.id {
+                return Err("Unauthorized: You do not own this project".to_string());
+            }
+            pid
+        } else if let Some(ref hash) = params.deployment_hash {
+            let deployment = db::deployment::fetch_by_deployment_hash(&context.pg_pool, hash)
+                .await
+                .map_err(|e| format!("Failed to lookup deployment: {}", e))?
+                .ok_or_else(|| "Deployment not found".to_string())?;
+            deployment.project_id
+        } else if let Some(deployment_id) = params.deployment_id {
+            // Legacy: try to find project by deployment ID
+            // This would need a User Service lookup - for now return error
+            return Err("Please provide deployment_hash or project_id".to_string());
+        } else {
+            return Err("Either deployment_hash, project_id, or deployment_id is required".to_string());
+        };
+
+        // Fetch all apps for this project
+        let apps = db::project_app::fetch_by_project(&context.pg_pool, project_id)
+            .await
+            .map_err(|e| format!("Failed to fetch apps: {}", e))?;
+
+        // Collect all resources
+        let mut all_volumes: Vec<serde_json::Value> = Vec::new();
+        let mut all_networks: Vec<serde_json::Value> = Vec::new();
+        let mut all_ports: Vec<serde_json::Value> = Vec::new();
+        let mut apps_summary: Vec<serde_json::Value> = Vec::new();
+
+        for app in &apps {
+            // Collect volumes
+            if let Some(volumes) = &app.volumes {
+                if let Some(vol_arr) = volumes.as_array() {
+                    for vol in vol_arr {
+                        all_volumes.push(json!({
+                            "app_code": app.code,
+                            "volume": vol,
+                        }));
+                    }
+                }
+            }
+
+            // Collect networks
+            if let Some(networks) = &app.networks {
+                if let Some(net_arr) = networks.as_array() {
+                    for net in net_arr {
+                        all_networks.push(json!({
+                            "app_code": app.code,
+                            "network": net,
+                        }));
+                    }
+                }
+            }
+
+            // Collect ports
+            if let Some(ports) = &app.ports {
+                if let Some(port_arr) = ports.as_array() {
+                    for port in port_arr {
+                        all_ports.push(json!({
+                            "app_code": app.code,
+                            "port": port,
+                            "domain": app.domain,
+                            "ssl_enabled": app.ssl_enabled,
+                        }));
+                    }
+                }
+            }
+
+            apps_summary.push(json!({
+                "code": app.code,
+                "name": app.name,
+                "image": app.image,
+                "domain": app.domain,
+                "ssl_enabled": app.ssl_enabled,
+                "parent_app_code": app.parent_app_code,
+                "enabled": app.enabled,
+            }));
+        }
+
+        let result = json!({
+            "project_id": project_id,
+            "apps_count": apps.len(),
+            "apps": apps_summary,
+            "volumes": {
+                "count": all_volumes.len(),
+                "items": all_volumes,
+            },
+            "networks": {
+                "count": all_networks.len(),
+                "items": all_networks,
+            },
+            "ports": {
+                "count": all_ports.len(),
+                "items": all_ports,
+            },
+            "hint": "Use these app_codes for configure_proxy, get_container_logs, restart_container, etc."
+        });
+
+        tracing::info!(
+            user_id = %context.user.id,
+            project_id = project_id,
+            apps_count = apps.len(),
+            "Retrieved deployment resources via MCP"
+        );
+
+        Ok(ToolContent::Text {
+            text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "get_deployment_resources".to_string(),
+            description: "Get all volumes, networks, and ports configured for a deployment. Use this to discover available resources before configuring proxies or troubleshooting.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "Deployment/installation ID (legacy)"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "Deployment hash (preferred)"
+                    },
+                    "project_id": {
+                        "type": "number",
+                        "description": "Project ID"
+                    }
+                },
+                "required": []
             }),
         }
     }

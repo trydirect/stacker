@@ -271,13 +271,22 @@ impl ProjectAppService {
 
     /// Validate app before saving
     fn validate_app(&self, app: &ProjectApp) -> Result<()> {
+        tracing::info!(
+            "[VALIDATE_APP] Validating app - code: '{}', name: '{}', image: '{}'",
+            app.code,
+            app.name,
+            app.image
+        );
         if app.code.is_empty() {
+            tracing::error!("[VALIDATE_APP] FAILED: App code is required");
             return Err(ProjectAppError::Validation("App code is required".into()));
         }
         if app.name.is_empty() {
+            tracing::error!("[VALIDATE_APP] FAILED: App name is required");
             return Err(ProjectAppError::Validation("App name is required".into()));
         }
         if app.image.is_empty() {
+            tracing::error!("[VALIDATE_APP] FAILED: Docker image is required (image is empty!)");
             return Err(ProjectAppError::Validation(
                 "Docker image is required".into(),
             ));
@@ -288,10 +297,12 @@ impl ProjectAppService {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
+            tracing::error!("[VALIDATE_APP] FAILED: Invalid app code format");
             return Err(ProjectAppError::Validation(
                 "App code must be alphanumeric with dashes or underscores only".into(),
             ));
         }
+        tracing::info!("[VALIDATE_APP] Validation passed");
         Ok(())
     }
 

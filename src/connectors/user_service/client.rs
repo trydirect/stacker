@@ -7,71 +7,71 @@ use uuid::Uuid;
 
 use super::connector::UserServiceConnector;
 use super::types::{
-	CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
+    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
 };
 use super::utils::is_plan_upgrade;
 
 /// HTTP-based User Service client
 pub struct UserServiceClient {
-	pub(crate) base_url: String,
-	pub(crate) http_client: reqwest::Client,
-	pub(crate) auth_token: Option<String>,
-	pub(crate) retry_attempts: usize,
+    pub(crate) base_url: String,
+    pub(crate) http_client: reqwest::Client,
+    pub(crate) auth_token: Option<String>,
+    pub(crate) retry_attempts: usize,
 }
 
 impl UserServiceClient {
-	/// Create new User Service client
-	pub fn new(config: UserServiceConfig) -> Self {
-		let timeout = std::time::Duration::from_secs(config.timeout_secs);
-		let http_client = reqwest::Client::builder()
-			.timeout(timeout)
-			.build()
-			.expect("Failed to create HTTP client");
+    /// Create new User Service client
+    pub fn new(config: UserServiceConfig) -> Self {
+        let timeout = std::time::Duration::from_secs(config.timeout_secs);
+        let http_client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("Failed to create HTTP client");
 
-		Self {
-			base_url: config.base_url,
-			http_client,
-			auth_token: config.auth_token,
-			retry_attempts: config.retry_attempts,
-		}
-	}
+        Self {
+            base_url: config.base_url,
+            http_client,
+            auth_token: config.auth_token,
+            retry_attempts: config.retry_attempts,
+        }
+    }
 
-	/// Create a client from a base URL with default config (used by MCP tools)
-	pub fn new_public(base_url: &str) -> Self {
-		let mut config = UserServiceConfig::default();
-		config.base_url = base_url.trim_end_matches('/').to_string();
-		config.auth_token = None;
-		Self::new(config)
-	}
+    /// Create a client from a base URL with default config (used by MCP tools)
+    pub fn new_public(base_url: &str) -> Self {
+        let mut config = UserServiceConfig::default();
+        config.base_url = base_url.trim_end_matches('/').to_string();
+        config.auth_token = None;
+        Self::new(config)
+    }
 
-	/// Build authorization header if token configured
-	pub(crate) fn auth_header(&self) -> Option<String> {
-		self.auth_token
-			.as_ref()
-			.map(|token| format!("Bearer {}", token))
-	}
+    /// Build authorization header if token configured
+    pub(crate) fn auth_header(&self) -> Option<String> {
+        self.auth_token
+            .as_ref()
+            .map(|token| format!("Bearer {}", token))
+    }
 
-	/// Retry helper with exponential backoff
-	pub(crate) async fn retry_request<F, T>(&self, mut f: F) -> Result<T, ConnectorError>
-	where
-		F: FnMut() -> futures::future::BoxFuture<'static, Result<T, ConnectorError>>,
-	{
-		let mut attempt = 0;
-		loop {
-			match f().await {
-				Ok(result) => return Ok(result),
-				Err(err) => {
-					attempt += 1;
-					if attempt >= self.retry_attempts {
-						return Err(err);
-					}
-					// Exponential backoff: 100ms, 200ms, 400ms, etc.
-					let backoff = std::time::Duration::from_millis(100 * 2_u64.pow(attempt as u32));
-					tokio::time::sleep(backoff).await;
-				}
-			}
-		}
-	}
+    /// Retry helper with exponential backoff
+    pub(crate) async fn retry_request<F, T>(&self, mut f: F) -> Result<T, ConnectorError>
+    where
+        F: FnMut() -> futures::future::BoxFuture<'static, Result<T, ConnectorError>>,
+    {
+        let mut attempt = 0;
+        loop {
+            match f().await {
+                Ok(result) => return Ok(result),
+                Err(err) => {
+                    attempt += 1;
+                    if attempt >= self.retry_attempts {
+                        return Err(err);
+                    }
+                    // Exponential backoff: 100ms, 200ms, 400ms, etc.
+                    let backoff = std::time::Duration::from_millis(100 * 2_u64.pow(attempt as u32));
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]

@@ -91,13 +91,13 @@ impl std::error::Error for VaultError {}
 
 impl VaultService {
     /// Create a new Vault service from VaultSettings (configuration.yaml)
-    pub fn from_settings(settings: &crate::configuration::VaultSettings) -> Result<Self, VaultError> {
+    pub fn from_settings(
+        settings: &crate::configuration::VaultSettings,
+    ) -> Result<Self, VaultError> {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
-            .map_err(|e| {
-                VaultError::Other(format!("Failed to create HTTP client: {}", e))
-            })?;
+            .map_err(|e| VaultError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
         tracing::debug!(
             "Vault service initialized from settings: base_url={}, prefix={}",
@@ -154,7 +154,7 @@ impl VaultService {
     /// Build the Vault path for app configuration
     /// For KV v1 API: {base}/v1/{prefix}/{deployment_hash}/apps/{app_code}/{config_type}
     /// The prefix already includes the mount (e.g., "secret/debug/status_panel")
-    /// app_name format: 
+    /// app_name format:
     ///   "{app_code}" for compose
     ///   "{app_code}_config" for single app config file (legacy)
     ///   "{app_code}_configs" for bundled config files (JSON array)
@@ -576,12 +576,13 @@ mod tests {
         ];
 
         let bundle_json = serde_json::to_string(&configs).unwrap();
-        
+
         // Parse back
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&bundle_json).unwrap();
         assert_eq!(parsed.len(), 2);
-        
-        let names: Vec<&str> = parsed.iter()
+
+        let names: Vec<&str> = parsed
+            .iter()
             .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
             .collect();
         assert!(names.contains(&"telegraf.conf"));

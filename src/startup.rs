@@ -96,7 +96,7 @@ pub async fn run(
                         actix_web::http::header::CONTENT_TYPE,
                         actix_web::http::header::ACCEPT,
                     ])
-                    .supports_credentials()
+                    .supports_credentials(),
             )
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())

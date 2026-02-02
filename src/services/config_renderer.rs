@@ -855,10 +855,10 @@ mod tests {
         // Test that .env files are stored with _env suffix
         let app_code = "komodo";
         let env_key = format!("{}_env", app_code);
-        
+
         assert_eq!(env_key, "komodo_env");
         assert!(env_key.ends_with("_env"));
-        
+
         // Ensure we can strip the suffix to get app_code back
         let extracted_app_code = env_key.strip_suffix("_env").unwrap();
         assert_eq!(extracted_app_code, app_code);
@@ -870,9 +870,12 @@ mod tests {
         let deployment_hash = "deployment_abc123";
         let app_code = "telegraf";
         let base_path = "/home/trydirect";
-        
+
         let expected_path = format!("{}/{}/{}.env", base_path, deployment_hash, app_code);
-        assert_eq!(expected_path, "/home/trydirect/deployment_abc123/telegraf.env");
+        assert_eq!(
+            expected_path,
+            "/home/trydirect/deployment_abc123/telegraf.env"
+        );
     }
 
     #[test]
@@ -896,15 +899,15 @@ mod tests {
     fn test_bundle_app_configs_use_env_key() {
         // Simulate the sync_to_vault behavior where app_configs are stored with _env key
         let app_codes = vec!["telegraf", "nginx", "komodo"];
-        
+
         for app_code in app_codes {
             let env_key = format!("{}_env", app_code);
-            
+
             // Verify key format
             assert!(env_key.ends_with("_env"));
             assert!(!env_key.ends_with("_config"));
             assert!(!env_key.ends_with("_compose"));
-            
+
             // Verify we can identify this as an env config
             assert!(env_key.contains("_env"));
         }
@@ -914,32 +917,39 @@ mod tests {
     fn test_config_bundle_structure() {
         // Test the structure of ConfigBundle
         let deployment_hash = "test_hash_123";
-        
+
         // Simulated app_configs HashMap as created by render_bundle
-        let mut app_configs: std::collections::HashMap<String, AppConfig> = std::collections::HashMap::new();
-        
-        app_configs.insert("telegraf".to_string(), AppConfig {
-            content: "INFLUX_TOKEN=xxx".to_string(),
-            content_type: "env".to_string(),
-            destination_path: format!("/home/trydirect/{}/telegraf.env", deployment_hash),
-            file_mode: "0640".to_string(),
-            owner: Some("trydirect".to_string()),
-            group: Some("docker".to_string()),
-        });
-        
-        app_configs.insert("nginx".to_string(), AppConfig {
-            content: "DOMAIN=example.com".to_string(),
-            content_type: "env".to_string(),
-            destination_path: format!("/home/trydirect/{}/nginx.env", deployment_hash),
-            file_mode: "0640".to_string(),
-            owner: Some("trydirect".to_string()),
-            group: Some("docker".to_string()),
-        });
+        let mut app_configs: std::collections::HashMap<String, AppConfig> =
+            std::collections::HashMap::new();
+
+        app_configs.insert(
+            "telegraf".to_string(),
+            AppConfig {
+                content: "INFLUX_TOKEN=xxx".to_string(),
+                content_type: "env".to_string(),
+                destination_path: format!("/home/trydirect/{}/telegraf.env", deployment_hash),
+                file_mode: "0640".to_string(),
+                owner: Some("trydirect".to_string()),
+                group: Some("docker".to_string()),
+            },
+        );
+
+        app_configs.insert(
+            "nginx".to_string(),
+            AppConfig {
+                content: "DOMAIN=example.com".to_string(),
+                content_type: "env".to_string(),
+                destination_path: format!("/home/trydirect/{}/nginx.env", deployment_hash),
+                file_mode: "0640".to_string(),
+                owner: Some("trydirect".to_string()),
+                group: Some("docker".to_string()),
+            },
+        );
 
         assert_eq!(app_configs.len(), 2);
         assert!(app_configs.contains_key("telegraf"));
         assert!(app_configs.contains_key("nginx"));
-        
+
         // When storing, each should be stored with _env suffix
         for (app_code, _config) in &app_configs {
             let env_key = format!("{}_env", app_code);

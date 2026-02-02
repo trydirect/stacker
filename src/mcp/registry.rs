@@ -21,24 +21,31 @@ use crate::mcp::tools::{
     DeleteProjectTool,
     DeleteProxyTool,
     DiagnoseDeploymentTool,
+    DiscoverStackServicesTool,
     EscalateToSupportTool,
     GetAppConfigTool,
     // Phase 5: App Configuration tools
     GetAppEnvVarsTool,
     GetCloudTool,
+    GetContainerExecTool,
     GetContainerHealthTool,
     GetContainerLogsTool,
+    GetDeploymentResourcesTool,
     GetDeploymentStatusTool,
+    GetDockerComposeYamlTool,
     GetErrorSummaryTool,
     GetInstallationDetailsTool,
     GetLiveChatInfoTool,
     GetProjectTool,
+    GetServerResourcesTool,
     GetSubscriptionPlanTool,
     GetUserProfileTool,
     // Phase 5: Vault Configuration tools
     GetVaultConfigTool,
     ListCloudsTool,
+    ListContainersTool,
     ListInstallationsTool,
+    ListProjectAppsTool,
     ListProjectsTool,
     ListProxiesTool,
     ListTemplatesTool,
@@ -127,6 +134,7 @@ impl ToolRegistry {
         // Phase 4: Monitoring & Logs tools (AI Integration)
         registry.register("get_container_logs", Box::new(GetContainerLogsTool));
         registry.register("get_container_health", Box::new(GetContainerHealthTool));
+        registry.register("list_containers", Box::new(ListContainersTool));
         registry.register("restart_container", Box::new(RestartContainerTool));
         registry.register("diagnose_deployment", Box::new(DiagnoseDeploymentTool));
 
@@ -150,7 +158,10 @@ impl ToolRegistry {
         // Phase 5: Stack Validation tool
         registry.register("validate_stack_config", Box::new(ValidateStackConfigTool));
 
-        // Phase 5: Vault Configuration tools
+        // Phase 6: Stack Service Discovery
+        registry.register("discover_stack_services", Box::new(DiscoverStackServicesTool));
+
+        // Phase 6: Vault Configuration tools
         registry.register("get_vault_config", Box::new(GetVaultConfigTool));
         registry.register("set_vault_config", Box::new(SetVaultConfigTool));
         registry.register("list_vault_configs", Box::new(ListVaultConfigsTool));
@@ -160,6 +171,21 @@ impl ToolRegistry {
         registry.register("configure_proxy", Box::new(ConfigureProxyTool));
         registry.register("delete_proxy", Box::new(DeleteProxyTool));
         registry.register("list_proxies", Box::new(ListProxiesTool));
+
+        // Phase 6: Project Resource Discovery tools
+        registry.register("list_project_apps", Box::new(ListProjectAppsTool));
+        registry.register(
+            "get_deployment_resources",
+            Box::new(GetDeploymentResourcesTool),
+        );
+
+        // Phase 7: Advanced Monitoring & Troubleshooting tools
+        registry.register(
+            "get_docker_compose_yaml",
+            Box::new(GetDockerComposeYamlTool),
+        );
+        registry.register("get_server_resources", Box::new(GetServerResourcesTool));
+        registry.register("get_container_exec", Box::new(GetContainerExecTool));
 
         registry
     }
