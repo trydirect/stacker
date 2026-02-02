@@ -7,7 +7,7 @@ pub mod project;
 pub mod proxy;
 pub mod support;
 pub mod templates;
-pub mod user;
+pub mod user_service;
 
 pub use cloud::*;
 pub use compose::*;
@@ -18,4 +18,4 @@ pub use project::*;
 pub use proxy::*;
 pub use support::*;
 pub use templates::*;
-pub use user::*;
+pub use user_service::*;

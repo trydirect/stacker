@@ -5,7 +5,6 @@ pub mod log_cache;
 pub mod project;
 pub mod project_app_service;
 mod rating;
-pub mod user_service;
 pub mod vault_service;
 
 pub use config_renderer::{AppRenderContext, ConfigBundle, ConfigRenderer, SyncResult};
@@ -15,5 +14,4 @@ pub use deployment_identifier::{
 };
 pub use log_cache::LogCacheService;
 pub use project_app_service::{ProjectAppError, ProjectAppService, SyncSummary};
-pub use user_service::UserServiceClient;
 pub use vault_service::{AppConfig, VaultError, VaultService};

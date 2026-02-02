@@ -19,9 +19,8 @@
 
 use async_trait::async_trait;
 
-use crate::services::{
-    DeploymentIdentifier, DeploymentResolveError, DeploymentResolver, UserServiceClient,
-};
+use crate::connectors::user_service::UserServiceClient;
+use crate::services::{DeploymentIdentifier, DeploymentResolveError, DeploymentResolver};
 
 /// Information about a resolved deployment (for diagnosis tools)
 /// Contains additional metadata from User Service beyond just the hash.
@@ -31,7 +30,7 @@ pub struct ResolvedDeploymentInfo {
     pub status: String,
     pub domain: Option<String>,
     pub server_ip: Option<String>,
-    pub apps: Option<Vec<crate::services::user_service::InstallationApp>>,
+    pub apps: Option<Vec<crate::connectors::user_service::install::InstallationApp>>,
 }
 
 impl ResolvedDeploymentInfo {
@@ -87,7 +86,7 @@ impl UserServiceDeploymentResolver {
             }
             DeploymentIdentifier::InstallationId(id) => {
                 // Legacy installation - fetch full details from User Service
-                let client = UserServiceClient::new(&self.user_service_url);
+                let client = UserServiceClient::new_public(&self.user_service_url);
 
                 let installation = client
                     .get_installation(&self.user_token, *id)
@@ -126,7 +125,7 @@ impl DeploymentResolver for UserServiceDeploymentResolver {
             }
             DeploymentIdentifier::InstallationId(id) => {
                 // Legacy installation - fetch from User Service
-                let client = UserServiceClient::new(&self.user_service_url);
+                let client = UserServiceClient::new_public(&self.user_service_url);
 
                 let installation = client
                     .get_installation(&self.user_token, *id)

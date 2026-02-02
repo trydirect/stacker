@@ -134,6 +134,7 @@ async fn test_docker_non_existent_repo_empty_namespace() {
 
 #[tokio::test]
 async fn test_docker_named_volume() {
+    let base_dir = env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
     let volume = Volume {
         host_path: Some("flask-data".to_owned()),
         container_path: Some("/var/www/flaskdata".to_owned()),
@@ -144,7 +145,7 @@ async fn test_docker_named_volume() {
     println!("{:?}", cv.driver_opts);
     assert_eq!(Some("flask-data".to_string()), cv.name);
     assert_eq!(
-        &Some(SingleValue::String("/root/project/flask-data".to_string())),
+        &Some(SingleValue::String(format!("{}/flask-data", base_dir.trim_end_matches('/')))),
         cv.driver_opts.get("device").unwrap()
     );
     assert_eq!(

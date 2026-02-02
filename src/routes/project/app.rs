@@ -1,6 +1,7 @@
 //! REST API routes for app configuration management.
 //!
 //! Endpoints for managing app configurations within projects:
+//! - POST /project/{project_id}/apps - Create or update an app in a project
 //! - GET /project/{project_id}/apps - List all apps in a project
 //! - GET /project/{project_id}/apps/{code} - Get a specific app
 //! - GET /project/{project_id}/apps/{code}/config - Get app configuration
@@ -14,11 +15,13 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::{delete, get, put, web, Responder, Result};
+use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
+
+use crate::services::ProjectAppService;
 
 /// Response for app configuration
 #[derive(Debug, Serialize)]
@@ -73,6 +76,50 @@ pub struct UpdateDomainRequest {
     pub ssl_enabled: bool,
 }
 
+/// Request to create or update an app in a project
+#[derive(Debug, Deserialize)]
+pub struct CreateAppRequest {
+    #[serde(alias = "app_code")]
+    pub code: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub image: String,
+    #[serde(default, alias = "environment")]
+    pub env: Option<Value>,
+    #[serde(default)]
+    pub ports: Option<Value>,
+    #[serde(default)]
+    pub volumes: Option<Value>,
+    #[serde(default)]
+    pub config_files: Option<Value>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub ssl_enabled: Option<bool>,
+    #[serde(default)]
+    pub resources: Option<Value>,
+    #[serde(default)]
+    pub restart_policy: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub networks: Option<Value>,
+    #[serde(default)]
+    pub depends_on: Option<Value>,
+    #[serde(default)]
+    pub healthcheck: Option<Value>,
+    #[serde(default)]
+    pub labels: Option<Value>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub deploy_order: Option<i32>,
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
+}
+
 /// List all apps in a project
 #[tracing::instrument(name = "List project apps", skip(pg_pool))]
 #[get("/{project_id}/apps")]
@@ -99,6 +146,90 @@ pub async fn list_apps(
         .map_err(|e| JsonResponse::internal_server_error(e))?;
 
     Ok(JsonResponse::build().set_list(apps).ok("OK"))
+}
+
+/// Create or update an app in a project
+#[tracing::instrument(name = "Create project app", skip(pg_pool))]
+#[post("/{project_id}/apps")]
+pub async fn create_app(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    payload: web::Json<CreateAppRequest>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let project_id = path.0;
+
+    // Verify project ownership
+    let project = db::project::fetch(pg_pool.get_ref(), project_id)
+        .await
+        .map_err(|e| JsonResponse::internal_server_error(e))?
+        .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
+
+    if project.user_id != user.id {
+        return Err(JsonResponse::not_found("Project not found"));
+    }
+
+    let code = payload.code.trim();
+    if code.is_empty() {
+        return Err(JsonResponse::<()>::build().bad_request("app code is required"));
+    }
+
+    let image = payload.image.trim();
+    if image.is_empty() {
+        return Err(JsonResponse::<()>::build().bad_request("image is required"));
+    }
+
+    let mut app = models::ProjectApp::default();
+    app.project_id = project_id;
+    app.code = code.to_string();
+    app.name = payload
+        .name
+        .clone()
+        .unwrap_or_else(|| code.to_string());
+    app.image = image.to_string();
+    app.environment = payload.env.clone();
+    app.ports = payload.ports.clone();
+    app.volumes = payload.volumes.clone();
+    app.domain = payload.domain.clone();
+    app.ssl_enabled = payload.ssl_enabled;
+    app.resources = payload.resources.clone();
+    app.restart_policy = payload.restart_policy.clone();
+    app.command = payload.command.clone();
+    app.entrypoint = payload.entrypoint.clone();
+    app.networks = payload.networks.clone();
+    app.depends_on = payload.depends_on.clone();
+    app.healthcheck = payload.healthcheck.clone();
+    app.labels = payload.labels.clone();
+    app.enabled = payload.enabled.or(Some(true));
+    app.deploy_order = payload.deploy_order;
+
+    if let Some(config_files) = payload.config_files.clone() {
+        let mut labels = app.labels.clone().unwrap_or(json!({}));
+        if let Some(obj) = labels.as_object_mut() {
+            obj.insert("config_files".to_string(), config_files);
+        }
+        app.labels = Some(labels);
+    }
+
+    let app_service = if let Some(deployment_hash) = payload.deployment_hash.as_deref() {
+        let service = ProjectAppService::new(Arc::new(pg_pool.get_ref().clone()))
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e))?;
+        let created = service
+            .upsert(&app, &project, deployment_hash)
+            .await
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e.to_string()))?;
+        return Ok(JsonResponse::build().set_item(Some(created)).ok("OK"));
+    } else {
+        ProjectAppService::new_without_sync(Arc::new(pg_pool.get_ref().clone()))
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e))?
+    };
+
+    let created = app_service
+        .upsert(&app, &project, "")
+        .await
+        .map_err(|e| JsonResponse::<()>::build().internal_server_error(e.to_string()))?;
+
+    Ok(JsonResponse::build().set_item(Some(created)).ok("OK"))
 }
 
 /// Get a specific app by code

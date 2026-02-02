@@ -9,6 +9,7 @@ pub mod helpers;
 pub mod mcp;
 mod middleware;
 pub mod models;
+pub mod project_app;
 pub mod routes;
 pub mod services;
 pub mod startup;

@@ -135,6 +135,7 @@ pub async fn run(
                     .service(crate::routes::project::delete::item)
                     // App configuration routes
                     .service(crate::routes::project::app::list_apps)
+                    .service(crate::routes::project::app::create_app)
                     .service(crate::routes::project::app::get_app)
                     .service(crate::routes::project::app::get_app_config)
                     .service(crate::routes::project::app::get_env_vars)

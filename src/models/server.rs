@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde_derive::{Deserialize, Serialize};
 use serde_valid::Validate;
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct Server {
     pub id: i32,
     pub user_id: String,
@@ -44,6 +44,30 @@ pub struct Server {
     /// Optional friendly name for the server
     #[validate(max_length = 100)]
     pub name: Option<String>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            user_id: String::new(),
+            project_id: 0,
+            region: None,
+            zone: None,
+            server: None,
+            os: None,
+            disk_type: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            srv_ip: None,
+            ssh_port: None,
+            ssh_user: None,
+            vault_key_path: None,
+            connection_mode: default_connection_mode(),
+            key_status: default_key_status(),
+            name: None,
+        }
+    }
 }
 
 fn default_connection_mode() -> String {

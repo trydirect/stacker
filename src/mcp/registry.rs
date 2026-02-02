@@ -14,6 +14,7 @@ use crate::mcp::tools::{
     CancelDeploymentTool,
     CloneProjectTool,
     ConfigureProxyTool,
+    CreateProjectAppTool,
     CreateProjectTool,
     DeleteAppEnvVarTool,
     DeleteCloudTool,
@@ -91,6 +92,7 @@ impl ToolRegistry {
         registry.register("list_projects", Box::new(ListProjectsTool));
         registry.register("get_project", Box::new(GetProjectTool));
         registry.register("create_project", Box::new(CreateProjectTool));
+        registry.register("create_project_app", Box::new(CreateProjectAppTool));
 
         // Template & discovery tools
         registry.register("suggest_resources", Box::new(SuggestResourcesTool));
