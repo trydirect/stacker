@@ -13,6 +13,7 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
@@ -24,6 +25,8 @@ use serde::Deserialize;
 
 const DEFAULT_LOG_LIMIT: usize = 100;
 const MAX_LOG_LIMIT: usize = 500;
+const COMMAND_RESULT_TIMEOUT_SECS: u64 = 8;
+const COMMAND_POLL_INTERVAL_MS: u64 = 400;
 
 /// Helper to create a resolver from context.
 /// Uses UserServiceDeploymentResolver from connectors to support legacy installations.
@@ -32,6 +35,35 @@ fn create_resolver(context: &ToolContext) -> UserServiceDeploymentResolver {
         &context.settings.user_service_url,
         context.user.access_token.as_deref(),
     )
+}
+
+/// Poll for command result with timeout.
+/// Waits up to COMMAND_RESULT_TIMEOUT_SECS for the command to complete.
+/// Returns the command if result/error is available, or None if timeout.
+async fn wait_for_command_result(
+    pg_pool: &sqlx::PgPool,
+    command_id: &str,
+) -> Result<Option<Command>, String> {
+    let wait_deadline = Instant::now() + Duration::from_secs(COMMAND_RESULT_TIMEOUT_SECS);
+    
+    while Instant::now() < wait_deadline {
+        let fetched = db::command::fetch_by_command_id(pg_pool, command_id)
+            .await
+            .map_err(|e| format!("Failed to fetch command: {}", e))?
+        ;
+        
+        if let Some(cmd) = fetched {
+            let status = cmd.status.to_lowercase();
+            // Return if completed, failed, or has result/error
+            if status == "completed" || status == "failed" || cmd.result.is_some() || cmd.error.is_some() {
+                return Ok(Some(cmd));
+            }
+        }
+        
+        sleep(Duration::from_millis(COMMAND_POLL_INTERVAL_MS)).await;
+    }
+    
+    Ok(None)
 }
 
 /// Get container logs from a deployment
@@ -100,16 +132,29 @@ impl ToolHandler for GetContainerLogsTool {
         .await
         .map_err(|e| format!("Failed to queue command: {}", e))?;
 
-        // For now, return acknowledgment (agent will process async)
-        // In production, we'd wait for result with timeout
-        let result = json!({
-            "status": "queued",
-            "command_id": command.command_id,
-            "deployment_hash": deployment_hash,
-            "app_code": params.app_code,
-            "limit": limit,
-            "message": "Log request queued. Agent will process shortly."
-        });
+        // Wait for result or timeout
+        let result = if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id).await? {
+            let status = cmd.status.to_lowercase();
+            json!({
+                "status": status,
+                "command_id": cmd.command_id,
+                "deployment_hash": deployment_hash,
+                "app_code": params.app_code,
+                "limit": limit,
+                "result": cmd.result,
+                "error": cmd.error,
+                "message": "Logs retrieved."
+            })
+        } else {
+            json!({
+                "status": "queued",
+                "command_id": command.command_id,
+                "deployment_hash": deployment_hash,
+                "app_code": params.app_code,
+                "limit": limit,
+                "message": "Log request queued. Agent will process shortly."
+            })
+        };
 
         tracing::info!(
             user_id = %context.user.id,
@@ -212,13 +257,27 @@ impl ToolHandler for GetContainerHealthTool {
         .await
         .map_err(|e| format!("Failed to queue command: {}", e))?;
 
-        let result = json!({
-            "status": "queued",
-            "command_id": command.command_id,
-            "deployment_hash": deployment_hash,
-            "app_code": params.app_code,
-            "message": "Health check queued. Agent will process shortly."
-        });
+        // Wait for result or timeout
+        let result = if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id).await? {
+            let status = cmd.status.to_lowercase();
+            json!({
+                "status": status,
+                "command_id": cmd.command_id,
+                "deployment_hash": deployment_hash,
+                "app_code": params.app_code,
+                "result": cmd.result,
+                "error": cmd.error,
+                "message": "Health metrics retrieved."
+            })
+        } else {
+            json!({
+                "status": "queued",
+                "command_id": command.command_id,
+                "deployment_hash": deployment_hash,
+                "app_code": params.app_code,
+                "message": "Health check queued. Agent will process shortly."
+            })
+        };
 
         tracing::info!(
             user_id = %context.user.id,
@@ -1107,13 +1166,27 @@ impl ToolHandler for GetServerResourcesTool {
         .await
         .map_err(|e| format!("Failed to queue command: {}", e))?;
 
-        let result = json!({
-            "status": "queued",
-            "command_id": command.command_id,
-            "deployment_hash": deployment_hash,
-            "message": "Server resources request queued. Agent will collect CPU, RAM, disk, and network metrics shortly.",
-            "metrics_included": ["cpu_percent", "memory_used", "memory_total", "disk_used", "disk_total", "network_io"]
-        });
+        // Wait for result or timeout
+        let result = if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id).await? {
+            let status = cmd.status.to_lowercase();
+            json!({
+                "status": status,
+                "command_id": cmd.command_id,
+                "deployment_hash": deployment_hash,
+                "result": cmd.result,
+                "error": cmd.error,
+                "message": "Server resources collected.",
+                "metrics_included": ["cpu_percent", "memory_used", "memory_total", "disk_used", "disk_total", "network_io"]
+            })
+        } else {
+            json!({
+                "status": "queued",
+                "command_id": command.command_id,
+                "deployment_hash": deployment_hash,
+                "message": "Server resources request queued. Agent will collect CPU, RAM, disk, and network metrics shortly.",
+                "metrics_included": ["cpu_percent", "memory_used", "memory_total", "disk_used", "disk_total", "network_io"]
+            })
+        };
 
         tracing::info!(
             user_id = %context.user.id,

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::connectors::user_service::UserServiceClient;
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
@@ -200,10 +201,12 @@ impl ToolHandler for CreateProjectAppTool {
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
         #[derive(Deserialize)]
         struct Args {
-            project_id: i32,
+            #[serde(default)]
+            project_id: Option<i32>,
             #[serde(alias = "app_code")]
             code: String,
-            image: String,
+            #[serde(default)]
+            image: Option<String>,
             #[serde(default)]
             name: Option<String>,
             #[serde(default, alias = "environment")]
@@ -245,15 +248,39 @@ impl ToolHandler for CreateProjectAppTool {
         let params: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        if params.code.trim().is_empty() {
+        let code = params.code.trim();
+        if code.is_empty() {
             return Err("app code is required".to_string());
         }
 
-        if params.image.trim().is_empty() {
-            return Err("image is required".to_string());
-        }
+        let project_id = if let Some(project_id) = params.project_id {
+            let project = db::project::fetch(&context.pg_pool, project_id)
+                .await
+                .map_err(|e| format!("Database error: {}", e))?
+                .ok_or_else(|| "Project not found".to_string())?;
 
-        let project = db::project::fetch(&context.pg_pool, params.project_id)
+            if project.user_id != context.user.id {
+                return Err("Project not found".to_string());
+            }
+            project_id
+        } else if let Some(ref deployment_hash) = params.deployment_hash {
+            let deployment = db::deployment::fetch_by_deployment_hash(
+                &context.pg_pool,
+                deployment_hash,
+            )
+            .await
+            .map_err(|e| format!("Failed to lookup deployment: {}", e))?
+            .ok_or_else(|| "Deployment not found".to_string())?;
+
+            if deployment.user_id != context.user.id {
+                return Err("Deployment not found".to_string());
+            }
+            deployment.project_id
+        } else {
+            return Err("project_id or deployment_hash is required".to_string());
+        };
+
+        let project = db::project::fetch(&context.pg_pool, project_id)
             .await
             .map_err(|e| format!("Database error: {}", e))?
             .ok_or_else(|| "Project not found".to_string())?;
@@ -262,16 +289,67 @@ impl ToolHandler for CreateProjectAppTool {
             return Err("Project not found".to_string());
         }
 
+        let mut resolved_image = params.image.unwrap_or_default().trim().to_string();
+        let mut resolved_name = params.name.clone();
+        let mut resolved_ports = params.ports.clone();
+
+        if resolved_image.is_empty() || resolved_name.is_none() || resolved_ports.is_none() {
+            let client = UserServiceClient::new_public(&context.settings.user_service_url);
+            let token = context.user.access_token.as_deref().unwrap_or("");
+            let apps = client
+                .search_applications(token, Some(code))
+                .await
+                .map_err(|e| format!("Failed to search applications: {}", e))?;
+
+            let code_lower = code.to_lowercase();
+            let matched = apps.iter().find(|app| {
+                app.code
+                    .as_deref()
+                    .map(|c| c.to_lowercase() == code_lower)
+                    .unwrap_or(false)
+            }).or_else(|| {
+                apps.iter().find(|app| {
+                    app.name
+                        .as_deref()
+                        .map(|n| n.to_lowercase() == code_lower)
+                        .unwrap_or(false)
+                })
+            }).or_else(|| apps.first());
+
+            if let Some(app) = matched {
+                if resolved_image.is_empty() {
+                    if let Some(image) = app.docker_image.clone() {
+                        resolved_image = image;
+                    }
+                }
+
+                if resolved_name.is_none() {
+                    if let Some(name) = app.name.clone() {
+                        resolved_name = Some(name);
+                    }
+                }
+
+                if resolved_ports.is_none() {
+                    if let Some(port) = app.default_port {
+                        if port > 0 {
+                            resolved_ports = Some(json!([format!("{0}:{0}", port)]));
+                        }
+                    }
+                }
+            }
+        }
+
+        if resolved_image.is_empty() {
+            return Err("image is required (no default found)".to_string());
+        }
+
         let mut app = crate::models::ProjectApp::default();
-        app.project_id = params.project_id;
-        app.code = params.code.trim().to_string();
-        app.name = params
-            .name
-            .clone()
-            .unwrap_or_else(|| params.code.trim().to_string());
-        app.image = params.image.trim().to_string();
+        app.project_id = project_id;
+        app.code = code.to_string();
+        app.name = resolved_name.unwrap_or_else(|| code.to_string());
+        app.image = resolved_image;
         app.environment = params.env.clone();
-        app.ports = params.ports.clone();
+        app.ports = resolved_ports;
         app.volumes = params.volumes.clone();
         app.domain = params.domain.clone();
         app.ssl_enabled = params.ssl_enabled;
@@ -323,11 +401,11 @@ impl ToolHandler for CreateProjectAppTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "number", "description": "Project ID" },
+                    "project_id": { "type": "number", "description": "Project ID (optional if deployment_hash is provided)" },
                     "code": { "type": "string", "description": "App code (or app_code)" },
                     "app_code": { "type": "string", "description": "Alias for code" },
                     "name": { "type": "string", "description": "Display name" },
-                    "image": { "type": "string", "description": "Docker image" },
+                    "image": { "type": "string", "description": "Docker image (optional: uses catalog default if omitted)" },
                     "env": { "type": "object", "description": "Environment variables" },
                     "ports": {
                         "type": "array",
@@ -371,9 +449,9 @@ impl ToolHandler for CreateProjectAppTool {
                     "labels": { "type": "object", "description": "Container labels" },
                     "enabled": { "type": "boolean", "description": "Enable app" },
                     "deploy_order": { "type": "number", "description": "Deployment order" },
-                    "deployment_hash": { "type": "string", "description": "Optional: sync to Vault" }
+                    "deployment_hash": { "type": "string", "description": "Deployment hash (optional; required if project_id is omitted)" }
                 },
-                "required": ["project_id", "code", "image"]
+                "required": ["code"]
             }),
         }
     }

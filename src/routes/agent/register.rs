@@ -58,11 +58,22 @@ pub async fn register_handler(
                 helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
             })?;
 
-    if let Some(existing) = existing_agent {
+    if let Some(mut existing) = existing_agent {
         tracing::info!(
             "Agent already registered for deployment {}, returning existing",
             payload.deployment_hash
         );
+
+        // Refresh agent metadata for existing registrations
+        existing.capabilities = Some(serde_json::json!(payload.capabilities));
+        existing.version = Some(payload.agent_version.clone());
+        existing.system_info = Some(payload.system_info.clone());
+        let existing = db::agent::update(agent_pool.as_ref(), existing)
+            .await
+            .map_err(|err| {
+                tracing::error!("Failed to update agent metadata: {:?}", err);
+                helpers::JsonResponse::<RegisterAgentResponse>::build().internal_server_error(err)
+            })?;
 
         // Try to fetch existing token from Vault
         let agent_token = vault_client
