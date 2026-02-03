@@ -245,8 +245,12 @@ pub async fn create_handler(
             tracing::warn!("Missing app_code in deploy_app arguments");
         }
 
-        let enriched_params = enrich_deploy_app_with_compose(&req.deployment_hash, validated_parameters, &settings.vault)
-            .await;
+        let enriched_params = enrich_deploy_app_with_compose(
+            &req.deployment_hash,
+            validated_parameters,
+            &settings.vault,
+        )
+        .await;
 
         // Auto-discover child services from multi-service compose files
         if let (Some(project_id), Some(app_code)) = (deployment_id, app_code) {

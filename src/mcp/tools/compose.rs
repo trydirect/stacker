@@ -405,7 +405,7 @@ impl ToolHandler for DiscoverStackServicesTool {
             )
             .await
             .map_err(|e| format!("Failed to fetch parent app: {}", e))?
-            .ok_or_else(|| format!("Parent app '{}' not found in project", args.parent_app_code))?;;
+            .ok_or_else(|| format!("Parent app '{}' not found in project", args.parent_app_code))?;
 
             // Try to get compose from config_files or stored compose
             // For now, require compose_content to be provided

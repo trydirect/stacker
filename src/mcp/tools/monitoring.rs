@@ -983,8 +983,11 @@ impl ToolHandler for GetDockerComposeYamlTool {
             .map_err(|e| format!("Vault service not configured: {}", e))?;
 
         // Determine what to fetch: specific app compose or global compose
-        let app_name = params.app_code.clone().unwrap_or_else(|| "_compose".to_string());
-        
+        let app_name = params
+            .app_code
+            .clone()
+            .unwrap_or_else(|| "_compose".to_string());
+
         match vault.fetch_app_config(&deployment_hash, &app_name).await {
             Ok(config) => {
                 let result = json!({
@@ -1008,7 +1011,8 @@ impl ToolHandler for GetDockerComposeYamlTool {
                 );
 
                 Ok(ToolContent::Text {
-                    text: serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+                    text: serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| result.to_string()),
                 })
             }
             Err(e) => {
@@ -1176,22 +1180,17 @@ impl ToolHandler for GetContainerExecTool {
 
         // Security: Block dangerous commands
         let blocked_patterns = [
-            "rm -rf /",
-            "mkfs",
-            "dd if=",
-            ":(){",  // Fork bomb
-            "shutdown",
-            "reboot",
-            "halt",
-            "poweroff",
-            "init 0",
-            "init 6",
+            "rm -rf /", "mkfs", "dd if=", ":(){", // Fork bomb
+            "shutdown", "reboot", "halt", "poweroff", "init 0", "init 6",
         ];
-        
+
         let cmd_lower = params.command.to_lowercase();
         for pattern in &blocked_patterns {
             if cmd_lower.contains(pattern) {
-                return Err(format!("Command '{}' is not allowed for security reasons", pattern));
+                return Err(format!(
+                    "Command '{}' is not allowed for security reasons",
+                    pattern
+                ));
             }
         }
 

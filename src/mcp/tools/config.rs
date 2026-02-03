@@ -426,12 +426,12 @@ impl ToolHandler for UpdateAppPortsTool {
         let params: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        // Validate ports
+        // Validate ports (u16 type already enforces max 65535, so we only check for 0)
         for port in &params.ports {
-            if port.host < 1 || port.host > 65535 {
+            if port.host == 0 {
                 return Err(format!("Invalid host port: {}", port.host));
             }
-            if port.container < 1 || port.container > 65535 {
+            if port.container == 0 {
                 return Err(format!("Invalid container port: {}", port.container));
             }
             if port.protocol != "tcp" && port.protocol != "udp" {

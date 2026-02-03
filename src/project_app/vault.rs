@@ -62,13 +62,8 @@ pub(crate) async fn store_configs_to_vault_from_params(
                     content_type
                 };
 
-                let config = build_app_config(
-                    content,
-                    compose_type,
-                    destination_path,
-                    file,
-                    "0644",
-                );
+                let config =
+                    build_app_config(content, compose_type, destination_path, file, "0644");
 
                 app_configs.push((compose_filename, config));
                 continue;
@@ -78,13 +73,7 @@ pub(crate) async fn store_configs_to_vault_from_params(
                 file,
                 format!("{}/{}/config/{}", config_base_path, app_code, file_name),
             );
-            let config = build_app_config(
-                content,
-                content_type,
-                destination_path,
-                file,
-                "0644",
-            );
+            let config = build_app_config(content, content_type, destination_path, file, "0644");
 
             app_configs.push((file_name.to_string(), config));
         }
@@ -258,7 +247,9 @@ fn build_app_config(
     file: &serde_json::Value,
     default_mode: &str,
 ) -> AppConfig {
-    let file_mode = get_str(file, "file_mode").unwrap_or(default_mode).to_string();
+    let file_mode = get_str(file, "file_mode")
+        .unwrap_or(default_mode)
+        .to_string();
 
     AppConfig {
         content: content.to_string(),

@@ -53,11 +53,19 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             dctypes::Ports::Long(list) => list
                 .iter()
                 .map(|p| {
-                    let host = p.host_ip.as_ref().map(|h| format!("{}:", h)).unwrap_or_default();
-                    let published = p.published.as_ref().map(|pp| match pp {
-                        dctypes::PublishedPort::Single(n) => n.to_string(),
-                        dctypes::PublishedPort::Range(s) => s.clone(),
-                    }).unwrap_or_default();
+                    let host = p
+                        .host_ip
+                        .as_ref()
+                        .map(|h| format!("{}:", h))
+                        .unwrap_or_default();
+                    let published = p
+                        .published
+                        .as_ref()
+                        .map(|pp| match pp {
+                            dctypes::PublishedPort::Single(n) => n.to_string(),
+                            dctypes::PublishedPort::Range(s) => s.clone(),
+                        })
+                        .unwrap_or_default();
                     format!("{}{}:{}", host, published, p.target)
                 })
                 .collect(),
@@ -69,9 +77,11 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             .iter()
             .filter_map(|v| match v {
                 dctypes::Volumes::Simple(s) => Some(s.clone()),
-                dctypes::Volumes::Advanced(adv) => {
-                    Some(format!("{}:{}", adv.source.as_deref().unwrap_or(""), &adv.target))
-                }
+                dctypes::Volumes::Advanced(adv) => Some(format!(
+                    "{}:{}",
+                    adv.source.as_deref().unwrap_or(""),
+                    &adv.target
+                )),
             })
             .collect();
 
@@ -81,13 +91,16 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             dctypes::Environment::KvPair(map) => map
                 .iter()
                 .map(|(k, v)| {
-                    let val = v.as_ref().map(|sv| match sv {
-                        dctypes::SingleValue::String(s) => s.clone(),
-                        dctypes::SingleValue::Bool(b) => b.to_string(),
-                        dctypes::SingleValue::Unsigned(n) => n.to_string(),
-                        dctypes::SingleValue::Signed(n) => n.to_string(),
-                        dctypes::SingleValue::Float(f) => f.to_string(),
-                    }).unwrap_or_default();
+                    let val = v
+                        .as_ref()
+                        .map(|sv| match sv {
+                            dctypes::SingleValue::String(s) => s.clone(),
+                            dctypes::SingleValue::Bool(b) => b.to_string(),
+                            dctypes::SingleValue::Unsigned(n) => n.to_string(),
+                            dctypes::SingleValue::Signed(n) => n.to_string(),
+                            dctypes::SingleValue::Float(f) => f.to_string(),
+                        })
+                        .unwrap_or_default();
                     format!("{}={}", k, val)
                 })
                 .collect(),

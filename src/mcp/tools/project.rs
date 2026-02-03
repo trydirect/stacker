@@ -329,20 +329,20 @@ impl ToolHandler for CreateProjectAppTool {
                     "name": { "type": "string", "description": "Display name" },
                     "image": { "type": "string", "description": "Docker image" },
                     "env": { "type": "object", "description": "Environment variables" },
-                    "ports": { 
-                        "type": "array", 
+                    "ports": {
+                        "type": "array",
                         "description": "Port mappings",
                         "items": { "type": "string" }
                     },
-                    "volumes": { 
-                        "type": "array", 
+                    "volumes": {
+                        "type": "array",
                         "description": "Volume mounts",
                         "items": { "type": "string" }
                     },
-                    "config_files": { 
-                        "type": "array", 
+                    "config_files": {
+                        "type": "array",
                         "description": "Additional config files",
-                        "items": { 
+                        "items": {
                             "type": "object",
                             "properties": {
                                 "name": { "type": "string" },
@@ -357,13 +357,13 @@ impl ToolHandler for CreateProjectAppTool {
                     "restart_policy": { "type": "string", "description": "Restart policy" },
                     "command": { "type": "string", "description": "Command override" },
                     "entrypoint": { "type": "string", "description": "Entrypoint override" },
-                    "networks": { 
-                        "type": "array", 
+                    "networks": {
+                        "type": "array",
                         "description": "Networks",
                         "items": { "type": "string" }
                     },
-                    "depends_on": { 
-                        "type": "array", 
+                    "depends_on": {
+                        "type": "array",
                         "description": "Dependencies",
                         "items": { "type": "string" }
                     },
@@ -449,9 +449,10 @@ impl ToolHandler for ListProjectAppsTool {
                     return Err("Unauthorized: You do not own this deployment".to_string());
                 }
 
-                let apps = db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id)
-                    .await
-                    .map_err(|e| format!("Failed to fetch apps: {}", e))?;
+                let apps =
+                    db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id)
+                        .await
+                        .map_err(|e| format!("Failed to fetch apps: {}", e))?;
 
                 for app in apps {
                     all_apps.push(json!({
@@ -485,11 +486,12 @@ impl ToolHandler for ListProjectAppsTool {
                     .unwrap_or_default();
 
                 // Get deployment hash if exists
-                let deployment_hash = db::deployment::fetch_by_project_id(&context.pg_pool, project.id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|d| d.deployment_hash);
+                let deployment_hash =
+                    db::deployment::fetch_by_project_id(&context.pg_pool, project.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|d| d.deployment_hash);
 
                 for app in apps {
                     all_apps.push(json!({
@@ -593,7 +595,9 @@ impl ToolHandler for GetDeploymentResourcesTool {
             // This would need a User Service lookup - for now return error
             return Err("Please provide deployment_hash or project_id".to_string());
         } else {
-            return Err("Either deployment_hash, project_id, or deployment_id is required".to_string());
+            return Err(
+                "Either deployment_hash, project_id, or deployment_id is required".to_string(),
+            );
         };
 
         // Fetch all apps for this project

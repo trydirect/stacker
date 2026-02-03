@@ -159,7 +159,10 @@ impl ToolRegistry {
         registry.register("validate_stack_config", Box::new(ValidateStackConfigTool));
 
         // Phase 6: Stack Service Discovery
-        registry.register("discover_stack_services", Box::new(DiscoverStackServicesTool));
+        registry.register(
+            "discover_stack_services",
+            Box::new(DiscoverStackServicesTool),
+        );
 
         // Phase 6: Vault Configuration tools
         registry.register("get_vault_config", Box::new(GetVaultConfigTool));
