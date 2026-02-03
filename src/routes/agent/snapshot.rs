@@ -1,9 +1,9 @@
 use crate::db;
+use crate::forms::status_panel::HealthCommandReport;
 use crate::helpers::{AgentPgPool, JsonResponse};
-use crate::models::{Agent, Command, Deployment, ProjectApp};
+use crate::models::{Command, ProjectApp};
 use actix_web::{get, web, Responder, Result};
-use serde::Serialize;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Default)]
 pub struct SnapshotResponse {
@@ -31,13 +31,31 @@ pub struct ContainerSnapshot {
     pub name: Option<String>,
 }
 
-#[tracing::instrument(name = "Get deployment snapshot", skip(agent_pool))]
+#[derive(Debug, Deserialize)]
+pub struct SnapshotQuery {
+    #[serde(default = "default_command_limit")]
+    pub command_limit: i64,
+    #[serde(default)]
+    pub include_command_results: bool,
+}
+
+fn default_command_limit() -> i64 {
+    50
+}
+
+#[tracing::instrument(name = "Get deployment snapshot", skip(agent_pool, query))]
 #[get("/deployments/{deployment_hash}")]
 pub async fn snapshot_handler(
     path: web::Path<String>,
+    query: web::Query<SnapshotQuery>,
     agent_pool: web::Data<AgentPgPool>,
 ) -> Result<impl Responder> {
-    tracing::info!("[SNAPSHOT HANDLER] Called for deployment_hash: {}", path);
+    tracing::info!(
+        "[SNAPSHOT HANDLER] Called for deployment_hash: {}, limit: {}, include_results: {}",
+        path,
+        query.command_limit,
+        query.include_command_results
+    );
     let deployment_hash = path.into_inner();
 
     // Fetch agent
@@ -47,10 +65,15 @@ pub async fn snapshot_handler(
         .flatten();
 
     tracing::debug!("[SNAPSHOT HANDLER] Agent : {:?}", agent);
-    // Fetch commands
-    let commands = db::command::fetch_by_deployment(agent_pool.get_ref(), &deployment_hash)
-        .await
-        .unwrap_or_default();
+    // Fetch recent commands with optional result exclusion to reduce payload size
+    let commands = db::command::fetch_recent_by_deployment(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        query.command_limit,
+        !query.include_command_results,
+    )
+    .await
+    .unwrap_or_default();
 
     tracing::debug!("[SNAPSHOT HANDLER] Commands : {:?}", commands);
     // Fetch deployment to get project_id
@@ -71,8 +94,35 @@ pub async fn snapshot_handler(
     };
 
     tracing::debug!("[SNAPSHOT HANDLER] Apps : {:?}", apps);
-    // No container model in ProjectApp; leave containers empty for now
-    let containers: Vec<ContainerSnapshot> = vec![];
+    
+    // Extract container states from recent health check commands
+    let containers: Vec<ContainerSnapshot> = commands
+        .iter()
+        .filter(|cmd| cmd.r#type == "health")
+        .filter_map(|cmd| {
+            cmd.result.as_ref().and_then(|result| {
+                serde_json::from_value::<HealthCommandReport>(result.clone())
+                    .ok()
+                    .map(|health| {
+                        // Serialize ContainerState enum to string using serde
+                        let state = serde_json::to_value(&health.container_state)
+                            .ok()
+                            .and_then(|v| v.as_str().map(String::from))
+                            .map(|s| s.to_lowercase());
+                        
+                        ContainerSnapshot {
+                            id: None, // Container ID not included in health reports
+                            app: Some(health.app_code),
+                            state,
+                            image: None, // Image not included in health reports
+                            name: None, // Container name not included in health reports
+                        }
+                    })
+            })
+        })
+        .collect();
+    
+    tracing::debug!("[SNAPSHOT HANDLER] Containers extracted from health checks: {:?}", containers);
 
     let agent_snapshot = agent.map(|a| AgentSnapshot {
         version: a.version,

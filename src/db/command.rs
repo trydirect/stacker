@@ -303,6 +303,63 @@ pub async fn fetch_updates_by_deployment(
     })
 }
 
+/// Fetch recent commands for a deployment with optional result exclusion
+#[tracing::instrument(name = "Fetch recent commands for deployment", skip(pool))]
+pub async fn fetch_recent_by_deployment(
+    pool: &PgPool,
+    deployment_hash: &str,
+    limit: i64,
+    exclude_results: bool,
+) -> Result<Vec<Command>, String> {
+    let query_span = tracing::info_span!("Fetching recent commands for deployment");
+    
+    if exclude_results {
+        // Fetch commands without result/error fields to reduce payload size
+        sqlx::query_as::<_, Command>(
+            r#"
+            SELECT id, command_id, deployment_hash, type, status, priority,
+                   parameters, NULL as result, NULL as error, created_by, created_at, updated_at,
+                   timeout_seconds, metadata
+            FROM commands
+            WHERE deployment_hash = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(deployment_hash)
+        .bind(limit)
+        .fetch_all(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch recent commands: {:?}", err);
+            format!("Failed to fetch recent commands: {}", err)
+        })
+    } else {
+        // Fetch commands with all fields including results
+        sqlx::query_as::<_, Command>(
+            r#"
+            SELECT id, command_id, deployment_hash, type, status, priority,
+                   parameters, result, error, created_by, created_at, updated_at,
+                   timeout_seconds, metadata
+            FROM commands
+            WHERE deployment_hash = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(deployment_hash)
+        .bind(limit)
+        .fetch_all(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch recent commands: {:?}", err);
+            format!("Failed to fetch recent commands: {}", err)
+        })
+    }
+}
+
 /// Cancel a command (remove from queue and mark as cancelled)
 #[tracing::instrument(name = "Cancel command", skip(pool))]
 pub async fn cancel(pool: &PgPool, command_id: &str) -> Result<Command, String> {

@@ -90,9 +90,22 @@ The core Project model includes:
 - Agent report command result: `POST /api/v1/agent/commands/report`
   - Headers: `X-Agent-Id`, `Authorization: Bearer <agent_token>`
   - Body: `command_id`, `deployment_hash`, `status` (`completed|failed`), `result`/`error`, optional `started_at`, required `completed_at`
+- **Get deployment snapshot**: `GET /api/v1/agent/deployments/:deployment_hash`
+  - Query params (optional):
+    - `command_limit` (default: 50) - Number of recent commands to return
+    - `include_command_results` (default: false) - Whether to include command result/error fields
+  - Response: `agent`, `commands`, `containers`, `apps`
+  - **Note**: Use `include_command_results=false` (default) for lightweight snapshots to avoid large payloads when commands contain log data
 - Create command (user auth via OAuth Bearer): `POST /api/v1/commands`
   - Body: `deployment_hash`, `command_type`, `priority` (`low|normal|high|critical`), `parameters`, optional `timeout_seconds`
-- List commands for a deployment: `GET /api/v1/commands/:deployment_hash`
+- **List commands for a deployment**: `GET /api/v1/commands/:deployment_hash`
+  - Query params (optional):
+    - `limit` (default: 50, max: 500) - Number of commands to return
+    - `include_results` (default: false) - Whether to include command result/error fields
+    - `since` (ISO 8601 timestamp) - Only return commands updated after this time
+    - `wait_ms` (max: 30000) - Long-poll timeout when using `since`
+  - Response: `list` of commands
+  - **Note**: Use `include_results=true` when you need log data or command execution results
 
 7. **Stacker → Agent HMAC-signed POSTs (v2)**
 - All POST calls from Stacker to the agent must be signed per [STACKER_INTEGRATION_REQUIREMENTS.md](STACKER_INTEGRATION_REQUIREMENTS.md)

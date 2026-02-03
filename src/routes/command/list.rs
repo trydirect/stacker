@@ -13,6 +13,8 @@ pub struct CommandListQuery {
     pub since: Option<String>,
     pub limit: Option<i64>,
     pub wait_ms: Option<u64>,
+    #[serde(default)]
+    pub include_results: bool,
 }
 
 #[tracing::instrument(name = "List commands for deployment", skip(pg_pool, user))]
@@ -54,12 +56,19 @@ pub async fn list_handler(
             sleep(Duration::from_millis(500)).await;
         }
     } else {
-        db::command::fetch_by_deployment(pg_pool.get_ref(), &deployment_hash)
-            .await
-            .map_err(|err| {
-                tracing::error!("Failed to fetch commands: {}", err);
-                JsonResponse::internal_server_error(err)
-            })?
+        // Default behavior: fetch recent commands with limit
+        // include_results defaults to false for performance, but can be enabled by client
+        db::command::fetch_recent_by_deployment(
+            pg_pool.get_ref(),
+            &deployment_hash,
+            limit,
+            !query.include_results,
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch commands: {}", err);
+            JsonResponse::internal_server_error(err)
+        })?
     };
 
     tracing::info!(

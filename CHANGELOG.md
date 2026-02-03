@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-02-03
+
+### Fixed
+- **API Performance**: Fixed 1MB+ response size issue in deployment endpoints
+  - **Snapshot endpoint** `/api/v1/agent/deployments/{deployment_hash}`:
+    - Added `command_limit` query parameter (default: 50) to limit number of commands returned
+    - Added `include_command_results` query parameter (default: false) to exclude large log results
+    - Example: `GET /api/v1/agent/deployments/{id}?command_limit=20&include_command_results=true`
+  - **Commands list endpoint** `/api/v1/commands/{deployment_hash}`:
+    - Added `include_results` query parameter (default: false) to exclude large result/error fields
+    - Added `limit` parameter enforcement (default: 50, max: 500)
+    - Example: `GET /api/v1/commands/{id}?limit=50&include_results=true`
+  - Created `fetch_recent_by_deployment()` in `db::command` for efficient queries
+  - Browser truncation issue resolved when viewing status_panel container logs
+  
+### Changed
+- **Frontend**: Updated `fetchStatusPanelCommandsFeed` to explicitly request `include_results=true` (blog/src/helpers/status/statusPanel.js)
+
 ## 2026-02-02
 
 ### Added - Advanced Monitoring & Troubleshooting MCP Tools (Phase 7)
