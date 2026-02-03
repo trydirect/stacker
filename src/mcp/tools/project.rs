@@ -272,7 +272,7 @@ impl ToolHandler for CreateProjectAppTool {
             .map_err(|e| format!("Failed to lookup deployment: {}", e))?
             .ok_or_else(|| "Deployment not found".to_string())?;
 
-            if deployment.user_id != context.user.id {
+            if deployment.user_id != Some(context.user.id.clone()) {
                 return Err("Deployment not found".to_string());
             }
             deployment.project_id

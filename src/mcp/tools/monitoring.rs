@@ -448,15 +448,49 @@ impl ToolHandler for DiagnoseDeploymentTool {
 
         // Create identifier and resolve with full info
         let identifier =
-            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+            DeploymentIdentifier::try_from_options(params.deployment_hash.clone(), params.deployment_id)?;
         let resolver = create_resolver(context);
         let info = resolver.resolve_with_info(&identifier).await?;
 
-        let deployment_hash = info.deployment_hash;
-        let status = info.status;
-        let domain = info.domain;
-        let server_ip = info.server_ip;
-        let apps = info.apps;
+        let deployment_hash = info.deployment_hash.clone();
+        let mut status = info.status;
+        let mut domain = info.domain;
+        let mut server_ip = info.server_ip;
+        let mut apps_info: Option<Value> = info.apps.as_ref().map(|apps| {
+            json!(apps.iter().map(|a| json!({
+                "app_code": a.app_code,
+                "display_name": a.name,
+                "version": a.version,
+                "port": a.port
+            })).collect::<Vec<_>>())
+        });
+
+        // For Stack Builder deployments (hash-based), fetch from Stacker's database
+        if params.deployment_hash.is_some() || (apps_info.is_none() && !deployment_hash.is_empty()) {
+            // Fetch deployment from Stacker DB
+            if let Ok(Some(deployment)) = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash).await {
+                status = if deployment.status.is_empty() { "unknown".to_string() } else { deployment.status.clone() };
+                
+                // Fetch apps from project
+                if let Ok(project_apps) = db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id).await {
+                    let apps_list: Vec<Value> = project_apps.iter().map(|app| {
+                        json!({
+                            "app_code": app.code,
+                            "display_name": app.name,
+                            "image": app.image,
+                            "domain": app.domain,
+                            "status": "configured"
+                        })
+                    }).collect();
+                    apps_info = Some(json!(apps_list));
+                    
+                    // Try to get domain from first app if not set
+                    if domain.is_none() {
+                        domain = project_apps.iter().find_map(|a| a.domain.clone());
+                    }
+                }
+            }
+        }
 
         // Build diagnostic summary
         let mut issues: Vec<String> = Vec::new();
@@ -512,7 +546,7 @@ impl ToolHandler for DiagnoseDeploymentTool {
             "status": status,
             "domain": domain,
             "server_ip": server_ip,
-            "apps": apps,
+            "apps": apps_info,
             "issues_found": issues.len(),
             "issues": issues,
             "recommendations": recommendations,
