@@ -39,6 +39,9 @@ pub struct HealthCommandRequest {
     pub app_code: String,
     #[serde(default = "default_include_metrics")]
     pub include_metrics: bool,
+    /// When true and app_code is "system" or empty, return system containers (status_panel, compose-agent)
+    #[serde(default)]
+    pub include_system: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
