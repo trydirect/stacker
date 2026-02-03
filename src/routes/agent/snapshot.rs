@@ -1,7 +1,7 @@
 use crate::db;
 use crate::forms::status_panel::HealthCommandReport;
 use crate::helpers::{AgentPgPool, JsonResponse};
-use crate::models::{Command, ProjectApp};
+use crate::models::{self, Command, ProjectApp};
 use actix_web::{get, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 
@@ -95,10 +95,21 @@ pub async fn snapshot_handler(
 
     tracing::debug!("[SNAPSHOT HANDLER] Apps : {:?}", apps);
     
+    // Fetch recent health commands WITH results to populate container states
+    // (we always need health results for container status, even if include_command_results=false)
+    let health_commands = db::command::fetch_recent_by_deployment(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        10, // Fetch last 10 health checks
+        false, // Always include results for health commands
+    )
+    .await
+    .unwrap_or_default();
+    
     // Extract container states from recent health check commands
-    let containers: Vec<ContainerSnapshot> = commands
+    let containers: Vec<ContainerSnapshot> = health_commands
         .iter()
-        .filter(|cmd| cmd.r#type == "health")
+        .filter(|cmd| cmd.r#type == "health" && cmd.status == "completed")
         .filter_map(|cmd| {
             cmd.result.as_ref().and_then(|result| {
                 serde_json::from_value::<HealthCommandReport>(result.clone())
@@ -122,7 +133,7 @@ pub async fn snapshot_handler(
         })
         .collect();
     
-    tracing::debug!("[SNAPSHOT HANDLER] Containers extracted from health checks: {:?}", containers);
+    tracing::debug!("[SNAPSHOT HANDLER] Containers extracted from {} health checks: {:?}", health_commands.len(), containers);
 
     let agent_snapshot = agent.map(|a| AgentSnapshot {
         version: a.version,
