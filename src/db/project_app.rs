@@ -149,6 +149,7 @@ pub async fn update(pool: &PgPool, app: &models::ProjectApp) -> Result<models::P
             enabled = $20,
             deploy_order = $21,
             parent_app_code = $22,
+            config_version = COALESCE(config_version, 0) + 1,
             updated_at = NOW()
         WHERE id = $1
         RETURNING *

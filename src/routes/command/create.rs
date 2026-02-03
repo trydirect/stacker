@@ -1,5 +1,5 @@
 use crate::configuration::Settings;
-use crate::db;
+use crate::db::{self, project};
 use crate::forms::status_panel;
 use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
@@ -609,6 +609,12 @@ pub async fn discover_and_register_child_services(
             }
         }
 
+        tracing::debug!(
+            app_code = %app_code,
+            service = %svc.name,
+            project_id = %project_id,
+            "Processing child service for registration"
+        );
         // Create new project_app for this service
         let mut new_app = crate::models::ProjectApp::new(
             project_id,

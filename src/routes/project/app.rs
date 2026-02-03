@@ -199,6 +199,7 @@ pub async fn create_app(
     app.labels = payload.labels.clone();
     app.enabled = payload.enabled.or(Some(true));
     app.deploy_order = payload.deploy_order;
+    app.config_files = payload.config_files.clone();
 
     if let Some(config_files) = payload.config_files.clone() {
         let mut labels = app.labels.clone().unwrap_or(json!({}));
