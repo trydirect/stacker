@@ -30,7 +30,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry
-        uses: actions/cache@v3.0.7
+        uses: actions/cache@v3.5.0
         with:
           path: ~/.cargo/registry
           key: docker-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -39,7 +39,7 @@ jobs:
             docker-
 
       - name: Cache cargo index
-        uses: actions/cache@v3.0.7
+        uses: actions/cache@v3.5.0
         with:
           path: ~/.cargo/git
           key: docker-index-${{ hashFiles('**/Cargo.lock') }}
@@ -52,7 +52,7 @@ jobs:
           head -c16 /dev/urandom > src/secret.key
 
       - name: Cache cargo build
-        uses: actions/cache@v3.0.7
+        uses: actions/cache@v3.5.0
         with:
           path: target
           key: docker-build-${{ hashFiles('**/Cargo.lock') }}
@@ -111,7 +111,7 @@ jobs:
       #   npm test
 
       - name: Archive production artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-without-markdown
           path: |
@@ -133,7 +133,7 @@ jobs:
           cd ..
 
       - name: Upload app archive for Docker job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: artifact-linux-docker
           path: app.tar.gz
@@ -144,7 +144,7 @@ jobs:
     needs: cicd-docker
     steps:
       - name: Download app archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: artifact-linux-docker
 
