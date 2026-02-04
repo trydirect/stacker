@@ -118,36 +118,99 @@ pub async fn discover_containers(
         .await
         .map_err(|e| JsonResponse::internal_server_error(e))?;
     
-    // Fetch recent health check commands to get actual container states
-    let health_commands = db::command::fetch_recent_by_deployment(
+    // Fetch recent list_containers commands to get ALL running containers
+    let container_commands = db::command::fetch_recent_by_deployment(
         pg_pool.get_ref(),
         &deployment_hash,
-        20, // Last 20 commands to ensure we get recent health checks for all containers
+        50, // Last 50 commands to find list_containers results
         false, // Include results
     )
     .await
     .unwrap_or_default();
     
-    // Extract running containers from health checks
+    // Extract running containers from list_containers or health commands
     let mut running_containers: Vec<ContainerInfo> = Vec::new();
     
-    for cmd in health_commands.iter() {
-        if cmd.r#type == "health" && cmd.status == "completed" {
+    // First, try to find a list_containers result (has ALL containers)
+    for cmd in container_commands.iter() {
+        if cmd.r#type == "list_containers" && cmd.status == "completed" {
             if let Some(result) = &cmd.result {
-                // Parse the health check result
-                if let Ok(health) = serde_json::from_value::<crate::forms::status_panel::HealthCommandReport>(result.clone()) {
-                    // Extract container info - use app_code as container name since HealthCommandReport doesn't have container_name
-                    let container_name = health.app_code.clone();
-                    let status = format!("{:?}", health.container_state).to_lowercase();
+                // Parse list_containers result which contains array of all containers
+                if let Some(containers_arr) = result.get("containers").and_then(|c| c.as_array()) {
+                    for c in containers_arr {
+                        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let status = c.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+                        let image = c.get("image").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                        
+                        if !running_containers.iter().any(|rc| rc.name == name) {
+                            running_containers.push(ContainerInfo {
+                                name: name.clone(),
+                                image,
+                                status,
+                                app_code: None, // Will be matched later
+                            });
+                        }
+                    }
+                }
+            }
+            // Found list_containers result, prefer this over health checks
+            if !running_containers.is_empty() {
+                break;
+            }
+        }
+    }
+    
+    // Fallback: If no list_containers found, try health check results
+    if running_containers.is_empty() {
+        for cmd in container_commands.iter() {
+            if cmd.r#type == "health" && cmd.status == "completed" {
+                if let Some(result) = &cmd.result {
+                    // Try to extract from system_containers array first
+                    if let Some(system_arr) = result.get("system_containers").and_then(|c| c.as_array()) {
+                        for c in system_arr {
+                            let name = c.get("container_name")
+                                .or_else(|| c.get("app_code"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if name.is_empty() {
+                                continue;
+                            }
+                            let status = c.get("container_state")
+                                .or_else(|| c.get("status"))
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            
+                            if !running_containers.iter().any(|rc| rc.name == name) {
+                                running_containers.push(ContainerInfo {
+                                    name: name.clone(),
+                                    image: String::new(),
+                                    status,
+                                    app_code: c.get("app_code").and_then(|a| a.as_str()).map(|s| s.to_string()),
+                                });
+                            }
+                        }
+                    }
                     
-                    // Check if we already have this container
-                    if !running_containers.iter().any(|c| c.name == container_name) {
-                        running_containers.push(ContainerInfo {
-                            name: container_name,
-                            image: String::new(), // Image not available in health check
-                            status,
-                            app_code: Some(health.app_code.clone()),
-                        });
+                    // Also try app_code from single-app health checks
+                    if let Some(app_code) = result.get("app_code").and_then(|a| a.as_str()) {
+                        let status = result.get("container_state")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        
+                        if !running_containers.iter().any(|c| c.name == app_code) {
+                            running_containers.push(ContainerInfo {
+                                name: app_code.to_string(),
+                                image: String::new(),
+                                status,
+                                app_code: Some(app_code.to_string()),
+                            });
+                        }
                     }
                 }
             }
