@@ -94,10 +94,11 @@ impl Secret {
         let cipher = Aes256Gcm::new(&key);
         // eprintln!("encrypt: Cipher str {cipher:?}");
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-        eprintln!("Nonce bytes {nonce:?}");
+        // eprintln!("Nonce bytes {nonce:?}");
         // let nonce_b64: String = general_purpose::STANDARD.encode(nonce);
         // eprintln!("Nonce b64 {nonce_b64:?}");
-        eprintln!("token {token:?}");
+        // Avoid logging the plaintext token to prevent leaking sensitive data.
+        // eprintln!("token {token:?}");
 
         let cipher_vec = cipher
             .encrypt(&nonce, token.as_ref())
