@@ -28,7 +28,7 @@ pub struct DiscoveredContainer {
 }
 
 /// Response for container discovery endpoint
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct DiscoverResponse {
     /// Containers that are registered in project_app
     pub registered: Vec<RegisteredContainerInfo>,
@@ -103,12 +103,12 @@ pub async fn discover_containers(
         Some(hash) => hash.clone(),
         None => {
             // Try to find a deployment for this project
-            let deployments = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
+            let deployment = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
                 .await
                 .map_err(|e| JsonResponse::internal_server_error(e))?;
             
-            deployments.first()
-                .map(|d| d.deployment_hash.clone())
+            deployment
+                .map(|d| d.deployment_hash)
                 .ok_or_else(|| JsonResponse::not_found("No deployment found for project. Please provide deployment_hash"))?
         }
     };
@@ -136,16 +136,15 @@ pub async fn discover_containers(
             if let Some(result) = &cmd.result {
                 // Parse the health check result
                 if let Ok(health) = serde_json::from_value::<crate::forms::status_panel::HealthCommandReport>(result.clone()) {
-                    // Extract container info
-                    let container_name = health.container_name.unwrap_or_else(|| health.app_code.clone());
-                    let image = health.image.unwrap_or_default();
+                    // Extract container info - use app_code as container name since HealthCommandReport doesn't have container_name
+                    let container_name = health.app_code.clone();
                     let status = format!("{:?}", health.container_state).to_lowercase();
                     
                     // Check if we already have this container
                     if !running_containers.iter().any(|c| c.name == container_name) {
                         running_containers.push(ContainerInfo {
                             name: container_name,
-                            image,
+                            image: String::new(), // Image not available in health check
                             status,
                             app_code: Some(health.app_code.clone()),
                         });
