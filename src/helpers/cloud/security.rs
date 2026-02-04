@@ -120,7 +120,7 @@ impl Secret {
         let key: &Key<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&sec_key.as_bytes());
         // eprintln!("decrypt: Key str {key:?}");
         let rkey = format!("{}_{}_{}", self.user_id, self.provider, self.field);
-        eprintln!("decrypt: Key str {rkey:?}");
+        // Avoid logging the full redis key (`rkey`) because it includes sensitive identifiers like `user_id`.
         self.get(rkey);
         // eprintln!("decrypt: nonce b64:decoded {nonce:?}");
 
