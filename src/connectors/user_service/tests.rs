@@ -2,7 +2,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::mock;
-use super::utils::is_plan_upgrade;
+use super::utils::is_plan_higher_tier;
 use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceConnector};
 
 /// Test that get_user_profile returns user with products list
@@ -221,24 +221,24 @@ async fn test_mock_list_stacks() {
 
 /// Test plan hierarchy comparison
 #[test]
-fn test_is_plan_upgrade_hierarchy() {
+fn test_is_plan_higher_tier_hierarchy() {
     // Enterprise user can access professional tier
-    assert!(is_plan_upgrade("enterprise", "professional"));
+    assert!(is_plan_higher_tier("enterprise", "professional"));
 
     // Enterprise user can access basic tier
-    assert!(is_plan_upgrade("enterprise", "basic"));
+    assert!(is_plan_higher_tier("enterprise", "basic"));
 
     // Professional user can access basic tier
-    assert!(is_plan_upgrade("professional", "basic"));
+    assert!(is_plan_higher_tier("professional", "basic"));
 
     // Basic user cannot access professional
-    assert!(!is_plan_upgrade("basic", "professional"));
+    assert!(!is_plan_higher_tier("basic", "professional"));
 
     // Basic user cannot access enterprise
-    assert!(!is_plan_upgrade("basic", "enterprise"));
+    assert!(!is_plan_higher_tier("basic", "enterprise"));
 
-    // Same plan should not be considered upgrade
-    assert!(!is_plan_upgrade("professional", "professional"));
+    // Same plan should not be considered higher tier
+    assert!(!is_plan_higher_tier("professional", "professional"));
 }
 
 /// Test UserProfile deserialization with all fields
