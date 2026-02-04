@@ -83,10 +83,6 @@ pub async fn run(
     });
     let server = HttpServer::new(move || {
         App::new()
-            .wrap(TracingLogger::default())
-            .wrap(authorization.clone())
-            .wrap(middleware::authentication::Manager::new())
-            .wrap(Compress::default())
             .wrap(
                 Cors::default()
                     .allow_any_origin()
@@ -96,8 +92,13 @@ pub async fn run(
                         actix_web::http::header::CONTENT_TYPE,
                         actix_web::http::header::ACCEPT,
                     ])
-                    .supports_credentials(),
+                    .supports_credentials()
+                    .max_age(3600),
             )
+            .wrap(TracingLogger::default())
+            .wrap(authorization.clone())
+            .wrap(middleware::authentication::Manager::new())
+            .wrap(Compress::default())
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
             .app_data(oauth_http_client.clone())
