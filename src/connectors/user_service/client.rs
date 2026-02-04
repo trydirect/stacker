@@ -433,10 +433,7 @@ impl UserServiceConnector for UserServiceClient {
 
         let url = format!("{}/api/1.0/products", self.base_url);
 
-        let mut req = self
-            .http_client
-            .get(&url)
-            .query(&[("where", &where_json)]);
+        let mut req = self.http_client.get(&url).query(&[("where", &where_json)]);
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }

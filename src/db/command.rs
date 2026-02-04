@@ -312,7 +312,7 @@ pub async fn fetch_recent_by_deployment(
     exclude_results: bool,
 ) -> Result<Vec<Command>, String> {
     let query_span = tracing::info_span!("Fetching recent commands for deployment");
-    
+
     if exclude_results {
         // Fetch commands without result/error fields to reduce payload size
         sqlx::query_as::<_, Command>(
