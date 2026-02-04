@@ -12,6 +12,9 @@ networks:
     driver: bridge
     name: backend
     external: true
+  trydirect-network:
+    external: true
+    name: trydirect-network
 
 
 services:
@@ -51,6 +54,10 @@ services:
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
+      - AMQP_HOST=rabbitmq
+      - AMQP_PORT=5672
+      - AMQP_USERNAME=guest
+      - AMQP_PASSWORD=guest
     env_file:
       - ./.env
     depends_on:
@@ -59,6 +66,7 @@ services:
     entrypoint: /app/console mq listen
     networks:
       - backend
+      - trydirect-network
 
 
   stackerdb:

@@ -135,6 +135,7 @@ impl TryInto<UserModel> for UserForm {
             email: self.user.email,
             email_confirmed: self.user.email_confirmed,
             role: self.user.role,
+            access_token: None,
         })
     }
 }

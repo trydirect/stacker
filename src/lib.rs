@@ -1,10 +1,15 @@
+pub mod banner;
 pub mod configuration;
+pub mod connectors;
 pub mod console;
 pub mod db;
 pub mod forms;
+pub mod health;
 pub mod helpers;
+pub mod mcp;
 mod middleware;
 pub mod models;
+pub mod project_app;
 pub mod routes;
 pub mod services;
 pub mod startup;

@@ -1,4 +1,7 @@
 use crate::configuration::Settings;
+use crate::connectors::{
+    install_service::InstallServiceConnector, user_service::UserServiceConnector,
+};
 use crate::db;
 use crate::forms;
 use crate::helpers::compressor::compress;
@@ -11,7 +14,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[tracing::instrument(name = "Deploy for every user")]
+#[tracing::instrument(name = "Deploy for every user", skip(user_service, install_service))]
 #[post("/{id}/deploy")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
@@ -20,6 +23,8 @@ pub async fn item(
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
+    install_service: Data<Arc<dyn InstallServiceConnector>>,
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("User {:?} is deploying project: {}", user, id);
@@ -40,6 +45,39 @@ pub async fn item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+
+    // Check marketplace template plan requirements if project was created from template
+    if let Some(template_id) = project.source_template_id {
+        if let Some(template) = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+            .await
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        {
+            // If template requires a specific plan, validate user has it
+            if let Some(required_plan) = template.required_plan_name {
+                let has_plan = user_service
+                    .user_has_plan(&user.id, &required_plan)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to validate plan: {:?}", err);
+                        JsonResponse::<models::Project>::build()
+                            .internal_server_error("Failed to validate subscription plan")
+                    })?;
+
+                if !has_plan {
+                    tracing::warn!(
+                        "User {} lacks required plan {} to deploy template {}",
+                        user.id,
+                        required_plan,
+                        template_id
+                    );
+                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
+                        "You require a '{}' subscription to deploy this template",
+                        required_plan
+                    )));
+                }
+            }
+        }
+    }
 
     // Build compose
     let id = project.id;
@@ -76,17 +114,6 @@ pub async fn item(
             JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
         })?;
 
-    // Build Payload for the 3-d party service through RabbitMQ
-    let mut payload = forms::project::Payload::try_from(&dc.project)
-        .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
-
-    payload.server = Some(server.into());
-    payload.cloud = Some(cloud_creds.into());
-    payload.stack = form.stack.clone().into();
-    payload.user_token = Some(user.id.clone());
-    payload.user_email = Some(user.email.clone());
-    payload.docker_compose = Some(compress(fc.as_str()));
-
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.metadata.clone();
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -98,47 +125,39 @@ pub async fn item(
         json_request,
     );
 
-    let result = db::deployment::insert(pg_pool.get_ref(), deployment)
+    let saved_deployment = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
-        .map(|deployment| {
-            payload.id = Some(deployment.id);
-            deployment
-        })
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
-        });
+        })?;
 
-    tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<>>>{:?}", payload);
+    let deployment_id = saved_deployment.id;
 
-    let provider = payload
-        .cloud
-        .as_ref()
-        .map(|form| {
-            if form.provider.contains("own") {
-                "own"
-            } else {
-                "tfa"
-            }
-        })
-        .unwrap_or("tfa")
-        .to_string();
-
-    let routing_key = format!("install.start.{}.all.all", provider);
-    tracing::debug!("Route: {:?}", routing_key);
-
-    // Send Payload
-    mq_manager
-        .publish("install".to_string(), routing_key, &payload)
+    // Delegate to install service connector
+    install_service
+        .deploy(
+            user.id.clone(),
+            user.email.clone(),
+            id,
+            deployment_id,
+            deployment_hash,
+            &dc.project,
+            cloud_creds,
+            server,
+            &form.stack,
+            fc,
+            mq_manager.get_ref(),
+        )
         .await
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
-        .map(|_| {
+        .map(|project_id| {
             JsonResponse::<models::Project>::build()
-                .set_id(id)
+                .set_id(project_id)
+                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
                 .ok("Success")
         })
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
 }
-#[tracing::instrument(name = "Deploy, when cloud token is saved")]
+#[tracing::instrument(name = "Deploy, when cloud token is saved", skip(user_service))]
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
@@ -147,6 +166,7 @@ pub async fn saved_item(
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
 ) -> Result<impl Responder> {
     let id = path.0;
     let cloud_id = path.1;
@@ -174,6 +194,39 @@ pub async fn saved_item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
+
+    // Check marketplace template plan requirements if project was created from template
+    if let Some(template_id) = project.source_template_id {
+        if let Some(template) = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+            .await
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        {
+            // If template requires a specific plan, validate user has it
+            if let Some(required_plan) = template.required_plan_name {
+                let has_plan = user_service
+                    .user_has_plan(&user.id, &required_plan)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to validate plan: {:?}", err);
+                        JsonResponse::<models::Project>::build()
+                            .internal_server_error("Failed to validate subscription plan")
+                    })?;
+
+                if !has_plan {
+                    tracing::warn!(
+                        "User {} lacks required plan {} to deploy template {}",
+                        user.id,
+                        required_plan,
+                        template_id
+                    );
+                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
+                        "You require a '{}' subscription to deploy this template",
+                        required_plan
+                    )));
+                }
+            }
+        }
+    }
 
     // Build compose
     let id = project.id;
@@ -259,7 +312,7 @@ pub async fn saved_item(
     let deployment = models::Deployment::new(
         dc.project.id,
         Some(user.id.clone()),
-        deployment_hash,
+        deployment_hash.clone(),
         String::from("pending"),
         json_request,
     );
@@ -272,10 +325,19 @@ pub async fn saved_item(
         })
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
-        });
+        })?;
+
+    let deployment_id = result.id;
+
+    // Set deployment_hash in payload before publishing to RabbitMQ
+    payload.deployment_hash = Some(deployment_hash);
 
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!("Send project data <<<>>>{:?}", payload);
+    tracing::debug!(
+        "Send project data (deployment_hash = {:?}): {:?}",
+        payload.deployment_hash,
+        payload
+    );
 
     // Send Payload
     mq_manager
@@ -289,6 +351,7 @@ pub async fn saved_item(
         .map(|_| {
             JsonResponse::<models::Project>::build()
                 .set_id(id)
+                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
                 .ok("Success")
         })
 }

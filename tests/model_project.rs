@@ -2,7 +2,6 @@ use stacker::forms::project::App;
 use stacker::forms::project::DockerImage;
 use stacker::forms::project::ProjectForm;
 use std::collections::HashMap;
-use std::fs;
 
 //  Unit Test
 
@@ -27,7 +26,10 @@ use std::fs;
 // }
 #[test]
 fn test_deserialize_project() {
-    let body_str = fs::read_to_string("./tests/custom-project-payload-11.json").unwrap();
+    let body_str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/mock_data/custom.json"
+    ));
     let form = serde_json::from_str::<ProjectForm>(&body_str).unwrap();
     println!("{:?}", form);
     // @todo assert required data

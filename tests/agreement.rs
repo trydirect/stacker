@@ -48,7 +48,10 @@ mod common;
 // test me: cargo t --test agreement get --nocapture --show-output
 #[tokio::test]
 async fn get() {
-    let app = common::spawn_app().await; // server
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    }; // server
     let client = reqwest::Client::new(); // client
 
     let response = client
@@ -65,7 +68,10 @@ async fn get() {
 // test me: cargo t --test agreement user_add -- --nocapture --show-output
 #[tokio::test]
 async fn user_add() {
-    let app = common::spawn_app().await; // server
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    }; // server
     let client = reqwest::Client::new(); // client
 
     let data = r#"

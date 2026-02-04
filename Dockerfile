@@ -1,4 +1,4 @@
-FROM rust:bookworm as builder
+FROM rust:bookworm AS builder
 
 #RUN apt-get update; \
 #    apt-get install --no-install-recommends -y libssl-dev; \
@@ -15,7 +15,7 @@ COPY ./rustfmt.toml .
 COPY ./Makefile .
 COPY ./docker/local/.env .
 COPY ./docker/local/configuration.yaml .
-COPY .sqlx  .
+COPY .sqlx .sqlx/
 
 # build this project to cache dependencies
 #RUN sqlx database create && sqlx migrate run
@@ -31,15 +31,16 @@ COPY ./src ./src
 #RUN ls -la /app/ >&2
 #RUN sqlx migrate run
 #RUN cargo sqlx prepare -- --bin stacker
-ENV SQLX_OFFLINE true
+ENV SQLX_OFFLINE=true
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev; \
-    cargo build --bin=console --features="explain" && cargo build --release --features="explain"
+    cargo build --release --bin server; \
+    cargo build --release --bin console --features explain
 
 #RUN ls -la /app/target/release/ >&2
 
 # deploy production
-FROM debian:bookworm-slim as production
+FROM debian:bookworm-slim AS production
 
 RUN apt-get update && apt-get install --no-install-recommends -y libssl-dev ca-certificates;
 # create app directory
@@ -51,8 +52,8 @@ COPY --from=builder /app/target/release/server .
 COPY --from=builder /app/target/release/console .
 COPY --from=builder /app/.env .
 COPY --from=builder /app/configuration.yaml .
-COPY --from=builder /usr/local/cargo/bin/sqlx sqlx
-COPY ./access_control.conf.dist /app
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
+COPY ./access_control.conf.dist ./access_control.conf
 
 EXPOSE 8000
 

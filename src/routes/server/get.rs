@@ -43,3 +43,30 @@ pub async fn list(
         .map(|server| JsonResponse::build().set_list(server).ok("OK"))
         .map_err(|_err| JsonResponse::<models::Server>::build().internal_server_error(""))
 }
+
+#[tracing::instrument(name = "Get servers by project.")]
+#[get("/project/{project_id}")]
+pub async fn list_by_project(
+    path: web::Path<(i32,)>,
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let project_id = path.0;
+
+    // Verify user owns the project
+    let project = db::project::fetch(pg_pool.get_ref(), project_id)
+        .await
+        .map_err(|_err| JsonResponse::<models::Server>::build().internal_server_error(""))
+        .and_then(|p| match p {
+            Some(proj) if proj.user_id != user.id => {
+                Err(JsonResponse::<models::Server>::build().not_found("Project not found"))
+            }
+            Some(proj) => Ok(proj),
+            None => Err(JsonResponse::<models::Server>::build().not_found("Project not found")),
+        })?;
+
+    db::server::fetch_by_project(pg_pool.get_ref(), project_id)
+        .await
+        .map(|servers| JsonResponse::build().set_list(servers).ok("OK"))
+        .map_err(|_err| JsonResponse::<models::Server>::build().internal_server_error(""))
+}

@@ -1,87 +1,68 @@
-use crate::{db, helpers};
-use helpers::{AgentClient, VaultClient};
+use crate::{
+    db, helpers,
+    models::{Command, CommandPriority},
+};
+use helpers::VaultClient;
 use serde_json::Value;
 use sqlx::PgPool;
 
-async fn ensure_agent_credentials(
-    pg: &PgPool,
-    vault: &VaultClient,
-    deployment_hash: &str,
-) -> Result<(String, String), String> {
-    let agent = db::agent::fetch_by_deployment_hash(pg, deployment_hash)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?
-        .ok_or_else(|| "Agent not found for deployment_hash".to_string())?;
-
-    let token = vault
-        .fetch_agent_token(&agent.deployment_hash)
-        .await
-        .map_err(|e| format!("Vault error: {}", e))?;
-
-    Ok((agent.id.to_string(), token))
+/// AgentDispatcher - queue commands for Status Panel agents
+pub struct AgentDispatcher<'a> {
+    pg: &'a PgPool,
 }
 
-async fn handle_resp(resp: reqwest::Response) -> Result<(), String> {
-    if resp.status().is_success() {
-        return Ok(());
+impl<'a> AgentDispatcher<'a> {
+    pub fn new(pg: &'a PgPool) -> Self {
+        Self { pg }
     }
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    Err(format!("Agent request failed: {} - {}", status, text))
-}
 
-#[tracing::instrument(name = "AgentDispatcher enqueue", skip(pg, vault, command), fields(deployment_hash = %deployment_hash, agent_base_url = %agent_base_url))]
-pub async fn enqueue(
-    pg: &PgPool,
-    vault: &VaultClient,
-    deployment_hash: &str,
-    agent_base_url: &str,
-    command: &Value,
-) -> Result<(), String> {
-    let (agent_id, agent_token) = ensure_agent_credentials(pg, vault, deployment_hash).await?;
-    let client = AgentClient::new(agent_base_url, agent_id, agent_token);
-    tracing::info!(deployment_hash = %deployment_hash, "Dispatching enqueue to agent");
-    let resp = client
-        .commands_enqueue(command)
-        .await
-        .map_err(|e| format!("HTTP error: {}", e))?;
-    handle_resp(resp).await
-}
+    /// Queue a command for the agent to execute
+    pub async fn queue_command(
+        &self,
+        deployment_id: i32,
+        command_type: &str,
+        parameters: Value,
+    ) -> Result<String, String> {
+        // Get deployment hash
+        let deployment = db::deployment::fetch(self.pg, deployment_id)
+            .await
+            .map_err(|e| format!("Failed to fetch deployment: {}", e))?
+            .ok_or_else(|| "Deployment not found".to_string())?;
 
-#[tracing::instrument(name = "AgentDispatcher execute", skip(pg, vault, command), fields(deployment_hash = %deployment_hash, agent_base_url = %agent_base_url))]
-pub async fn execute(
-    pg: &PgPool,
-    vault: &VaultClient,
-    deployment_hash: &str,
-    agent_base_url: &str,
-    command: &Value,
-) -> Result<(), String> {
-    let (agent_id, agent_token) = ensure_agent_credentials(pg, vault, deployment_hash).await?;
-    let client = AgentClient::new(agent_base_url, agent_id, agent_token);
-    tracing::info!(deployment_hash = %deployment_hash, "Dispatching execute to agent");
-    let resp = client
-        .commands_execute(command)
-        .await
-        .map_err(|e| format!("HTTP error: {}", e))?;
-    handle_resp(resp).await
-}
+        let command_id = uuid::Uuid::new_v4().to_string();
 
-#[tracing::instrument(name = "AgentDispatcher report", skip(pg, vault, result), fields(deployment_hash = %deployment_hash, agent_base_url = %agent_base_url))]
-pub async fn report(
-    pg: &PgPool,
-    vault: &VaultClient,
-    deployment_hash: &str,
-    agent_base_url: &str,
-    result: &Value,
-) -> Result<(), String> {
-    let (agent_id, agent_token) = ensure_agent_credentials(pg, vault, deployment_hash).await?;
-    let client = AgentClient::new(agent_base_url, agent_id, agent_token);
-    tracing::info!(deployment_hash = %deployment_hash, "Dispatching report to agent");
-    let resp = client
-        .commands_report(result)
+        // Create command using the model's constructor and builder pattern
+        let command = Command::new(
+            command_id.clone(),
+            deployment.deployment_hash.clone(),
+            command_type.to_string(),
+            "mcp_tool".to_string(),
+        )
+        .with_priority(CommandPriority::Normal)
+        .with_parameters(parameters);
+
+        db::command::insert(self.pg, &command)
+            .await
+            .map_err(|e| format!("Failed to insert command: {}", e))?;
+
+        db::command::add_to_queue(
+            self.pg,
+            &command_id,
+            &deployment.deployment_hash,
+            &CommandPriority::Normal,
+        )
         .await
-        .map_err(|e| format!("HTTP error: {}", e))?;
-    handle_resp(resp).await
+        .map_err(|e| format!("Failed to queue command: {}", e))?;
+
+        tracing::info!(
+            deployment_id = deployment_id,
+            command_id = %command_id,
+            command_type = %command_type,
+            "Queued command for agent"
+        );
+
+        Ok(command_id)
+    }
 }
 
 /// Rotate token by writing the new value into Vault.
@@ -106,20 +87,4 @@ pub async fn rotate_token(
         .map_err(|e| format!("Vault store error: {}", e))?;
 
     Ok(())
-}
-
-#[tracing::instrument(name = "AgentDispatcher wait", skip(pg, vault), fields(deployment_hash = %deployment_hash, agent_base_url = %agent_base_url))]
-pub async fn wait(
-    pg: &PgPool,
-    vault: &VaultClient,
-    deployment_hash: &str,
-    agent_base_url: &str,
-) -> Result<reqwest::Response, String> {
-    let (agent_id, agent_token) = ensure_agent_credentials(pg, vault, deployment_hash).await?;
-    let client = AgentClient::new(agent_base_url, agent_id, agent_token);
-    tracing::info!(deployment_hash = %deployment_hash, "Agent long-poll wait");
-    client
-        .wait(deployment_hash)
-        .await
-        .map_err(|e| format!("HTTP error: {}", e))
 }

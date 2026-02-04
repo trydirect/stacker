@@ -106,3 +106,61 @@ pub async fn update(
         "".to_string()
     })
 }
+
+pub async fn fetch_by_deployment_hash(
+    pool: &PgPool,
+    deployment_hash: &str,
+) -> Result<Option<models::Deployment>, String> {
+    tracing::info!("Fetch deployment by hash: {}", deployment_hash);
+    sqlx::query_as!(
+        models::Deployment,
+        r#"
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+               last_seen_at, created_at, updated_at
+        FROM deployment
+        WHERE deployment_hash = $1
+        LIMIT 1
+        "#,
+        deployment_hash
+    )
+    .fetch_one(pool)
+    .await
+    .map(Some)
+    .or_else(|err| match err {
+        sqlx::Error::RowNotFound => Ok(None),
+        e => {
+            tracing::error!("Failed to fetch deployment by hash: {:?}", e);
+            Err("Could not fetch deployment".to_string())
+        }
+    })
+}
+
+/// Fetch deployment by project ID
+pub async fn fetch_by_project_id(
+    pool: &PgPool,
+    project_id: i32,
+) -> Result<Option<models::Deployment>, String> {
+    tracing::debug!("Fetch deployment by project_id: {}", project_id);
+    sqlx::query_as!(
+        models::Deployment,
+        r#"
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+               last_seen_at, created_at, updated_at
+        FROM deployment
+        WHERE project_id = $1 AND deleted = false
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+        project_id
+    )
+    .fetch_one(pool)
+    .await
+    .map(Some)
+    .or_else(|err| match err {
+        sqlx::Error::RowNotFound => Ok(None),
+        e => {
+            tracing::error!("Failed to fetch deployment by project_id: {:?}", e);
+            Err("Could not fetch deployment".to_string())
+        }
+    })
+}

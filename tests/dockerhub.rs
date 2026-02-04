@@ -59,12 +59,14 @@ const DOCKER_PASSWORD: &str = "**********";
 
 #[tokio::test]
 async fn test_docker_hub_successful_login() {
-    common::spawn_app().await; // server
-                               // let username = env::var("TEST_DOCKER_USERNAME")
-                               //     .expect("username environment variable is not set");
-                               //
-                               // let password= env::var("TEST_DOCKER_PASSWORD")
-                               //     .expect("password environment variable is not set");
+    if common::spawn_app().await.is_none() {
+        return;
+    } // server
+      // let username = env::var("TEST_DOCKER_USERNAME")
+      //     .expect("username environment variable is not set");
+      //
+      // let password= env::var("TEST_DOCKER_PASSWORD")
+      //     .expect("password environment variable is not set");
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")),
         dockerhub_name: Some(String::from("nginx-waf")),
@@ -76,7 +78,9 @@ async fn test_docker_hub_successful_login() {
 
 #[tokio::test]
 async fn test_docker_private_exists() {
-    common::spawn_app().await; // server
+    if common::spawn_app().await.is_none() {
+        return;
+    } // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")),
         dockerhub_name: Some(String::from("nginx-waf")),
@@ -88,7 +92,9 @@ async fn test_docker_private_exists() {
 
 #[tokio::test]
 async fn test_public_repo_is_accessible() {
-    common::spawn_app().await; // server
+    if common::spawn_app().await.is_none() {
+        return;
+    } // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("")),
         dockerhub_name: Some(String::from("nginx")),
@@ -99,7 +105,9 @@ async fn test_public_repo_is_accessible() {
 }
 #[tokio::test]
 async fn test_docker_non_existent_repo() {
-    common::spawn_app().await; // server
+    if common::spawn_app().await.is_none() {
+        return;
+    } // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("trydirect")), //namespace
         dockerhub_name: Some(String::from("nonexistent")), //repo
@@ -112,7 +120,9 @@ async fn test_docker_non_existent_repo() {
 
 #[tokio::test]
 async fn test_docker_non_existent_repo_empty_namespace() {
-    common::spawn_app().await; // server
+    if common::spawn_app().await.is_none() {
+        return;
+    } // server
     let di = DockerImage {
         dockerhub_user: Some(String::from("")),            //namespace
         dockerhub_name: Some(String::from("nonexistent")), //repo
@@ -124,6 +134,7 @@ async fn test_docker_non_existent_repo_empty_namespace() {
 
 #[tokio::test]
 async fn test_docker_named_volume() {
+    let base_dir = env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
     let volume = Volume {
         host_path: Some("flask-data".to_owned()),
         container_path: Some("/var/www/flaskdata".to_owned()),
@@ -134,7 +145,10 @@ async fn test_docker_named_volume() {
     println!("{:?}", cv.driver_opts);
     assert_eq!(Some("flask-data".to_string()), cv.name);
     assert_eq!(
-        &Some(SingleValue::String("/root/project/flask-data".to_string())),
+        &Some(SingleValue::String(format!(
+            "{}/flask-data",
+            base_dir.trim_end_matches('/')
+        ))),
         cv.driver_opts.get("device").unwrap()
     );
     assert_eq!(

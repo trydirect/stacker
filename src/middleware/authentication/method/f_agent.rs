@@ -1,4 +1,4 @@
-use crate::helpers::VaultClient;
+use crate::helpers::{AgentPgPool, VaultClient};
 use crate::middleware::authentication::get_header;
 use crate::models;
 use actix_web::{dev::ServiceRequest, web, HttpMessage};
@@ -85,11 +85,11 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         .ok_or("Invalid Authorization header format")?
         .to_string();
 
-    // Get database pool
-    let db_pool = req
-        .app_data::<web::Data<PgPool>>()
-        .ok_or("Database pool not found")?
-        .get_ref();
+    // Get agent database pool (separate pool for agent operations)
+    let agent_pool = req
+        .app_data::<web::Data<AgentPgPool>>()
+        .ok_or("Agent database pool not found")?;
+    let db_pool: &PgPool = agent_pool.get_ref().as_ref();
 
     // Fetch agent from database
     let agent = fetch_agent_by_id(db_pool, agent_id).await?;
@@ -110,7 +110,7 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
             // Fallback for local test setups without Vault
             if addr.contains("127.0.0.1") || addr.contains("localhost") {
                 actix_web::rt::spawn(log_audit(
-                    db_pool.clone(),
+                    agent_pool.inner().clone(),
                     Some(agent_id),
                     Some(agent.deployment_hash.clone()),
                     "agent.auth_warning".to_string(),
@@ -120,7 +120,7 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
                 bearer_token.clone()
             } else {
                 actix_web::rt::spawn(log_audit(
-                    db_pool.clone(),
+                    agent_pool.inner().clone(),
                     Some(agent_id),
                     Some(agent.deployment_hash.clone()),
                     "agent.auth_failure".to_string(),
@@ -135,7 +135,7 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     // Compare tokens
     if bearer_token != stored_token {
         actix_web::rt::spawn(log_audit(
-            db_pool.clone(),
+            agent_pool.inner().clone(),
             Some(agent_id),
             Some(agent.deployment_hash.clone()),
             "agent.auth_failure".to_string(),
@@ -159,6 +159,7 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         last_name: format!("#{}", &agent.id.to_string()[..8]), // First 8 chars of UUID
         email: format!("agent+{}@system.local", agent.deployment_hash),
         email_confirmed: true,
+        access_token: None,
     };
 
     if req.extensions_mut().insert(Arc::new(agent_user)).is_some() {
