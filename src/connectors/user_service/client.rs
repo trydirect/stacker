@@ -9,7 +9,7 @@ use super::connector::UserServiceConnector;
 use super::types::{
     CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
 };
-use super::utils::is_plan_upgrade;
+use super::utils::is_plan_higher_tier;
 
 /// HTTP-based User Service client
 pub struct UserServiceClient {
@@ -260,7 +260,7 @@ impl UserServiceConnector for UserServiceClient {
                             return user_plan == required_plan_name;
                         }
                         user_plan == required_plan_name
-                            || is_plan_upgrade(&user_plan, required_plan_name)
+                            || is_plan_higher_tier(&user_plan, required_plan_name)
                     })
                     .map_err(|_| ConnectorError::InvalidResponse(text))
             }
