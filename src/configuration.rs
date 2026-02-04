@@ -222,6 +222,14 @@ impl AmqpSettings {
     }
 }
 
+/// Parses a boolean value from an environment variable string.
+/// 
+/// Recognizes common boolean representations: "1", "true", "TRUE"
+/// Returns `true` if the value matches any of these, `false` otherwise.
+pub fn parse_bool_env(value: &str) -> bool {
+    matches!(value, "1" | "true" | "TRUE")
+}
+
 pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     // Load environment variables from .env file
     dotenvy::dotenv().ok();
@@ -262,7 +270,7 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     }
 
     if let Ok(enabled) = std::env::var("STACKER_CASBIN_RELOAD_ENABLED") {
-        config.casbin_reload_enabled = matches!(enabled.as_str(), "1" | "true" | "TRUE");
+        config.casbin_reload_enabled = parse_bool_env(&enabled);
     }
 
     if let Ok(interval) = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS") {
@@ -293,4 +301,28 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_bool_env_true_values() {
+        assert!(parse_bool_env("1"));
+        assert!(parse_bool_env("true"));
+        assert!(parse_bool_env("TRUE"));
+    }
+
+    #[test]
+    fn test_parse_bool_env_false_values() {
+        assert!(!parse_bool_env("0"));
+        assert!(!parse_bool_env("false"));
+        assert!(!parse_bool_env("FALSE"));
+        assert!(!parse_bool_env(""));
+        assert!(!parse_bool_env("yes"));
+        assert!(!parse_bool_env("no"));
+        assert!(!parse_bool_env("True")); // Case-sensitive
+        assert!(!parse_bool_env("invalid"));
+    }
 }

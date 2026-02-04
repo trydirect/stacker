@@ -2,6 +2,7 @@ use actix_casbin_auth::{
     casbin::{function_map::key_match2, CoreApi, DefaultModel},
     CasbinService,
 };
+use crate::configuration::parse_bool_env;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx_adapter::SqlxAdapter;
 use std::io::{Error, ErrorKind};
@@ -34,7 +35,7 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
         .matching_fn(Some(key_match2), None);
 
     if std::env::var("STACKER_CASBIN_RELOAD_ENABLED")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+        .map(|value| parse_bool_env(&value))
         .unwrap_or(true)
     {
         let interval = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS")
