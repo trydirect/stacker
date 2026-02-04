@@ -94,22 +94,23 @@ pub async fn snapshot_handler(
     };
 
     tracing::debug!("[SNAPSHOT HANDLER] Apps : {:?}", apps);
-    
+
     // Fetch recent health commands WITH results to populate container states
     // (we always need health results for container status, even if include_command_results=false)
     let health_commands = db::command::fetch_recent_by_deployment(
         agent_pool.get_ref(),
         &deployment_hash,
-        10, // Fetch last 10 health checks
+        10,    // Fetch last 10 health checks
         false, // Always include results for health commands
     )
     .await
     .unwrap_or_default();
-    
+
     // Extract container states from recent health check commands
     // Use a HashMap to keep only the most recent health check per app_code
-    let mut container_map: std::collections::HashMap<String, ContainerSnapshot> = std::collections::HashMap::new();
-    
+    let mut container_map: std::collections::HashMap<String, ContainerSnapshot> =
+        std::collections::HashMap::new();
+
     for cmd in health_commands.iter() {
         if cmd.r#type == "health" && cmd.status == "completed" {
             if let Some(result) = &cmd.result {
@@ -119,7 +120,7 @@ pub async fn snapshot_handler(
                         .ok()
                         .and_then(|v| v.as_str().map(String::from))
                         .map(|s| s.to_lowercase());
-                    
+
                     let container = ContainerSnapshot {
                         id: None,
                         app: Some(health.app_code.clone()),
@@ -127,17 +128,23 @@ pub async fn snapshot_handler(
                         image: None,
                         name: None,
                     };
-                    
+
                     // Only insert if we don't have this app yet (keeps most recent due to DESC order)
-                    container_map.entry(health.app_code.clone()).or_insert(container);
+                    container_map
+                        .entry(health.app_code.clone())
+                        .or_insert(container);
                 }
             }
         }
     }
-    
+
     let containers: Vec<ContainerSnapshot> = container_map.into_values().collect();
-    
-    tracing::debug!("[SNAPSHOT HANDLER] Containers extracted from {} health checks: {:?}", health_commands.len(), containers);
+
+    tracing::debug!(
+        "[SNAPSHOT HANDLER] Containers extracted from {} health checks: {:?}",
+        health_commands.len(),
+        containers
+    );
 
     let agent_snapshot = agent.map(|a| AgentSnapshot {
         version: a.version,

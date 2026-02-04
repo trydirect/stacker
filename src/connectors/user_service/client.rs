@@ -9,7 +9,7 @@ use super::connector::UserServiceConnector;
 use super::types::{
     CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
 };
-use super::utils::is_plan_upgrade;
+use super::utils::is_plan_higher_tier;
 
 /// HTTP-based User Service client
 pub struct UserServiceClient {
@@ -260,7 +260,7 @@ impl UserServiceConnector for UserServiceClient {
                             return user_plan == required_plan_name;
                         }
                         user_plan == required_plan_name
-                            || is_plan_upgrade(&user_plan, required_plan_name)
+                            || is_plan_higher_tier(&user_plan, required_plan_name)
                     })
                     .map_err(|_| ConnectorError::InvalidResponse(text))
             }
@@ -412,14 +412,28 @@ impl UserServiceConnector for UserServiceClient {
             template_id = stack_template_id
         );
 
-        // Query /api/1.0/products?external_id={template_id}&product_type=template
-        let url = format!(
-            "{}/api/1.0/products?where={{\"external_id\":{},\"product_type\":\"template\"}}",
-            self.base_url, stack_template_id
-        );
+        // Build "where" filter as JSON and let reqwest handle URL encoding
+        #[derive(Serialize)]
+        struct WhereFilter<'a> {
+            external_id: i32,
+            product_type: &'a str,
+        }
 
-        let mut req = self.http_client.get(&url);
+        let where_filter = WhereFilter {
+            external_id: stack_template_id,
+            product_type: "template",
+        };
 
+        let where_json = serde_json::to_string(&where_filter).map_err(|e| {
+            ConnectorError::HttpError(format!(
+                "Failed to serialize where filter for template product: {}",
+                e
+            ))
+        })?;
+
+        let url = format!("{}/api/1.0/products", self.base_url);
+
+        let mut req = self.http_client.get(&url).query(&[("where", &where_json)]);
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }

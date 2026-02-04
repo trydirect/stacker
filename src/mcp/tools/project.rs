@@ -264,13 +264,11 @@ impl ToolHandler for CreateProjectAppTool {
             }
             project_id
         } else if let Some(ref deployment_hash) = params.deployment_hash {
-            let deployment = db::deployment::fetch_by_deployment_hash(
-                &context.pg_pool,
-                deployment_hash,
-            )
-            .await
-            .map_err(|e| format!("Failed to lookup deployment: {}", e))?
-            .ok_or_else(|| "Deployment not found".to_string())?;
+            let deployment =
+                db::deployment::fetch_by_deployment_hash(&context.pg_pool, deployment_hash)
+                    .await
+                    .map_err(|e| format!("Failed to lookup deployment: {}", e))?
+                    .ok_or_else(|| "Deployment not found".to_string())?;
 
             if deployment.user_id != Some(context.user.id.clone()) {
                 return Err("Deployment not found".to_string());
@@ -302,19 +300,23 @@ impl ToolHandler for CreateProjectAppTool {
                 .map_err(|e| format!("Failed to search applications: {}", e))?;
 
             let code_lower = code.to_lowercase();
-            let matched = apps.iter().find(|app| {
-                app.code
-                    .as_deref()
-                    .map(|c| c.to_lowercase() == code_lower)
-                    .unwrap_or(false)
-            }).or_else(|| {
-                apps.iter().find(|app| {
-                    app.name
+            let matched = apps
+                .iter()
+                .find(|app| {
+                    app.code
                         .as_deref()
-                        .map(|n| n.to_lowercase() == code_lower)
+                        .map(|c| c.to_lowercase() == code_lower)
                         .unwrap_or(false)
                 })
-            }).or_else(|| apps.first());
+                .or_else(|| {
+                    apps.iter().find(|app| {
+                        app.name
+                            .as_deref()
+                            .map(|n| n.to_lowercase() == code_lower)
+                            .unwrap_or(false)
+                    })
+                })
+                .or_else(|| apps.first());
 
             if let Some(app) = matched {
                 if resolved_image.is_empty() {

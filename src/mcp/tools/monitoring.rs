@@ -45,24 +45,27 @@ async fn wait_for_command_result(
     command_id: &str,
 ) -> Result<Option<Command>, String> {
     let wait_deadline = Instant::now() + Duration::from_secs(COMMAND_RESULT_TIMEOUT_SECS);
-    
+
     while Instant::now() < wait_deadline {
         let fetched = db::command::fetch_by_command_id(pg_pool, command_id)
             .await
-            .map_err(|e| format!("Failed to fetch command: {}", e))?
-        ;
-        
+            .map_err(|e| format!("Failed to fetch command: {}", e))?;
+
         if let Some(cmd) = fetched {
             let status = cmd.status.to_lowercase();
             // Return if completed, failed, or has result/error
-            if status == "completed" || status == "failed" || cmd.result.is_some() || cmd.error.is_some() {
+            if status == "completed"
+                || status == "failed"
+                || cmd.result.is_some()
+                || cmd.error.is_some()
+            {
                 return Ok(Some(cmd));
             }
         }
-        
+
         sleep(Duration::from_millis(COMMAND_POLL_INTERVAL_MS)).await;
     }
-    
+
     Ok(None)
 }
 
@@ -133,7 +136,9 @@ impl ToolHandler for GetContainerLogsTool {
         .map_err(|e| format!("Failed to queue command: {}", e))?;
 
         // Wait for result or timeout
-        let result = if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id).await? {
+        let result = if let Some(cmd) =
+            wait_for_command_result(&context.pg_pool, &command.command_id).await?
+        {
             let status = cmd.status.to_lowercase();
             json!({
                 "status": status,
@@ -258,7 +263,9 @@ impl ToolHandler for GetContainerHealthTool {
         .map_err(|e| format!("Failed to queue command: {}", e))?;
 
         // Wait for result or timeout
-        let result = if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id).await? {
+        let result = if let Some(cmd) =
+            wait_for_command_result(&context.pg_pool, &command.command_id).await?
+        {
             let status = cmd.status.to_lowercase();
             json!({
                 "status": status,
@@ -447,8 +454,10 @@ impl ToolHandler for DiagnoseDeploymentTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         // Create identifier and resolve with full info
-        let identifier =
-            DeploymentIdentifier::try_from_options(params.deployment_hash.clone(), params.deployment_id)?;
+        let identifier = DeploymentIdentifier::try_from_options(
+            params.deployment_hash.clone(),
+            params.deployment_id,
+        )?;
         let resolver = create_resolver(context);
         let info = resolver.resolve_with_info(&identifier).await?;
 
@@ -457,33 +466,48 @@ impl ToolHandler for DiagnoseDeploymentTool {
         let mut domain = info.domain;
         let mut server_ip = info.server_ip;
         let mut apps_info: Option<Value> = info.apps.as_ref().map(|apps| {
-            json!(apps.iter().map(|a| json!({
-                "app_code": a.app_code,
-                "display_name": a.name,
-                "version": a.version,
-                "port": a.port
-            })).collect::<Vec<_>>())
+            json!(apps
+                .iter()
+                .map(|a| json!({
+                    "app_code": a.app_code,
+                    "display_name": a.name,
+                    "version": a.version,
+                    "port": a.port
+                }))
+                .collect::<Vec<_>>())
         });
 
         // For Stack Builder deployments (hash-based), fetch from Stacker's database
-        if params.deployment_hash.is_some() || (apps_info.is_none() && !deployment_hash.is_empty()) {
+        if params.deployment_hash.is_some() || (apps_info.is_none() && !deployment_hash.is_empty())
+        {
             // Fetch deployment from Stacker DB
-            if let Ok(Some(deployment)) = db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash).await {
-                status = if deployment.status.is_empty() { "unknown".to_string() } else { deployment.status.clone() };
-                
+            if let Ok(Some(deployment)) =
+                db::deployment::fetch_by_deployment_hash(&context.pg_pool, &deployment_hash).await
+            {
+                status = if deployment.status.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    deployment.status.clone()
+                };
+
                 // Fetch apps from project
-                if let Ok(project_apps) = db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id).await {
-                    let apps_list: Vec<Value> = project_apps.iter().map(|app| {
-                        json!({
-                            "app_code": app.code,
-                            "display_name": app.name,
-                            "image": app.image,
-                            "domain": app.domain,
-                            "status": "configured"
+                if let Ok(project_apps) =
+                    db::project_app::fetch_by_project(&context.pg_pool, deployment.project_id).await
+                {
+                    let apps_list: Vec<Value> = project_apps
+                        .iter()
+                        .map(|app| {
+                            json!({
+                                "app_code": app.code,
+                                "display_name": app.name,
+                                "image": app.image,
+                                "domain": app.domain,
+                                "status": "configured"
+                            })
                         })
-                    }).collect();
+                        .collect();
                     apps_info = Some(json!(apps_list));
-                    
+
                     // Try to get domain from first app if not set
                     if domain.is_none() {
                         domain = project_apps.iter().find_map(|a| a.domain.clone());
@@ -1201,7 +1225,9 @@ impl ToolHandler for GetServerResourcesTool {
         .map_err(|e| format!("Failed to queue command: {}", e))?;
 
         // Wait for result or timeout
-        let result = if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id).await? {
+        let result = if let Some(cmd) =
+            wait_for_command_result(&context.pg_pool, &command.command_id).await?
+        {
             let status = cmd.status.to_lowercase();
             json!({
                 "status": status,
