@@ -35,6 +35,8 @@ enum AgentCommands {
         new_token: String,
     },
 }
+
+#[derive(Debug, Subcommand)]
 enum AppClientCommands {
     New {
         #[arg(long)]

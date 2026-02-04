@@ -7,7 +7,36 @@
 # Stacker Project Overview
 Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
 source apps and user's custom applications docker containers. Users can build their own project of applications, and 
-deploy the final result to their favorite clouds using TryDirect API.
+deploy the final result to their favorite clouds using TryDirect API. See [CHANGELOG.md](CHANGELOG.md) for the latest platform updates.
+
+## Startup Banner
+When you start the Stacker server, you'll see a welcome banner displaying version and configuration info:
+
+```
+ ██████ ████████ █████   ██████ ██   ██ ███████ ██████  
+██         ██    ██   ██ ██     ██  ██  ██      ██   ██ 
+███████    ██    ███████ ██     █████   █████   ██████  
+     ██    ██    ██   ██ ██     ██  ██  ██      ██   ██ 
+██████     ██    ██   ██  █████ ██   ██ ███████ ██   ██ 
+
+╭────────────────────────────────────────────────────────╮
+│  Stacker                                          │
+│  Version: 0.2.1t                                      │
+│  Build: 0.2.0                                 │
+│  Edition: 2021                                       │
+╰────────────────────────────────────────────────────────╯
+
+📋 Configuration Loaded
+  🌐 Server Address: http://127.0.0.1:8000
+  📦 Ready to accept connections
+```
+
+This banner provides quick visibility into:
+- **Version**: Current Stacker version
+- **Build**: Build version information
+- **Edition**: Rust edition used
+- **Server Address**: Where the API server is listening
+- **Status**: Server readiness
 
 ## Core Purpose
 - Allows users to build projects using both open source and custom Docker containers
@@ -57,62 +86,66 @@ The core Project model includes:
   - Response: `agent_id`, `agent_token`
 - Agent long-poll for commands: `GET /api/v1/agent/commands/wait/:deployment_hash`
   - Headers: `X-Agent-Id: <agent_id>`, `Authorization: Bearer <agent_token>`
+  - Optional query params: `timeout` (seconds), `interval` (seconds)
 - Agent report command result: `POST /api/v1/agent/commands/report`
   - Headers: `X-Agent-Id`, `Authorization: Bearer <agent_token>`
   - Body: `command_id`, `deployment_hash`, `status` (`completed|failed`), `result`/`error`, optional `started_at`, required `completed_at`
+- **Get deployment snapshot**: `GET /api/v1/agent/deployments/:deployment_hash`
+  - Query params (optional):
+    - `command_limit` (default: 50) - Number of recent commands to return
+    - `include_command_results` (default: false) - Whether to include command result/error fields
+  - Response: `agent`, `commands`, `containers`, `apps`
+  - **Note**: Use `include_command_results=false` (default) for lightweight snapshots to avoid large payloads when commands contain log data
 - Create command (user auth via OAuth Bearer): `POST /api/v1/commands`
   - Body: `deployment_hash`, `command_type`, `priority` (`low|normal|high|critical`), `parameters`, optional `timeout_seconds`
-- List commands for a deployment: `GET /api/v1/commands/:deployment_hash`
+- **List commands for a deployment**: `GET /api/v1/commands/:deployment_hash`
+  - Query params (optional):
+    - `limit` (default: 50, max: 500) - Number of commands to return
+    - `include_results` (default: false) - Whether to include command result/error fields
+    - `since` (ISO 8601 timestamp) - Only return commands updated after this time
+    - `wait_ms` (max: 30000) - Long-poll timeout when using `since`
+  - Response: `list` of commands
+  - **Note**: Use `include_results=true` when you need log data or command execution results
 
 7. **Stacker → Agent HMAC-signed POSTs (v2)**
 - All POST calls from Stacker to the agent must be signed per [STACKER_INTEGRATION_REQUIREMENTS.md](STACKER_INTEGRATION_REQUIREMENTS.md)
 - Required headers: `X-Agent-Id`, `X-Timestamp`, `X-Request-Id`, `X-Agent-Signature`
 - Signature: base64(HMAC_SHA256(AGENT_TOKEN, raw_body_bytes))
 - Helper available: `helpers::AgentClient`
- - Base URL: set `AGENT_BASE_URL` to point Stacker at the target agent (e.g., `http://agent:8080`).
+ - Base URL: set `AGENT_BASE_URL` to point Stacker at the target agent (e.g., `http://agent:5000`).
 
 Example:
 ```rust
 use stacker::helpers::AgentClient;
 use serde_json::json;
 
-let client = AgentClient::new("http://agent:8080", agent_id, agent_token);
+let client = AgentClient::new("http://agent:5000", agent_id, agent_token);
 let payload = json!({"deployment_hash": dh, "type": "restart_service", "parameters": {"service": "web"}});
-let resp = client.commands_execute(&payload).await?;
+let resp = client.get("/api/v1/status").await?;
 ``` 
 
-Dispatcher example (recommended wiring):
+### Pull-Only Command Architecture
+
+Stacker uses a pull-only architecture for agent communication. **Stacker never dials out to agents.** Commands are enqueued in the database; agents poll and sign their own requests.
+
+**Flow:**
+1. UI/API calls `POST /api/v1/commands` or `POST /api/v1/agent/commands/enqueue`
+2. Command is inserted into `commands` + `command_queue` tables
+3. Agent polls `GET /api/v1/agent/commands/wait/{deployment_hash}` with HMAC headers
+4. Stacker verifies agent's HMAC, returns queued commands
+5. Agent executes locally and calls `POST /api/v1/agent/commands/report`
+
+**Note:** `AGENT_BASE_URL` environment variable is NOT required for Status Panel commands.
+
+Token rotation (writes to Vault; agent pulls latest):
 ```rust
 use stacker::services::agent_dispatcher;
-use serde_json::json;
 
-// Given: deployment_hash, agent_base_url, PgPool (pg), VaultClient (vault)
-let cmd = json!({
-  "deployment_hash": deployment_hash,
-  "type": "restart_service",
-  "parameters": { "service": "web", "graceful": true }
-});
-
-// Enqueue command for agent (signed HMAC headers handled internally)
-agent_dispatcher::enqueue(&pg, &vault, &deployment_hash, agent_base_url, &cmd).await?;
-
-// Or execute immediately
-agent_dispatcher::execute(&pg, &vault, &deployment_hash, agent_base_url, &cmd).await?;
-
-// Report result later
-let result = json!({
-  "deployment_hash": deployment_hash,
-  "command_id": "...",
-  "status": "completed",
-  "result": { "ok": true }
-});
-agent_dispatcher::report(&pg, &vault, &deployment_hash, agent_base_url, &result).await?;
-
-// Rotate token (Vault-only; agent pulls latest)
+// Rotate token - stored in Vault, agent fetches on next poll
 agent_dispatcher::rotate_token(&pg, &vault, &deployment_hash, "NEW_TOKEN").await?;
 ```
 
-Console token rotation (writes to Vault; agent pulls):
+Console token rotation:
 ```bash
 cargo run --bin console -- Agent rotate-token \
   --deployment-hash <hash> \
@@ -126,6 +159,18 @@ cargo run --bin console -- Agent rotate-token \
   - vault.agent_path_prefix: KV mount/prefix for agent tokens (e.g., agent or kv/agent)
 - Environment variable overrides (optional): VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
 - Agent tokens are stored at: {vault.agent_path_prefix}/{deployment_hash}/token
+
+### Configuration: Agent Polling & Casbin Reload
+- `agent_command_poll_timeout_secs` (default 30)
+- `agent_command_poll_interval_secs` (default 3)
+- `casbin_reload_enabled` (default true)
+- `casbin_reload_interval_secs` (default 10)
+
+Environment overrides:
+- `STACKER_AGENT_POLL_TIMEOUT_SECS`
+- `STACKER_AGENT_POLL_INTERVAL_SECS`
+- `STACKER_CASBIN_RELOAD_ENABLED`
+- `STACKER_CASBIN_RELOAD_INTERVAL_SECS`
 
 The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
 
@@ -178,6 +223,19 @@ sqlx migrate revert
 ```
 
 
+## Testing
+
+Stacker ships targeted tests for the new User Service marketplace integrations. Run them with:
+
+```
+cargo test user_service_client
+cargo test marketplace_webhook
+cargo test deployment_validator
+```
+
+Each suite uses WireMock-backed HTTP servers, so they run offline and cover the actual request/response flows for the connector, webhook sender, and deployment validator.
+
+
 ## CURL examples
 
 
@@ -215,4 +273,13 @@ http://localhost:8000/test/deploy
 Test casbin rule
 ```
 cargo r --bin console --features=explain debug casbin --path /client --action POST --subject admin_petru
+```
+
+
+
+"cargo sqlx prepare" requires setting the DATABASE_URL environment variable to a valid database URL. 
+
+## TODOs
+```
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/stacker
 ```

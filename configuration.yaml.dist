@@ -3,6 +3,10 @@ app_host: 127.0.0.1
 app_port: 8000
 auth_url: https://dev.try.direct/server/user/oauth_server/api/me
 max_clients_number: 2
+agent_command_poll_timeout_secs: 30
+agent_command_poll_interval_secs: 3
+casbin_reload_enabled: true
+casbin_reload_interval_secs: 10
 database:
   host: 127.0.0.1
   port: 5432
@@ -20,8 +24,48 @@ amqp:
 vault:
   address: http://127.0.0.1:8200
   token: change-me-dev-token
-  # KV mount/prefix for agent tokens, e.g. 'kv/agent' or 'agent'
+  # API prefix (Vault uses /v1 by default). Set empty to omit.
+  api_prefix: v1
+  # Path under the mount (without deployment_hash), e.g. 'secret/debug/status_panel' or 'agent'
+  # Final path: {address}/{api_prefix}/{agent_path_prefix}/{deployment_hash}/token
   agent_path_prefix: agent
+
+# External service connectors
+connectors:
+  user_service:
+    enabled: false
+    base_url: "https://dev.try.direct/server/user"
+    timeout_secs: 10
+    retry_attempts: 3
+  payment_service:
+    enabled: false
+    base_url: "http://localhost:8000"
+    timeout_secs: 15
+  events:
+    enabled: false
+    amqp_url: "amqp://guest:guest@127.0.0.1:5672/%2f"
+    exchange: "stacker_events"
+    prefetch: 10
+  dockerhub_service:
+    enabled: true
+    base_url: "https://hub.docker.com"
+    timeout_secs: 10
+    retry_attempts: 3
+    page_size: 50
+    redis_url: "redis://127.0.0.1/0"
+    cache_ttl_namespaces_secs: 86400
+    cache_ttl_repositories_secs: 21600
+    cache_ttl_tags_secs: 3600
+    username: ~
+    personal_access_token: ~
 
 # Env overrides (optional):
 #   VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
+#   USER_SERVICE_AUTH_TOKEN, PAYMENT_SERVICE_AUTH_TOKEN
+#   DEFAULT_DEPLOY_DIR - Base directory for deployments (default: /home/trydirect)
+
+# Deployment settings
+# deployment:
+#   # Base path for app config files on the deployment server
+#   # Can also be set via DEFAULT_DEPLOY_DIR environment variable
+#   config_base_path: /home/trydirect

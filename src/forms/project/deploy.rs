@@ -4,7 +4,37 @@ use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 
+/// Validates that cloud deployments have required instance configuration
+fn validate_cloud_instance_config(deploy: &Deploy) -> Result<(), serde_valid::validation::Error> {
+    // Skip validation for "own" server deployments
+    if deploy.cloud.provider == "own" {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+
+    if deploy.server.region.as_ref().map_or(true, |s| s.is_empty()) {
+        missing.push("region");
+    }
+    if deploy.server.server.as_ref().map_or(true, |s| s.is_empty()) {
+        missing.push("server");
+    }
+    if deploy.server.os.as_ref().map_or(true, |s| s.is_empty()) {
+        missing.push("os");
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(serde_valid::validation::Error::Custom(format!(
+            "Instance configuration incomplete. Missing: {}. Select datacenter, hardware, and OS before deploying.",
+            missing.join(", ")
+        )))
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[validate(custom(validate_cloud_instance_config))]
 pub struct Deploy {
     #[validate]
     pub(crate) stack: Stack,

@@ -51,10 +51,22 @@ impl TryInto<dctypes::AdvancedVolumes> for &Volume {
 
 impl Into<dctypes::ComposeVolume> for &Volume {
     fn into(self) -> dctypes::ComposeVolume {
-        // let's create a symlink to /var/docker/volumes in project docroot
+        // Use default base dir - for custom base dir use to_compose_volume()
+        self.to_compose_volume(None)
+    }
+}
+
+impl Volume {
+    /// Convert to ComposeVolume with optional custom base directory
+    /// If base_dir is None, uses DEFAULT_DEPLOY_DIR env var or "/home/trydirect"
+    pub fn to_compose_volume(&self, base_dir: Option<&str>) -> dctypes::ComposeVolume {
+        let default_base =
+            std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
+        let base = base_dir.unwrap_or(&default_base);
+
         let mut driver_opts = IndexMap::default();
         let host_path = self.host_path.clone().unwrap_or_else(String::default);
-        // @todo check if host_path is required argument
+
         driver_opts.insert(
             String::from("type"),
             Some(dctypes::SingleValue::String("none".to_string())),
@@ -63,8 +75,9 @@ impl Into<dctypes::ComposeVolume> for &Volume {
             String::from("o"),
             Some(dctypes::SingleValue::String("bind".to_string())),
         );
-        // @todo move to config project docroot on host
-        let path = format!("/root/project/{}", &host_path);
+
+        // Use configurable base directory instead of hardcoded /root/project
+        let path = format!("{}/{}", base.trim_end_matches('/'), &host_path);
         driver_opts.insert(
             String::from("device"),
             Some(dctypes::SingleValue::String(path)),

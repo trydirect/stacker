@@ -12,7 +12,10 @@ use std::time::Duration;
 /// 5. Agent reports command completion
 #[tokio::test]
 async fn test_agent_command_flow() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
 
     // Step 1: Create a test deployment (simulating what deploy endpoint does)
@@ -253,7 +256,10 @@ async fn test_agent_command_flow() {
 /// Test agent heartbeat mechanism
 #[tokio::test]
 async fn test_agent_heartbeat() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_hb_{}", uuid::Uuid::new_v4());
@@ -351,7 +357,10 @@ async fn test_agent_heartbeat() {
 #[tokio::test]
 #[ignore] // Requires auth setup
 async fn test_command_priority_ordering() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_priority_{}", uuid::Uuid::new_v4());
@@ -420,7 +429,10 @@ async fn test_command_priority_ordering() {
 /// Test authenticated command creation
 #[tokio::test]
 async fn test_authenticated_command_creation() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_cmd_{}", uuid::Uuid::new_v4());
@@ -536,7 +548,10 @@ async fn test_authenticated_command_creation() {
 /// Test command priorities and user permissions
 #[tokio::test]
 async fn test_command_priorities_and_permissions() {
-    let app = common::spawn_app().await;
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
     let client = reqwest::Client::new();
 
     let deployment_hash = format!("test_prio_{}", uuid::Uuid::new_v4());

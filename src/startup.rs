@@ -1,26 +1,70 @@
 use crate::configuration::Settings;
+use crate::connectors;
+use crate::health::{HealthChecker, HealthMetrics};
 use crate::helpers;
+use crate::helpers::AgentPgPool;
+use crate::mcp;
 use crate::middleware;
 use crate::routes;
 use actix_cors::Cors;
+use actix_web::middleware::Compress;
 use actix_web::{dev::Server, error, http, web, App, HttpServer};
 use sqlx::{Pool, Postgres};
 use std::net::TcpListener;
+use std::sync::Arc;
+use std::time::Duration;
 use tracing_actix_web::TracingLogger;
 
 pub async fn run(
     listener: TcpListener,
-    pg_pool: Pool<Postgres>,
+    api_pool: Pool<Postgres>,
+    agent_pool: AgentPgPool,
     settings: Settings,
 ) -> Result<Server, std::io::Error> {
+    let settings_arc = Arc::new(settings.clone());
+    let api_pool_arc = Arc::new(api_pool.clone());
+
     let settings = web::Data::new(settings);
-    let pg_pool = web::Data::new(pg_pool);
+    let api_pool = web::Data::new(api_pool);
+    let agent_pool = web::Data::new(agent_pool);
 
     let mq_manager = helpers::MqManager::try_new(settings.amqp.connection_string())?;
     let mq_manager = web::Data::new(mq_manager);
 
     let vault_client = helpers::VaultClient::new(&settings.vault);
     let vault_client = web::Data::new(vault_client);
+
+    let oauth_http_client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+    let oauth_http_client = web::Data::new(oauth_http_client);
+
+    let oauth_cache = web::Data::new(middleware::authentication::OAuthCache::new(
+        Duration::from_secs(60),
+    ));
+
+    // Initialize MCP tool registry
+    let mcp_registry = Arc::new(mcp::ToolRegistry::new());
+    let mcp_registry = web::Data::new(mcp_registry);
+
+    // Initialize health checker and metrics
+    let health_checker = Arc::new(HealthChecker::new(
+        api_pool_arc.clone(),
+        settings_arc.clone(),
+    ));
+    let health_checker = web::Data::new(health_checker);
+
+    let health_metrics = Arc::new(HealthMetrics::new(1000));
+    let health_metrics = web::Data::new(health_metrics);
+
+    // Initialize external service connectors (plugin pattern)
+    // Connector handles category sync on startup
+    let user_service_connector =
+        connectors::init_user_service(&settings.connectors, api_pool.clone());
+    let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
+    let install_service_connector: web::Data<Arc<dyn connectors::InstallServiceConnector>> =
+        web::Data::new(Arc::new(connectors::InstallServiceClient));
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;
@@ -42,8 +86,27 @@ pub async fn run(
             .wrap(TracingLogger::default())
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
-            .wrap(Cors::permissive())
-            .service(web::scope("/health_check").service(routes::health_check))
+            .wrap(Compress::default())
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allow_any_method()
+                    .allowed_headers(vec![
+                        actix_web::http::header::AUTHORIZATION,
+                        actix_web::http::header::CONTENT_TYPE,
+                        actix_web::http::header::ACCEPT,
+                    ])
+                    .supports_credentials(),
+            )
+            .app_data(health_checker.clone())
+            .app_data(health_metrics.clone())
+            .app_data(oauth_http_client.clone())
+            .app_data(oauth_cache.clone())
+            .service(
+                web::scope("/health_check")
+                    .service(routes::health_check)
+                    .service(routes::health_metrics),
+            )
             .service(
                 web::scope("/client")
                     .service(routes::client::add_handler)
@@ -69,7 +132,26 @@ pub async fn run(
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item)
-                    .service(crate::routes::project::delete::item),
+                    .service(crate::routes::project::delete::item)
+                    // App configuration routes
+                    .service(crate::routes::project::app::list_apps)
+                    .service(crate::routes::project::app::create_app)
+                    .service(crate::routes::project::app::get_app)
+                    .service(crate::routes::project::app::get_app_config)
+                    .service(crate::routes::project::app::get_env_vars)
+                    .service(crate::routes::project::app::update_env_vars)
+                    .service(crate::routes::project::app::delete_env_var)
+                    .service(crate::routes::project::app::update_ports)
+                    .service(crate::routes::project::app::update_domain)
+                    // Container discovery and import routes
+                    .service(crate::routes::project::discover::discover_containers)
+                    .service(crate::routes::project::discover::import_containers),
+            )
+            .service(
+                web::scope("/dockerhub")
+                    .service(crate::routes::dockerhub::search_namespaces)
+                    .service(crate::routes::dockerhub::list_repositories)
+                    .service(crate::routes::dockerhub::list_tags),
             )
             .service(
                 web::scope("/admin")
@@ -99,6 +181,53 @@ pub async fn run(
                     ),
             )
             .service(
+                web::scope("/api")
+                    .service(crate::routes::marketplace::categories::list_handler)
+                    .service(
+                        web::scope("/templates")
+                            .service(crate::routes::marketplace::public::list_handler)
+                            .service(crate::routes::marketplace::public::detail_handler)
+                            .service(crate::routes::marketplace::creator::create_handler)
+                            .service(crate::routes::marketplace::creator::update_handler)
+                            .service(crate::routes::marketplace::creator::submit_handler)
+                            .service(crate::routes::marketplace::creator::mine_handler),
+                    )
+                    .service(
+                        web::scope("/v1/agent")
+                            .service(routes::agent::register_handler)
+                            .service(routes::agent::enqueue_handler)
+                            .service(routes::agent::wait_handler)
+                            .service(routes::agent::report_handler)
+                            .service(routes::agent::snapshot_handler),
+                    )
+                    .service(
+                        web::scope("/v1/deployments")
+                            .service(routes::deployment::capabilities_handler),
+                    )
+                    .service(
+                        web::scope("/v1/commands")
+                            .service(routes::command::create_handler)
+                            .service(routes::command::list_handler)
+                            .service(routes::command::get_handler)
+                            .service(routes::command::cancel_handler),
+                    )
+                    .service(
+                        web::scope("/admin")
+                            .service(
+                                web::scope("/templates")
+                                    .service(
+                                        crate::routes::marketplace::admin::list_submitted_handler,
+                                    )
+                                    .service(crate::routes::marketplace::admin::approve_handler)
+                                    .service(crate::routes::marketplace::admin::reject_handler),
+                            )
+                            .service(
+                                web::scope("/marketplace")
+                                    .service(crate::routes::marketplace::admin::list_plans_handler),
+                            ),
+                    ),
+            )
+            .service(
                 web::scope("/cloud")
                     .service(crate::routes::cloud::get::item)
                     .service(crate::routes::cloud::get::list)
@@ -110,21 +239,13 @@ pub async fn run(
                 web::scope("/server")
                     .service(crate::routes::server::get::item)
                     .service(crate::routes::server::get::list)
+                    .service(crate::routes::server::get::list_by_project)
                     .service(crate::routes::server::update::item)
-                    .service(crate::routes::server::delete::item),
-            )
-            .service(
-                web::scope("/api/v1/agent")
-                    .service(routes::agent::register_handler)
-                    .service(routes::agent::wait_handler)
-                    .service(routes::agent::report_handler),
-            )
-            .service(
-                web::scope("/api/v1/commands")
-                    .service(routes::command::create_handler)
-                    .service(routes::command::list_handler)
-                    .service(routes::command::get_handler)
-                    .service(routes::command::cancel_handler),
+                    .service(crate::routes::server::delete::item)
+                    .service(crate::routes::server::ssh_key::generate_key)
+                    .service(crate::routes::server::ssh_key::upload_key)
+                    .service(crate::routes::server::ssh_key::get_public_key)
+                    .service(crate::routes::server::ssh_key::delete_key),
             )
             .service(
                 web::scope("/agreement")
@@ -132,10 +253,16 @@ pub async fn run(
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
             )
+            .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())
-            .app_data(pg_pool.clone())
+            .app_data(api_pool.clone())
+            .app_data(agent_pool.clone())
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
+            .app_data(mcp_registry.clone())
+            .app_data(user_service_connector.clone())
+            .app_data(install_service_connector.clone())
+            .app_data(dockerhub_connector.clone())
             .app_data(settings.clone())
     })
     .listen(listener)?

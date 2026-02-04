@@ -9,6 +9,7 @@ use std::convert::TryFrom;
 pub struct Payload {
     pub(crate) id: Option<i32>,
     pub(crate) project_id: Option<i32>,
+    pub(crate) deployment_hash: Option<String>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
     #[serde(flatten)]

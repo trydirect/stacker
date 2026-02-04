@@ -5,21 +5,34 @@ on:
     branches:
       - main
       - testing
+      - dev
   pull_request:
     branches:
       - main
-
-env:
-  SQLX_OFFLINE: true
+      - dev
 
 jobs:
 
   cicd-docker:
     name: Cargo and npm build
     runs-on: ubuntu-latest
+    #runs-on: self-hosted
+    env:
+      SQLX_OFFLINE: true
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+
+      - name: Install OpenSSL build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Verify .sqlx cache exists
+        run: |
+          ls -lh .sqlx/ || echo ".sqlx directory not found"
+          find .sqlx -type f 2>/dev/null | wc -l
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -30,7 +43,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry
-        uses: actions/cache@v3.5.0
+        uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
           key: docker-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -39,7 +52,7 @@ jobs:
             docker-
 
       - name: Cache cargo index
-        uses: actions/cache@v3.5.0
+        uses: actions/cache@v4
         with:
           path: ~/.cargo/git
           key: docker-index-${{ hashFiles('**/Cargo.lock') }}
@@ -52,7 +65,7 @@ jobs:
           head -c16 /dev/urandom > src/secret.key
 
       - name: Cache cargo build
-        uses: actions/cache@v3.5.0
+        uses: actions/cache@v4
         with:
           path: target
           key: docker-build-${{ hashFiles('**/Cargo.lock') }}
@@ -64,12 +77,6 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: check
-
-      - name: Run cargo sqlx prepare
-        uses: actions-rs/cargo@v1
-        with:
-          command: sqlx prepare
-          args: --release
 
       - name: Cargo test
         if: ${{ always() }}
@@ -97,13 +104,14 @@ jobs:
           command: clippy
           args: -- -D warnings
 
-      - name: Run cargo build
+      - name: Build server (release)
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --release --bin server
 
       - name: npm install, build, and test
+        if: ${{ hashFiles('web/package.json') != '' }}
         working-directory: ./web
         run: |
           npm install
@@ -111,6 +119,7 @@ jobs:
       #   npm test
 
       - name: Archive production artifacts
+        if: ${{ hashFiles('web/package.json') != '' }}
         uses: actions/upload-artifact@v6
         with:
           name: dist-without-markdown
@@ -119,14 +128,15 @@ jobs:
             !web/dist/**/*.md
 
       - name: Display structure of downloaded files
+        if: ${{ hashFiles('web/package.json') != '' }}
         run: ls -R web/dist
 
       - name: Copy app files and zip
         run: |
           mkdir -p app/stacker/dist
-          cp target/release/stacker app/stacker
-          cp -a web/dist/. app/stacker
-          cp docker/prod/Dockerfile app/Dockerfile
+          cp target/release/server app/stacker/server
+          if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
+          cp Dockerfile app/Dockerfile
           cd app
           touch .env
           tar -czvf ../app.tar.gz .

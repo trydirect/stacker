@@ -5,3 +5,20 @@ repos:
       - id: ggshield
         language_version: python3
         stages: [commit]
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --all
+        entry: cargo fmt --all
+        language: system
+        stages: [commit]
+      - id: cargo-clippy
+        name: SQLX_OFFLINE=true cargo clippy
+        entry: bash -c 'SQLX_OFFLINE=true cargo clippy'
+        language: system
+        stages: [commit]
+      - id: cargo-test
+        name: SQLX_OFFLINE=true cargo test
+        entry: bash -c 'SQLX_OFFLINE=true cargo test'
+        language: system
+        stages: [commit]
