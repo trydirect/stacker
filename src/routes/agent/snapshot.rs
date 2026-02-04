@@ -107,31 +107,35 @@ pub async fn snapshot_handler(
     .unwrap_or_default();
     
     // Extract container states from recent health check commands
-    let containers: Vec<ContainerSnapshot> = health_commands
-        .iter()
-        .filter(|cmd| cmd.r#type == "health" && cmd.status == "completed")
-        .filter_map(|cmd| {
-            cmd.result.as_ref().and_then(|result| {
-                serde_json::from_value::<HealthCommandReport>(result.clone())
-                    .ok()
-                    .map(|health| {
-                        // Serialize ContainerState enum to string using serde
-                        let state = serde_json::to_value(&health.container_state)
-                            .ok()
-                            .and_then(|v| v.as_str().map(String::from))
-                            .map(|s| s.to_lowercase());
-                        
-                        ContainerSnapshot {
-                            id: None, // Container ID not included in health reports
-                            app: Some(health.app_code),
-                            state,
-                            image: None, // Image not included in health reports
-                            name: None, // Container name not included in health reports
-                        }
-                    })
-            })
-        })
-        .collect();
+    // Use a HashMap to keep only the most recent health check per app_code
+    let mut container_map: std::collections::HashMap<String, ContainerSnapshot> = std::collections::HashMap::new();
+    
+    for cmd in health_commands.iter() {
+        if cmd.r#type == "health" && cmd.status == "completed" {
+            if let Some(result) = &cmd.result {
+                if let Ok(health) = serde_json::from_value::<HealthCommandReport>(result.clone()) {
+                    // Serialize ContainerState enum to string using serde
+                    let state = serde_json::to_value(&health.container_state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .map(|s| s.to_lowercase());
+                    
+                    let container = ContainerSnapshot {
+                        id: None,
+                        app: Some(health.app_code.clone()),
+                        state,
+                        image: None,
+                        name: None,
+                    };
+                    
+                    // Only insert if we don't have this app yet (keeps most recent due to DESC order)
+                    container_map.entry(health.app_code.clone()).or_insert(container);
+                }
+            }
+        }
+    }
+    
+    let containers: Vec<ContainerSnapshot> = container_map.into_values().collect();
     
     tracing::debug!("[SNAPSHOT HANDLER] Containers extracted from {} health checks: {:?}", health_commands.len(), containers);
 
