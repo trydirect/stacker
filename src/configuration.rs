@@ -223,7 +223,7 @@ impl AmqpSettings {
 }
 
 /// Parses a boolean value from an environment variable string.
-/// 
+///
 /// Recognizes common boolean representations: "1", "true", "TRUE"
 /// Returns `true` if the value matches any of these, `false` otherwise.
 pub fn parse_bool_env(value: &str) -> bool {

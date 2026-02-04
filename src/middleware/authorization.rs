@@ -1,8 +1,8 @@
+use crate::configuration::parse_bool_env;
 use actix_casbin_auth::{
     casbin::{function_map::key_match2, CoreApi, DefaultModel},
     CasbinService,
 };
-use crate::configuration::parse_bool_env;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx_adapter::SqlxAdapter;
 use std::io::{Error, ErrorKind};
