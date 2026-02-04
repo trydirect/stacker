@@ -237,7 +237,7 @@ fn test_is_plan_higher_tier_hierarchy() {
     // Basic user cannot access enterprise
     assert!(!is_plan_higher_tier("basic", "enterprise"));
 
-    // Same plan should not be considered upgrade
+    // Same plan should not be considered higher tier
     assert!(!is_plan_higher_tier("professional", "professional"));
 }
 
