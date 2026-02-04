@@ -5,12 +5,14 @@ pub(crate) fn is_plan_upgrade(user_plan: &str, required_plan: &str) -> bool {
 
     let user_level = plan_hierarchy
         .iter()
-        .position(|&p| p == user_plan)
-        .unwrap_or(0);
+        .position(|&p| p == user_plan);
     let required_level = plan_hierarchy
         .iter()
-        .position(|&p| p == required_plan)
-        .unwrap_or(0);
+        .position(|&p| p == required_plan);
 
-    user_level > required_level
+    match (user_level, required_level) {
+        (Some(user_level), Some(required_level)) => user_level > required_level,
+        // Fail closed if either plan is unknown
+        _ => false,
+    }
 }
