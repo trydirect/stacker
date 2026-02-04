@@ -9,8 +9,6 @@ Stacker - is an application that helps users to create custom IT solutions based
 source apps and user's custom applications docker containers. Users can build their own project of applications, and 
 deploy the final result to their favorite clouds using TryDirect API. See [CHANGELOG.md](CHANGELOG.md) for the latest platform updates.
 
-## Startup Banner
-When you start the Stacker server, you'll see a welcome banner displaying version and configuration info:
 
 ```
  ██████ ████████ █████   ██████ ██   ██ ███████ ██████  
@@ -30,6 +28,7 @@ When you start the Stacker server, you'll see a welcome banner displaying versio
   🌐 Server Address: http://127.0.0.1:8000
   📦 Ready to accept connections
 ```
+
 
 ## Core Purpose
 - Allows users to build projects using both open source and custom Docker containers
