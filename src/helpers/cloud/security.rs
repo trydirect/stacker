@@ -121,15 +121,16 @@ impl Secret {
         // eprintln!("decrypt: Key str {key:?}");
         let rkey = format!("{}_{}_{}", self.user_id, self.provider, self.field);
         // Avoid logging the full redis key (`rkey`) because it includes sensitive identifiers like `user_id`.
+        // eprintln!("decrypt: Key str {rkey:?}");
         self.get(rkey);
         // eprintln!("decrypt: nonce b64:decoded {nonce:?}");
 
         let nonce = Nonce::from_slice(self.nonce.as_slice());
-        eprintln!("decrypt: nonce {nonce:?}");
+        // eprintln!("decrypt: nonce {nonce:?}");
 
         let cipher = Aes256Gcm::new(&key);
         // eprintln!("decrypt: Cipher str {cipher:?}");
-        eprintln!("decrypt: str {encrypted_data:?}");
+        // eprintln!("decrypt: str {encrypted_data:?}");
 
         let plaintext = cipher
             .decrypt(&nonce, encrypted_data.as_ref())
