@@ -20,23 +20,16 @@ When you start the Stacker server, you'll see a welcome banner displaying versio
 ██████     ██    ██   ██  █████ ██   ██ ███████ ██   ██ 
 
 ╭────────────────────────────────────────────────────────╮
-│  Stacker                                          │
-│  Version: 0.2.1t                                      │
-│  Build: 0.2.0                                 │
-│  Edition: 2021                                       │
+│  Stacker                                               │
+│  Version: 0.2.2                                        │
+│  Build: 0.2.2                                          │
+│  Edition: 2021                                         │
 ╰────────────────────────────────────────────────────────╯
 
 📋 Configuration Loaded
   🌐 Server Address: http://127.0.0.1:8000
   📦 Ready to accept connections
 ```
-
-This banner provides quick visibility into:
-- **Version**: Current Stacker version
-- **Build**: Build version information
-- **Edition**: Rust edition used
-- **Server Address**: Where the API server is listening
-- **Status**: Server readiness
 
 ## Core Purpose
 - Allows users to build projects using both open source and custom Docker containers
