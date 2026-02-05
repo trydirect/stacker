@@ -34,9 +34,11 @@ impl HealthChecker {
         let hub_check = timeout(CHECK_TIMEOUT, self.check_dockerhub());
         let redis_check = timeout(CHECK_TIMEOUT, self.check_redis());
         let vault_check = timeout(CHECK_TIMEOUT, self.check_vault());
+        let user_service_check = timeout(CHECK_TIMEOUT, self.check_user_service());
+        let install_service_check = timeout(CHECK_TIMEOUT, self.check_install_service());
 
-        let (db_result, mq_result, hub_result, redis_result, vault_result) =
-            tokio::join!(db_check, mq_check, hub_check, redis_check, vault_check);
+        let (db_result, mq_result, hub_result, redis_result, vault_result, user_result, install_result) =
+            tokio::join!(db_check, mq_check, hub_check, redis_check, vault_check, user_service_check, install_service_check);
 
         let db_health =
             db_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
@@ -48,12 +50,18 @@ impl HealthChecker {
             redis_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
         let vault_health =
             vault_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let user_health =
+            user_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
+        let install_health =
+            install_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
 
         response.add_component("database".to_string(), db_health);
         response.add_component("rabbitmq".to_string(), mq_health);
         response.add_component("dockerhub".to_string(), hub_health);
         response.add_component("redis".to_string(), redis_health);
         response.add_component("vault".to_string(), vault_health);
+        response.add_component("user_service".to_string(), user_health);
+        response.add_component("install_service".to_string(), install_health);
 
         response
     }
@@ -339,6 +347,108 @@ impl HealthChecker {
             Err(e) => {
                 tracing::error!("Failed to create HTTP client for Vault: {:?}", e);
                 ComponentHealth::degraded(format!("HTTP client error: {}", e), None)
+            }
+        }
+    }
+
+    #[tracing::instrument(name = "Check User Service health", skip(self))]
+    async fn check_user_service(&self) -> ComponentHealth {
+        let user_service_url = &self.settings.user_service_url;
+        let health_url = format!("{}/plans/info/", user_service_url);
+
+        let start = Instant::now();
+        match reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .http1_only()
+            .build()
+        {
+            Ok(client) => match client.get(&health_url).send().await {
+                Ok(response) => {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    let status_code = response.status().as_u16();
+
+                    match status_code {
+                        200 => {
+                            let mut health = ComponentHealth::healthy(elapsed);
+
+                            if elapsed > SLOW_RESPONSE_THRESHOLD_MS {
+                                health = ComponentHealth::degraded(
+                                    format!("User Service slow ({} ms)", elapsed),
+                                    Some(elapsed),
+                                );
+                            }
+
+                            let mut details = HashMap::new();
+                            details.insert("url".to_string(), serde_json::Value::String(user_service_url.clone()));
+                            details.insert("response_time_ms".to_string(), serde_json::Value::from(elapsed));
+
+                            health.with_details(details)
+                        }
+                        _ => ComponentHealth::unhealthy(format!(
+                            "User Service returned status: {}",
+                            status_code
+                        )),
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("User Service health check failed: {:?}", e);
+                    ComponentHealth::unhealthy(format!("User Service error: {}", e))
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to create HTTP client for User Service: {:?}", e);
+                ComponentHealth::unhealthy(format!("HTTP client error: {}", e))
+            }
+        }
+    }
+
+    #[tracing::instrument(name = "Check Install Service health", skip(self))]
+    async fn check_install_service(&self) -> ComponentHealth {
+        // Install service runs on http://install:4400/health
+        let install_url = "http://install:4400/health";
+
+        let start = Instant::now();
+        match reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .http1_only()
+            .build()
+        {
+            Ok(client) => match client.get(install_url).send().await {
+                Ok(response) => {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    let status_code = response.status().as_u16();
+
+                    match status_code {
+                        200 => {
+                            let mut health = ComponentHealth::healthy(elapsed);
+
+                            if elapsed > SLOW_RESPONSE_THRESHOLD_MS {
+                                health = ComponentHealth::degraded(
+                                    format!("Install Service slow ({} ms)", elapsed),
+                                    Some(elapsed),
+                                );
+                            }
+
+                            let mut details = HashMap::new();
+                            details.insert("url".to_string(), serde_json::Value::String(install_url.to_string()));
+                            details.insert("response_time_ms".to_string(), serde_json::Value::from(elapsed));
+
+                            health.with_details(details)
+                        }
+                        _ => ComponentHealth::unhealthy(format!(
+                            "Install Service returned status: {}",
+                            status_code
+                        )),
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Install Service health check failed: {:?}", e);
+                    ComponentHealth::unhealthy(format!("Install Service error: {}", e))
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to create HTTP client for Install Service: {:?}", e);
+                ComponentHealth::unhealthy(format!("HTTP client error: {}", e))
             }
         }
     }
