@@ -27,8 +27,17 @@ impl UserServiceClient {
         tracing::info!("Fetching stack_view from {}", url);
         let start = std::time::Instant::now();
         
-        let response = self
-            .http_client
+        // Create a dedicated client for stack_view with longer timeout (30s for large response)
+        // and explicit connection settings to avoid connection reuse issues
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .http1_only()
+            .pool_max_idle_per_host(0)  // Don't reuse connections
+            .build()
+            .map_err(|e| ConnectorError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+        
+        let response = client
             .get(&url)
             .header("Authorization", format!("Bearer {}", bearer_token))
             .send()
