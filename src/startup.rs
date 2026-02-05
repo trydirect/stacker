@@ -115,7 +115,11 @@ pub async fn run(
                     .service(routes::client::enable_handler)
                     .service(routes::client::disable_handler),
             )
-            .service(web::scope("/test").service(routes::test::deploy::handler))
+            .service(
+                web::scope("/test")
+                    .service(routes::test::deploy::handler)
+                    .service(routes::test::stack_view::test_stack_view)
+            )
             .service(
                 web::scope("/rating")
                     .service(routes::rating::anonymous_get_handler)
