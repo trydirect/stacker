@@ -23,27 +23,44 @@ impl UserServiceClient {
         query: Option<&str>,
     ) -> Result<Vec<Application>, ConnectorError> {
         let url = format!("{}/stack_view", self.base_url);
+        
+        tracing::info!("Fetching stack_view from {}", url);
+        let start = std::time::Instant::now();
+        
         let response = self
             .http_client
             .get(&url)
             .header("Authorization", format!("Bearer {}", bearer_token))
             .send()
             .await
-            .map_err(ConnectorError::from)?;
+            .map_err(|e| {
+                tracing::error!("Failed to send request to stack_view: {:?}", e);
+                ConnectorError::from(e)
+            })?;
 
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
+        let status = response.status();
+        tracing::info!("stack_view responded with status {} in {:?}", status, start.elapsed());
+
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(ConnectorError::HttpError(format!(
                 "User Service error ({}): {}",
-                status, body
+                status.as_u16(), body
             )));
         }
 
+        tracing::info!("Reading stack_view JSON body...");
+        let json_start = std::time::Instant::now();
+        
         let wrapper: StackViewResponse = response
             .json()
             .await
-            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("Failed to parse stack_view JSON after {:?}: {:?}", json_start.elapsed(), e);
+                ConnectorError::InvalidResponse(e.to_string())
+            })?;
+
+        tracing::info!("Parsed stack_view with {} items in {:?}", wrapper._items.len(), json_start.elapsed());
 
         let mut apps: Vec<Application> = wrapper
             ._items
