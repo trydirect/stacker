@@ -26,6 +26,7 @@ impl UserServiceClient {
         let http_client = reqwest::Client::builder()
             .timeout(timeout)
             .http1_only()  // Force HTTP/1.1 since uwsgi might not handle HTTP/2 well
+            .pool_max_idle_per_host(0)  // Disable connection pooling to prevent stale connections
             .build()
             .expect("Failed to create HTTP client");
 
