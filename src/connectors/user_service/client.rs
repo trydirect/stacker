@@ -25,6 +25,7 @@ impl UserServiceClient {
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
         let http_client = reqwest::Client::builder()
             .timeout(timeout)
+            .http1_only()  // Force HTTP/1.1 since uwsgi might not handle HTTP/2 well
             .build()
             .expect("Failed to create HTTP client");
 
