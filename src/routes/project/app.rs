@@ -15,7 +15,7 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{self, Project};
-use crate::services::{AppConfig, ProjectAppService, VaultService};
+use crate::services::{ProjectAppService};
 use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,19 +28,13 @@ async fn hydrate_apps_with_metadata(
     pool: &PgPool,
     project: &Project,
     apps: Vec<models::ProjectApp>,
-) -> Result<Vec<HydratedProjectApp>, JsonResponse<()>> {
+) -> Result<Vec<HydratedProjectApp>, actix_web::Error> {
     let mut hydrated = Vec::with_capacity(apps.len());
     for app in apps {
-        hydrated.push(
-            hydrate_project_app(pool, project, app)
-                .await
-                .map_err(|e| JsonResponse::internal_server_error(e))?,
-        );
+        hydrated.push(hydrate_project_app(pool, project, app).await?);
     }
     Ok(hydrated)
 }
-use sqlx::PgPool;
-use std::sync::Arc;
 
 /// Response for app configuration
 #[derive(Debug, Serialize)]

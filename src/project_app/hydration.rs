@@ -1,8 +1,7 @@
-use serde_json::Value;
-
 pub use hydrate::{hydrate_project_app, hydrate_single_app, HydratedProjectApp};
 
 mod hydrate {
+    use actix_web::Error;
     use serde_json::{json, Value};
     use sqlx::PgPool;
 
@@ -97,7 +96,7 @@ mod hydrate {
         pool: &PgPool,
         project: &Project,
         app: ProjectApp,
-    ) -> Result<HydratedProjectApp, JsonResponse<()>> {
+    ) -> Result<HydratedProjectApp, Error> {
         hydrate_single_app(pool, project, app).await
     }
 
@@ -105,7 +104,7 @@ mod hydrate {
         pool: &PgPool,
         project: &Project,
         app: ProjectApp,
-    ) -> Result<HydratedProjectApp, JsonResponse<()>> {
+    ) -> Result<HydratedProjectApp, Error> {
         let mut hydrated = HydratedProjectApp::from_project_app(app.clone());
         let mut compose_config: Option<AppConfig> = None;
         let mut env_config: Option<AppConfig> = None;
@@ -153,9 +152,8 @@ mod hydrate {
                         env_config = Some(config);
                     }
 
-                    if let Some(config_bundle) =
-                        fetch_optional_config(&vault, &hash, &format!("{}_configs", app.code))
-                            .await?
+                    if let Some(config_bundle) = fetch_optional_config(&vault, &hash, &format!("{}_configs", app.code))
+                        .await?
                     {
                         hydrated.config_files = parse_config_bundle(&config_bundle.content);
                     }
@@ -217,11 +215,11 @@ mod hydrate {
         vault: &VaultService,
         deployment_hash: &str,
         config_key: &str,
-    ) -> Result<Option<AppConfig>, JsonResponse<()>> {
+    ) -> Result<Option<AppConfig>, Error> {
         match vault.fetch_app_config(deployment_hash, config_key).await {
             Ok(config) => Ok(Some(config)),
             Err(VaultError::NotFound(_)) => Ok(None),
-            Err(error) => Err(JsonResponse::internal_server_error(error)),
+            Err(error) => Err(JsonResponse::internal_server_error(error.to_string())),
         }
     }
 
