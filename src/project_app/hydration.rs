@@ -101,7 +101,7 @@ mod hydrate {
     }
 
     pub async fn hydrate_single_app(
-        pool: &PgPool,
+        _pool: &PgPool,
         project: &Project,
         app: ProjectApp,
     ) -> Result<HydratedProjectApp, Error> {

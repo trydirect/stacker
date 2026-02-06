@@ -156,5 +156,9 @@ pub(crate) fn application_from_stack_view(item: StackViewItem) -> Application {
         category,
         docker_image,
         default_port,
+        role: None,
+        default_env: None,
+        default_ports: None,
+        default_config_files: None,
     }
 }

@@ -523,7 +523,7 @@ pub async fn admin_decide(
     decision: &str,
     review_reason: Option<&str>,
 ) -> Result<bool, String> {
-    let query_span = tracing::info_span!("marketplace_admin_decide", template_id = %template_id, decision = %decision);
+    let _query_span = tracing::info_span!("marketplace_admin_decide", template_id = %template_id, decision = %decision);
 
     let valid = ["approved", "rejected", "needs_changes"];
     if !valid.contains(&decision) {

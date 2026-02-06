@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 use super::{CategoryInfo, UserServiceConnector};
-use crate::connectors::ConnectorError;
 
 /// Sync categories from User Service to local database
 ///

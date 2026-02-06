@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use tracing::Instrument;
 
-use crate::connectors::{ConnectorError, UserServiceConnector};
+use crate::connectors::UserServiceConnector;
 use crate::models;
 
 /// Custom error types for deployment validation

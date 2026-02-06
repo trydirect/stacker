@@ -25,8 +25,6 @@ impl UserServiceClient {
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
         let http_client = reqwest::Client::builder()
             .timeout(timeout)
-            .http1_only() // Force HTTP/1.1 since uwsgi might not handle HTTP/2 well
-            .pool_max_idle_per_host(0) // Disable connection pooling to prevent stale connections
             .build()
             .expect("Failed to create HTTP client");
 
@@ -414,28 +412,14 @@ impl UserServiceConnector for UserServiceClient {
             template_id = stack_template_id
         );
 
-        // Build "where" filter as JSON and let reqwest handle URL encoding
-        #[derive(Serialize)]
-        struct WhereFilter<'a> {
-            external_id: i32,
-            product_type: &'a str,
-        }
+        // Query /api/1.0/products?external_id={template_id}&product_type=template
+        let url = format!(
+            "{}/api/1.0/products?where={{\"external_id\":{},\"product_type\":\"template\"}}",
+            self.base_url, stack_template_id
+        );
 
-        let where_filter = WhereFilter {
-            external_id: stack_template_id,
-            product_type: "template",
-        };
+        let mut req = self.http_client.get(&url);
 
-        let where_json = serde_json::to_string(&where_filter).map_err(|e| {
-            ConnectorError::HttpError(format!(
-                "Failed to serialize where filter for template product: {}",
-                e
-            ))
-        })?;
-
-        let url = format!("{}/api/1.0/products", self.base_url);
-
-        let mut req = self.http_client.get(&url).query(&[("where", &where_json)]);
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }

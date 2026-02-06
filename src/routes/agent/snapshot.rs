@@ -1,7 +1,7 @@
 use crate::db;
 use crate::forms::status_panel::HealthCommandReport;
 use crate::helpers::{AgentPgPool, JsonResponse};
-use crate::models::{self, Command, ProjectApp};
+use crate::models::{Command, ProjectApp};
 use actix_web::{get, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 

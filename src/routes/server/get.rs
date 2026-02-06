@@ -54,7 +54,7 @@ pub async fn list_by_project(
     let project_id = path.0;
 
     // Verify user owns the project
-    let project = db::project::fetch(pg_pool.get_ref(), project_id)
+    let _project = db::project::fetch(pg_pool.get_ref(), project_id)
         .await
         .map_err(|_err| JsonResponse::<models::Server>::build().internal_server_error(""))
         .and_then(|p| match p {

@@ -1,5 +1,5 @@
 use crate::configuration::Settings;
-use crate::db::{self, project};
+use crate::db;
 use crate::forms::status_panel;
 use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;

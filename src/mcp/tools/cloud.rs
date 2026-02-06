@@ -108,7 +108,7 @@ impl ToolHandler for DeleteCloudTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let cloud = db::cloud::fetch(&context.pg_pool, args.id)
+        let _cloud = db::cloud::fetch(&context.pg_pool, args.id)
             .await
             .map_err(|e| format!("Cloud error: {}", e))?
             .ok_or_else(|| "Cloud not found".to_string())?;

@@ -28,6 +28,16 @@ pub struct GenerateKeyResponse {
     pub message: String,
 }
 
+/// Response for SSH key generation (with optional private key if Vault fails)
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GenerateKeyResponseWithPrivate {
+    pub public_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    pub fingerprint: Option<String>,
+    pub message: String,
+}
+
 /// Helper to verify server ownership
 async fn verify_server_ownership(
     pg_pool: &PgPool,
@@ -85,34 +95,33 @@ pub async fn generate_key(
             .internal_server_error("Failed to generate SSH key")
     })?;
 
-    // Store in Vault
-    let vault_path = vault_client
+    // Try to store in Vault, but don't fail if it doesn't work
+    let vault_result = vault_client
         .get_ref()
         .store_ssh_key(&user.id, server_id, &public_key, &private_key)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to store SSH key in Vault: {}", e);
-            let _ = futures::executor::block_on(db::server::update_ssh_key_status(
-                pg_pool.get_ref(),
-                server_id,
-                None,
-                "failed",
-            ));
-            JsonResponse::<GenerateKeyResponse>::build()
-                .internal_server_error("Failed to store SSH key")
-        })?;
+        .await;
+
+    let (vault_path, status, message, include_private_key) = match vault_result {
+        Ok(path) => {
+            tracing::info!("SSH key stored in Vault successfully");
+            (Some(path), "active", "SSH key generated and stored in Vault successfully. Copy the public key to your server's authorized_keys.".to_string(), false)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to store SSH key in Vault (continuing without Vault): {}", e);
+            (None, "active", format!("SSH key generated successfully, but could not be stored in Vault ({}). Please save the private key shown below - it will not be shown again!", e), true)
+        }
+    };
 
     // Update server with vault path and active status
-    db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, Some(vault_path), "active")
+    db::server::update_ssh_key_status(pg_pool.get_ref(), server_id, vault_path, status)
         .await
         .map_err(|e| JsonResponse::<GenerateKeyResponse>::build().internal_server_error(&e))?;
 
-    let response = GenerateKeyResponse {
-        public_key,
+    let response = GenerateKeyResponseWithPrivate {
+        public_key: public_key.clone(),
+        private_key: if include_private_key { Some(private_key) } else { None },
         fingerprint: None, // TODO: Calculate fingerprint
-        message:
-            "SSH key generated successfully. Copy the public key to your server's authorized_keys."
-                .to_string(),
+        message,
     };
 
     Ok(JsonResponse::build()

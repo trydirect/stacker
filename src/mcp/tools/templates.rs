@@ -117,7 +117,7 @@ pub struct ListTemplatesTool;
 
 #[async_trait]
 impl ToolHandler for ListTemplatesTool {
-    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolContent, String> {
         #[derive(Deserialize)]
         struct Args {
             #[serde(default)]

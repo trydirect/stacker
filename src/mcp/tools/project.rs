@@ -290,38 +290,32 @@ impl ToolHandler for CreateProjectAppTool {
         let mut resolved_image = params.image.unwrap_or_default().trim().to_string();
         let mut resolved_name = params.name.clone();
         let mut resolved_ports = params.ports.clone();
+        let mut resolved_env = params.env.clone();
+        let mut resolved_config_files = params.config_files.clone();
 
-        if resolved_image.is_empty() || resolved_name.is_none() || resolved_ports.is_none() {
+        // Use enriched catalog endpoint for correct Docker image + default configs
+        if resolved_image.is_empty()
+            || resolved_name.is_none()
+            || resolved_ports.is_none()
+            || resolved_env.is_none()
+        {
             let client = UserServiceClient::new_public(&context.settings.user_service_url);
             let token = context.user.access_token.as_deref().unwrap_or("");
-            let apps = client
-                .search_applications(token, Some(code))
-                .await
-                .map_err(|e| format!("Failed to search applications: {}", e))?;
 
-            let code_lower = code.to_lowercase();
-            let matched = apps
-                .iter()
-                .find(|app| {
-                    app.code
-                        .as_deref()
-                        .map(|c| c.to_lowercase() == code_lower)
-                        .unwrap_or(false)
-                })
-                .or_else(|| {
-                    apps.iter().find(|app| {
-                        app.name
-                            .as_deref()
-                            .map(|n| n.to_lowercase() == code_lower)
-                            .unwrap_or(false)
-                    })
-                })
-                .or_else(|| apps.first());
+            // Try catalog endpoint first (has correct Docker image + default env/config)
+            // Gracefully handle total failure — proceed with defaults if User Service is unreachable
+            let catalog_app = match client.fetch_app_catalog(token, code).await {
+                Ok(app) => app,
+                Err(e) => {
+                    tracing::warn!("Could not fetch app catalog for code={}: {}, proceeding with defaults", code, e);
+                    None
+                }
+            };
 
-            if let Some(app) = matched {
+            if let Some(app) = catalog_app {
                 if resolved_image.is_empty() {
-                    if let Some(image) = app.docker_image.clone() {
-                        resolved_image = image;
+                    if let Some(image) = app.docker_image.as_ref().filter(|s| !s.is_empty()) {
+                        resolved_image = image.clone();
                     }
                 }
 
@@ -332,9 +326,66 @@ impl ToolHandler for CreateProjectAppTool {
                 }
 
                 if resolved_ports.is_none() {
-                    if let Some(port) = app.default_port {
-                        if port > 0 {
-                            resolved_ports = Some(json!([format!("{0}:{0}", port)]));
+                    // Prefer default_ports (structured) from catalog
+                    if let Some(ports) = &app.default_ports {
+                        if let Some(arr) = ports.as_array() {
+                            if !arr.is_empty() {
+                                let port_strings: Vec<serde_json::Value> = arr
+                                    .iter()
+                                    .filter_map(|p| {
+                                        let port = p
+                                            .get("port")
+                                            .and_then(|v| v.as_i64())
+                                            .or_else(|| p.as_i64());
+                                        port.map(|p| {
+                                            serde_json::Value::String(format!("{0}:{0}", p))
+                                        })
+                                    })
+                                    .collect();
+                                if !port_strings.is_empty() {
+                                    resolved_ports = Some(json!(port_strings));
+                                }
+                            }
+                        }
+                    }
+                    // Fallback to default_port scalar
+                    if resolved_ports.is_none() {
+                        if let Some(port) = app.default_port {
+                            if port > 0 {
+                                resolved_ports = Some(json!([format!("{0}:{0}", port)]));
+                            }
+                        }
+                    }
+                }
+
+                // Populate default environment from catalog if not provided by user
+                if resolved_env.is_none() {
+                    if let Some(env_obj) = &app.default_env {
+                        if let Some(obj) = env_obj.as_object() {
+                            if !obj.is_empty() {
+                                // Convert { "KEY": "value" } to [{ "name": "KEY", "value": "value" }]
+                                let env_arr: Vec<serde_json::Value> = obj
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        json!({
+                                            "name": k,
+                                            "value": v.as_str().unwrap_or("")
+                                        })
+                                    })
+                                    .collect();
+                                resolved_env = Some(json!(env_arr));
+                            }
+                        }
+                    }
+                }
+
+                // Populate default config_files from catalog if not provided
+                if resolved_config_files.is_none() {
+                    if let Some(cf) = &app.default_config_files {
+                        if let Some(arr) = cf.as_array() {
+                            if !arr.is_empty() {
+                                resolved_config_files = Some(cf.clone());
+                            }
                         }
                     }
                 }
@@ -350,7 +401,7 @@ impl ToolHandler for CreateProjectAppTool {
         app.code = code.to_string();
         app.name = resolved_name.unwrap_or_else(|| code.to_string());
         app.image = resolved_image;
-        app.environment = params.env.clone();
+        app.environment = resolved_env;
         app.ports = resolved_ports;
         app.volumes = params.volumes.clone();
         app.domain = params.domain.clone();
@@ -366,7 +417,7 @@ impl ToolHandler for CreateProjectAppTool {
         app.enabled = params.enabled.or(Some(true));
         app.deploy_order = params.deploy_order;
 
-        if let Some(config_files) = params.config_files.clone() {
+        if let Some(config_files) = resolved_config_files {
             let mut labels = app.labels.clone().unwrap_or(json!({}));
             if let Some(obj) = labels.as_object_mut() {
                 obj.insert("config_files".to_string(), config_files);
@@ -670,7 +721,7 @@ impl ToolHandler for GetDeploymentResourcesTool {
                 .map_err(|e| format!("Failed to lookup deployment: {}", e))?
                 .ok_or_else(|| "Deployment not found".to_string())?;
             deployment.project_id
-        } else if let Some(deployment_id) = params.deployment_id {
+        } else if let Some(_deployment_id) = params.deployment_id {
             // Legacy: try to find project by deployment ID
             // This would need a User Service lookup - for now return error
             return Err("Please provide deployment_hash or project_id".to_string());

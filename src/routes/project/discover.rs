@@ -8,7 +8,7 @@ use crate::helpers::JsonResponse;
 use crate::models::{self, ProjectApp};
 use actix_web::{get, post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 
