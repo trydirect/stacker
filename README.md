@@ -9,8 +9,6 @@ Stacker - is an application that helps users to create custom IT solutions based
 source apps and user's custom applications docker containers. Users can build their own project of applications, and 
 deploy the final result to their favorite clouds using TryDirect API. See [CHANGELOG.md](CHANGELOG.md) for the latest platform updates.
 
-## Startup Banner
-When you start the Stacker server, you'll see a welcome banner displaying version and configuration info:
 
 ```
  ██████ ████████ █████   ██████ ██   ██ ███████ ██████  
@@ -20,10 +18,10 @@ When you start the Stacker server, you'll see a welcome banner displaying versio
 ██████     ██    ██   ██  █████ ██   ██ ███████ ██   ██ 
 
 ╭────────────────────────────────────────────────────────╮
-│  Stacker                                          │
-│  Version: 0.2.1t                                      │
-│  Build: 0.2.0                                 │
-│  Edition: 2021                                       │
+│  Stacker                                               │
+│  Version: 0.2.2                                        │
+│  Build: 0.2.2                                          │
+│  Edition: 2021                                         │
 ╰────────────────────────────────────────────────────────╯
 
 📋 Configuration Loaded
@@ -31,12 +29,6 @@ When you start the Stacker server, you'll see a welcome banner displaying versio
   📦 Ready to accept connections
 ```
 
-This banner provides quick visibility into:
-- **Version**: Current Stacker version
-- **Build**: Build version information
-- **Edition**: Rust edition used
-- **Server Address**: Where the API server is listening
-- **Status**: Server readiness
 
 ## Core Purpose
 - Allows users to build projects using both open source and custom Docker containers

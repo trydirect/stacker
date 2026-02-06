@@ -163,6 +163,66 @@ pub async fn report_handler(
             // Remove from queue if still there (shouldn't be, but cleanup)
             let _ = db::command::remove_from_queue(agent_pool.as_ref(), &payload.command_id).await;
 
+            // Cleanup project_app record when remove_app command completes successfully
+            if command.r#type == "remove_app" && status == models::CommandStatus::Completed {
+                if let Some(ref params) = command.parameters {
+                    if let Some(app_code) = params.get("app_code").and_then(|v| v.as_str()) {
+                        match db::deployment::fetch_by_deployment_hash(
+                            agent_pool.as_ref(),
+                            &payload.deployment_hash,
+                        )
+                        .await
+                        {
+                            Ok(Some(deployment)) => {
+                                match db::project_app::delete_by_project_and_code(
+                                    agent_pool.as_ref(),
+                                    deployment.project_id,
+                                    app_code,
+                                )
+                                .await
+                                {
+                                    Ok(true) => {
+                                        tracing::info!(
+                                            deployment_hash = %payload.deployment_hash,
+                                            app_code = %app_code,
+                                            "Deleted project_app record after successful remove_app"
+                                        );
+                                    }
+                                    Ok(false) => {
+                                        tracing::debug!(
+                                            deployment_hash = %payload.deployment_hash,
+                                            app_code = %app_code,
+                                            "No project_app record found to delete (may have been removed already)"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            deployment_hash = %payload.deployment_hash,
+                                            app_code = %app_code,
+                                            error = %e,
+                                            "Failed to delete project_app record after remove_app"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    deployment_hash = %payload.deployment_hash,
+                                    "Deployment not found; cannot clean up project_app"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    deployment_hash = %payload.deployment_hash,
+                                    error = %e,
+                                    "Failed to fetch deployment for project_app cleanup"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // Log audit event
             let audit_log = models::AuditLog::new(
                 Some(agent.id),
