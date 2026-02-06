@@ -37,8 +37,23 @@ impl HealthChecker {
         let user_service_check = timeout(CHECK_TIMEOUT, self.check_user_service());
         let install_service_check = timeout(CHECK_TIMEOUT, self.check_install_service());
 
-        let (db_result, mq_result, hub_result, redis_result, vault_result, user_result, install_result) =
-            tokio::join!(db_check, mq_check, hub_check, redis_check, vault_check, user_service_check, install_service_check);
+        let (
+            db_result,
+            mq_result,
+            hub_result,
+            redis_result,
+            vault_result,
+            user_result,
+            install_result,
+        ) = tokio::join!(
+            db_check,
+            mq_check,
+            hub_check,
+            redis_check,
+            vault_check,
+            user_service_check,
+            install_service_check
+        );
 
         let db_health =
             db_result.unwrap_or_else(|_| ComponentHealth::unhealthy("Timeout".to_string()));
@@ -379,8 +394,14 @@ impl HealthChecker {
                             }
 
                             let mut details = HashMap::new();
-                            details.insert("url".to_string(), serde_json::Value::String(user_service_url.clone()));
-                            details.insert("response_time_ms".to_string(), serde_json::Value::from(elapsed));
+                            details.insert(
+                                "url".to_string(),
+                                serde_json::Value::String(user_service_url.clone()),
+                            );
+                            details.insert(
+                                "response_time_ms".to_string(),
+                                serde_json::Value::from(elapsed),
+                            );
 
                             health.with_details(details)
                         }
@@ -430,8 +451,14 @@ impl HealthChecker {
                             }
 
                             let mut details = HashMap::new();
-                            details.insert("url".to_string(), serde_json::Value::String(install_url.to_string()));
-                            details.insert("response_time_ms".to_string(), serde_json::Value::from(elapsed));
+                            details.insert(
+                                "url".to_string(),
+                                serde_json::Value::String(install_url.to_string()),
+                            );
+                            details.insert(
+                                "response_time_ms".to_string(),
+                                serde_json::Value::from(elapsed),
+                            );
 
                             health.with_details(details)
                         }

@@ -14,14 +14,33 @@
 
 use crate::db;
 use crate::helpers::JsonResponse;
-use crate::models;
+use crate::models::{self, Project};
+use crate::services::{AppConfig, ProjectAppService, VaultService};
 use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::services::ProjectAppService;
+use crate::project_app::hydration::{hydrate_project_app, hydrate_single_app, HydratedProjectApp};
+
+async fn hydrate_apps_with_metadata(
+    pool: &PgPool,
+    project: &Project,
+    apps: Vec<models::ProjectApp>,
+) -> Result<Vec<HydratedProjectApp>, JsonResponse<()>> {
+    let mut hydrated = Vec::with_capacity(apps.len());
+    for app in apps {
+        hydrated.push(
+            hydrate_project_app(pool, project, app)
+                .await
+                .map_err(|e| JsonResponse::internal_server_error(e))?,
+        );
+    }
+    Ok(hydrated)
+}
+use sqlx::PgPool;
+use std::sync::Arc;
 
 /// Response for app configuration
 #[derive(Debug, Serialize)]
@@ -145,7 +164,10 @@ pub async fn list_apps(
         .await
         .map_err(|e| JsonResponse::internal_server_error(e))?;
 
-    Ok(JsonResponse::build().set_list(apps).ok("OK"))
+    // Hydrate additional config metadata via helper
+    let hydrated = hydrate_apps_with_metadata(pg_pool.get_ref(), &project, apps).await?;
+
+    Ok(JsonResponse::build().set_list(hydrated).ok("OK"))
 }
 
 /// Create or update an app in a project
@@ -256,7 +278,9 @@ pub async fn get_app(
         .map_err(|e| JsonResponse::internal_server_error(e))?
         .ok_or_else(|| JsonResponse::not_found("App not found"))?;
 
-    Ok(JsonResponse::build().set_item(Some(app)).ok("OK"))
+    let hydrated = hydrate_single_app(pg_pool.get_ref(), &project, app).await?;
+
+    Ok(JsonResponse::build().set_item(Some(hydrated)).ok("OK"))
 }
 
 /// Get app configuration (env vars, ports, domain, etc.)

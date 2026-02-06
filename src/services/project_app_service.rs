@@ -4,6 +4,7 @@
 //! syncs configuration changes to Vault for the Status Panel to consume.
 
 use crate::db;
+use crate::forms::project::Payload;
 use crate::models::{Project, ProjectApp};
 use crate::services::config_renderer::ConfigRenderer;
 use crate::services::vault_service::{VaultError, VaultService};
@@ -61,6 +62,22 @@ impl ProjectAppService {
             pool,
             config_renderer: Arc::new(RwLock::new(config_renderer)),
             vault_sync_enabled: true,
+        })
+    }
+
+    pub fn default_network_from_project(project: &Project) -> Option<String> {
+        Payload::try_from(project).ok().and_then(|payload| {
+            payload
+                .custom
+                .networks
+                .networks
+                .as_ref()
+                .and_then(|networks| {
+                    networks
+                        .iter()
+                        .find(|network| network.name == "default_network")
+                        .map(|network| network.name.clone())
+                })
         })
     }
 

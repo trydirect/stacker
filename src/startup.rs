@@ -118,7 +118,7 @@ pub async fn run(
             .service(
                 web::scope("/test")
                     .service(routes::test::deploy::handler)
-                    .service(routes::test::stack_view::test_stack_view)
+                    .service(routes::test::stack_view::test_stack_view),
             )
             .service(
                 web::scope("/rating")
