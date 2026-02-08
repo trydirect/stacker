@@ -39,6 +39,9 @@ pub struct HealthCommandRequest {
     /// App code to check health for. Use "all" or omit to get all containers.
     #[serde(default = "default_health_app_code")]
     pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
     #[serde(default = "default_include_metrics")]
     pub include_metrics: bool,
     /// When true and app_code is "system" or empty, return system containers (status_panel, compose-agent)
@@ -53,6 +56,9 @@ fn default_health_app_code() -> String {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LogsCommandRequest {
     pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
     #[serde(default)]
     pub cursor: Option<String>,
     #[serde(default = "default_log_limit")]
@@ -66,6 +72,9 @@ pub struct LogsCommandRequest {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RestartCommandRequest {
     pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
     #[serde(default = "default_restart_force")]
     pub force: bool,
 }
