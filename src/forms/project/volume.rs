@@ -10,13 +10,16 @@ pub struct Volume {
 
 impl Volume {
     pub fn is_named_docker_volume(&self) -> bool {
-        // Docker named volumes typically don't contain special characters or slashes
-        // They are alphanumeric and may include underscores or hyphens
-        self.host_path
-            .as_ref()
-            .unwrap()
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        // Named volumes have no path separators and don't start with . or ~
+        // Bind mounts contain '/' or start with './' or '~'
+        match self.host_path.as_deref() {
+            Some(p) if !p.is_empty() => {
+                let result = !p.contains('/') && !p.starts_with('.') && !p.starts_with('~');
+                tracing::debug!("is_named_docker_volume: '{}' => {}", p, result);
+                result
+            }
+            _ => false,
+        }
     }
 }
 
@@ -63,6 +66,7 @@ impl Volume {
         let host_path = self.host_path.clone().unwrap_or_else(String::default);
 
         if self.is_named_docker_volume() {
+            tracing::debug!("Named volume '{}' — skipping driver_opts", host_path);
             return dctypes::ComposeVolume {
                 driver: None,
                 driver_opts: Default::default(),
@@ -71,6 +75,8 @@ impl Volume {
                 name: Some(host_path),
             };
         }
+
+        tracing::debug!("Bind mount volume '{}' — adding driver_opts with base dir", host_path);
 
         let default_base =
             std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
@@ -193,5 +199,35 @@ mod tests {
 
         assert!(named.is_named_docker_volume());
         assert!(!bind.is_named_docker_volume());
+    }
+
+    #[test]
+    fn test_named_volume_with_dots() {
+        // Docker allows dots in named volumes (e.g., "flowise.data")
+        let vol = Volume {
+            host_path: Some("flowise.data".to_string()),
+            container_path: Some("/data".to_string()),
+        };
+        assert!(vol.is_named_docker_volume());
+
+        let compose = vol.to_compose_volume(Some("/srv/trydirect"));
+        assert!(compose.driver.is_none());
+        assert!(compose.driver_opts.is_empty());
+        assert_eq!(compose.name.as_deref(), Some("flowise.data"));
+    }
+
+    #[test]
+    fn test_empty_host_path_is_not_named() {
+        let vol = Volume {
+            host_path: Some("".to_string()),
+            container_path: Some("/data".to_string()),
+        };
+        assert!(!vol.is_named_docker_volume());
+
+        let vol_none = Volume {
+            host_path: None,
+            container_path: Some("/data".to_string()),
+        };
+        assert!(!vol_none.is_named_docker_volume());
     }
 }
