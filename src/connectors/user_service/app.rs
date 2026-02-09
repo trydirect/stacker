@@ -29,12 +29,6 @@ pub struct Application {
     pub default_config_files: Option<serde_json::Value>,
 }
 
-// Wrapper types for Eve-style responses
-#[derive(Debug, Deserialize)]
-struct ApplicationsResponse {
-    _items: Vec<Application>,
-}
-
 impl UserServiceClient {
     /// Search available applications/stacks
     pub async fn search_applications(
@@ -42,7 +36,11 @@ impl UserServiceClient {
         bearer_token: &str,
         query: Option<&str>,
     ) -> Result<Vec<Application>, ConnectorError> {
-        let url = format!("{}/applications", self.base_url);
+        let mut url = format!("{}/catalog?kind=app", self.base_url);
+        if let Some(q) = query {
+            url.push_str("&q=");
+            url.push_str(&urlencoding::encode(q));
+        }
 
         let response = self
             .http_client
@@ -65,12 +63,21 @@ impl UserServiceClient {
             )));
         }
 
-        // User Service returns { "_items": [...], "_meta": {...} }
-        let wrapper: ApplicationsResponse = response
+        let wrapper: serde_json::Value = response
             .json()
             .await
             .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))?;
-        let mut apps = wrapper._items;
+
+        let items = wrapper
+            .get("_items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut apps: Vec<Application> = items
+            .into_iter()
+            .filter_map(application_from_catalog)
+            .collect();
 
         if let Some(q) = query {
             let q = q.to_lowercase();
@@ -162,4 +169,50 @@ impl UserServiceClient {
                 .unwrap_or(false)
         }))
     }
+}
+
+fn application_from_catalog(item: serde_json::Value) -> Option<Application> {
+    let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if kind != "app" {
+        return None;
+    }
+
+    let id = item.get("_id").and_then(|v| v.as_i64());
+    let name = item
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let code = item
+        .get("code")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let description = item
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let category = item
+        .get("categories")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            item.get("app_type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
+    Some(Application {
+        id,
+        name,
+        code,
+        description,
+        category,
+        docker_image: None,
+        default_port: None,
+        role: None,
+        default_env: None,
+        default_ports: None,
+        default_config_files: None,
+    })
 }

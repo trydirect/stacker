@@ -14,6 +14,7 @@ use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::json;
 use std::collections::HashMap;
 use tera::{Context as TeraContext, Tera};
 

@@ -1,7 +1,6 @@
 // use std::fs;
 // use std::collections::HashMap;
-use docker_compose_types::{ComposeVolume, SingleValue};
-use std::env;
+use docker_compose_types::ComposeVolume;
 
 mod common;
 use stacker::forms::project::DockerImage;
@@ -134,7 +133,6 @@ async fn test_docker_non_existent_repo_empty_namespace() {
 
 #[tokio::test]
 async fn test_docker_named_volume() {
-    let base_dir = env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
     let volume = Volume {
         host_path: Some("flask-data".to_owned()),
         container_path: Some("/var/www/flaskdata".to_owned()),
@@ -144,15 +142,6 @@ async fn test_docker_named_volume() {
     println!("ComposeVolume: {:?}", cv);
     println!("{:?}", cv.driver_opts);
     assert_eq!(Some("flask-data".to_string()), cv.name);
-    assert_eq!(
-        &Some(SingleValue::String(format!(
-            "{}/flask-data",
-            base_dir.trim_end_matches('/')
-        ))),
-        cv.driver_opts.get("device").unwrap()
-    );
-    assert_eq!(
-        &Some(SingleValue::String("none".to_string())),
-        cv.driver_opts.get("type").unwrap()
-    );
+    assert!(cv.driver.is_none());
+    assert!(cv.driver_opts.is_empty());
 }
