@@ -1,4 +1,4 @@
-use crate::models::{StackCategory, StackTemplate, StackTemplateVersion};
+use crate::models::{StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion};
 use sqlx::PgPool;
 use tracing::Instrument;
 
@@ -683,6 +683,58 @@ pub async fn get_categories(pool: &PgPool) -> Result<Vec<StackCategory>, String>
     .await
     .map_err(|e| {
         tracing::error!("Failed to fetch categories: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// List all versions for a template, ordered by creation date descending
+pub async fn list_versions_by_template(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Vec<StackTemplateVersion>, String> {
+    let query_span = tracing::info_span!("list_versions_by_template", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateVersion>(
+        r#"
+        SELECT id, template_id, version, stack_definition, definition_format,
+               changelog, is_latest, created_at
+        FROM stack_template_version
+        WHERE template_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(template_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("list_versions_by_template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// List all reviews for a template, ordered by submission date descending
+pub async fn list_reviews_by_template(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Vec<StackTemplateReview>, String> {
+    let query_span = tracing::info_span!("list_reviews_by_template", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateReview>(
+        r#"
+        SELECT id, template_id, reviewer_user_id, decision, review_reason,
+               security_checklist, submitted_at, reviewed_at
+        FROM stack_template_review
+        WHERE template_id = $1
+        ORDER BY submitted_at DESC
+        "#,
+    )
+    .bind(template_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("list_reviews_by_template error: {:?}", e);
         "Internal Server Error".to_string()
     })
 }

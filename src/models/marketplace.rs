@@ -44,3 +44,15 @@ pub struct StackTemplateVersion {
     pub is_latest: Option<bool>,
     pub created_at: Option<DateTime<Utc>>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct StackTemplateReview {
+    pub id: Uuid,
+    pub template_id: Uuid,
+    pub reviewer_user_id: Option<String>,
+    pub decision: String,
+    pub review_reason: Option<String>,
+    pub security_checklist: Option<serde_json::Value>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+}

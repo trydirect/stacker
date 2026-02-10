@@ -23,6 +23,42 @@ pub async fn list_submitted_handler(
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }
 
+#[tracing::instrument(name = "Get template detail (admin)")]
+#[get("/{id}")]
+pub async fn detail_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    let versions = db::marketplace::list_versions_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let reviews = db::marketplace::list_reviews_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let detail = serde_json::json!({
+        "template": template,
+        "versions": versions,
+        "reviews": reviews,
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(detail)
+        .ok("OK"))
+}
+
 #[derive(serde::Deserialize, Debug)]
 pub struct AdminDecisionRequest {
     pub decision: String, // approved|rejected|needs_changes
