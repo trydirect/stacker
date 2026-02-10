@@ -203,6 +203,62 @@ pub async fn submit_handler(
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ResubmitRequest {
+    pub version: String,
+    pub stack_definition: serde_json::Value,
+    pub definition_format: Option<String>,
+    pub changelog: Option<String>,
+}
+
+#[tracing::instrument(name = "Resubmit template with new version")]
+#[post("/{id}/resubmit")]
+pub async fn resubmit_handler(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<ResubmitRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    // Ownership check
+    let owner_id: String = sqlx::query_scalar!(
+        r#"SELECT creator_user_id FROM stack_template WHERE id = $1"#,
+        id
+    )
+    .fetch_one(pg_pool.get_ref())
+    .await
+    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+
+    if owner_id != user.id {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+    }
+
+    let req = body.into_inner();
+
+    let version = db::marketplace::resubmit_with_new_version(
+        pg_pool.get_ref(),
+        &id,
+        &req.version,
+        req.stack_definition,
+        req.definition_format.as_deref(),
+        req.changelog.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
+
+    let result = serde_json::json!({
+        "template_id": id,
+        "version": version,
+        "status": "submitted"
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("Resubmitted for review"))
+}
+
 #[tracing::instrument(name = "List my templates")]
 #[get("/mine")]
 pub async fn mine_handler(

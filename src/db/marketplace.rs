@@ -423,7 +423,7 @@ pub async fn submit_for_review(pool: &PgPool, template_id: &uuid::Uuid) -> Resul
         tracing::info_span!("marketplace_submit_for_review", template_id = %template_id);
 
     let res = sqlx::query!(
-        r#"UPDATE stack_template SET status = 'submitted' WHERE id = $1::uuid AND status IN ('draft','rejected')"#,
+        r#"UPDATE stack_template SET status = 'submitted' WHERE id = $1::uuid AND status IN ('draft','rejected','needs_changes')"#,
         template_id
     )
     .execute(pool)
@@ -435,6 +435,85 @@ pub async fn submit_for_review(pool: &PgPool, template_id: &uuid::Uuid) -> Resul
     })?;
 
     Ok(res.rows_affected() > 0)
+}
+
+/// Resubmit a template for review with a new version.
+/// Allowed from statuses: rejected, needs_changes, approved (for version updates).
+/// Creates a new version, resets status to 'submitted'.
+pub async fn resubmit_with_new_version(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    version: &str,
+    stack_definition: serde_json::Value,
+    definition_format: Option<&str>,
+    changelog: Option<&str>,
+) -> Result<StackTemplateVersion, String> {
+    let query_span =
+        tracing::info_span!("marketplace_resubmit_with_new_version", template_id = %template_id);
+
+    let mut tx = pool.begin().await.map_err(|e| {
+        tracing::error!("tx begin error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Update status to submitted (allowed from rejected, needs_changes, approved)
+    let res = sqlx::query!(
+        r#"UPDATE stack_template SET status = 'submitted', updated_at = now()
+           WHERE id = $1::uuid AND status IN ('rejected', 'needs_changes', 'approved')"#,
+        template_id
+    )
+    .execute(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("resubmit status update error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    if res.rows_affected() == 0 {
+        return Err("Template cannot be resubmitted from its current status".to_string());
+    }
+
+    // Clear previous latest version
+    sqlx::query!(
+        r#"UPDATE stack_template_version SET is_latest = false WHERE template_id = $1 AND is_latest = true"#,
+        template_id
+    )
+    .execute(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("clear latest version error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Insert new version
+    let ver = sqlx::query_as!(
+        StackTemplateVersion,
+        r#"INSERT INTO stack_template_version (
+            template_id, version, stack_definition, definition_format, changelog, is_latest
+        ) VALUES ($1,$2,$3,$4,$5,true)
+        RETURNING id, template_id, version, stack_definition, definition_format, changelog, is_latest, created_at"#,
+        template_id,
+        version,
+        stack_definition,
+        definition_format,
+        changelog
+    )
+    .fetch_one(&mut *tx)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("insert new version error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("tx commit error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(ver)
 }
 
 pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate>, String> {

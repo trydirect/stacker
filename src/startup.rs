@@ -195,6 +195,7 @@ pub async fn run(
                             .service(crate::routes::marketplace::creator::create_handler)
                             .service(crate::routes::marketplace::creator::update_handler)
                             .service(crate::routes::marketplace::creator::submit_handler)
+                            .service(crate::routes::marketplace::creator::resubmit_handler)
                             .service(crate::routes::marketplace::creator::mine_handler),
                     )
                     .service(
