@@ -191,6 +191,63 @@ pub async fn reject_handler(
     Ok(JsonResponse::<serde_json::Value>::build().ok("Rejected"))
 }
 
+#[derive(serde::Deserialize, Debug)]
+pub struct UnapproveRequest {
+    pub reason: Option<String>,
+}
+
+#[tracing::instrument(name = "Unapprove template (admin)")]
+#[post("/{id}/unapprove")]
+pub async fn unapprove_handler(
+    admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<UnapproveRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+    let req = body.into_inner();
+
+    let updated = db::marketplace::admin_unapprove(
+        pg_pool.get_ref(),
+        &id,
+        &admin.id,
+        req.reason.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    if !updated {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("Template is not approved or not found"));
+    }
+
+    // Send webhook to remove from marketplace (same as rejection - deactivates product)
+    let template_id = id.to_string();
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span =
+                    tracing::info_span!("send_unapproval_webhook", template_id = %template_id);
+
+                if let Err(e) = sender
+                    .send_template_rejected(&template_id)
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send template unapproval webhook: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+            }
+        }
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Template unapproved and hidden from marketplace"))
+}
+
 #[tracing::instrument(name = "Security scan template (admin)")]
 #[post("/{id}/security-scan")]
 pub async fn security_scan_handler(

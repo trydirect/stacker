@@ -90,8 +90,9 @@ impl WebhookSenderConfig {
     /// Create from environment variables
     pub fn from_env() -> Result<Self, String> {
         let base_url = std::env::var("URL_SERVER_USER")
+            .or_else(|_| std::env::var("USER_SERVICE_URL"))
             .or_else(|_| std::env::var("USER_SERVICE_BASE_URL"))
-            .map_err(|_| "USER_SERVICE_BASE_URL not configured".to_string())?;
+            .map_err(|_| "USER_SERVICE_URL not configured".to_string())?;
 
         let bearer_token = std::env::var("STACKER_SERVICE_TOKEN")
             .map_err(|_| "STACKER_SERVICE_TOKEN not configured".to_string())?;

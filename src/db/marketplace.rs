@@ -583,8 +583,13 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.approved_at
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        WHERE t.status = 'submitted'
-        ORDER BY t.created_at ASC"#
+        WHERE t.status IN ('submitted', 'approved')
+        ORDER BY 
+            CASE t.status
+                WHEN 'submitted' THEN 0
+                WHEN 'approved' THEN 1
+            END,
+            t.created_at ASC"#
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -656,6 +661,55 @@ pub async fn admin_decide(
     })?;
 
     Ok(true)
+}
+
+/// Unapprove a template: set status back to 'submitted' and clear approved_at.
+/// This hides the template from the marketplace until re-approved.
+pub async fn admin_unapprove(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    reviewer_user_id: &str,
+    reason: Option<&str>,
+) -> Result<bool, String> {
+    let _query_span = tracing::info_span!("marketplace_admin_unapprove", template_id = %template_id);
+
+    let mut tx = pool.begin().await.map_err(|e| {
+        tracing::error!("tx begin error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Insert a review record documenting the unapproval
+    sqlx::query!(
+        r#"INSERT INTO stack_template_review (template_id, reviewer_user_id, decision, review_reason, reviewed_at) VALUES ($1::uuid, $2, 'unapproved', $3, now())"#,
+        template_id,
+        reviewer_user_id,
+        reason
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!("insert unapproval review error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Set status back to 'submitted' and clear approved_at
+    let result = sqlx::query!(
+        r#"UPDATE stack_template SET status = 'submitted', approved_at = NULL WHERE id = $1::uuid AND status = 'approved'"#,
+        template_id,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!("unapprove template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("tx commit error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 /// Sync categories from User Service to local mirror
