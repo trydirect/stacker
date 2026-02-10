@@ -51,17 +51,17 @@ const SECRET_PATTERNS: &[(&str, &str)] = &[
 
 /// Patterns for hardcoded credentials (passwords, default creds)
 const CRED_PATTERNS: &[(&str, &str)] = &[
-    (r"(?i)(password|passwd|pwd)\s*[:=]\s*['\"]?(?!(\$\{|\$\(|changeme|CHANGE_ME|your_password|example))[A-Za-z0-9!@#$%^&*]{6,}['\"]?", "Hardcoded password"),
-    (r"(?i)(mysql_root_password|postgres_password|mongo_initdb_root_password)\s*[:=]\s*['\"]?(?!(\$\{|\$\())[^\s'\"$]{4,}", "Hardcoded database password"),
+    (r#"(?i)(password|passwd|pwd)\s*[:=]\s*['"]?(?!(\$\{|\$\(|changeme|CHANGE_ME|your_password|example))[A-Za-z0-9!@#$%^&*]{6,}['"]?"#, "Hardcoded password"),
+    (r#"(?i)(mysql_root_password|postgres_password|mongo_initdb_root_password)\s*[:=]\s*['"]?(?!(\$\{|\$\())[^\s'"$]{4,}"#, "Hardcoded database password"),
     (r"(?i)root:(?!(\$\{|\$\())[^\s:$]{4,}", "Root password in plain text"),
 ];
 
 /// Patterns indicating potentially malicious or dangerous configurations
 const MALICIOUS_PATTERNS: &[(&str, &str, &str)] = &[
     (r"(?i)privileged\s*:\s*true", "critical", "Container running in privileged mode"),
-    (r"(?i)network_mode\s*:\s*['\"]?host", "warning", "Container using host network"),
-    (r"(?i)pid\s*:\s*['\"]?host", "critical", "Container sharing host PID namespace"),
-    (r"(?i)ipc\s*:\s*['\"]?host", "critical", "Container sharing host IPC namespace"),
+    (r#"(?i)network_mode\s*:\s*['"]?host"#, "warning", "Container using host network"),
+    (r#"(?i)pid\s*:\s*['"]?host"#, "critical", "Container sharing host PID namespace"),
+    (r#"(?i)ipc\s*:\s*['"]?host"#, "critical", "Container sharing host IPC namespace"),
     (r"(?i)cap_add\s*:.*SYS_ADMIN", "critical", "Container with SYS_ADMIN capability"),
     (r"(?i)cap_add\s*:.*SYS_PTRACE", "warning", "Container with SYS_PTRACE capability"),
     (r"(?i)cap_add\s*:.*ALL", "critical", "Container with ALL capabilities"),
