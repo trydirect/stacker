@@ -15,6 +15,7 @@ use crate::mcp::tools::{
     AdminListSubmittedTemplatesTool,
     AdminListTemplateReviewsTool,
     AdminListTemplateVersionsTool,
+    AdminValidateTemplateSecurityTool,
     ApplyVaultConfigTool,
     CancelDeploymentTool,
     CloneProjectTool,
@@ -220,6 +221,10 @@ impl ToolRegistry {
         registry.register(
             "admin_list_template_reviews",
             Box::new(AdminListTemplateReviewsTool),
+        );
+        registry.register(
+            "admin_validate_template_security",
+            Box::new(AdminValidateTemplateSecurityTool),
         );
 
         registry

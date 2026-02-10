@@ -225,7 +225,8 @@ pub async fn run(
                                     )
                                     .service(crate::routes::marketplace::admin::detail_handler)
                                     .service(crate::routes::marketplace::admin::approve_handler)
-                                    .service(crate::routes::marketplace::admin::reject_handler),
+                                    .service(crate::routes::marketplace::admin::reject_handler)
+                                    .service(crate::routes::marketplace::admin::security_scan_handler),
                             )
                             .service(
                                 web::scope("/marketplace")

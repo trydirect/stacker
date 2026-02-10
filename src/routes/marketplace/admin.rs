@@ -1,6 +1,7 @@
 use crate::connectors::user_service::UserServiceConnector;
 use crate::connectors::{MarketplaceWebhookSender, WebhookSenderConfig};
 use crate::db;
+use crate::helpers::security_validator;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, web, Responder, Result};
@@ -189,6 +190,71 @@ pub async fn reject_handler(
 
     Ok(JsonResponse::<serde_json::Value>::build().ok("Rejected"))
 }
+
+#[tracing::instrument(name = "Security scan template (admin)")]
+#[post("/{id}/security-scan")]
+pub async fn security_scan_handler(
+    admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    // Fetch template
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    // Fetch versions to get latest stack_definition
+    let versions = db::marketplace::list_versions_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let latest = versions
+        .iter()
+        .find(|v| v.is_latest == Some(true))
+        .or_else(|| versions.first())
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .bad_request("No versions found for this template")
+        })?;
+
+    // Run automated security validation
+    let report = security_validator::validate_stack_security(&latest.stack_definition);
+
+    // Save scan result as a review record
+    let review = db::marketplace::save_security_scan(
+        pg_pool.get_ref(),
+        &id,
+        &admin.id,
+        report.to_checklist_json(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let result = serde_json::json!({
+        "template_id": template.id,
+        "template_name": template.name,
+        "version": latest.version,
+        "review_id": review.id,
+        "overall_passed": report.overall_passed,
+        "risk_score": report.risk_score,
+        "no_secrets": report.no_secrets,
+        "no_hardcoded_creds": report.no_hardcoded_creds,
+        "valid_docker_syntax": report.valid_docker_syntax,
+        "no_malicious_code": report.no_malicious_code,
+        "recommendations": report.recommendations,
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("Security scan completed"))
+}
+
 #[tracing::instrument(name = "List available plans from User Service", skip(user_service))]
 #[get("/plans")]
 pub async fn list_plans_handler(

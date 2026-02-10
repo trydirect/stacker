@@ -4,6 +4,7 @@ pub mod db_pools;
 pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;
+pub mod security_validator;
 pub mod vault;
 
 pub use agent_client::*;

@@ -738,3 +738,32 @@ pub async fn list_reviews_by_template(
         "Internal Server Error".to_string()
     })
 }
+
+/// Save a security scan result as a review record with security_checklist populated
+pub async fn save_security_scan(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    reviewer_user_id: &str,
+    security_checklist: serde_json::Value,
+) -> Result<StackTemplateReview, String> {
+    let query_span = tracing::info_span!("save_security_scan", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateReview>(
+        r#"
+        INSERT INTO stack_template_review
+            (template_id, reviewer_user_id, decision, review_reason, security_checklist, submitted_at, reviewed_at)
+        VALUES ($1, $2, 'pending', 'Automated security scan', $3, now(), now())
+        RETURNING id, template_id, reviewer_user_id, decision, review_reason, security_checklist, submitted_at, reviewed_at
+        "#,
+    )
+    .bind(template_id)
+    .bind(reviewer_user_id)
+    .bind(&security_checklist)
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("save_security_scan error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
