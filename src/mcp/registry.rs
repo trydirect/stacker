@@ -26,6 +26,8 @@ use crate::mcp::tools::{
     DeleteCloudTool,
     DeleteProjectTool,
     DeleteProxyTool,
+    // Ansible Roles tools
+    DeployRoleTool,
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
@@ -43,11 +45,14 @@ use crate::mcp::tools::{
     GetInstallationDetailsTool,
     GetLiveChatInfoTool,
     GetProjectTool,
+    GetRoleDetailsTool,
+    GetRoleRequirementsTool,
     GetServerResourcesTool,
     GetSubscriptionPlanTool,
     GetUserProfileTool,
     // Phase 5: Vault Configuration tools
     GetVaultConfigTool,
+    ListAvailableRolesTool,
     ListCloudsTool,
     ListContainersTool,
     ListInstallationsTool,
@@ -69,6 +74,7 @@ use crate::mcp::tools::{
     UpdateAppDomainTool,
     UpdateAppPortsTool,
     ValidateDomainTool,
+    ValidateRoleVarsTool,
     // Phase 5: Stack Validation tool
     ValidateStackConfigTool,
 };
@@ -226,6 +232,16 @@ impl ToolRegistry {
             "admin_validate_template_security",
             Box::new(AdminValidateTemplateSecurityTool),
         );
+
+        // Ansible Roles tools (SSH deployment method)
+        registry.register("list_available_roles", Box::new(ListAvailableRolesTool));
+        registry.register("get_role_details", Box::new(GetRoleDetailsTool));
+        registry.register(
+            "get_role_requirements",
+            Box::new(GetRoleRequirementsTool),
+        );
+        registry.register("validate_role_vars", Box::new(ValidateRoleVarsTool));
+        registry.register("deploy_role", Box::new(DeployRoleTool));
 
         registry
     }
