@@ -10,6 +10,11 @@ use std::sync::Arc;
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
     AddCloudTool,
+    AdminApproveTemplateTool,
+    AdminGetTemplateDetailTool,
+    AdminListSubmittedTemplatesTool,
+    AdminListTemplateReviewsTool,
+    AdminListTemplateVersionsTool,
     ApplyVaultConfigTool,
     CancelDeploymentTool,
     CloneProjectTool,
@@ -58,6 +63,7 @@ use crate::mcp::tools::{
     StartDeploymentTool,
     // Phase 5: Container Operations tools
     StopContainerTool,
+    AdminRejectTemplateTool,
     SuggestResourcesTool,
     UpdateAppDomainTool,
     UpdateAppPortsTool,
@@ -189,6 +195,32 @@ impl ToolRegistry {
         );
         registry.register("get_server_resources", Box::new(GetServerResourcesTool));
         registry.register("get_container_exec", Box::new(GetContainerExecTool));
+
+        // Marketplace Admin tools (admin role required)
+        registry.register(
+            "admin_list_submitted_templates",
+            Box::new(AdminListSubmittedTemplatesTool),
+        );
+        registry.register(
+            "admin_get_template_detail",
+            Box::new(AdminGetTemplateDetailTool),
+        );
+        registry.register(
+            "admin_approve_template",
+            Box::new(AdminApproveTemplateTool),
+        );
+        registry.register(
+            "admin_reject_template",
+            Box::new(AdminRejectTemplateTool),
+        );
+        registry.register(
+            "admin_list_template_versions",
+            Box::new(AdminListTemplateVersionsTool),
+        );
+        registry.register(
+            "admin_list_template_reviews",
+            Box::new(AdminListTemplateReviewsTool),
+        );
 
         registry
     }
