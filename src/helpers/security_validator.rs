@@ -85,12 +85,33 @@ const KNOWN_CRYPTO_MINER_PATTERNS: &[&str] = &[
     "monero", "coinhive", "coin-hive",
 ];
 
+/// Normalize a JSON-pretty-printed string into a YAML-like format so that
+/// regex patterns designed for docker-compose YAML also match JSON input.
+///
+/// Transforms lines like:
+///   `"AWS_SECRET_ACCESS_KEY": "wJalrXU..."` → `AWS_SECRET_ACCESS_KEY: wJalrXU...`
+///   `"privileged": true`                    → `privileged: true`
+fn normalize_json_for_matching(json: &str) -> String {
+    // Match JSON key-value pairs:  "key": "value"  or  "key": non-string
+    let re = Regex::new(r#""([^"]+)"\s*:\s*"([^"]*)""#).unwrap();
+    let pass1 = re.replace_all(json, "$1: $2");
+    // Handle "key": true / false / number (non-string values)
+    let re2 = Regex::new(r#""([^"]+)"\s*:\s*([^",\}\]]+)"#).unwrap();
+    re2.replace_all(&pass1, "$1: $2").to_string()
+}
+
 /// Run all security checks on a stack definition
 pub fn validate_stack_security(stack_definition: &Value) -> SecurityReport {
-    // Convert the stack definition to a string for pattern matching
+    // Convert the stack definition to a string for pattern matching.
+    // When the input is a JSON object, serde_json produces `"key": "value"` format
+    // which breaks YAML-oriented regex patterns. We normalize by stripping JSON
+    // key/value quotes so patterns like `key\s*:\s*value` match both formats.
     let definition_str = match stack_definition {
         Value::String(s) => s.clone(),
-        _ => serde_json::to_string_pretty(stack_definition).unwrap_or_default(),
+        _ => {
+            let json = serde_json::to_string_pretty(stack_definition).unwrap_or_default();
+            normalize_json_for_matching(&json)
+        }
     };
 
     let no_secrets = check_no_secrets(&definition_str);
