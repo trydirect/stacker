@@ -154,6 +154,13 @@ fn test_webhook_payload_for_template_approval() {
         vendor_name: Some("John Doe".to_string()),
         category: Some("AI Agents".to_string()),
         tags: Some(serde_json::json!(["ai", "agents", "marketplace"])),
+        long_description: None,
+        tech_stack: None,
+        creator_name: Some("John Doe".to_string()),
+        deploy_count: Some(10),
+        view_count: Some(100),
+        approved_at: Some("2026-02-11T00:00:00Z".to_string()),
+        required_plan_name: None,
     };
 
     // Verify payload has all required fields for approval
@@ -184,6 +191,13 @@ fn test_webhook_payload_for_template_update_price() {
         vendor_name: Some("John Doe".to_string()),
         category: Some("AI Agents".to_string()),
         tags: Some(serde_json::json!(["ai", "agents", "v2"])),
+        long_description: None,
+        tech_stack: None,
+        creator_name: Some("John Doe".to_string()),
+        deploy_count: None,
+        view_count: None,
+        approved_at: None,
+        required_plan_name: None,
     };
 
     assert_eq!(payload.action, "template_updated");
@@ -209,6 +223,13 @@ fn test_webhook_payload_for_template_rejection() {
         vendor_name: None,
         category: None,
         tags: None,
+        long_description: None,
+        tech_stack: None,
+        creator_name: None,
+        deploy_count: None,
+        view_count: None,
+        approved_at: None,
+        required_plan_name: None,
     };
 
     assert_eq!(payload.action, "template_rejected");
@@ -377,6 +398,9 @@ async fn test_multiple_deployments_mixed_templates() {
         long_description: None,
         category_code: Some("test".to_string()),
         product_id: None,
+        price: None,
+        billing_cycle: None,
+        currency: None,
         tags: serde_json::json!([]),
         tech_stack: serde_json::json!([]),
         status: "approved".to_string(),
