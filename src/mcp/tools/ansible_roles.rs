@@ -134,7 +134,7 @@ fn get_role_details_from_fs(role_name: &str) -> Result<AnsibleRole, String> {
         private_ports: vec![],
         variables: HashMap::new(),
         dependencies: vec![],
-        supported_os: vec!["ubuntu", "debian"].map(|s| s.to_string()).to_vec(), // default
+        supported_os: vec!["ubuntu", "debian"].into_iter().map(|s| s.to_string()).collect(), // default
     };
 
     // Parse README.md for description
@@ -245,18 +245,18 @@ impl ToolHandler for ListAvailableRolesTool {
             })).collect::<Vec<_>>(),
         });
 
-        Ok(ToolContent::from(vec![result]))
+        Ok(ToolContent::Text {
+            text: serde_json::to_string(&result).unwrap(),
+        })
     }
 
     fn schema(&self) -> Tool {
         Tool {
             name: "list_available_roles".to_string(),
-            description: Some(
-                "Get a catalog of all available Ansible roles for SSH-based deployments. \
+            description: "Get a catalog of all available Ansible roles for SSH-based deployments. \
                 Returns role names, descriptions, and port configurations. \
                 Uses database as primary source with filesystem fallback."
-                    .to_string(),
-            ),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -296,18 +296,18 @@ impl ToolHandler for GetRoleDetailsTool {
             }
         });
 
-        Ok(ToolContent::from(vec![result]))
+        Ok(ToolContent::Text {
+            text: serde_json::to_string(&result).unwrap(),
+        })
     }
 
     fn schema(&self) -> Tool {
         Tool {
             name: "get_role_details".to_string(),
-            description: Some(
-                "Get detailed information about a specific Ansible role. \
+            description: "Get detailed information about a specific Ansible role. \
                 Returns description, variables, dependencies, supported OS, and ports. \
                 Parses role's README.md and defaults/main.yml for metadata."
-                    .to_string(),
-            ),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -357,18 +357,18 @@ impl ToolHandler for GetRoleRequirementsTool {
             }
         });
 
-        Ok(ToolContent::from(vec![result]))
+        Ok(ToolContent::Text {
+            text: serde_json::to_string(&result).unwrap(),
+        })
     }
 
     fn schema(&self) -> Tool {
         Tool {
             name: "get_role_requirements".to_string(),
-            description: Some(
-                "Get requirements and dependencies for a specific Ansible role. \
+            description: "Get requirements and dependencies for a specific Ansible role. \
                 Returns OS requirements, dependent roles, required/optional variables, \
                 and port configurations needed for deployment."
-                    .to_string(),
-            ),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -431,18 +431,18 @@ impl ToolHandler for ValidateRoleVarsTool {
             "validated_variables": params.variables.keys().collect::<Vec<_>>(),
         });
 
-        Ok(ToolContent::from(vec![result]))
+        Ok(ToolContent::Text {
+            text: serde_json::to_string(&result).unwrap(),
+        })
     }
 
     fn schema(&self) -> Tool {
         Tool {
             name: "validate_role_vars".to_string(),
-            description: Some(
-                "Validate variable configuration for an Ansible role before deployment. \
+            description: "Validate variable configuration for an Ansible role before deployment. \
                 Checks for required variables, type compatibility, and warns about unknown variables. \
                 Returns validation status with specific errors/warnings."
-                    .to_string(),
-            ),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -494,10 +494,13 @@ impl ToolHandler for DeployRoleTool {
         }
 
         if !errors.is_empty() {
-            return Ok(ToolContent::from(vec![json!({
-                "status": "validation_failed",
-                "errors": errors,
-            })]));
+            return Ok(ToolContent::Text {
+                text: serde_json::to_string(&json!({
+                    "status": "validation_failed",
+                    "errors": errors,
+                }))
+                .unwrap(),
+            });
         }
 
         // TODO: Implement actual Ansible playbook execution
@@ -520,19 +523,19 @@ impl ToolHandler for DeployRoleTool {
             "note": "This tool currently queues the deployment. Integration with Install Service pending."
         });
 
-        Ok(ToolContent::from(vec![result]))
+        Ok(ToolContent::Text {
+            text: serde_json::to_string(&result).unwrap(),
+        })
     }
 
     fn schema(&self) -> Tool {
         Tool {
             name: "deploy_role".to_string(),
-            description: Some(
-                "Deploy an Ansible role to a remote server via SSH. \
+            description: "Deploy an Ansible role to a remote server via SSH. \
                 Validates configuration, generates playbook, and executes on target. \
                 Requires SSH access credentials (key-based authentication). \
                 Used for SSH deployment method in Stack Builder."
-                    .to_string(),
-            ),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
