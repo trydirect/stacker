@@ -415,6 +415,13 @@ mod tests {
             vendor_name: Some("alice@example.com".to_string()),
             category: Some("AI Agents".to_string()),
             tags: Some(serde_json::json!(["ai", "agents"])),
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
@@ -443,6 +450,13 @@ mod tests {
             vendor_name: None,
             category: None,
             tags: None,
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
@@ -467,6 +481,13 @@ mod tests {
             vendor_name: Some("vendor@example.com".to_string()),
             category: Some("CMS".to_string()),
             tags: Some(serde_json::json!(["cms", "wordpress"])),
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         assert_eq!(payload.action, "template_approved");
@@ -491,6 +512,13 @@ mod tests {
             vendor_name: Some("vendor@example.com".to_string()),
             category: Some("CMS".to_string()),
             tags: Some(serde_json::json!(["cms", "wordpress", "v2"])),
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         assert_eq!(payload.action, "template_updated");
@@ -515,6 +543,13 @@ mod tests {
             vendor_name: None,
             category: Some("CMS".to_string()),
             tags: Some(serde_json::json!(["blog", "free"])),
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         assert_eq!(payload.action, "template_approved");
@@ -603,6 +638,13 @@ mod tests {
             vendor_name: Some("John Doe".to_string()),
             category: Some("Enterprise".to_string()),
             tags: Some(serde_json::json!(["enterprise", "complex", "saas"])),
+            long_description: Some("Full enterprise description".to_string()),
+            tech_stack: Some(serde_json::json!({"nginx": "1.25", "postgres": "16"})),
+            creator_name: Some("John Doe".to_string()),
+            deploy_count: Some(42),
+            view_count: Some(1337),
+            approved_at: Some("2026-02-11T10:00:00Z".to_string()),
+            required_plan_name: Some("starter".to_string()),
         };
 
         // Verify all fields are accessible
@@ -629,6 +671,13 @@ mod tests {
             vendor_name: None,
             category: None,
             tags: None,
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         // Should serialize without errors even with all optional fields as None
