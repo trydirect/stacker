@@ -18,6 +18,12 @@ pub struct CreateTemplateRequest {
     pub version: Option<String>,
     pub stack_definition: Option<serde_json::Value>,
     pub definition_format: Option<String>,
+    /// Pricing: "free", "one_time", or "subscription"
+    pub plan_type: Option<String>,
+    /// Price amount (e.g. 9.99). Ignored when plan_type is "free"
+    pub price: Option<f64>,
+    /// ISO 4217 currency code, default "USD"
+    pub currency: Option<String>,
 }
 
 #[tracing::instrument(name = "Create draft template")]
@@ -33,6 +39,11 @@ pub async fn create_handler(
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
+
+    // Normalize pricing: plan_type "free" forces price to 0
+    let billing_cycle = req.plan_type.unwrap_or_else(|| "free".to_string());
+    let price = if billing_cycle == "free" { 0.0 } else { req.price.unwrap_or(0.0) };
+    let currency = req.currency.unwrap_or_else(|| "USD".to_string());
 
     // Check if template with this slug already exists for this user
     let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
@@ -51,6 +62,9 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             Some(tags.clone()),
             Some(tech_stack.clone()),
+            Some(price),
+            Some(billing_cycle.as_str()),
+            Some(currency.as_str()),
         )
         .await
         .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
@@ -83,6 +97,9 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             tags,
             tech_stack,
+            price,
+            &billing_cycle,
+            &currency,
         )
         .await
         .map_err(|err| {
@@ -121,6 +138,9 @@ pub struct UpdateTemplateRequest {
     pub category_code: Option<String>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
+    pub plan_type: Option<String>,
+    pub price: Option<f64>,
+    pub currency: Option<String>,
 }
 
 #[tracing::instrument(name = "Update template metadata")]
@@ -158,6 +178,9 @@ pub async fn update_handler(
         req.category_code.as_deref(),
         req.tags,
         req.tech_stack,
+        req.price,
+        req.plan_type.as_deref(),
+        req.currency.as_deref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;

@@ -36,10 +36,10 @@ pub struct MarketplaceWebhookPayload {
     /// Template description
     pub description: Option<String>,
 
-    /// Price in specified currency (if not free)
+    /// Price in specified currency (set by creator during submission)
     pub price: Option<f64>,
 
-    /// Billing cycle: "one_time" or "monthly"/"yearly"
+    /// Billing cycle: "free", "one_time", or "subscription"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billing_cycle: Option<String>,
 
@@ -50,7 +50,7 @@ pub struct MarketplaceWebhookPayload {
     /// Creator/vendor user ID from Stacker
     pub vendor_user_id: Option<String>,
 
-    /// Vendor name or email
+    /// Vendor display name (creator_name from template)
     pub vendor_name: Option<String>,
 
     /// Category of template
@@ -60,6 +60,34 @@ pub struct MarketplaceWebhookPayload {
     /// Tags/keywords
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<serde_json::Value>,
+
+    /// Full description (long_description from template)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long_description: Option<String>,
+
+    /// Tech stack metadata (JSON object of services/apps)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tech_stack: Option<serde_json::Value>,
+
+    /// Creator display name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator_name: Option<String>,
+
+    /// Total deployments count
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deploy_count: Option<i32>,
+
+    /// Total views count
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view_count: Option<i32>,
+
+    /// When the template was approved
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved_at: Option<String>,
+
+    /// Minimum plan required to deploy
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_plan_name: Option<String>,
 }
 
 /// Response from User Service webhook endpoint
@@ -160,17 +188,28 @@ impl MarketplaceWebhookSender {
                 .short_description
                 .clone()
                 .or_else(|| template.long_description.clone()),
-            price: None, // Pricing not stored in Stacker (User Service responsibility)
-            billing_cycle: None,
-            currency: None,
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
-            vendor_name: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
             category: category_code,
             tags: if let serde_json::Value::Array(_) = template.tags {
                 Some(template.tags.clone())
             } else {
                 None
             },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -199,17 +238,28 @@ impl MarketplaceWebhookSender {
                 .short_description
                 .clone()
                 .or_else(|| template.long_description.clone()),
-            price: None,
-            billing_cycle: None,
-            currency: None,
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
             vendor_user_id: Some(vendor_id.to_string()),
-            vendor_name: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
             category: category_code,
             tags: if let serde_json::Value::Array(_) = template.tags {
                 Some(template.tags.clone())
             } else {
                 None
             },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
         };
 
         self.send_webhook(&payload).instrument(span).await
@@ -240,6 +290,13 @@ impl MarketplaceWebhookSender {
             vendor_name: None,
             category: None,
             tags: None,
+            long_description: None,
+            tech_stack: None,
+            creator_name: None,
+            deploy_count: None,
+            view_count: None,
+            approved_at: None,
+            required_plan_name: None,
         };
 
         self.send_webhook(&payload).instrument(span).await
