@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE project_app SET\n            code = $2,\n            name = $3,\n            image = $4,\n            environment = $5,\n            ports = $6,\n            volumes = $7,\n            domain = $8,\n            ssl_enabled = $9,\n            resources = $10,\n            restart_policy = $11,\n            command = $12,\n            entrypoint = $13,\n            networks = $14,\n            depends_on = $15,\n            healthcheck = $16,\n            labels = $17,\n            config_files = $18,\n            template_source = $19,\n            enabled = $20,\n            deploy_order = $21,\n            parent_app_code = $22,\n            config_version = COALESCE(config_version, 0) + 1,\n            updated_at = NOW()\n        WHERE id = $1\n        RETURNING *\n        ",
+  "query": "\n        SELECT * FROM project_app \n        WHERE project_id = $1 AND deployment_id = $2\n        ORDER BY deploy_order ASC NULLS LAST, id ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -147,32 +147,17 @@
         "ordinal": 28,
         "name": "parent_app_code",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 29,
+        "name": "deployment_id",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
       "Left": [
         "Int4",
-        "Varchar",
-        "Varchar",
-        "Varchar",
-        "Jsonb",
-        "Jsonb",
-        "Jsonb",
-        "Varchar",
-        "Bool",
-        "Jsonb",
-        "Varchar",
-        "Text",
-        "Text",
-        "Jsonb",
-        "Jsonb",
-        "Jsonb",
-        "Jsonb",
-        "Jsonb",
-        "Varchar",
-        "Bool",
-        "Int4",
-        "Varchar"
+        "Int4"
       ]
     },
     "nullable": [
@@ -204,8 +189,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "1fc71c48b12866a80749de677b0c3b478efa6ee82397af82d21bc88110bf8ad1"
+  "hash": "1ee7eb9b87cfcc6ba3d2bbc6351277ac4a7f94d9f0f448b5549e30fc6cc66e19"
 }

@@ -84,9 +84,9 @@ pub async fn snapshot_handler(
             .flatten();
 
     tracing::debug!("[SNAPSHOT HANDLER] Deployment : {:?}", deployment);
-    // Fetch apps for the project
+    // Fetch apps scoped to this specific deployment (falls back to project-level if no deployment-scoped apps)
     let apps = if let Some(deployment) = &deployment {
-        db::project_app::fetch_by_project(agent_pool.get_ref(), deployment.project_id)
+        db::project_app::fetch_by_deployment(agent_pool.get_ref(), deployment.project_id, deployment.id)
             .await
             .unwrap_or_default()
     } else {

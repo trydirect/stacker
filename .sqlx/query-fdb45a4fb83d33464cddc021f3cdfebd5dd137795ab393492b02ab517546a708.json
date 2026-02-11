@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT * FROM project_app \n        WHERE project_id = $1 AND code = $2 \n        LIMIT 1\n        ",
+  "query": "\n        UPDATE project_app SET\n            code = $2,\n            name = $3,\n            image = $4,\n            environment = $5,\n            ports = $6,\n            volumes = $7,\n            domain = $8,\n            ssl_enabled = $9,\n            resources = $10,\n            restart_policy = $11,\n            command = $12,\n            entrypoint = $13,\n            networks = $14,\n            depends_on = $15,\n            healthcheck = $16,\n            labels = $17,\n            config_files = $18,\n            template_source = $19,\n            enabled = $20,\n            deploy_order = $21,\n            parent_app_code = $22,\n            deployment_id = $23,\n            config_version = COALESCE(config_version, 0) + 1,\n            updated_at = NOW()\n        WHERE id = $1\n        RETURNING *\n        ",
   "describe": {
     "columns": [
       {
@@ -157,7 +157,28 @@
     "parameters": {
       "Left": [
         "Int4",
-        "Text"
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "Varchar",
+        "Bool",
+        "Jsonb",
+        "Varchar",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "Varchar",
+        "Bool",
+        "Int4",
+        "Varchar",
+        "Int4"
       ]
     },
     "nullable": [
@@ -193,5 +214,5 @@
       true
     ]
   },
-  "hash": "5d36c126c67a5b70ac168bc46fcff3ee63ae5548ce78f244099f9d61ca694312"
+  "hash": "fdb45a4fb83d33464cddc021f3cdfebd5dd137795ab393492b02ab517546a708"
 }
