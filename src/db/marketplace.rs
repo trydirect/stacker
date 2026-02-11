@@ -26,6 +26,9 @@ pub async fn list_approved(
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -107,6 +110,9 @@ pub async fn get_by_slug_and_user(
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -150,6 +156,9 @@ pub async fn get_by_slug_with_latest(
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -218,7 +227,10 @@ pub async fn get_by_id(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.required_plan_name
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.id = $1"#,
@@ -246,16 +258,21 @@ pub async fn create_draft(
     category_code: Option<&str>,
     tags: serde_json::Value,
     tech_stack: serde_json::Value,
+    price: f64,
+    billing_cycle: &str,
+    currency: &str,
 ) -> Result<StackTemplate, String> {
     let query_span = tracing::info_span!("marketplace_create_draft", slug = %slug);
+
+    let price_f64 = price;
 
     let rec = sqlx::query_as!(
         StackTemplate,
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
-            tags, tech_stack, status
-        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft')
+            tags, tech_stack, status, price, billing_cycle, currency
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft',$10,$11,$12)
         RETURNING 
             id,
             creator_user_id,
@@ -273,6 +290,9 @@ pub async fn create_draft(
             view_count,
             deploy_count,
             required_plan_name,
+            price,
+            billing_cycle,
+            currency,
             created_at,
             updated_at,
             approved_at
@@ -285,7 +305,10 @@ pub async fn create_draft(
         long_description,
         category_code,
         tags,
-        tech_stack
+        tech_stack,
+        price_f64,
+        billing_cycle,
+        currency
     )
     .fetch_one(pool)
     .instrument(query_span)
@@ -370,6 +393,9 @@ pub async fn update_metadata(
     category_code: Option<&str>,
     tags: Option<serde_json::Value>,
     tech_stack: Option<serde_json::Value>,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    currency: Option<&str>,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_update_metadata", template_id = %template_id);
 
@@ -397,7 +423,10 @@ pub async fn update_metadata(
             long_description = COALESCE($4, long_description),
             category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
             tags = COALESCE($6, tags),
-            tech_stack = COALESCE($7, tech_stack)
+            tech_stack = COALESCE($7, tech_stack),
+            price = COALESCE($8, price),
+            billing_cycle = COALESCE($9, billing_cycle),
+            currency = COALESCE($10, currency)
         WHERE id = $1::uuid"#,
         template_id,
         name,
@@ -405,7 +434,10 @@ pub async fn update_metadata(
         long_description,
         category_code,
         tags,
-        tech_stack
+        tech_stack,
+        price,
+        billing_cycle,
+        currency
     )
     .execute(pool)
     .instrument(query_span)
@@ -538,6 +570,9 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -578,6 +613,9 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
