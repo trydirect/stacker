@@ -229,6 +229,81 @@ pub async fn get_public_key(
     Ok(JsonResponse::build().set_item(Some(response)).ok("OK"))
 }
 
+/// Response for SSH validation
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ValidateResponse {
+    pub valid: bool,
+    pub server_id: i32,
+    pub srv_ip: Option<String>,
+    pub message: String,
+}
+
+/// Validate SSH connection for a server
+/// POST /server/{id}/ssh-key/validate
+/// 
+/// This endpoint validates that:
+/// 1. The server exists and belongs to the user
+/// 2. The SSH key is active
+/// 3. The key can be retrieved from Vault
+/// 
+/// Note: This does not actually test the SSH connection to the remote server
+/// (that would require an SSH client library). It validates the key is ready for use.
+#[tracing::instrument(name = "Validate SSH key for server.")]
+#[post("/{id}/ssh-key/validate")]
+pub async fn validate_key(
+    path: web::Path<(i32,)>,
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+    vault_client: web::Data<VaultClient>,
+) -> Result<impl Responder> {
+    let server_id = path.0;
+    let server = verify_server_ownership(pg_pool.get_ref(), server_id, &user.id).await?;
+
+    // Check if server has an active key
+    if server.key_status != "active" {
+        let response = ValidateResponse {
+            valid: false,
+            server_id,
+            srv_ip: server.srv_ip.clone(),
+            message: format!("SSH key status is '{}', not active", server.key_status),
+        };
+        return Ok(JsonResponse::build()
+            .set_item(Some(response))
+            .ok("Validation failed"));
+    }
+
+    // Verify we can fetch the key from Vault
+    match vault_client
+        .get_ref()
+        .fetch_ssh_public_key(&user.id, server_id)
+        .await
+    {
+        Ok(_public_key) => {
+            let response = ValidateResponse {
+                valid: true,
+                server_id,
+                srv_ip: server.srv_ip.clone(),
+                message: "SSH key is valid and ready for connection".to_string(),
+            };
+            Ok(JsonResponse::build()
+                .set_item(Some(response))
+                .ok("SSH key validated successfully"))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch SSH key from Vault during validation: {}", e);
+            let response = ValidateResponse {
+                valid: false,
+                server_id,
+                srv_ip: server.srv_ip.clone(),
+                message: "SSH key could not be retrieved from secure storage".to_string(),
+            };
+            Ok(JsonResponse::build()
+                .set_item(Some(response))
+                .ok("Validation failed"))
+        }
+    }
+}
+
 /// Delete SSH key for a server (disconnect)
 /// DELETE /server/{id}/ssh-key
 #[tracing::instrument(name = "Delete SSH key for server.")]

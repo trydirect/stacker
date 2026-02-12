@@ -254,6 +254,7 @@ pub async fn run(
                     .service(crate::routes::server::ssh_key::generate_key)
                     .service(crate::routes::server::ssh_key::upload_key)
                     .service(crate::routes::server::ssh_key::get_public_key)
+                    .service(crate::routes::server::ssh_key::validate_key)
                     .service(crate::routes::server::ssh_key::delete_key),
             )
             .service(
