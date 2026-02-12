@@ -229,25 +229,57 @@ pub async fn get_public_key(
     Ok(JsonResponse::build().set_item(Some(response)).ok("OK"))
 }
 
-/// Response for SSH validation
+/// Response for SSH validation with full system check
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ValidateResponse {
     pub valid: bool,
     pub server_id: i32,
     pub srv_ip: Option<String>,
     pub message: String,
+    /// SSH connection was successful
+    pub connected: bool,
+    /// SSH authentication was successful
+    pub authenticated: bool,
+    /// Username from whoami
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Total disk space in GB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_total_gb: Option<f64>,
+    /// Available disk space in GB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_available_gb: Option<f64>,
+    /// Disk usage percentage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_usage_percent: Option<f64>,
+    /// Docker is installed
+    pub docker_installed: bool,
+    /// Docker version string
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_version: Option<String>,
+    /// OS name (from /etc/os-release)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_name: Option<String>,
+    /// OS version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    /// Total memory in MB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_total_mb: Option<u64>,
+    /// Available memory in MB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_available_mb: Option<u64>,
 }
 
 /// Validate SSH connection for a server
 /// POST /server/{id}/ssh-key/validate
 /// 
-/// This endpoint validates that:
-/// 1. The server exists and belongs to the user
-/// 2. The SSH key is active
-/// 3. The key can be retrieved from Vault
-/// 
-/// Note: This does not actually test the SSH connection to the remote server
-/// (that would require an SSH client library). It validates the key is ready for use.
+/// This endpoint:
+/// 1. Verifies the server exists and belongs to the user
+/// 2. Checks the SSH key is active and retrieves it from Vault
+/// 3. Connects to the server via SSH and authenticates
+/// 4. Runs system diagnostic commands (whoami, df, docker, os-release, free)
+/// 5. Returns comprehensive system information
 #[tracing::instrument(name = "Validate SSH key for server.")]
 #[post("/{id}/ssh-key/validate")]
 pub async fn validate_key(
@@ -256,6 +288,9 @@ pub async fn validate_key(
     pg_pool: web::Data<PgPool>,
     vault_client: web::Data<VaultClient>,
 ) -> Result<impl Responder> {
+    use crate::helpers::ssh_client;
+    use std::time::Duration;
+
     let server_id = path.0;
     let server = verify_server_ownership(pg_pool.get_ref(), server_id, &user.id).await?;
 
@@ -266,29 +301,37 @@ pub async fn validate_key(
             server_id,
             srv_ip: server.srv_ip.clone(),
             message: format!("SSH key status is '{}', not active", server.key_status),
+            ..Default::default()
         };
         return Ok(JsonResponse::build()
             .set_item(Some(response))
             .ok("Validation failed"));
     }
 
-    // Verify we can fetch the key from Vault
-    match vault_client
-        .get_ref()
-        .fetch_ssh_public_key(&user.id, server_id)
-        .await
-    {
-        Ok(_public_key) => {
+    // Verify we have the server IP
+    let srv_ip = match &server.srv_ip {
+        Some(ip) if !ip.is_empty() => ip.clone(),
+        _ => {
             let response = ValidateResponse {
-                valid: true,
+                valid: false,
                 server_id,
                 srv_ip: server.srv_ip.clone(),
-                message: "SSH key is valid and ready for connection".to_string(),
+                message: "Server IP address not configured".to_string(),
+                ..Default::default()
             };
-            Ok(JsonResponse::build()
+            return Ok(JsonResponse::build()
                 .set_item(Some(response))
-                .ok("SSH key validated successfully"))
+                .ok("Validation failed"));
         }
+    };
+
+    // Fetch private key from Vault
+    let private_key = match vault_client
+        .get_ref()
+        .fetch_ssh_key(&user.id, server_id)
+        .await
+    {
+        Ok(key) => key,
         Err(e) => {
             tracing::warn!("Failed to fetch SSH key from Vault during validation: {}", e);
             let response = ValidateResponse {
@@ -296,12 +339,64 @@ pub async fn validate_key(
                 server_id,
                 srv_ip: server.srv_ip.clone(),
                 message: "SSH key could not be retrieved from secure storage".to_string(),
+                ..Default::default()
             };
-            Ok(JsonResponse::build()
+            return Ok(JsonResponse::build()
                 .set_item(Some(response))
-                .ok("Validation failed"))
+                .ok("Validation failed"));
         }
-    }
+    };
+
+    // Get SSH connection parameters
+    let ssh_port = server.ssh_port.unwrap_or(22) as u16;
+    let ssh_user = server.ssh_user.clone().unwrap_or_else(|| "root".to_string());
+
+    // Perform SSH connection and system check
+    let check_result = ssh_client::check_server(
+        &srv_ip,
+        ssh_port,
+        &ssh_user,
+        &private_key,
+        Duration::from_secs(30),
+    )
+    .await;
+
+    // Build response from check result
+    let valid = check_result.connected && check_result.authenticated;
+    let message = if valid {
+        check_result.summary()
+    } else {
+        check_result.error.unwrap_or_else(|| "SSH validation failed".to_string())
+    };
+
+    let response = ValidateResponse {
+        valid,
+        server_id,
+        srv_ip: Some(srv_ip),
+        message,
+        connected: check_result.connected,
+        authenticated: check_result.authenticated,
+        username: check_result.username,
+        disk_total_gb: check_result.disk_total_gb,
+        disk_available_gb: check_result.disk_available_gb,
+        disk_usage_percent: check_result.disk_usage_percent,
+        docker_installed: check_result.docker_installed,
+        docker_version: check_result.docker_version,
+        os_name: check_result.os_name,
+        os_version: check_result.os_version,
+        memory_total_mb: check_result.memory_total_mb,
+        memory_available_mb: check_result.memory_available_mb,
+    };
+
+    let ok_message = if valid {
+        "SSH connection validated successfully"
+    } else {
+        "SSH validation failed"
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(Some(response))
+        .ok(ok_message))
 }
 
 /// Delete SSH key for a server (disconnect)

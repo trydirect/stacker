@@ -5,12 +5,14 @@ pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;
 pub mod security_validator;
+pub mod ssh_client;
 pub mod vault;
 
 pub use agent_client::*;
 pub use db_pools::*;
 pub use json::*;
 pub use mq_manager::*;
+pub use ssh_client::*;
 pub use vault::*;
 pub(crate) mod cloud;
 pub(crate) mod compressor;
