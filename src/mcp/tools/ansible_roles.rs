@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 
-const ROLES_BASE_PATH: &str = "/app/tfa/roles";
+const ROLES_BASE_PATH: &str = "/ansible/roles";
 const POSTGREST_ROLE_ENDPOINT: &str = "/role";
 
 /// Role metadata structure
