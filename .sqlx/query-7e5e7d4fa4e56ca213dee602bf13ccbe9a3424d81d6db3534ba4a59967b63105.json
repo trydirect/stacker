@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE server\n        SET\n            user_id=$2,\n            project_id=$3,\n            region=$4,\n            zone=$5,\n            server=$6,\n            os=$7,\n            disk_type=$8,\n            updated_at=NOW() at time zone 'utc',\n            srv_ip=$9,\n            ssh_user=$10,\n            ssh_port=$11,\n            vault_key_path=$12,\n            connection_mode=$13,\n            key_status=$14,\n            name=$15\n        WHERE id = $1\n        RETURNING *\n        ",
+  "query": "\n        UPDATE server\n        SET\n            user_id=$2,\n            project_id=$3,\n            cloud_id=$4,\n            region=$5,\n            zone=$6,\n            server=$7,\n            os=$8,\n            disk_type=$9,\n            updated_at=NOW() at time zone 'utc',\n            srv_ip=$10,\n            ssh_user=$11,\n            ssh_port=$12,\n            vault_key_path=$13,\n            connection_mode=$14,\n            key_status=$15,\n            name=$16\n        WHERE id = $1\n        RETURNING *\n        ",
   "describe": {
     "columns": [
       {
@@ -87,12 +87,18 @@
         "ordinal": 16,
         "name": "name",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 17,
+        "name": "cloud_id",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
       "Left": [
         "Int4",
         "Varchar",
+        "Int4",
         "Int4",
         "Varchar",
         "Varchar",
@@ -125,8 +131,9 @@
       true,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "83769682ee9bf8c76f1058a71b11d7d009683eef134e7be5b4ac285333822f58"
+  "hash": "7e5e7d4fa4e56ca213dee602bf13ccbe9a3424d81d6db3534ba4a59967b63105"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM server WHERE id=$1 LIMIT 1 ",
+  "query": "\n        SELECT\n            s.id,\n            s.user_id,\n            s.project_id,\n            s.cloud_id,\n            c.provider as cloud,\n            s.region,\n            s.zone,\n            s.server,\n            s.os,\n            s.disk_type,\n            s.created_at,\n            s.updated_at,\n            s.srv_ip,\n            s.ssh_port,\n            s.ssh_user,\n            s.vault_key_path,\n            s.connection_mode,\n            s.key_status,\n            s.name\n        FROM server s\n        LEFT JOIN cloud c ON s.cloud_id = c.id\n        WHERE s.user_id=$1\n        ORDER BY s.created_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -20,83 +20,88 @@
       },
       {
         "ordinal": 3,
-        "name": "region",
-        "type_info": "Varchar"
+        "name": "cloud_id",
+        "type_info": "Int4"
       },
       {
         "ordinal": 4,
-        "name": "zone",
+        "name": "cloud",
         "type_info": "Varchar"
       },
       {
         "ordinal": 5,
-        "name": "server",
+        "name": "region",
         "type_info": "Varchar"
       },
       {
         "ordinal": 6,
-        "name": "os",
+        "name": "zone",
         "type_info": "Varchar"
       },
       {
         "ordinal": 7,
-        "name": "disk_type",
+        "name": "server",
         "type_info": "Varchar"
       },
       {
         "ordinal": 8,
+        "name": "os",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "disk_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "srv_ip",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 11,
-        "name": "ssh_user",
-        "type_info": "Varchar"
-      },
-      {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "ssh_port",
         "type_info": "Int4"
       },
       {
-        "ordinal": 13,
-        "name": "vault_key_path",
-        "type_info": "Varchar"
-      },
-      {
         "ordinal": 14,
-        "name": "connection_mode",
+        "name": "ssh_user",
         "type_info": "Varchar"
       },
       {
         "ordinal": 15,
-        "name": "key_status",
+        "name": "vault_key_path",
         "type_info": "Varchar"
       },
       {
         "ordinal": 16,
-        "name": "name",
+        "name": "connection_mode",
         "type_info": "Varchar"
       },
       {
         "ordinal": 17,
-        "name": "cloud_id",
-        "type_info": "Int4"
+        "name": "key_status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 18,
+        "name": "name",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
       "Left": [
-        "Int4"
+        "Text"
       ]
     },
     "nullable": [
@@ -104,6 +109,8 @@
       false,
       false,
       true,
+      false,
+      true,
       true,
       true,
       true,
@@ -116,9 +123,8 @@
       true,
       false,
       false,
-      true,
       true
     ]
   },
-  "hash": "8cfb2d3a45ff6c5d1d51a98f6a37ba89da5a49c211c8627c314b8a32c92a62e1"
+  "hash": "a6cac393c36ca2ae08d877f5ed2ed699a7a29f68625f6ceab653980e8ff8d2ac"
 }
