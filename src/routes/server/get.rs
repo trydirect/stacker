@@ -38,10 +38,10 @@ pub async fn list(
     user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    db::server::fetch_by_user(pg_pool.get_ref(), user.id.as_ref())
+    db::server::fetch_by_user_with_provider(pg_pool.get_ref(), user.id.as_ref())
         .await
-        .map(|server| JsonResponse::build().set_list(server).ok("OK"))
-        .map_err(|_err| JsonResponse::<models::Server>::build().internal_server_error(""))
+        .map(|servers| JsonResponse::build().set_list(servers).ok("OK"))
+        .map_err(|_err| JsonResponse::<models::ServerWithProvider>::build().internal_server_error(""))
 }
 
 #[tracing::instrument(name = "Get servers by project.")]

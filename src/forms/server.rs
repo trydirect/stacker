@@ -5,6 +5,8 @@ use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct ServerForm {
+    /// Reference to the cloud provider (DO, Hetzner, AWS, etc.)
+    pub cloud_id: Option<i32>,
     pub region: Option<String>,
     pub zone: Option<String>,
     pub server: Option<String>,
@@ -24,6 +26,7 @@ pub struct ServerForm {
 impl From<&ServerForm> for models::Server {
     fn from(val: &ServerForm) -> Self {
         let mut server = models::Server::default();
+        server.cloud_id = val.cloud_id;
         server.disk_type = val.disk_type.clone();
         server.region = val.region.clone();
         server.server = val.server.clone();
@@ -48,6 +51,7 @@ impl From<&ServerForm> for models::Server {
 impl Into<ServerForm> for models::Server {
     fn into(self) -> ServerForm {
         let mut form = ServerForm::default();
+        form.cloud_id = self.cloud_id;
         form.disk_type = self.disk_type;
         form.region = self.region;
         form.server = self.server;
