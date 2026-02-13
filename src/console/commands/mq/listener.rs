@@ -15,13 +15,43 @@ use tokio::time::sleep;
 
 pub struct ListenCommand {}
 
+use serde_json::Value;
+
+fn string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Value = serde::Deserialize::deserialize(deserializer)?;
+    match v {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        _ => Err(serde::de::Error::custom("expected string or number")),
+    }
+}
+
+fn optional_string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<Value> = serde::Deserialize::deserialize(deserializer)?;
+    match v {
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(Value::Null) | None => Ok(None),
+        _ => Err(serde::de::Error::custom("expected string, number, or null")),
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct ProgressMessage {
+    #[serde(deserialize_with = "string_or_number")]
     id: String,
+    #[serde(default, deserialize_with = "optional_string_or_number")]
     deploy_id: Option<String>,
     alert: i32,
     message: String,
     status: String,
+    #[serde(deserialize_with = "string_or_number")]
     progress: String,
 }
 
