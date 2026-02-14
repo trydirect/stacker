@@ -10,6 +10,12 @@ use std::sync::Arc;
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
     AddCloudTool,
+    AdminApproveTemplateTool,
+    AdminGetTemplateDetailTool,
+    AdminListSubmittedTemplatesTool,
+    AdminListTemplateReviewsTool,
+    AdminListTemplateVersionsTool,
+    AdminValidateTemplateSecurityTool,
     ApplyVaultConfigTool,
     CancelDeploymentTool,
     CloneProjectTool,
@@ -20,6 +26,8 @@ use crate::mcp::tools::{
     DeleteCloudTool,
     DeleteProjectTool,
     DeleteProxyTool,
+    // Ansible Roles tools
+    DeployRoleTool,
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
@@ -37,11 +45,14 @@ use crate::mcp::tools::{
     GetInstallationDetailsTool,
     GetLiveChatInfoTool,
     GetProjectTool,
+    GetRoleDetailsTool,
+    GetRoleRequirementsTool,
     GetServerResourcesTool,
     GetSubscriptionPlanTool,
     GetUserProfileTool,
     // Phase 5: Vault Configuration tools
     GetVaultConfigTool,
+    ListAvailableRolesTool,
     ListCloudsTool,
     ListContainersTool,
     ListInstallationsTool,
@@ -58,10 +69,12 @@ use crate::mcp::tools::{
     StartDeploymentTool,
     // Phase 5: Container Operations tools
     StopContainerTool,
+    AdminRejectTemplateTool,
     SuggestResourcesTool,
     UpdateAppDomainTool,
     UpdateAppPortsTool,
     ValidateDomainTool,
+    ValidateRoleVarsTool,
     // Phase 5: Stack Validation tool
     ValidateStackConfigTool,
 };
@@ -189,6 +202,46 @@ impl ToolRegistry {
         );
         registry.register("get_server_resources", Box::new(GetServerResourcesTool));
         registry.register("get_container_exec", Box::new(GetContainerExecTool));
+
+        // Marketplace Admin tools (admin role required)
+        registry.register(
+            "admin_list_submitted_templates",
+            Box::new(AdminListSubmittedTemplatesTool),
+        );
+        registry.register(
+            "admin_get_template_detail",
+            Box::new(AdminGetTemplateDetailTool),
+        );
+        registry.register(
+            "admin_approve_template",
+            Box::new(AdminApproveTemplateTool),
+        );
+        registry.register(
+            "admin_reject_template",
+            Box::new(AdminRejectTemplateTool),
+        );
+        registry.register(
+            "admin_list_template_versions",
+            Box::new(AdminListTemplateVersionsTool),
+        );
+        registry.register(
+            "admin_list_template_reviews",
+            Box::new(AdminListTemplateReviewsTool),
+        );
+        registry.register(
+            "admin_validate_template_security",
+            Box::new(AdminValidateTemplateSecurityTool),
+        );
+
+        // Ansible Roles tools (SSH deployment method)
+        registry.register("list_available_roles", Box::new(ListAvailableRolesTool));
+        registry.register("get_role_details", Box::new(GetRoleDetailsTool));
+        registry.register(
+            "get_role_requirements",
+            Box::new(GetRoleRequirementsTool),
+        );
+        registry.register("validate_role_vars", Box::new(ValidateRoleVarsTool));
+        registry.register("deploy_role", Box::new(DeployRoleTool));
 
         registry
     }

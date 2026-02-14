@@ -1,7 +1,9 @@
+pub mod ansible_roles;
 pub mod cloud;
 pub mod compose;
 pub mod config;
 pub mod deployment;
+pub mod marketplace_admin;
 pub mod monitoring;
 pub mod project;
 pub mod proxy;
@@ -9,10 +11,12 @@ pub mod support;
 pub mod templates;
 pub mod user_service;
 
+pub use ansible_roles::*;
 pub use cloud::*;
 pub use compose::*;
 pub use config::*;
 pub use deployment::*;
+pub use marketplace_admin::*;
 pub use monitoring::*;
 pub use project::*;
 pub use proxy::*;

@@ -118,7 +118,7 @@ pub async fn run(
             .service(
                 web::scope("/test")
                     .service(routes::test::deploy::handler)
-                    .service(routes::test::stack_view::test_stack_view)
+                    .service(routes::test::stack_view::test_stack_view),
             )
             .service(
                 web::scope("/rating")
@@ -195,6 +195,7 @@ pub async fn run(
                             .service(crate::routes::marketplace::creator::create_handler)
                             .service(crate::routes::marketplace::creator::update_handler)
                             .service(crate::routes::marketplace::creator::submit_handler)
+                            .service(crate::routes::marketplace::creator::resubmit_handler)
                             .service(crate::routes::marketplace::creator::mine_handler),
                     )
                     .service(
@@ -223,8 +224,11 @@ pub async fn run(
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,
                                     )
+                                    .service(crate::routes::marketplace::admin::detail_handler)
                                     .service(crate::routes::marketplace::admin::approve_handler)
-                                    .service(crate::routes::marketplace::admin::reject_handler),
+                                    .service(crate::routes::marketplace::admin::reject_handler)
+                                    .service(crate::routes::marketplace::admin::unapprove_handler)
+                                    .service(crate::routes::marketplace::admin::security_scan_handler),
                             )
                             .service(
                                 web::scope("/marketplace")
@@ -250,6 +254,7 @@ pub async fn run(
                     .service(crate::routes::server::ssh_key::generate_key)
                     .service(crate::routes::server::ssh_key::upload_key)
                     .service(crate::routes::server::ssh_key::get_public_key)
+                    .service(crate::routes::server::ssh_key::validate_key)
                     .service(crate::routes::server::ssh_key::delete_key),
             )
             .service(

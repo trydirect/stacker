@@ -23,20 +23,22 @@ impl UserServiceClient {
         query: Option<&str>,
     ) -> Result<Vec<Application>, ConnectorError> {
         let url = format!("{}/stack_view", self.base_url);
-        
+
         tracing::info!("Fetching stack_view from {}", url);
         let start = std::time::Instant::now();
-        
+
         // Create a dedicated client for stack_view with longer timeout (30s for large response)
         // and explicit connection settings to avoid connection reuse issues
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
             .http1_only()
-            .pool_max_idle_per_host(0)  // Don't reuse connections
+            .pool_max_idle_per_host(0) // Don't reuse connections
             .build()
-            .map_err(|e| ConnectorError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-        
+            .map_err(|e| {
+                ConnectorError::Internal(format!("Failed to create HTTP client: {}", e))
+            })?;
+
         let response = client
             .get(&url)
             .header("Authorization", format!("Bearer {}", bearer_token))
@@ -48,28 +50,38 @@ impl UserServiceClient {
             })?;
 
         let status = response.status();
-        tracing::info!("stack_view responded with status {} in {:?}", status, start.elapsed());
+        tracing::info!(
+            "stack_view responded with status {} in {:?}",
+            status,
+            start.elapsed()
+        );
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(ConnectorError::HttpError(format!(
                 "User Service error ({}): {}",
-                status.as_u16(), body
+                status.as_u16(),
+                body
             )));
         }
 
         tracing::info!("Reading stack_view JSON body...");
         let json_start = std::time::Instant::now();
-        
-        let wrapper: StackViewResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to parse stack_view JSON after {:?}: {:?}", json_start.elapsed(), e);
-                ConnectorError::InvalidResponse(e.to_string())
-            })?;
 
-        tracing::info!("Parsed stack_view with {} items in {:?}", wrapper._items.len(), json_start.elapsed());
+        let wrapper: StackViewResponse = response.json().await.map_err(|e| {
+            tracing::error!(
+                "Failed to parse stack_view JSON after {:?}: {:?}",
+                json_start.elapsed(),
+                e
+            );
+            ConnectorError::InvalidResponse(e.to_string())
+        })?;
+
+        tracing::info!(
+            "Parsed stack_view with {} items in {:?}",
+            wrapper._items.len(),
+            json_start.elapsed()
+        );
 
         let mut apps: Vec<Application> = wrapper
             ._items
@@ -144,5 +156,9 @@ pub(crate) fn application_from_stack_view(item: StackViewItem) -> Application {
         category,
         docker_image,
         default_port,
+        role: None,
+        default_env: None,
+        default_ports: None,
+        default_config_files: None,
     }
 }

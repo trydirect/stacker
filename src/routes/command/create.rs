@@ -1,5 +1,5 @@
 use crate::configuration::Settings;
-use crate::db::{self, project};
+use crate::db;
 use crate::forms::status_panel;
 use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
@@ -264,6 +264,7 @@ pub async fn create_handler(
                     project_id,
                     app_code,
                     compose_content,
+                    &req.deployment_hash,
                 )
                 .await;
             }
@@ -556,7 +557,19 @@ pub async fn discover_and_register_child_services(
     project_id: i32,
     parent_app_code: &str,
     compose_content: &str,
+    deployment_hash: &str,
 ) -> usize {
+    // Resolve actual deployment ID from hash for scoping apps per deployment
+    let actual_deployment_id = match crate::db::deployment::fetch_by_deployment_hash(
+        pg_pool,
+        deployment_hash,
+    )
+    .await
+    {
+        Ok(Some(dep)) => Some(dep.id),
+        _ => None,
+    };
+
     // Parse the compose file to extract services
     let services = match parse_compose_services(compose_content) {
         Ok(svcs) => svcs,
@@ -629,6 +642,9 @@ pub async fn discover_and_register_child_services(
 
         // Set parent reference
         new_app.parent_app_code = Some(parent_app_code.to_string());
+
+        // Scope to this specific deployment
+        new_app.deployment_id = actual_deployment_id;
 
         // Convert environment to JSON object
         if !svc.environment.is_empty() {

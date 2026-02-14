@@ -1,4 +1,4 @@
-use crate::models::{StackCategory, StackTemplate, StackTemplateVersion};
+use crate::models::{StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion};
 use sqlx::PgPool;
 use tracing::Instrument;
 
@@ -26,6 +26,9 @@ pub async fn list_approved(
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -107,6 +110,9 @@ pub async fn get_by_slug_and_user(
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -150,6 +156,9 @@ pub async fn get_by_slug_with_latest(
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -218,7 +227,10 @@ pub async fn get_by_id(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.required_plan_name
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.id = $1"#,
@@ -246,16 +258,21 @@ pub async fn create_draft(
     category_code: Option<&str>,
     tags: serde_json::Value,
     tech_stack: serde_json::Value,
+    price: f64,
+    billing_cycle: &str,
+    currency: &str,
 ) -> Result<StackTemplate, String> {
     let query_span = tracing::info_span!("marketplace_create_draft", slug = %slug);
+
+    let price_f64 = price;
 
     let rec = sqlx::query_as!(
         StackTemplate,
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
-            tags, tech_stack, status
-        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft')
+            tags, tech_stack, status, price, billing_cycle, currency
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft',$10,$11,$12)
         RETURNING 
             id,
             creator_user_id,
@@ -273,6 +290,9 @@ pub async fn create_draft(
             view_count,
             deploy_count,
             required_plan_name,
+            price,
+            billing_cycle,
+            currency,
             created_at,
             updated_at,
             approved_at
@@ -285,7 +305,10 @@ pub async fn create_draft(
         long_description,
         category_code,
         tags,
-        tech_stack
+        tech_stack,
+        price_f64,
+        billing_cycle,
+        currency
     )
     .fetch_one(pool)
     .instrument(query_span)
@@ -370,6 +393,9 @@ pub async fn update_metadata(
     category_code: Option<&str>,
     tags: Option<serde_json::Value>,
     tech_stack: Option<serde_json::Value>,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    currency: Option<&str>,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_update_metadata", template_id = %template_id);
 
@@ -397,7 +423,10 @@ pub async fn update_metadata(
             long_description = COALESCE($4, long_description),
             category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
             tags = COALESCE($6, tags),
-            tech_stack = COALESCE($7, tech_stack)
+            tech_stack = COALESCE($7, tech_stack),
+            price = COALESCE($8, price),
+            billing_cycle = COALESCE($9, billing_cycle),
+            currency = COALESCE($10, currency)
         WHERE id = $1::uuid"#,
         template_id,
         name,
@@ -405,7 +434,10 @@ pub async fn update_metadata(
         long_description,
         category_code,
         tags,
-        tech_stack
+        tech_stack,
+        price,
+        billing_cycle,
+        currency
     )
     .execute(pool)
     .instrument(query_span)
@@ -423,7 +455,7 @@ pub async fn submit_for_review(pool: &PgPool, template_id: &uuid::Uuid) -> Resul
         tracing::info_span!("marketplace_submit_for_review", template_id = %template_id);
 
     let res = sqlx::query!(
-        r#"UPDATE stack_template SET status = 'submitted' WHERE id = $1::uuid AND status IN ('draft','rejected')"#,
+        r#"UPDATE stack_template SET status = 'submitted' WHERE id = $1::uuid AND status IN ('draft','rejected','needs_changes')"#,
         template_id
     )
     .execute(pool)
@@ -435,6 +467,85 @@ pub async fn submit_for_review(pool: &PgPool, template_id: &uuid::Uuid) -> Resul
     })?;
 
     Ok(res.rows_affected() > 0)
+}
+
+/// Resubmit a template for review with a new version.
+/// Allowed from statuses: rejected, needs_changes, approved (for version updates).
+/// Creates a new version, resets status to 'submitted'.
+pub async fn resubmit_with_new_version(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    version: &str,
+    stack_definition: serde_json::Value,
+    definition_format: Option<&str>,
+    changelog: Option<&str>,
+) -> Result<StackTemplateVersion, String> {
+    let query_span =
+        tracing::info_span!("marketplace_resubmit_with_new_version", template_id = %template_id);
+
+    let mut tx = pool.begin().await.map_err(|e| {
+        tracing::error!("tx begin error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Update status to submitted (allowed from rejected, needs_changes, approved)
+    let res = sqlx::query!(
+        r#"UPDATE stack_template SET status = 'submitted', updated_at = now()
+           WHERE id = $1::uuid AND status IN ('rejected', 'needs_changes', 'approved')"#,
+        template_id
+    )
+    .execute(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("resubmit status update error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    if res.rows_affected() == 0 {
+        return Err("Template cannot be resubmitted from its current status".to_string());
+    }
+
+    // Clear previous latest version
+    sqlx::query!(
+        r#"UPDATE stack_template_version SET is_latest = false WHERE template_id = $1 AND is_latest = true"#,
+        template_id
+    )
+    .execute(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("clear latest version error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Insert new version
+    let ver = sqlx::query_as!(
+        StackTemplateVersion,
+        r#"INSERT INTO stack_template_version (
+            template_id, version, stack_definition, definition_format, changelog, is_latest
+        ) VALUES ($1,$2,$3,$4,$5,true)
+        RETURNING id, template_id, version, stack_definition, definition_format, changelog, is_latest, created_at"#,
+        template_id,
+        version,
+        stack_definition,
+        definition_format,
+        changelog
+    )
+    .fetch_one(&mut *tx)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("insert new version error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("tx commit error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(ver)
 }
 
 pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate>, String> {
@@ -459,6 +570,9 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
@@ -499,13 +613,21 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.view_count,
             t.deploy_count,
             t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
             t.created_at,
             t.updated_at,
             t.approved_at
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        WHERE t.status = 'submitted'
-        ORDER BY t.created_at ASC"#
+        WHERE t.status IN ('submitted', 'approved')
+        ORDER BY 
+            CASE t.status
+                WHEN 'submitted' THEN 0
+                WHEN 'approved' THEN 1
+            END,
+            t.created_at ASC"#
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -523,7 +645,7 @@ pub async fn admin_decide(
     decision: &str,
     review_reason: Option<&str>,
 ) -> Result<bool, String> {
-    let query_span = tracing::info_span!("marketplace_admin_decide", template_id = %template_id, decision = %decision);
+    let _query_span = tracing::info_span!("marketplace_admin_decide", template_id = %template_id, decision = %decision);
 
     let valid = ["approved", "rejected", "needs_changes"];
     if !valid.contains(&decision) {
@@ -577,6 +699,55 @@ pub async fn admin_decide(
     })?;
 
     Ok(true)
+}
+
+/// Unapprove a template: set status back to 'submitted' and clear approved_at.
+/// This hides the template from the marketplace until re-approved.
+pub async fn admin_unapprove(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    reviewer_user_id: &str,
+    reason: Option<&str>,
+) -> Result<bool, String> {
+    let _query_span = tracing::info_span!("marketplace_admin_unapprove", template_id = %template_id);
+
+    let mut tx = pool.begin().await.map_err(|e| {
+        tracing::error!("tx begin error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Insert a review record documenting the unapproval
+    sqlx::query!(
+        r#"INSERT INTO stack_template_review (template_id, reviewer_user_id, decision, review_reason, reviewed_at) VALUES ($1::uuid, $2, 'unapproved', $3, now())"#,
+        template_id,
+        reviewer_user_id,
+        reason
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!("insert unapproval review error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    // Set status back to 'submitted' and clear approved_at
+    let result = sqlx::query!(
+        r#"UPDATE stack_template SET status = 'submitted', approved_at = NULL WHERE id = $1::uuid AND status = 'approved'"#,
+        template_id,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!("unapprove template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("tx commit error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 /// Sync categories from User Service to local mirror
@@ -683,6 +854,87 @@ pub async fn get_categories(pool: &PgPool) -> Result<Vec<StackCategory>, String>
     .await
     .map_err(|e| {
         tracing::error!("Failed to fetch categories: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// List all versions for a template, ordered by creation date descending
+pub async fn list_versions_by_template(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Vec<StackTemplateVersion>, String> {
+    let query_span = tracing::info_span!("list_versions_by_template", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateVersion>(
+        r#"
+        SELECT id, template_id, version, stack_definition, definition_format,
+               changelog, is_latest, created_at
+        FROM stack_template_version
+        WHERE template_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(template_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("list_versions_by_template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// List all reviews for a template, ordered by submission date descending
+pub async fn list_reviews_by_template(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Vec<StackTemplateReview>, String> {
+    let query_span = tracing::info_span!("list_reviews_by_template", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateReview>(
+        r#"
+        SELECT id, template_id, reviewer_user_id, decision, review_reason,
+               security_checklist, submitted_at, reviewed_at
+        FROM stack_template_review
+        WHERE template_id = $1
+        ORDER BY submitted_at DESC
+        "#,
+    )
+    .bind(template_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("list_reviews_by_template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+/// Save a security scan result as a review record with security_checklist populated
+pub async fn save_security_scan(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    reviewer_user_id: &str,
+    security_checklist: serde_json::Value,
+) -> Result<StackTemplateReview, String> {
+    let query_span = tracing::info_span!("save_security_scan", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateReview>(
+        r#"
+        INSERT INTO stack_template_review
+            (template_id, reviewer_user_id, decision, review_reason, security_checklist, submitted_at, reviewed_at)
+        VALUES ($1, $2, 'pending', 'Automated security scan', $3, now(), now())
+        RETURNING id, template_id, reviewer_user_id, decision, review_reason, security_checklist, submitted_at, reviewed_at
+        "#,
+    )
+    .bind(template_id)
+    .bind(reviewer_user_id)
+    .bind(&security_checklist)
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("save_security_scan error: {:?}", e);
         "Internal Server Error".to_string()
     })
 }

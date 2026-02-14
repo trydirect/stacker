@@ -365,5 +365,6 @@ pub(crate) fn merge_project_app(existing: ProjectApp, incoming: ProjectApp) -> P
         vault_sync_version: existing.vault_sync_version,
         config_hash: existing.config_hash,
         parent_app_code: incoming.parent_app_code.or(existing.parent_app_code),
+        deployment_id: incoming.deployment_id.or(existing.deployment_id),
     }
 }

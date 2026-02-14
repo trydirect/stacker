@@ -6,7 +6,7 @@
 //!
 //! Vault Path Template: {prefix}/{deployment_hash}/apps/{app_name}/config
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

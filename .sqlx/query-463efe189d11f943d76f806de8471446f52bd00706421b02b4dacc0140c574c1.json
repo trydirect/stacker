@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \n            t.id,\n            t.creator_user_id,\n            t.creator_name,\n            t.name,\n            t.slug,\n            t.short_description,\n            t.long_description,\n            c.name AS \"category_code?\",\n            t.product_id,\n            t.tags,\n            t.tech_stack,\n            t.status,\n            t.is_configurable,\n            t.view_count,\n            t.deploy_count,\n            t.required_plan_name,\n            t.created_at,\n            t.updated_at,\n            t.approved_at\n        FROM stack_template t\n        LEFT JOIN stack_category c ON t.category_id = c.id\n        WHERE t.status = 'submitted'\n        ORDER BY t.created_at ASC",
+  "query": "INSERT INTO stack_template (\n            creator_user_id, creator_name, name, slug,\n            short_description, long_description, category_id,\n            tags, tech_stack, status, price, billing_cycle, currency\n        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft',$10,$11,$12)\n        RETURNING \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            (SELECT name FROM stack_category WHERE id = category_id) AS \"category_code?\",\n            product_id,\n            tags,\n            tech_stack,\n            status,\n            is_configurable,\n            view_count,\n            deploy_count,\n            required_plan_name,\n            price,\n            billing_cycle,\n            currency,\n            created_at,\n            updated_at,\n            approved_at\n        ",
   "describe": {
     "columns": [
       {
@@ -85,22 +85,50 @@
       },
       {
         "ordinal": 16,
+        "name": "price",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 17,
+        "name": "billing_cycle",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 18,
+        "name": "currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 19,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 20,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 18,
+        "ordinal": 21,
         "name": "approved_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Float8",
+        "Varchar",
+        "Varchar"
+      ]
     },
     "nullable": [
       false,
@@ -110,11 +138,14 @@
       false,
       true,
       true,
-      false,
+      null,
       true,
       true,
       true,
       false,
+      true,
+      true,
+      true,
       true,
       true,
       true,
@@ -124,5 +155,5 @@
       true
     ]
   },
-  "hash": "e5956a76c15941c58fc9acb3886c9d8ed8688d70ac5fcceaf41e1671f75dbaa8"
+  "hash": "463efe189d11f943d76f806de8471446f52bd00706421b02b4dacc0140c574c1"
 }

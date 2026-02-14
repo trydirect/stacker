@@ -42,6 +42,51 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::S
     })
 }
 
+/// Fetch servers by user ID with cloud provider information
+pub async fn fetch_by_user_with_provider(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<models::ServerWithProvider>, String> {
+    let query_span = tracing::info_span!("Fetch servers by user id with provider info.");
+    sqlx::query_as!(
+        models::ServerWithProvider,
+        r#"
+        SELECT
+            s.id,
+            s.user_id,
+            s.project_id,
+            s.cloud_id,
+            c.provider as cloud,
+            s.region,
+            s.zone,
+            s.server,
+            s.os,
+            s.disk_type,
+            s.created_at,
+            s.updated_at,
+            s.srv_ip,
+            s.ssh_port,
+            s.ssh_user,
+            s.vault_key_path,
+            s.connection_mode,
+            s.key_status,
+            s.name
+        FROM server s
+        LEFT JOIN cloud c ON s.cloud_id = c.id
+        WHERE s.user_id=$1
+        ORDER BY s.created_at DESC
+        "#,
+        user_id
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch servers with provider, error: {:?}", err);
+        "".to_string()
+    })
+}
+
 pub async fn fetch_by_project(
     pool: &PgPool,
     project_id: i32,
@@ -73,6 +118,7 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         INSERT INTO server (
         user_id,
         project_id,
+        cloud_id,
         region,
         zone,
         server,
@@ -88,11 +134,12 @@ pub async fn insert(pool: &PgPool, mut server: models::Server) -> Result<models:
         key_status,
         name
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc',NOW() at time zone 'utc', $8, $9, $10, $11, $12, $13, $14)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() at time zone 'utc',NOW() at time zone 'utc', $9, $10, $11, $12, $13, $14, $15)
         RETURNING id;
         "#,
         server.user_id,
         server.project_id,
+        server.cloud_id,
         server.region,
         server.zone,
         server.server,
@@ -137,25 +184,27 @@ pub async fn update(pool: &PgPool, mut server: models::Server) -> Result<models:
         SET
             user_id=$2,
             project_id=$3,
-            region=$4,
-            zone=$5,
-            server=$6,
-            os=$7,
-            disk_type=$8,
+            cloud_id=$4,
+            region=$5,
+            zone=$6,
+            server=$7,
+            os=$8,
+            disk_type=$9,
             updated_at=NOW() at time zone 'utc',
-            srv_ip=$9,
-            ssh_user=$10,
-            ssh_port=$11,
-            vault_key_path=$12,
-            connection_mode=$13,
-            key_status=$14,
-            name=$15
+            srv_ip=$10,
+            ssh_user=$11,
+            ssh_port=$12,
+            vault_key_path=$13,
+            connection_mode=$14,
+            key_status=$15,
+            name=$16
         WHERE id = $1
         RETURNING *
         "#,
         server.id,
         server.user_id,
         server.project_id,
+        server.cloud_id,
         server.region,
         server.zone,
         server.server,

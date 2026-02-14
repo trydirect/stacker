@@ -43,6 +43,8 @@ tracing-actix-web = "0.7.7"
 regex = "1.10.2"
 rand = "0.8.5"
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
+russh = "0.44"
+russh-keys = "0.44"
 futures-util = "0.3.29"
 futures = "0.3.29"
 tokio-stream = "0.1.14"

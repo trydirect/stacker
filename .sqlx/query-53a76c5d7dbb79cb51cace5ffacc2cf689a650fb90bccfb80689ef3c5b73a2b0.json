@@ -147,6 +147,11 @@
         "ordinal": 28,
         "name": "parent_app_code",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 29,
+        "name": "deployment_id",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
@@ -178,6 +183,7 @@
       false,
       false,
       false,
+      true,
       true,
       true,
       true,

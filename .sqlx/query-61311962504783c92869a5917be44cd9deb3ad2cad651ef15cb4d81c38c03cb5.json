@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO stack_template_review (template_id, reviewer_user_id, decision, review_reason, reviewed_at) VALUES ($1::uuid, $2, 'unapproved', $3, now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61311962504783c92869a5917be44cd9deb3ad2cad651ef15cb4d81c38c03cb5"
+}

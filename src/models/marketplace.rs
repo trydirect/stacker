@@ -28,6 +28,9 @@ pub struct StackTemplate {
     pub view_count: Option<i32>,
     pub deploy_count: Option<i32>,
     pub required_plan_name: Option<String>,
+    pub price: Option<f64>,
+    pub billing_cycle: Option<String>,
+    pub currency: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,
@@ -43,4 +46,16 @@ pub struct StackTemplateVersion {
     pub changelog: Option<String>,
     pub is_latest: Option<bool>,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct StackTemplateReview {
+    pub id: Uuid,
+    pub template_id: Uuid,
+    pub reviewer_user_id: Option<String>,
+    pub decision: String,
+    pub review_reason: Option<String>,
+    pub security_checklist: Option<serde_json::Value>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub reviewed_at: Option<DateTime<Utc>>,
 }

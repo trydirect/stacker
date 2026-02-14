@@ -2,7 +2,6 @@ use crate::connectors::{
     extract_bearer_token, parse_jwt_claims, user_from_jwt_claims, validate_jwt_expiration,
 };
 use crate::middleware::authentication::get_header;
-use crate::models;
 use actix_web::dev::ServiceRequest;
 use actix_web::HttpMessage;
 use std::sync::Arc;

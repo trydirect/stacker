@@ -36,7 +36,12 @@ fn default_create_action() -> String {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HealthCommandRequest {
+    /// App code to check health for. Use "all" or omit to get all containers.
+    #[serde(default = "default_health_app_code")]
     pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
     #[serde(default = "default_include_metrics")]
     pub include_metrics: bool,
     /// When true and app_code is "system" or empty, return system containers (status_panel, compose-agent)
@@ -44,9 +49,16 @@ pub struct HealthCommandRequest {
     pub include_system: bool,
 }
 
+fn default_health_app_code() -> String {
+    "all".to_string()
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LogsCommandRequest {
     pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
     #[serde(default)]
     pub cursor: Option<String>,
     #[serde(default = "default_log_limit")]
@@ -60,6 +72,9 @@ pub struct LogsCommandRequest {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RestartCommandRequest {
     pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
     #[serde(default = "default_restart_force")]
     pub force: bool,
 }
@@ -239,7 +254,11 @@ fn ensure_result_envelope(
     if actual_hash != expected_hash {
         return Err(format!("{} result deployment_hash mismatch", expected_type));
     }
-    ensure_app_code(expected_type, app_code)
+    // Allow "all" as a special value for health checks
+    if app_code != "all" {
+        ensure_app_code(expected_type, app_code)?;
+    }
+    Ok(())
 }
 
 pub fn validate_command_parameters(
@@ -251,7 +270,10 @@ pub fn validate_command_parameters(
             let value = parameters.clone().unwrap_or_else(|| json!({}));
             let params: HealthCommandRequest = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid health parameters: {}", err))?;
-            ensure_app_code("health", &params.app_code)?;
+            // Allow "all" as a special value to get all containers' health
+            if params.app_code != "all" {
+                ensure_app_code("health", &params.app_code)?;
+            }
 
             serde_json::to_value(params)
                 .map(Some)

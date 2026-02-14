@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO stack_template (\n            creator_user_id, creator_name, name, slug,\n            short_description, long_description, category_id,\n            tags, tech_stack, status\n        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft')\n        RETURNING \n            id,\n            creator_user_id,\n            creator_name,\n            name,\n            slug,\n            short_description,\n            long_description,\n            (SELECT name FROM stack_category WHERE id = category_id) AS \"category_code?\",\n            product_id,\n            tags,\n            tech_stack,\n            status,\n            is_configurable,\n            view_count,\n            deploy_count,\n            required_plan_name,\n            created_at,\n            updated_at,\n            approved_at\n        ",
+  "query": "SELECT \n            t.id,\n            t.creator_user_id,\n            t.creator_name,\n            t.name,\n            t.slug,\n            t.short_description,\n            t.long_description,\n            c.name AS \"category_code?\",\n            t.product_id,\n            t.tags,\n            t.tech_stack,\n            t.status,\n            t.is_configurable,\n            t.view_count,\n            t.deploy_count,\n            t.created_at,\n            t.updated_at,\n            t.approved_at,\n            t.required_plan_name,\n            t.price,\n            t.billing_cycle,\n            t.currency\n        FROM stack_template t\n        LEFT JOIN stack_category c ON t.category_id = c.id\n        WHERE t.id = $1",
   "describe": {
     "columns": [
       {
@@ -80,36 +80,43 @@
       },
       {
         "ordinal": 15,
-        "name": "required_plan_name",
-        "type_info": "Varchar"
-      },
-      {
-        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 18,
+        "ordinal": 17,
         "name": "approved_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "required_plan_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 19,
+        "name": "price",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 20,
+        "name": "billing_cycle",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 21,
+        "name": "currency",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
       "Left": [
-        "Varchar",
-        "Varchar",
-        "Varchar",
-        "Varchar",
-        "Text",
-        "Text",
-        "Text",
-        "Jsonb",
-        "Jsonb"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -120,7 +127,7 @@
       false,
       true,
       true,
-      null,
+      false,
       true,
       true,
       true,
@@ -131,8 +138,11 @@
       true,
       true,
       true,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "4ed4ce17b28e36898d9afabb96b7043ceee664f67752c41bf06df6e51ed69362"
+  "hash": "27d5c5d688f0ee38fb6db48ef062b31a3f661b0d7351d648f24f277467d5ca2d"
 }
