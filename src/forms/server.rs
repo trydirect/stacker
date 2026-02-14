@@ -5,6 +5,8 @@ use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct ServerForm {
+    /// If provided, update this existing server instead of creating new
+    pub server_id: Option<i32>,
     /// Reference to the cloud provider (DO, Hetzner, AWS, etc.)
     pub cloud_id: Option<i32>,
     pub region: Option<String>,

@@ -48,6 +48,8 @@ struct ProgressMessage {
     id: String,
     #[serde(default, deserialize_with = "optional_string_or_number")]
     deploy_id: Option<String>,
+    #[serde(default)]
+    deployment_hash: Option<String>,
     alert: i32,
     message: String,
     status: String,
@@ -154,30 +156,38 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                         Ok(msg) => {
                             println!("message {:?}", s);
 
-                            if statuses.contains(&(msg.status.as_ref())) && msg.deploy_id.is_some() {
-                                println!("Update DB on status change ..");
-                                let id = match msg
-                                    .deploy_id
-                                    .unwrap()
-                                    .parse::<i32>()
-                                {
-                                    Ok(id) => id,
-                                    Err(_) => {
-                                        eprintln!("Could not parse deployment id");
-                                        if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
-                                            eprintln!("Failed to ack: {}", ack_err);
-                                        }
-                                        continue;
+                            if statuses.contains(&(msg.status.as_ref())) {
+                                // Try to find deployment by deploy_id or deployment_hash
+                                let deployment_result = if let Some(ref deploy_id_str) = msg.deploy_id {
+                                    // Try deploy_id first (numeric ID)
+                                    if let Ok(id) = deploy_id_str.parse::<i32>() {
+                                        deployment::fetch(db_pool.get_ref(), id).await
+                                    } else if let Some(ref hash) = msg.deployment_hash {
+                                        // deploy_id might be the hash string
+                                        deployment::fetch_by_deployment_hash(db_pool.get_ref(), hash).await
+                                    } else {
+                                        // Try deploy_id as hash
+                                        deployment::fetch_by_deployment_hash(db_pool.get_ref(), deploy_id_str).await
                                     }
+                                } else if let Some(ref hash) = msg.deployment_hash {
+                                    // Use deployment_hash
+                                    deployment::fetch_by_deployment_hash(db_pool.get_ref(), hash).await
+                                } else {
+                                    // No identifier available
+                                    println!("No deploy_id or deployment_hash in message");
+                                    if let Err(ack_err) = delivery.ack(BasicAckOptions::default()).await {
+                                        eprintln!("Failed to ack: {}", ack_err);
+                                    }
+                                    continue;
                                 };
 
-                                match deployment::fetch(db_pool.get_ref(), id).await {
+                                match deployment_result {
                                     Ok(Some(mut row)) => {
                                         row.status = msg.status;
                                         row.updated_at = Utc::now();
                                         println!(
                                             "Deployment {} updated with status {}",
-                                            &id, &row.status
+                                            &row.id, &row.status
                                         );
                                         if let Err(e) = deployment::update(db_pool.get_ref(), row).await {
                                             eprintln!("Failed to update deployment: {}", e);

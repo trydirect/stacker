@@ -249,50 +249,57 @@ pub async fn saved_item(
         }
     };
 
-    let server = match db::server::fetch_by_project(pg_pool.get_ref(), dc.project.id.clone()).await
-    {
-        Ok(server) => {
-            // currently we support only one type of servers
-            //@todo multiple server types support
-            match server.into_iter().nth(0) {
-                Some(mut server) => {
-                    // new updates
-                    server.disk_type = form.server.disk_type.clone();
-                    server.region = form.server.region.clone();
-                    server.server = form.server.server.clone();
-                    server.zone = form.server.zone.clone();
-                    server.os = form.server.os.clone();
-                    server.user_id = user.id.clone();
-                    server.project_id = id;
-                    server
-                }
-                None => {
-                    // Create new server
-                    // form.update_with(server.into());
-                    let mut server: models::Server = (&form.server).into();
-                    server.user_id = user.id.clone();
-                    server.project_id = id;
-                    db::server::insert(pg_pool.get_ref(), server)
-                        .await
-                        .map(|server| server)
-                        .map_err(|_| {
-                            JsonResponse::<models::Server>::build()
-                                .internal_server_error("Internal Server Error")
-                        })?
-                }
-            }
-        }
-        Err(_e) => {
-            return Err(JsonResponse::<models::Project>::build().not_found("No servers configured"));
-        }
-    };
+    // Handle server: if server_id provided, update existing; otherwise create new
+    let server = if let Some(server_id) = form.server.server_id {
+        // Update existing server
+        let existing = db::server::fetch(pg_pool.get_ref(), server_id)
+            .await
+            .map_err(|_| {
+                JsonResponse::<models::Server>::build().internal_server_error("Failed to fetch server")
+            })?
+            .ok_or_else(|| {
+                JsonResponse::<models::Server>::build().not_found("Server not found")
+            })?;
 
-    let server = db::server::update(pg_pool.get_ref(), server)
-        .await
-        .map(|server| server)
-        .map_err(|_| {
-            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
-        })?;
+        // Verify ownership
+        if existing.user_id != user.id {
+            return Err(JsonResponse::<models::Server>::build().not_found("Server not found"));
+        }
+
+        let mut server = existing;
+        server.disk_type = form.server.disk_type.clone();
+        server.region = form.server.region.clone();
+        server.server = form.server.server.clone();
+        server.zone = form.server.zone.clone();
+        server.os = form.server.os.clone();
+        server.project_id = id;
+        server.srv_ip = form.server.srv_ip.clone();
+        server.ssh_user = form.server.ssh_user.clone();
+        server.ssh_port = form.server.ssh_port.or(server.ssh_port);
+        server.name = form.server.name.clone().or(server.name);
+        if form.server.connection_mode.is_some() {
+            server.connection_mode = form.server.connection_mode.clone().unwrap();
+        }
+        server.cloud_id = Some(cloud_id);
+
+        db::server::update(pg_pool.get_ref(), server)
+            .await
+            .map_err(|_| {
+                JsonResponse::<models::Server>::build().internal_server_error("Failed to update server")
+            })?
+    } else {
+        // Create new server
+        let mut server: models::Server = (&form.server).into();
+        server.user_id = user.id.clone();
+        server.project_id = id;
+        server.cloud_id = Some(cloud_id);
+
+        db::server::insert(pg_pool.get_ref(), server)
+            .await
+            .map_err(|_| {
+                JsonResponse::<models::Server>::build().internal_server_error("Failed to create server")
+            })?
+    };
 
     // Building Payload for the 3-d party service through RabbitMQ
     // let mut payload = forms::project::Payload::default();
