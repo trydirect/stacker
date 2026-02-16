@@ -87,11 +87,8 @@ pub async fn run(
                 Cors::default()
                     .allow_any_origin()
                     .allow_any_method()
-                    .allowed_headers(vec![
-                        actix_web::http::header::AUTHORIZATION,
-                        actix_web::http::header::CONTENT_TYPE,
-                        actix_web::http::header::ACCEPT,
-                    ])
+                    .allow_any_header()
+                    .expose_any_header()
                     .supports_credentials()
                     .max_age(3600),
             )
