@@ -247,6 +247,7 @@ pub async fn run(
                     .service(crate::routes::server::get::list)
                     .service(crate::routes::server::get::list_by_project)
                     .service(crate::routes::server::update::item)
+                    .service(crate::routes::server::delete::delete_preview)
                     .service(crate::routes::server::delete::item)
                     .service(crate::routes::server::ssh_key::generate_key)
                     .service(crate::routes::server::ssh_key::upload_key)
