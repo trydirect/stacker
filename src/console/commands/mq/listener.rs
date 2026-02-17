@@ -145,6 +145,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                         "completed",
                         "paused",
                         "failed",
+                        "cancelled",
                         "in_progress",
                         "error",
                         "wait_resume",
