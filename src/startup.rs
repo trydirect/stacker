@@ -87,9 +87,14 @@ pub async fn run(
                 Cors::default()
                     .allow_any_origin()
                     .allow_any_method()
-                    .allow_any_header()
+                    .allowed_headers(vec![
+                        http::header::AUTHORIZATION,
+                        http::header::CONTENT_TYPE,
+                        http::header::ACCEPT,
+                        http::header::ORIGIN,
+                        http::header::HeaderName::from_static("x-requested-with"),
+                    ])
                     .expose_any_header()
-                    .supports_credentials()
                     .max_age(3600),
             )
             .wrap(TracingLogger::default())
