@@ -269,6 +269,9 @@ pub struct ValidateResponse {
     /// Available memory in MB
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_available_mb: Option<u64>,
+    /// Public key stored in Vault (shown only on auth failure for debugging)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault_public_key: Option<String>,
 }
 
 /// Validate SSH connection for a server
@@ -347,6 +350,13 @@ pub async fn validate_key(
         }
     };
 
+    // Also fetch public key so we can include it in failed auth responses for debugging
+    let vault_public_key = vault_client
+        .get_ref()
+        .fetch_ssh_public_key(&user.id, server_id)
+        .await
+        .ok();
+
     // Get SSH connection parameters
     let ssh_port = server.ssh_port.unwrap_or(22) as u16;
     let ssh_user = server.ssh_user.clone().unwrap_or_else(|| "root".to_string());
@@ -376,6 +386,8 @@ pub async fn validate_key(
         message,
         connected: check_result.connected,
         authenticated: check_result.authenticated,
+        // Include vault public key in response when auth fails (helps debug key mismatch)
+        vault_public_key: if !check_result.authenticated { vault_public_key } else { None },
         username: check_result.username,
         disk_total_gb: check_result.disk_total_gb,
         disk_available_gb: check_result.disk_available_gb,
