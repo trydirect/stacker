@@ -30,6 +30,12 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.id = Some(deployment_id);
         // Force-set deployment_hash in case deserialization overwrote it
         payload.deployment_hash = Some(deployment_hash.clone());
+
+        // Determine routing before server is moved into payload:
+        // If server has an existing IP, deploy to it directly (own flow).
+        // Otherwise, use the cloud provider to decide (own vs tfa).
+        let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
+
         payload.server = Some(server.into());
         payload.cloud = Some(cloud_creds.into());
         payload.stack = form_stack.clone().into();
@@ -43,18 +49,25 @@ impl InstallServiceConnector for InstallServiceClient {
             payload
         );
 
-        let provider = payload
-            .cloud
-            .as_ref()
-            .map(|form| {
-                if form.provider.contains("own") {
-                    "own"
-                } else {
-                    "tfa"
-                }
-            })
-            .unwrap_or("tfa")
-            .to_string();
+        let provider = if has_existing_ip {
+            // Server already has an IP → deploy to existing server via SSH (own flow)
+            tracing::info!("Server has existing IP, routing to 'own' flow");
+            "own"
+        } else {
+            // No IP → provision new server via cloud provider (tfa or own)
+            payload
+                .cloud
+                .as_ref()
+                .map(|form| {
+                    if form.provider.contains("own") {
+                        "own"
+                    } else {
+                        "tfa"
+                    }
+                })
+                .unwrap_or("tfa")
+        }
+        .to_string();
 
         let routing_key = format!("install.start.{}.all.all", provider);
         tracing::debug!("Route: {:?}", routing_key);
