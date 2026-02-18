@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-02-18
+
+### Fixed
+- **Container Discovery 403**: Fixed Casbin authorization rules for `/project/:id/containers/discover` (GET) and `/project/:id/containers/import` (POST)
+  - Migration `20260204120000_casbin_container_discovery_rules` had wrong path prefix `/api/v1/project/...` instead of `/project/...`
+  - The middleware was rejecting the request with a 403 before CORS headers could be attached, causing the browser to report a misleading "CORS header missing" error
+  - New migration `20260218100000_fix_casbin_container_discovery_paths` removes the wrong rules and inserts the correct paths
+
 ## 2026-02-03
 
 ### Fixed
