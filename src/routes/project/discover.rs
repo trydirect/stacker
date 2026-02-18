@@ -12,6 +12,8 @@ use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+const BLOCKED_SYSTEM_CONTAINERS: [&str; 3] = ["status", "status_agent", "telegraf"];
+
 /// Discovered container that's not registered in project_app
 #[derive(Debug, Serialize, Clone)]
 pub struct DiscoveredContainer {
@@ -247,6 +249,15 @@ pub async fn discover_containers(
         "Discovered containers"
     );
 
+    // Exclude system containers from discovery/import candidates
+    running_containers.retain(|container| {
+        !is_blocked_system_container(
+            &container.name,
+            &container.image,
+            container.app_code.as_deref(),
+        )
+    });
+
     // Classify containers
     let mut registered = Vec::new();
     let mut unregistered = Vec::new();
@@ -343,6 +354,14 @@ pub async fn import_containers(
     let mut errors = Vec::new();
 
     for container in &body.containers {
+        if is_blocked_system_container(&container.container_name, &container.image, Some(&container.app_code)) {
+            errors.push(format!(
+                "Container '{}' is a system container and cannot be imported",
+                container.container_name
+            ));
+            continue;
+        }
+
         // Check if app_code already exists
         let existing = db::project_app::fetch_by_project_and_code(
             pg_pool.get_ref(),
@@ -530,4 +549,37 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(f) => f.to_uppercase().chain(c).collect(),
     }
+}
+
+fn is_blocked_system_container(container_name: &str, image: &str, app_code: Option<&str>) -> bool {
+    let mut candidates: Vec<String> = vec![normalize_container_token(container_name)];
+
+    if let Some(code) = app_code {
+        candidates.push(normalize_container_token(code));
+    }
+
+    if let Some(compose_parts) = extract_compose_service(container_name) {
+        candidates.push(normalize_container_token(&compose_parts.service));
+    }
+
+    if let Some(img_name) = image.split('/').last() {
+        if let Some(name_without_tag) = img_name.split(':').next() {
+            candidates.push(normalize_container_token(name_without_tag));
+        }
+    }
+
+    candidates
+        .iter()
+        .any(|candidate| BLOCKED_SYSTEM_CONTAINERS.contains(&candidate.as_str()))
+}
+
+fn normalize_container_token(value: &str) -> String {
+    value
+        .trim_start_matches('/')
+        .trim()
+        .to_lowercase()
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<&str>>()
+        .join("_")
 }
