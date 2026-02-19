@@ -113,4 +113,105 @@ impl UserServiceClient {
             .await
             .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
     }
+
+    /// Initiate a deployment via User Service native flow
+    pub async fn initiate_deployment(
+        &self,
+        bearer_token: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        let url = format!("{}/install/init/", self.base_url);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", bearer_token))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ConnectorError::HttpError(format!(
+                "User Service error ({}): {}",
+                status, body
+            )));
+        }
+
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    /// Trigger redeploy for an installation
+    pub async fn trigger_redeploy(
+        &self,
+        bearer_token: &str,
+        installation_id: i64,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        let url = format!("{}/install/{}/redeploy", self.base_url, installation_id);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", bearer_token))
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ConnectorError::HttpError(format!(
+                "User Service error ({}): {}",
+                status, body
+            )));
+        }
+
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    /// Add app to an existing installation
+    pub async fn add_app_to_installation(
+        &self,
+        bearer_token: &str,
+        installation_id: i64,
+        app_code: &str,
+        app_config: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        let url = format!("{}/install/{}/add-app", self.base_url, installation_id);
+        let payload = serde_json::json!({
+            "app_code": app_code,
+            "app_config": app_config.unwrap_or_else(|| serde_json::json!({}))
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", bearer_token))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ConnectorError::HttpError(format!(
+                "User Service error ({}): {}",
+                status, body
+            )));
+        }
+
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
 }

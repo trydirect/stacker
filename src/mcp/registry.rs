@@ -17,6 +17,7 @@ use crate::mcp::tools::{
     AdminListTemplateVersionsTool,
     AdminValidateTemplateSecurityTool,
     ApplyVaultConfigTool,
+    AddAppToDeploymentTool,
     CancelDeploymentTool,
     CloneProjectTool,
     ConfigureProxyTool,
@@ -46,6 +47,7 @@ use crate::mcp::tools::{
     GetErrorSummaryTool,
     GetInstallationDetailsTool,
     GetLiveChatInfoTool,
+    GetNotificationsTool,
     GetProjectTool,
     GetRoleDetailsTool,
     GetRoleRequirementsTool,
@@ -56,25 +58,36 @@ use crate::mcp::tools::{
     GetVaultConfigTool,
     ListAvailableRolesTool,
     ListCloudsTool,
+    ListCloudImagesTool,
+    ListCloudRegionsTool,
+    ListCloudServerSizesTool,
     ListContainersTool,
     ListInstallationsTool,
+    InitiateDeploymentTool,
     ListProjectAppsTool,
     ListProjectsTool,
     ListProxiesTool,
     ListTemplatesTool,
     ListVaultConfigsTool,
     RestartContainerTool,
+    RenderAnsibleTemplateTool,
     SearchApplicationsTool,
+    SearchMarketplaceTemplatesTool,
     SetAppEnvVarTool,
     SetVaultConfigTool,
+    MarkAllNotificationsReadTool,
+    MarkNotificationReadTool,
     StartContainerTool,
     StartDeploymentTool,
     // Phase 5: Container Operations tools
     StopContainerTool,
+    TriggerRedeployTool,
     AdminRejectTemplateTool,
     SuggestResourcesTool,
     UpdateAppDomainTool,
     UpdateAppPortsTool,
+    GetAnsibleRoleDefaultsTool,
+    PreviewInstallConfigTool,
     ValidateDomainTool,
     ValidateRoleVarsTool,
     // Phase 5: Stack Validation tool
@@ -131,6 +144,12 @@ impl ToolRegistry {
         registry.register("get_cloud", Box::new(GetCloudTool));
         registry.register("add_cloud", Box::new(AddCloudTool));
         registry.register("delete_cloud", Box::new(DeleteCloudTool));
+        registry.register("list_cloud_regions", Box::new(ListCloudRegionsTool));
+        registry.register(
+            "list_cloud_server_sizes",
+            Box::new(ListCloudServerSizesTool),
+        );
+        registry.register("list_cloud_images", Box::new(ListCloudImagesTool));
 
         // Phase 3: Project management
         registry.register("delete_project", Box::new(DeleteProjectTool));
@@ -145,6 +164,22 @@ impl ToolRegistry {
             Box::new(GetInstallationDetailsTool),
         );
         registry.register("search_applications", Box::new(SearchApplicationsTool));
+        registry.register(
+            "search_marketplace_templates",
+            Box::new(SearchMarketplaceTemplatesTool),
+        );
+        registry.register("get_notifications", Box::new(GetNotificationsTool));
+        registry.register(
+            "mark_notification_read",
+            Box::new(MarkNotificationReadTool),
+        );
+        registry.register(
+            "mark_all_notifications_read",
+            Box::new(MarkAllNotificationsReadTool),
+        );
+        registry.register("initiate_deployment", Box::new(InitiateDeploymentTool));
+        registry.register("trigger_redeploy", Box::new(TriggerRedeployTool));
+        registry.register("add_app_to_deployment", Box::new(AddAppToDeploymentTool));
 
         // Phase 4: Monitoring & Logs tools (AI Integration)
         registry.register("get_container_logs", Box::new(GetContainerLogsTool));
@@ -169,6 +204,15 @@ impl ToolRegistry {
         registry.register("get_app_config", Box::new(GetAppConfigTool));
         registry.register("update_app_ports", Box::new(UpdateAppPortsTool));
         registry.register("update_app_domain", Box::new(UpdateAppDomainTool));
+        registry.register("preview_install_config", Box::new(PreviewInstallConfigTool));
+        registry.register(
+            "get_ansible_role_defaults",
+            Box::new(GetAnsibleRoleDefaultsTool),
+        );
+        registry.register(
+            "render_ansible_template",
+            Box::new(RenderAnsibleTemplateTool),
+        );
 
         // Phase 5: Stack Validation tool
         registry.register("validate_stack_config", Box::new(ValidateStackConfigTool));

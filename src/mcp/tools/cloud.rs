@@ -7,6 +7,62 @@ use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::models;
 use serde::Deserialize;
 
+fn app_service_base_url() -> String {
+    std::env::var("APP_SERVICE_URL").unwrap_or_else(|_| "http://app:4200".to_string())
+}
+
+fn is_supported_cloud_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "do" | "htz" | "lo" | "scw" | "aws" | "gc" | "vu" | "ovh" | "upc" | "ali"
+    )
+}
+
+async fn fetch_app_service_catalog(
+    context: &ToolContext,
+    provider: &str,
+    resource: &str,
+    cloud_id: Option<i32>,
+) -> Result<Value, String> {
+    if !is_supported_cloud_provider(provider) {
+        return Err(
+            "Unsupported provider. Use one of: do, htz, lo, scw, aws, gc, vu, ovh, upc, ali"
+                .to_string(),
+        );
+    }
+
+    let base_url = app_service_base_url().trim_end_matches('/').to_string();
+    let mut url = format!("{}/{}/{}", base_url, provider, resource);
+
+    if let Some(cloud_id) = cloud_id {
+        url.push_str(&format!("?cloud_id={}", cloud_id));
+    }
+
+    let token = context.user.access_token.as_deref().unwrap_or("");
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+
+    if !token.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to call App Service: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("App Service error {}: {}", status, body));
+    }
+
+    response
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("Failed to parse App Service response: {}", e))
+}
+
 /// List user's cloud credentials
 pub struct ListCloudsTool;
 
@@ -245,6 +301,165 @@ impl ToolHandler for AddCloudTool {
                     "save_token": {
                         "type": "boolean",
                         "description": "Whether to save the token for future use (default: true)"
+                    }
+                },
+                "required": ["provider"]
+            }),
+        }
+    }
+}
+
+/// List available cloud regions for a provider
+pub struct ListCloudRegionsTool;
+
+#[async_trait]
+impl ToolHandler for ListCloudRegionsTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            provider: String,
+            #[serde(default)]
+            cloud_id: Option<i32>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let payload = fetch_app_service_catalog(
+            context,
+            &params.provider.to_lowercase(),
+            "regions",
+            params.cloud_id,
+        )
+        .await?;
+
+        Ok(ToolContent::Text {
+            text: payload.to_string(),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "list_cloud_regions".to_string(),
+            description: "List available regions from App Service for a cloud provider"
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["do", "htz", "lo", "scw", "aws", "gc", "vu", "ovh", "upc", "ali"],
+                        "description": "Cloud provider code"
+                    },
+                    "cloud_id": {
+                        "type": "number",
+                        "description": "Optional cloud credential ID"
+                    }
+                },
+                "required": ["provider"]
+            }),
+        }
+    }
+}
+
+/// List available server sizes/plans for a provider
+pub struct ListCloudServerSizesTool;
+
+#[async_trait]
+impl ToolHandler for ListCloudServerSizesTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            provider: String,
+            #[serde(default)]
+            cloud_id: Option<i32>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let payload = fetch_app_service_catalog(
+            context,
+            &params.provider.to_lowercase(),
+            "servers",
+            params.cloud_id,
+        )
+        .await?;
+
+        Ok(ToolContent::Text {
+            text: payload.to_string(),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "list_cloud_server_sizes".to_string(),
+            description: "List available server sizes/plans from App Service for a cloud provider"
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["do", "htz", "lo", "scw", "aws", "gc", "vu", "ovh", "upc", "ali"],
+                        "description": "Cloud provider code"
+                    },
+                    "cloud_id": {
+                        "type": "number",
+                        "description": "Optional cloud credential ID"
+                    }
+                },
+                "required": ["provider"]
+            }),
+        }
+    }
+}
+
+/// List available images for a provider
+pub struct ListCloudImagesTool;
+
+#[async_trait]
+impl ToolHandler for ListCloudImagesTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            provider: String,
+            #[serde(default)]
+            cloud_id: Option<i32>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let payload = fetch_app_service_catalog(
+            context,
+            &params.provider.to_lowercase(),
+            "images",
+            params.cloud_id,
+        )
+        .await?;
+
+        Ok(ToolContent::Text {
+            text: payload.to_string(),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "list_cloud_images".to_string(),
+            description: "List available OS/images from App Service for a cloud provider"
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["do", "htz", "lo", "scw", "aws", "gc", "vu", "ovh", "upc", "ali"],
+                        "description": "Cloud provider code"
+                    },
+                    "cloud_id": {
+                        "type": "number",
+                        "description": "Optional cloud credential ID"
                     }
                 },
                 "required": ["provider"]
