@@ -69,7 +69,7 @@ actix-casbin-auth = { git = "https://github.com/casbin-rs/actix-casbin-auth.git"
 casbin = "2.2.0"
 aes-gcm = "0.10.3"
 base64 = "0.22.1"
-redis = { version = "0.27.5", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.0.0", features = ["tokio-comp", "connection-manager"] }
 urlencoding = "2.1.3"
 tera = "1.19.1"
 
