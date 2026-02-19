@@ -266,6 +266,12 @@ pub async fn run(
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
             )
+            .service(
+                web::scope("/chat")
+                    .service(crate::routes::chat::get::item)
+                    .service(crate::routes::chat::upsert::item)
+                    .service(crate::routes::chat::delete::item),
+            )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())
             .app_data(api_pool.clone())

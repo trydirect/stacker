@@ -28,6 +28,8 @@ use crate::mcp::tools::{
     DeleteProxyTool,
     // Ansible Roles tools
     DeployRoleTool,
+    // Stack Recommendations
+    RecommendStackServicesTool,
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
@@ -242,6 +244,12 @@ impl ToolRegistry {
         );
         registry.register("validate_role_vars", Box::new(ValidateRoleVarsTool));
         registry.register("deploy_role", Box::new(DeployRoleTool));
+
+        // Stack Recommendations
+        registry.register(
+            "recommend_stack_services",
+            Box::new(RecommendStackServicesTool),
+        );
 
         registry
     }
