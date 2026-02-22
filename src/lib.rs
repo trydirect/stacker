@@ -1,4 +1,5 @@
 pub mod banner;
+pub mod cli;
 pub mod configuration;
 pub mod connectors;
 pub mod console;
