@@ -16,6 +16,10 @@ path = "src/console/main.rs"
 name = "console"
 required-features = ["explain"]
 
+[[bin]]
+path = "src/bin/stacker.rs"
+name = "stacker-cli"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
