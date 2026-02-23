@@ -237,9 +237,9 @@ impl CredentialsManager<FileCredentialStore> {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Default TryDirect platform API base URL.
-pub const DEFAULT_API_URL: &str = "https://try.direct";
+pub const DEFAULT_API_URL: &str = "https://api.try.direct";
 
-/// OAuth token endpoint path (relative to api_url).
+/// OAuth token endpoint path (relative to auth_url).
 const TOKEN_ENDPOINT: &str = "/oauth_server/token";
 
 /// Parameters for a login request.
@@ -247,7 +247,7 @@ const TOKEN_ENDPOINT: &str = "/oauth_server/token";
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
-    pub api_url: Option<String>,
+    pub auth_url: Option<String>,
     pub org: Option<String>,
     pub domain: Option<String>,
 }
@@ -255,7 +255,7 @@ pub struct LoginRequest {
 /// Abstraction over the HTTP call to the OAuth token endpoint.
 /// Production uses `HttpOAuthClient`; tests can inject a mock.
 pub trait OAuthClient: Send + Sync {
-    fn request_token(&self, api_url: &str, email: &str, password: &str)
+    fn request_token(&self, auth_url: &str, email: &str, password: &str)
         -> Result<TokenResponse, CliError>;
 }
 
@@ -265,11 +265,11 @@ pub struct HttpOAuthClient;
 impl OAuthClient for HttpOAuthClient {
     fn request_token(
         &self,
-        api_url: &str,
+        auth_url: &str,
         email: &str,
         password: &str,
     ) -> Result<TokenResponse, CliError> {
-        let url = format!("{}{}", api_url.trim_end_matches('/'), TOKEN_ENDPOINT);
+        let url = format!("{}{}", auth_url.trim_end_matches('/'), TOKEN_ENDPOINT);
 
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -289,8 +289,19 @@ impl OAuthClient for HttpOAuthClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().unwrap_or_default();
+            let body_preview: String = body.chars().take(240).collect();
+            let html_404_hint = if status == reqwest::StatusCode::NOT_FOUND
+                && (body.contains("<!DOCTYPE html") || body.contains("<html"))
+            {
+                format!(
+                    "\nHint: this looks like a website endpoint, not API. Retry with `stacker-cli login --auth-url https://api.try.direct` (attempted: {}).",
+                    auth_url
+                )
+            } else {
+                String::new()
+            };
             return Err(CliError::AuthFailed(format!(
-                "Authentication failed (HTTP {status}): {body}"
+                "Authentication failed (HTTP {status}): {body_preview}{html_404_hint}"
             )));
         }
 
@@ -310,15 +321,19 @@ pub fn login<S: CredentialStore, O: OAuthClient>(
     oauth: &O,
     request: &LoginRequest,
 ) -> Result<StoredCredentials, CliError> {
-    let api_url = request
-        .api_url
+    let env_auth_url = std::env::var("STACKER_AUTH_URL")
+        .ok()
+        .or_else(|| std::env::var("STACKER_API_URL").ok());
+    let auth_url = request
+        .auth_url
         .as_deref()
+        .or(env_auth_url.as_deref())
         .unwrap_or(DEFAULT_API_URL);
 
-    let token_resp = oauth.request_token(api_url, &request.email, &request.password)?;
+    let token_resp = oauth.request_token(auth_url, &request.email, &request.password)?;
     let mut creds = StoredCredentials::from(token_resp);
     creds.email = Some(request.email.clone());
-    creds.server_url = Some(api_url.to_string());
+    creds.server_url = Some(auth_url.to_string());
     creds.org = request.org.clone();
     creds.domain = request.domain.clone();
 
@@ -658,7 +673,7 @@ mod tests {
     impl OAuthClient for MockOAuthClient {
         fn request_token(
             &self,
-            _api_url: &str,
+            _auth_url: &str,
             _email: &str,
             _password: &str,
         ) -> Result<TokenResponse, CliError> {
@@ -678,7 +693,7 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            api_url: None,
+            auth_url: None,
             org: None,
             domain: None,
         };
@@ -700,7 +715,7 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            api_url: None,
+            auth_url: None,
             org: Some("acme".into()),
             domain: None,
         };
@@ -716,7 +731,7 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            api_url: None,
+            auth_url: None,
             org: None,
             domain: Some("acme.com".into()),
         };
@@ -732,7 +747,7 @@ mod tests {
         let request = LoginRequest {
             email: "bad@example.com".into(),
             password: "wrong".into(),
-            api_url: None,
+            auth_url: None,
             org: None,
             domain: None,
         };
@@ -743,13 +758,13 @@ mod tests {
     }
 
     #[test]
-    fn test_login_api_url_override() {
+    fn test_login_auth_url_override() {
         let (manager, _) = make_manager();
         let oauth = MockOAuthClient::success();
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            api_url: Some("https://custom.api".into()),
+            auth_url: Some("https://custom.api".into()),
             org: None,
             domain: None,
         };
@@ -768,7 +783,7 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            api_url: None,
+            auth_url: None,
             org: None,
             domain: None,
         };

@@ -3,7 +3,7 @@ use crate::cli::credentials::{
     CredentialsManager, FileCredentialStore, HttpOAuthClient, LoginRequest, login,
 };
 
-/// `stacker login [--org <name>] [--domain <domain>] [--api-url <url>]`
+/// `stacker login [--org <name>] [--domain <domain>] [--auth-url <url>]`
 ///
 /// Authenticates with the TryDirect platform via OAuth2 and stores
 /// credentials in `~/.config/stacker/credentials.json`.
@@ -12,15 +12,15 @@ use crate::cli::credentials::{
 pub struct LoginCommand {
     pub org: Option<String>,
     pub domain: Option<String>,
-    pub api_url: Option<String>,
+    pub auth_url: Option<String>,
 }
 
 impl LoginCommand {
-    pub fn new(org: Option<String>, domain: Option<String>, api_url: Option<String>) -> Self {
+    pub fn new(org: Option<String>, domain: Option<String>, auth_url: Option<String>) -> Self {
         Self {
             org,
             domain,
-            api_url,
+            auth_url,
         }
     }
 
@@ -48,7 +48,7 @@ impl CallableTrait for LoginCommand {
         let request = LoginRequest {
             email,
             password,
-            api_url: self.api_url.clone(),
+            auth_url: self.auth_url.clone(),
             org: self.org.clone(),
             domain: self.domain.clone(),
         };

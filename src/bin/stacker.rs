@@ -41,9 +41,9 @@ enum StackerCommands {
         /// Custom platform domain
         #[arg(long)]
         domain: Option<String>,
-        /// API base URL (default: https://try.direct)
-        #[arg(long)]
-        api_url: Option<String>,
+        /// API base URL (default: https://api.try.direct)
+        #[arg(long = "auth-url", visible_alias = "api-url")]
+        auth_url: Option<String>,
     },
     /// Initialize a new stacker project (generates stacker.yml + Dockerfile)
     Init {
@@ -210,9 +210,9 @@ fn get_command(
         StackerCommands::Login {
             org,
             domain,
-            api_url,
+            auth_url,
         } => Box::new(
-            stacker::console::commands::cli::login::LoginCommand::new(org, domain, api_url),
+            stacker::console::commands::cli::login::LoginCommand::new(org, domain, auth_url),
         ),
         StackerCommands::Init {
             app_type,

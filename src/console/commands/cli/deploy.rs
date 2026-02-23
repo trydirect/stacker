@@ -1,7 +1,9 @@
 use std::convert::TryFrom;
 use std::path::{Path, PathBuf};
 
-use crate::cli::ai_client::{build_prompt, create_provider, AiTask, PromptContext};
+use crate::cli::ai_client::{
+    build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
+};
 use crate::cli::config_parser::{AiProviderType, AppType, DeployTarget, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, FileCredentialStore};
 use crate::cli::error::CliError;
@@ -248,6 +250,27 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
     };
     let (system, prompt) = build_prompt(AiTask::Troubleshoot, &ctx);
 
+    if ai_config.provider == AiProviderType::Ollama {
+        eprintln!("  AI suggestion (streaming from Ollama):");
+        match ollama_complete_streaming(&ai_config, &prompt, &system) {
+            Ok(answer) => {
+                if answer.trim().is_empty() {
+                    eprintln!("    (empty AI response)");
+                }
+                eprintln!();
+            }
+            Err(ai_err) => {
+                eprintln!("  AI troubleshooting unavailable: {}", ai_err);
+                for hint in fallback_troubleshooting_hints(reason) {
+                    eprintln!("  - {}", hint);
+                }
+                eprintln!("  Tip: set STACKER_AI_PROVIDER=ollama and ensure Ollama is running");
+            }
+        }
+        return;
+    }
+
+    eprintln!("  AI request in progress...");
     match create_provider(&ai_config).and_then(|provider| provider.complete(&prompt, &system)) {
         Ok(answer) => {
             eprintln!("  AI suggestion:");

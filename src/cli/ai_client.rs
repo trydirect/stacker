@@ -1,5 +1,6 @@
 use crate::cli::config_parser::{AiConfig, AiProviderType, AppType};
 use crate::cli::error::CliError;
+use std::io::{BufRead, BufReader, Write};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
@@ -455,6 +456,93 @@ impl AiProvider for OllamaProvider {
                 message: "No content in response".to_string(),
             })
     }
+}
+
+/// Stream a response from Ollama and print token chunks to stderr as they arrive.
+/// Returns the full accumulated response text.
+pub fn ollama_complete_streaming(
+    config: &AiConfig,
+    prompt: &str,
+    context: &str,
+) -> Result<String, CliError> {
+    let provider = OllamaProvider::from_config(config);
+
+    let body = serde_json::json!({
+        "model": provider.model,
+        "stream": true,
+        "messages": [
+            { "role": "system", "content": context },
+            { "role": "user", "content": prompt }
+        ]
+    });
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(provider.timeout_secs))
+        .build()
+        .map_err(|e| CliError::AiProviderError {
+            provider: "ollama".to_string(),
+            message: format!("Failed to build HTTP client: {}", e),
+        })?;
+
+    let response = client
+        .post(&provider.endpoint)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .map_err(|e| CliError::AiProviderError {
+            provider: "ollama".to_string(),
+            message: format!("Request failed (is Ollama running?): {}", e),
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().unwrap_or_default();
+        return Err(CliError::AiProviderError {
+            provider: "ollama".to_string(),
+            message: format!("HTTP {} — {}", status, text),
+        });
+    }
+
+    let mut content = String::new();
+    let mut reader = BufReader::new(response);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|e| CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("Failed to read stream: {}", e),
+            })?;
+        if bytes == 0 {
+            break;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let json: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+            CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("Invalid streaming chunk: {}", e),
+            }
+        })?;
+
+        if let Some(chunk) = json["message"]["content"].as_str() {
+            eprint!("{}", chunk);
+            let _ = std::io::stderr().flush();
+            content.push_str(chunk);
+        }
+
+        if json["done"].as_bool().unwrap_or(false) {
+            break;
+        }
+    }
+
+    Ok(content)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
