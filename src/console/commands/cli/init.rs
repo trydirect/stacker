@@ -104,12 +104,19 @@ pub fn resolve_ai_config(
     // Endpoint from env
     let endpoint = std::env::var("STACKER_AI_ENDPOINT").ok();
 
+    // Timeout: env > default (300s)
+    let timeout = std::env::var("STACKER_AI_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(300);
+
     Ok(AiConfig {
         enabled: true,
         provider,
         model,
         api_key,
         endpoint,
+        timeout,
         tasks: vec!["dockerfile".to_string(), "compose".to_string()],
     })
 }
@@ -554,6 +561,21 @@ mod tests {
         assert_eq!(config.provider, AiProviderType::Ollama);
 
         std::env::remove_var("STACKER_AI_PROVIDER");
+    }
+
+    #[test]
+    fn test_resolve_ai_config_timeout_default() {
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+        let config = resolve_ai_config(None, None, None).unwrap();
+        assert_eq!(config.timeout, 300);
+    }
+
+    #[test]
+    fn test_resolve_ai_config_timeout_from_env() {
+        std::env::set_var("STACKER_AI_TIMEOUT", "900");
+        let config = resolve_ai_config(None, None, None).unwrap();
+        assert_eq!(config.timeout, 900);
+        std::env::remove_var("STACKER_AI_TIMEOUT");
     }
 
     #[test]

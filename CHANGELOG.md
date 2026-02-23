@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## 2026-02-23
 
+### Added - Configurable AI Request Timeout
+
+- New `timeout` field in `ai` config section of `stacker.yml` (default: 300 seconds)
+- `STACKER_AI_TIMEOUT` environment variable overrides the config value
+- Timeout applies to all AI providers (OpenAI, Anthropic, Ollama, Custom)
+- Useful for large models on slower hardware: `STACKER_AI_TIMEOUT=900 stacker init --with-ai`
+- Example stacker.yml:
+  ```yaml
+  ai:
+    enabled: true
+    provider: ollama
+    model: deepseek-r1
+    timeout: 600  # 10 minutes
+  ```
+- 9 new tests for timeout resolution
+
 ### Added - Stacker CLI: AI-Powered Project Initialization
 
 #### AI Scanner Module (`src/cli/ai_scanner.rs`)

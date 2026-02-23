@@ -143,6 +143,7 @@ ai:
   provider: ollama
   model: llama3
   endpoint: http://localhost:11434
+  timeout: 600
   tasks:
     - dockerfile
     - troubleshoot
@@ -536,6 +537,7 @@ AI/LLM assistant configuration. When enabled, `stacker ai ask` uses the configur
 | `model` | `string` | no | Provider default | Model name |
 | `api_key` | `string` | no* | none | API key (supports `${VAR}` syntax) |
 | `endpoint` | `string` | no | Provider default | Custom API endpoint URL |
+| `timeout` | `integer` | no | `300` | Request timeout in seconds (increase for slow models / weak hardware) |
 | `tasks` | `string[]` | no | `[]` | Allowed AI task types |
 
 **Supported providers:**
@@ -570,6 +572,7 @@ ai:
   provider: ollama
   model: llama3
   endpoint: http://localhost:11434
+  timeout: 600  # 10 minutes for large models on slower hardware
 
 # Using a custom OpenAI-compatible API (e.g. Groq, Together AI)
 ai:
@@ -864,6 +867,17 @@ Configuration issues:
 ```bash
 # Init
 stacker init --app-type node --with-proxy --with-ai
+stacker init --with-ai --ai-provider ollama --ai-model deepseek-r1
+
+# AI init environment variables (override CLI defaults)
+# STACKER_AI_PROVIDER  — AI provider (openai, anthropic, ollama, custom)
+# STACKER_AI_MODEL     — Model name
+# STACKER_AI_API_KEY   — API key (generic, provider-specific vars also supported)
+# STACKER_AI_ENDPOINT  — Custom endpoint URL
+# STACKER_AI_TIMEOUT   — Request timeout in seconds (default: 300)
+# OPENAI_API_KEY       — OpenAI API key (used when provider is openai)
+# ANTHROPIC_API_KEY    — Anthropic API key (used when provider is anthropic)
+STACKER_AI_TIMEOUT=900 stacker init --with-ai  # 15 min timeout for slow models
 
 # Deploy
 stacker deploy --target local          # Deploy locally

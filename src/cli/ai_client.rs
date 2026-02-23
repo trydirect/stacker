@@ -46,6 +46,26 @@ const OLLAMA_PREFERRED_MODELS: &[&str] = &[
     "gpt-oss",
 ];
 
+/// Default request timeout in seconds.
+const DEFAULT_AI_TIMEOUT_SECS: u64 = 300;
+
+/// Resolve the AI request timeout in seconds.
+///
+/// Priority: `STACKER_AI_TIMEOUT` env var > `AiConfig.timeout` value > 300s default.
+/// A value of 0 means no timeout (unlimited).
+pub fn resolve_timeout(config_timeout: u64) -> u64 {
+    if let Ok(val) = std::env::var("STACKER_AI_TIMEOUT") {
+        if let Ok(secs) = val.parse::<u64>() {
+            return secs;
+        }
+    }
+    if config_timeout > 0 {
+        config_timeout
+    } else {
+        DEFAULT_AI_TIMEOUT_SECS
+    }
+}
+
 /// Query the local Ollama instance for available models.
 /// Returns a list of model names, or an empty vec if Ollama is unreachable.
 pub fn list_ollama_models(base_url: Option<&str>) -> Vec<String> {
@@ -139,6 +159,7 @@ pub struct OpenAiProvider {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
+    pub timeout_secs: u64,
 }
 
 impl OpenAiProvider {
@@ -158,6 +179,7 @@ impl OpenAiProvider {
                 .model
                 .clone()
                 .unwrap_or_else(|| default_model(AiProviderType::Openai).to_string()),
+            timeout_secs: resolve_timeout(config.timeout),
         })
     }
 }
@@ -178,7 +200,7 @@ impl AiProvider for OpenAiProvider {
         });
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build()
             .map_err(|e| CliError::AiProviderError {
                 provider: "openai".to_string(),
@@ -229,6 +251,7 @@ pub struct AnthropicProvider {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
+    pub timeout_secs: u64,
 }
 
 impl AnthropicProvider {
@@ -248,6 +271,7 @@ impl AnthropicProvider {
                 .model
                 .clone()
                 .unwrap_or_else(|| default_model(AiProviderType::Anthropic).to_string()),
+            timeout_secs: resolve_timeout(config.timeout),
         })
     }
 }
@@ -268,7 +292,7 @@ impl AiProvider for AnthropicProvider {
         });
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build()
             .map_err(|e| CliError::AiProviderError {
                 provider: "anthropic".to_string(),
@@ -319,6 +343,7 @@ impl AiProvider for AnthropicProvider {
 pub struct OllamaProvider {
     pub endpoint: String,
     pub model: String,
+    pub timeout_secs: u64,
 }
 
 impl OllamaProvider {
@@ -343,7 +368,9 @@ impl OllamaProvider {
             }
         });
 
-        Self { endpoint, model }
+        let timeout_secs = resolve_timeout(config.timeout);
+
+        Self { endpoint, model, timeout_secs }
     }
 }
 
@@ -363,7 +390,7 @@ impl AiProvider for OllamaProvider {
         });
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build()
             .map_err(|e| CliError::AiProviderError {
                 provider: "ollama".to_string(),
@@ -841,5 +868,62 @@ mod tests {
         assert!(ctx.files.is_empty());
         assert!(ctx.error_log.is_none());
         assert!(ctx.current_config.is_none());
+    }
+
+    // ── Timeout resolution tests ────────────────
+
+    #[test]
+    fn test_resolve_timeout_uses_config_value() {
+        // Clean env to avoid interference
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+        assert_eq!(resolve_timeout(600), 600);
+        assert_eq!(resolve_timeout(30), 30);
+    }
+
+    #[test]
+    fn test_resolve_timeout_default_fallback() {
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+        // 0 means "use default"
+        assert_eq!(resolve_timeout(0), DEFAULT_AI_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn test_resolve_timeout_env_overrides_config() {
+        std::env::set_var("STACKER_AI_TIMEOUT", "900");
+        assert_eq!(resolve_timeout(300), 900);
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+    }
+
+    #[test]
+    fn test_resolve_timeout_env_invalid_ignored() {
+        std::env::set_var("STACKER_AI_TIMEOUT", "not-a-number");
+        assert_eq!(resolve_timeout(120), 120);
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+    }
+
+    #[test]
+    fn test_provider_timeout_from_config() {
+        let config = AiConfig {
+            enabled: true,
+            provider: AiProviderType::Ollama,
+            timeout: 600,
+            ..Default::default()
+        };
+        let provider = OllamaProvider::from_config(&config);
+        assert_eq!(provider.timeout_secs, 600);
+    }
+
+    #[test]
+    fn test_openai_provider_timeout_from_config() {
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+        let config = AiConfig {
+            enabled: true,
+            provider: AiProviderType::Openai,
+            api_key: Some("sk-test".to_string()),
+            timeout: 120,
+            ..Default::default()
+        };
+        let provider = OpenAiProvider::from_config(&config).unwrap();
+        assert_eq!(provider.timeout_secs, 120);
     }
 }

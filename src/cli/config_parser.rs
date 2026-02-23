@@ -320,6 +320,11 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+/// Default AI request timeout in seconds.
+fn default_ai_timeout() -> u64 {
+    300
+}
+
 /// AI/LLM assistant configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiConfig {
@@ -337,6 +342,11 @@ pub struct AiConfig {
 
     #[serde(default)]
     pub endpoint: Option<String>,
+
+    /// Request timeout in seconds. Default: 300 (5 minutes).
+    /// Can be overridden via `STACKER_AI_TIMEOUT` env var.
+    #[serde(default = "default_ai_timeout")]
+    pub timeout: u64,
 
     #[serde(default)]
     pub tasks: Vec<String>,
