@@ -242,6 +242,11 @@ pub const DEFAULT_API_URL: &str = "https://api.try.direct";
 /// OAuth token endpoint path (relative to auth_url).
 const TOKEN_ENDPOINT: &str = "/oauth_server/token";
 
+fn is_direct_login_endpoint(auth_url: &str) -> bool {
+    let url = auth_url.trim_end_matches('/').to_lowercase();
+    url.ends_with("/auth/login") || url.ends_with("/server/user/auth/login") || url.ends_with("/login")
+}
+
 /// Parameters for a login request.
 #[derive(Debug, Clone)]
 pub struct LoginRequest {
@@ -269,22 +274,37 @@ impl OAuthClient for HttpOAuthClient {
         email: &str,
         password: &str,
     ) -> Result<TokenResponse, CliError> {
-        let url = format!("{}{}", auth_url.trim_end_matches('/'), TOKEN_ENDPOINT);
+        let direct_login = is_direct_login_endpoint(auth_url);
+        let url = if direct_login {
+            auth_url.trim_end_matches('/').to_string()
+        } else {
+            format!("{}{}", auth_url.trim_end_matches('/'), TOKEN_ENDPOINT)
+        };
 
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| CliError::AuthFailed(format!("HTTP client error: {e}")))?;
 
-        let resp = client
-            .post(&url)
-            .form(&[
-                ("grant_type", "password"),
-                ("username", email),
-                ("password", password),
-            ])
-            .send()
-            .map_err(|e| CliError::AuthFailed(format!("Network error: {e}")))?;
+        let resp = if direct_login {
+            client
+                .post(&url)
+                .form(&[
+                    ("email", email),
+                    ("password", password),
+                ])
+                .send()
+        } else {
+            client
+                .post(&url)
+                .form(&[
+                    ("grant_type", "password"),
+                    ("username", email),
+                    ("password", password),
+                ])
+                .send()
+        }
+        .map_err(|e| CliError::AuthFailed(format!("Network error: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -294,7 +314,7 @@ impl OAuthClient for HttpOAuthClient {
                 && (body.contains("<!DOCTYPE html") || body.contains("<html"))
             {
                 format!(
-                    "\nHint: this looks like a website endpoint, not API. Retry with `stacker-cli login --auth-url https://api.try.direct` (attempted: {}).",
+                    "\nHint: if this is an API base URL, use `stacker-cli login --auth-url https://api.try.direct`; if this is a direct login endpoint, pass the full `/auth/login` URL (attempted: {}).",
                     auth_url
                 )
             } else {
@@ -357,6 +377,13 @@ impl fmt::Display for StoredCredentials {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_is_direct_login_endpoint_detection() {
+        assert!(is_direct_login_endpoint("https://dev.try.direct/server/user/auth/login"));
+        assert!(is_direct_login_endpoint("https://dev.try.direct/server/user/auth/login/"));
+        assert!(!is_direct_login_endpoint("https://api.try.direct"));
+    }
 
     // ── In-memory mock store ────────────────────────
 

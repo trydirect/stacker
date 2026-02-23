@@ -179,6 +179,13 @@ impl DeployStrategy for LocalDeploy {
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let output = executor.execute("docker", &args_refs)?;
 
+        if !output.stdout.trim().is_empty() {
+            println!("{}", output.stdout);
+        }
+        if !output.stderr.trim().is_empty() {
+            eprintln!("{}", output.stderr);
+        }
+
         if !output.success() {
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Local,

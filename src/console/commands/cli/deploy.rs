@@ -196,6 +196,95 @@ fn ensure_env_file_if_needed(config: &StackerConfig, project_dir: &Path) -> Resu
     Ok(())
 }
 
+fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError> {
+    let is_stacker_compose = compose_path
+        .components()
+        .any(|c| c.as_os_str() == OUTPUT_DIR);
+
+    if !is_stacker_compose || !compose_path.exists() {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(compose_path)?;
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+
+    let mut changed = false;
+
+    if let serde_yaml::Value::Mapping(ref mut root) = doc {
+        // Remove obsolete compose version key.
+        if root.remove(serde_yaml::Value::String("version".to_string())).is_some() {
+            changed = true;
+        }
+
+        let services_key = serde_yaml::Value::String("services".to_string());
+        if let Some(serde_yaml::Value::Mapping(services)) = root.get_mut(&services_key) {
+            for (service_key, service_value) in services.iter_mut() {
+                let service_name = service_key.as_str().unwrap_or("");
+                let service_map = match service_value {
+                    serde_yaml::Value::Mapping(m) => m,
+                    _ => continue,
+                };
+
+                let build_key = serde_yaml::Value::String("build".to_string());
+                let build_val = match service_map.get_mut(&build_key) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                let build_map = match build_val {
+                    serde_yaml::Value::Mapping(m) => m,
+                    _ => continue,
+                };
+
+                let context_key = serde_yaml::Value::String("context".to_string());
+                let dockerfile_key = serde_yaml::Value::String("dockerfile".to_string());
+
+                let current_context = build_map
+                    .get(&context_key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".")
+                    .to_string();
+
+                let dockerfile = build_map
+                    .get(&dockerfile_key)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let dockerfile_points_to_stacker = dockerfile
+                    .as_deref()
+                    .map(|d| d.starts_with(".stacker/"))
+                    .unwrap_or(false);
+
+                if dockerfile_points_to_stacker && (current_context == "." || current_context == "./") {
+                    build_map.insert(
+                        context_key.clone(),
+                        serde_yaml::Value::String("..".to_string()),
+                    );
+                    changed = true;
+                }
+
+                if service_name == "app" && (current_context == "." || current_context == "./") {
+                    build_map.insert(
+                        context_key,
+                        serde_yaml::Value::String("..".to_string()),
+                    );
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if changed {
+        let updated = serde_yaml::to_string(&doc)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize compose file: {e}")))?;
+        std::fs::write(compose_path, updated)?;
+        eprintln!("  Normalized {}/docker-compose.yml paths", OUTPUT_DIR);
+    }
+
+    Ok(())
+}
+
 fn build_troubleshoot_error_log(project_dir: &Path, reason: &str) -> String {
     let dockerfile_path = project_dir.join(OUTPUT_DIR).join("Dockerfile");
     let compose_path = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
@@ -393,6 +482,8 @@ pub fn run_deploy(
         }
         compose_out
     };
+
+    normalize_generated_compose_paths(&compose_path)?;
 
     // 5c. Report hooks (dry-run)
     if dry_run {
@@ -729,6 +820,31 @@ mod tests {
         assert!(log.contains("docker compose failed"));
         assert!(log.contains("(not found)"));
     }
+
+        #[test]
+        fn test_normalize_generated_compose_paths_fixes_stacker_context_and_version() {
+                let dir = TempDir::new().unwrap();
+                let stacker_dir = dir.path().join(".stacker");
+                std::fs::create_dir_all(&stacker_dir).unwrap();
+
+                let compose_path = stacker_dir.join("docker-compose.yml");
+                let compose = r#"
+version: "3.9"
+services:
+    app:
+        build:
+            context: .
+            dockerfile: .stacker/Dockerfile
+"#;
+                std::fs::write(&compose_path, compose).unwrap();
+
+                normalize_generated_compose_paths(&compose_path).unwrap();
+
+                let normalized = std::fs::read_to_string(&compose_path).unwrap();
+                assert!(!normalized.contains("version:"));
+                assert!(normalized.contains("context: .."));
+                assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+        }
 
     #[test]
     fn test_parse_deploy_target_valid() {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_valid::Validate;
 
 use crate::cli::error::{CliError, Severity, ValidationIssue};
@@ -235,6 +235,56 @@ pub struct ServiceDefinition {
     pub depends_on: Vec<String>,
 }
 
+fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+
+    match value {
+        serde_yaml::Value::Null => Ok(Vec::new()),
+        serde_yaml::Value::Sequence(_) => serde_yaml::from_value(value)
+            .map_err(serde::de::Error::custom),
+        serde_yaml::Value::Mapping(map) => {
+            let mut services = Vec::new();
+
+            for (key, service_value) in map {
+                let service_key = key
+                    .as_str()
+                    .ok_or_else(|| serde::de::Error::custom("services map key must be a string"))?
+                    .to_string();
+
+                let mut service_map = match service_value {
+                    serde_yaml::Value::Mapping(m) => m,
+                    _ => {
+                        return Err(serde::de::Error::custom(
+                            "each services map item must be an object",
+                        ));
+                    }
+                };
+
+                let has_name = service_map.keys().any(|k| k.as_str() == Some("name"));
+                if !has_name {
+                    service_map.insert(
+                        serde_yaml::Value::String("name".to_string()),
+                        serde_yaml::Value::String(service_key),
+                    );
+                }
+
+                let service: ServiceDefinition =
+                    serde_yaml::from_value(serde_yaml::Value::Mapping(service_map))
+                        .map_err(serde::de::Error::custom)?;
+                services.push(service);
+            }
+
+            Ok(services)
+        }
+        _ => Err(serde::de::Error::custom(
+            "services must be a sequence or map",
+        )),
+    }
+}
+
 /// Proxy/ingress configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyConfig {
@@ -425,7 +475,7 @@ pub struct StackerConfig {
     #[serde(default)]
     pub app: AppSource,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_services")]
     pub services: Vec<ServiceDefinition>,
 
     #[serde(default)]
@@ -461,7 +511,8 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
-        let resolved_content = resolve_env_vars(&raw_content)?;
+        let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
+        let resolved_content = resolve_env_vars_with_fallback(&raw_content, &env_file_vars)?;
         let config: StackerConfig = serde_yaml::from_str(&resolved_content)?;
         Ok(config)
     }
@@ -543,6 +594,64 @@ impl StackerConfig {
     }
 }
 
+fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<String, String> {
+    let parsed: serde_yaml::Value = match serde_yaml::from_str(raw_content) {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+
+    let env_file_value = parsed
+        .get("env_file")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let env_file = match env_file_value {
+        Some(v) => v,
+        None => return HashMap::new(),
+    };
+
+    let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let env_file_path = Path::new(env_file);
+    let resolved_path = if env_file_path.is_absolute() {
+        env_file_path.to_path_buf()
+    } else {
+        config_dir.join(env_file_path)
+    };
+
+    let content = match std::fs::read_to_string(&resolved_path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut vars = HashMap::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some((key, value)) = trimmed.split_once('=') {
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+
+            let mut value = value.trim().to_string();
+            if (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''))
+            {
+                if value.len() >= 2 {
+                    value = value[1..value.len() - 1].to_string();
+                }
+            }
+            vars.insert(key.to_string(), value);
+        }
+    }
+
+    vars
+}
+
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
 fn extract_host_port(port_str: &str) -> String {
     port_str
@@ -554,6 +663,13 @@ fn extract_host_port(port_str: &str) -> String {
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
 fn resolve_env_vars(content: &str) -> Result<String, CliError> {
+    resolve_env_vars_with_fallback(content, &HashMap::new())
+}
+
+fn resolve_env_vars_with_fallback(
+    content: &str,
+    fallback_vars: &HashMap<String, String>,
+) -> Result<String, CliError> {
     let mut result = content.to_string();
     let re = regex::Regex::new(r"\$\{([^}]+)\}").expect("valid regex");
 
@@ -568,9 +684,15 @@ fn resolve_env_vars(content: &str) -> Result<String, CliError> {
         .collect();
 
     for (full_match, var_name) in captures {
-        let value = std::env::var(&var_name).map_err(|_| CliError::EnvVarNotFound {
-            var_name: var_name.clone(),
-        })?;
+        let value = match std::env::var(&var_name) {
+            Ok(v) => v,
+            Err(_) => fallback_vars
+                .get(&var_name)
+                .cloned()
+                .ok_or_else(|| CliError::EnvVarNotFound {
+                    var_name: var_name.clone(),
+                })?,
+        };
         result = result.replace(&full_match, &value);
     }
 
@@ -749,6 +871,8 @@ impl ConfigBuilder {
 mod tests {
     use super::*;
     use std::env;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_minimal_config() {
@@ -866,6 +990,28 @@ env:
         );
     }
 
+        #[test]
+        fn test_from_file_resolves_env_from_env_file() {
+                let dir = TempDir::new().unwrap();
+                fs::write(dir.path().join(".env"), "DOCKER_IMAGE=node:14-alpine\n").unwrap();
+
+                let yaml = r#"
+name: env-file-test
+env_file: .env
+app:
+    type: custom
+    path: .
+    image: ${DOCKER_IMAGE}
+deploy:
+    target: local
+"#;
+                let config_path = dir.path().join("stacker.yml");
+                fs::write(&config_path, yaml).unwrap();
+
+                let config = StackerConfig::from_file(&config_path).unwrap();
+                assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
+        }
+
     #[test]
     fn test_parse_invalid_app_type_returns_error() {
         let yaml = r#"
@@ -910,6 +1056,42 @@ services:
         assert_eq!(config.services[2].name, "minio");
         assert_eq!(config.services[2].ports.len(), 2);
     }
+
+        #[test]
+        fn test_parse_services_map() {
+                let yaml = r#"
+name: svc-map-test
+services:
+    web:
+        name: web
+        image: nginx:alpine
+        ports: ["8080:80"]
+    redis:
+        name: redis
+        image: redis:7-alpine
+"#;
+
+                let config = StackerConfig::from_str(yaml).unwrap();
+                assert_eq!(config.services.len(), 2);
+                assert!(config.services.iter().any(|s| s.name == "web" && s.image == "nginx:alpine"));
+                assert!(config.services.iter().any(|s| s.name == "redis" && s.image == "redis:7-alpine"));
+        }
+
+        #[test]
+        fn test_parse_services_map_infers_name_from_key() {
+                let yaml = r#"
+name: svc-map-key-test
+services:
+    web:
+        image: nginx:alpine
+        ports: ["8080:80"]
+"#;
+
+                let config = StackerConfig::from_str(yaml).unwrap();
+                assert_eq!(config.services.len(), 1);
+                assert_eq!(config.services[0].name, "web");
+                assert_eq!(config.services[0].image, "nginx:alpine");
+        }
 
     #[test]
     fn test_parse_proxy_domains() {

@@ -205,6 +205,11 @@ Rules:
 9. If a docker-compose already exists, set deploy.compose_file to reference it.
 10. Keep the configuration practical and deployable — don't add services that aren't needed.";
 
+/// Expose the system prompt used for AI-based stacker.yml generation.
+pub fn generation_system_prompt() -> &'static str {
+    SYSTEM_PROMPT
+}
+
 /// Build the user prompt from the scan result.
 pub fn build_generation_prompt(scan: &ProjectScanResult) -> String {
     let mut sections = Vec::new();
@@ -251,6 +256,16 @@ pub fn build_generation_prompt(scan: &ProjectScanResult) -> String {
     );
 
     sections.join("\n\n")
+}
+
+/// Build the `(system_prompt, user_prompt)` pair for stacker.yml generation.
+pub fn build_generation_request(project_dir: &Path) -> (String, String) {
+    let fs = RealFileSystem;
+    let scan = scan_project(project_dir, &fs);
+    (
+        generation_system_prompt().to_string(),
+        build_generation_prompt(&scan),
+    )
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

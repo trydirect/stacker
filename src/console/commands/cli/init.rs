@@ -1,8 +1,10 @@
 use std::convert::TryFrom;
 use std::path::{Path, PathBuf};
 
-use crate::cli::ai_client::{AiProvider, create_provider};
-use crate::cli::ai_scanner::{generate_config_with_ai, strip_code_fences};
+use crate::cli::ai_client::{AiProvider, create_provider, ollama_complete_streaming};
+use crate::cli::ai_scanner::{
+    build_generation_request, generate_config_with_ai, strip_code_fences,
+};
 use crate::cli::config_parser::{
     AiConfig, AiProviderType, AppType, ConfigBuilder, DomainConfig, ProxyConfig, ProxyType,
     SslMode, StackerConfig,
@@ -324,7 +326,24 @@ fn generate_config_ai_path(
 ) -> Result<PathBuf, CliError> {
     eprintln!("🤖 Scanning project and generating config with AI...");
 
-    let yaml = generate_config_with_ai(project_dir, provider)?;
+    let yaml = if ai_config.provider == AiProviderType::Ollama {
+        let (system_prompt, user_prompt) = build_generation_request(project_dir);
+        eprintln!("🧠 AI reasoning (streaming)...");
+        let raw = ollama_complete_streaming(ai_config, &user_prompt, &system_prompt)?;
+        eprintln!();
+        let yaml = strip_code_fences(&raw);
+
+        serde_yaml::from_str::<serde_yaml::Value>(&yaml).map_err(|e| {
+            CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("AI generated invalid YAML: {}", e),
+            }
+        })?;
+
+        yaml
+    } else {
+        generate_config_with_ai(project_dir, provider)?
+    };
 
     // Validate it parses as StackerConfig
     match StackerConfig::from_str(&yaml) {
@@ -440,6 +459,7 @@ const OUTPUT_DIR: &str = ".stacker";
 fn generate_dockerfile_with_ai(
     project_dir: &Path,
     config: &StackerConfig,
+    ai_config: &AiConfig,
     provider: &dyn AiProvider,
 ) -> Result<String, CliError> {
     let mut context = Vec::new();
@@ -465,7 +485,14 @@ fn generate_dockerfile_with_ai(
     );
 
     let system = "You are an expert Docker engineer. Return only valid Dockerfile content.";
-    let raw = provider.complete(&prompt, system)?;
+    let raw = if ai_config.provider == AiProviderType::Ollama {
+        eprintln!("🧠 AI reasoning for Dockerfile (streaming)...");
+        let response = ollama_complete_streaming(ai_config, &prompt, system)?;
+        eprintln!();
+        response
+    } else {
+        provider.complete(&prompt, system)?
+    };
     let dockerfile = strip_code_fences(&raw);
 
     if !dockerfile
@@ -484,6 +511,7 @@ fn generate_compose_with_ai(
     project_dir: &Path,
     config: &StackerConfig,
     dockerfile_path: &Path,
+    ai_config: &AiConfig,
     provider: &dyn AiProvider,
 ) -> Result<String, CliError> {
     let config_yaml = serde_yaml::to_string(config)
@@ -501,7 +529,14 @@ fn generate_compose_with_ai(
     );
 
     let system = "You are an expert Docker Compose engineer. Return only valid docker compose YAML.";
-    let raw = provider.complete(&prompt, system)?;
+    let raw = if ai_config.provider == AiProviderType::Ollama {
+        eprintln!("🧠 AI reasoning for compose (streaming)...");
+        let response = ollama_complete_streaming(ai_config, &prompt, system)?;
+        eprintln!();
+        response
+    } else {
+        provider.complete(&prompt, system)?
+    };
     let compose = strip_code_fences(&raw);
 
     let parsed: serde_yaml::Value = serde_yaml::from_str(&compose).map_err(|e| {
@@ -552,14 +587,14 @@ impl CallableTrait for InitCommand {
         std::fs::create_dir_all(&output_dir)?;
 
         // Optional AI provider for artifact generation
-        let ai_provider = if self.with_ai {
+        let ai_runtime = if self.with_ai {
             match resolve_ai_config(
                 self.ai_provider.as_deref(),
                 self.ai_model.as_deref(),
                 self.ai_api_key.as_deref(),
             ) {
                 Ok(ai_cfg) => match create_provider(&ai_cfg) {
-                    Ok(provider) => Some(provider),
+                    Ok(provider) => Some((ai_cfg, provider)),
                     Err(e) => {
                         eprintln!("⚠ AI artifact generation unavailable: {}", e);
                         None
@@ -574,81 +609,74 @@ impl CallableTrait for InitCommand {
             None
         };
 
-        // Generate Dockerfile (skip if user specified a custom one or an image)
+        // Generate Dockerfile
         let needs_dockerfile = config.app.image.is_none() && config.app.dockerfile.is_none();
-        let prefer_ai_dockerfile = self.with_ai && config.app.dockerfile.is_none();
-        if needs_dockerfile {
+        if self.with_ai {
             let dockerfile_path = output_dir.join("Dockerfile");
             let mut generated = false;
 
-            if prefer_ai_dockerfile {
-                if let Some(ref provider) = ai_provider {
-                    match generate_dockerfile_with_ai(&project_dir, &config, provider.as_ref()) {
-                        Ok(dockerfile) => {
-                            std::fs::write(&dockerfile_path, dockerfile)?;
-                            eprintln!("✓ Generated {}/Dockerfile (AI)", OUTPUT_DIR);
-                            generated = true;
-                        }
-                        Err(e) => {
-                            eprintln!("⚠ AI Dockerfile generation failed: {}", e);
-                            eprintln!("  Falling back to template Dockerfile generation.");
-                        }
+            if let Some((ref ai_cfg, ref provider)) = ai_runtime {
+                match generate_dockerfile_with_ai(&project_dir, &config, ai_cfg, provider.as_ref()) {
+                    Ok(dockerfile) => {
+                        std::fs::write(&dockerfile_path, dockerfile)?;
+                        eprintln!("✓ Generated {}/Dockerfile (AI)", OUTPUT_DIR);
+                        generated = true;
+                    }
+                    Err(e) => {
+                        eprintln!("⚠ AI Dockerfile generation failed: {}", e);
+                        eprintln!("  Falling back to template Dockerfile generation.");
                     }
                 }
             }
 
             if !generated {
                 let builder = DockerfileBuilder::from(config.app.app_type);
-                builder.write_to(&dockerfile_path, false)?;
-                eprintln!("✓ Generated {}/Dockerfile", OUTPUT_DIR);
+                builder.write_to(&dockerfile_path, true)?;
+                eprintln!("✓ Regenerated {}/Dockerfile (template)", OUTPUT_DIR);
             }
-        } else if prefer_ai_dockerfile {
+        } else if needs_dockerfile {
             let dockerfile_path = output_dir.join("Dockerfile");
-            if let Some(ref provider) = ai_provider {
-                match generate_dockerfile_with_ai(&project_dir, &config, provider.as_ref()) {
-                    Ok(dockerfile) => {
-                        std::fs::write(&dockerfile_path, dockerfile)?;
-                        eprintln!("✓ Generated {}/Dockerfile (AI)", OUTPUT_DIR);
-                    }
-                    Err(e) => {
-                        eprintln!("⚠ AI Dockerfile generation failed: {}", e);
-                    }
-                }
-            }
+            let builder = DockerfileBuilder::from(config.app.app_type);
+            builder.write_to(&dockerfile_path, false)?;
+            eprintln!("✓ Generated {}/Dockerfile", OUTPUT_DIR);
         }
 
-        // Generate docker-compose.yml (skip if user specified an existing compose file)
-        if config.deploy.compose_file.is_none() {
+        // Generate docker-compose.yml
+        if self.with_ai {
             let compose_path = output_dir.join("docker-compose.yml");
             let dockerfile_path = output_dir.join("Dockerfile");
             let mut generated = false;
 
-            if self.with_ai {
-                if let Some(ref provider) = ai_provider {
-                    match generate_compose_with_ai(
-                        &project_dir,
-                        &config,
-                        &dockerfile_path,
-                        provider.as_ref(),
-                    ) {
-                        Ok(compose_yaml) => {
-                            std::fs::write(&compose_path, compose_yaml)?;
-                            eprintln!("✓ Generated {}/docker-compose.yml (AI)", OUTPUT_DIR);
-                            generated = true;
-                        }
-                        Err(e) => {
-                            eprintln!("⚠ AI compose generation failed: {}", e);
-                            eprintln!("  Falling back to template compose generation.");
-                        }
+            if let Some((ref ai_cfg, ref provider)) = ai_runtime {
+                match generate_compose_with_ai(
+                    &project_dir,
+                    &config,
+                    &dockerfile_path,
+                    ai_cfg,
+                    provider.as_ref(),
+                ) {
+                    Ok(compose_yaml) => {
+                        std::fs::write(&compose_path, compose_yaml)?;
+                        eprintln!("✓ Generated {}/docker-compose.yml (AI)", OUTPUT_DIR);
+                        generated = true;
+                    }
+                    Err(e) => {
+                        eprintln!("⚠ AI compose generation failed: {}", e);
+                        eprintln!("  Falling back to template compose generation.");
                     }
                 }
             }
 
             if !generated {
                 let compose = ComposeDefinition::try_from(&config)?;
-                compose.write_to(&compose_path, false)?;
-                eprintln!("✓ Generated {}/docker-compose.yml", OUTPUT_DIR);
+                compose.write_to(&compose_path, true)?;
+                eprintln!("✓ Regenerated {}/docker-compose.yml (template)", OUTPUT_DIR);
             }
+        } else if config.deploy.compose_file.is_none() {
+            let compose_path = output_dir.join("docker-compose.yml");
+            let compose = ComposeDefinition::try_from(&config)?;
+            compose.write_to(&compose_path, false)?;
+            eprintln!("✓ Generated {}/docker-compose.yml", OUTPUT_DIR);
         }
 
         eprintln!("\nNext steps:");
@@ -936,7 +964,13 @@ mod tests {
             "```dockerfile\nFROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --omit=dev\nCOPY . .\nCMD [\"npm\",\"start\"]\n```",
         ]);
 
-        let dockerfile = generate_dockerfile_with_ai(dir.path(), &config, &provider).unwrap();
+        let ai_cfg = AiConfig {
+            enabled: true,
+            provider: AiProviderType::Custom,
+            ..AiConfig::default()
+        };
+
+        let dockerfile = generate_dockerfile_with_ai(dir.path(), &config, &ai_cfg, &provider).unwrap();
         assert!(dockerfile.contains("FROM node:20-alpine"));
         assert!(!dockerfile.contains("```"));
     }
@@ -956,10 +990,17 @@ mod tests {
             "services:\n  app:\n    build:\n      context: .\n      dockerfile: .stacker/Dockerfile\n    ports:\n      - \"3000:3000\"\n",
         ]);
 
+        let ai_cfg = AiConfig {
+            enabled: true,
+            provider: AiProviderType::Custom,
+            ..AiConfig::default()
+        };
+
         let compose = generate_compose_with_ai(
             dir.path(),
             &config,
             &dir.path().join(".stacker").join("Dockerfile"),
+            &ai_cfg,
             &provider,
         )
         .unwrap();
