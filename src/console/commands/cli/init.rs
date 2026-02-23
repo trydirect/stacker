@@ -132,20 +132,31 @@ fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
 ///
 /// This is extracted as a standalone function for testability — the
 /// `InitCommand::call()` delegates here with `std::env::current_dir()`.
+///
+/// NOTE: This function always uses template-based generation (no network calls).
+/// For AI-powered generation, use `generate_config_full()` with explicit
+/// provider options — that path is invoked by the real CLI binary.
 pub fn generate_config(
     project_dir: &Path,
     app_type_override: Option<&str>,
     with_proxy: bool,
     with_ai: bool,
 ) -> Result<PathBuf, CliError> {
-    generate_config_full(
+    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+
+    if config_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "{} already exists. Remove it first or edit it directly.",
+            DEFAULT_CONFIG_FILE
+        )));
+    }
+
+    generate_config_template_path(
         project_dir,
+        &config_path,
         app_type_override,
         with_proxy,
         with_ai,
-        None,
-        None,
-        None,
     )
 }
 
@@ -183,12 +194,17 @@ pub fn generate_config_full(
                 ) {
                     Ok(path) => return Ok(path),
                     Err(e) => {
-                        eprintln!("⚠ AI generation failed: {}. Falling back to template-based generation.", e);
+                        eprintln!("\n⚠ AI generation failed: {}", e);
+                        eprintln!("  Falling back to template-based generation.");
+                        eprintln!("  Tip: make sure your Ollama model supports code generation.");
+                        eprintln!("  Available models can be listed with: ollama list\n");
                     }
                 }
             }
-            Err(_) => {
-                eprintln!("⚠ AI provider not available, falling back to template-based generation");
+            Err(e) => {
+                eprintln!("\n⚠ AI provider not available: {}", e);
+                eprintln!("  Falling back to template-based generation.");
+                eprintln!("  Tip: start Ollama with: ollama serve\n");
             }
         }
     }
@@ -553,9 +569,14 @@ mod tests {
 
     #[test]
     fn test_generate_config_full_template_fallback() {
-        // with_ai=true but no provider available → falls back to template
+        // with_ai=true but bogus provider → create_provider fails → falls back to template
         let dir = setup_dir_with_files(&["package.json"]);
-        let result = generate_config_full(dir.path(), None, false, true, None, None, None);
+        // Use an explicit provider that will fail connection (port 1 is unreachable)
+        // This avoids hitting a real running Ollama instance
+        let result = generate_config_full(
+            dir.path(), None, false, true,
+            Some("custom"), None, Some("fake-key"),
+        );
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();

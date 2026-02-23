@@ -61,9 +61,11 @@ fn test_init_with_proxy_flag() {
 fn test_init_with_ai_flag() {
     let dir = TempDir::new().unwrap();
 
+    // Use custom provider with fake key so it fails fast (avoids hitting
+    // a real running Ollama which would take minutes to generate).
     stacker_cmd()
         .current_dir(dir.path())
-        .args(["init", "--with-ai"])
+        .args(["init", "--with-ai", "--ai-provider", "custom", "--ai-api-key", "fake"])
         .assert()
         .success();
 
@@ -151,10 +153,11 @@ fn test_init_with_ai_and_provider_flags() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("package.json"), r#"{"name":"test"}"#).unwrap();
 
-    // Using ollama with no running instance — should fall back to template
+    // Use custom provider with fake key — triggers AI path, fails fast,
+    // then falls back to template-based generation.
     stacker_cmd()
         .current_dir(dir.path())
-        .args(["init", "--with-ai", "--ai-provider", "ollama"])
+        .args(["init", "--with-ai", "--ai-provider", "custom", "--ai-api-key", "fake"])
         .assert()
         .success()
         .stderr(predicate::str::contains("AI").or(predicate::str::contains("Created")));

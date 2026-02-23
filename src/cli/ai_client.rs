@@ -14,6 +14,9 @@ pub const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Default Ollama endpoint.
 pub const OLLAMA_API_URL: &str = "http://localhost:11434/api/chat";
 
+/// Ollama tags endpoint (for listing available models).
+pub const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
+
 /// Default model per provider when none is specified in config.
 pub fn default_model(provider: AiProviderType) -> &'static str {
     match provider {
@@ -22,6 +25,92 @@ pub fn default_model(provider: AiProviderType) -> &'static str {
         AiProviderType::Ollama => "llama3",
         AiProviderType::Custom => "default",
     }
+}
+
+/// Preferred Ollama models for stacker.yml generation, in priority order.
+/// The first available model from this list will be used.
+const OLLAMA_PREFERRED_MODELS: &[&str] = &[
+    "llama3",
+    "llama3.1",
+    "llama3.2",
+    "llama3:latest",
+    "codellama",
+    "mistral",
+    "mixtral",
+    "deepseek-r1",
+    "deepseek-coder",
+    "qwen2.5-coder",
+    "qwen2.5",
+    "phi3",
+    "gemma2",
+    "gpt-oss",
+];
+
+/// Query the local Ollama instance for available models.
+/// Returns a list of model names, or an empty vec if Ollama is unreachable.
+pub fn list_ollama_models(base_url: Option<&str>) -> Vec<String> {
+    let tags_url = base_url
+        .map(|u| {
+            // Convert chat endpoint to tags endpoint
+            u.replace("/api/chat", "/api/tags")
+                .replace("/api/generate", "/api/tags")
+        })
+        .unwrap_or_else(|| OLLAMA_TAGS_URL.to_string());
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let response = match client.get(&tags_url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+
+    let json: serde_json::Value = match response.json() {
+        Ok(j) => j,
+        Err(_) => return Vec::new(),
+    };
+
+    json["models"]
+        .as_array()
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pick the best available Ollama model for config generation.
+/// Checks the preferred list first, then falls back to the first available model.
+/// Returns None if no models are available.
+pub fn pick_ollama_model(base_url: Option<&str>) -> Option<String> {
+    let available = list_ollama_models(base_url);
+    if available.is_empty() {
+        return None;
+    }
+
+    // Check preferred models in priority order
+    for preferred in OLLAMA_PREFERRED_MODELS {
+        for avail in &available {
+            // Match base name (e.g. "deepseek-r1" matches "deepseek-r1:latest")
+            let avail_base = avail.split(':').next().unwrap_or(avail);
+            if avail_base == *preferred || avail == preferred {
+                return Some(avail.clone());
+            }
+        }
+    }
+
+    // No preferred model found — use the first non-embedding model
+    available
+        .into_iter()
+        .find(|m| !m.contains("embed"))
+        .or_else(|| Some("llama3".to_string()))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -234,16 +323,27 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn from_config(config: &AiConfig) -> Self {
-        Self {
-            endpoint: config
-                .endpoint
-                .clone()
-                .unwrap_or_else(|| OLLAMA_API_URL.to_string()),
-            model: config
-                .model
-                .clone()
-                .unwrap_or_else(|| default_model(AiProviderType::Ollama).to_string()),
-        }
+        let endpoint = config
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| OLLAMA_API_URL.to_string());
+
+        let model = config.model.clone().unwrap_or_else(|| {
+            // Try to auto-detect the best available model
+            match pick_ollama_model(Some(&endpoint)) {
+                Some(m) => {
+                    eprintln!("  Using Ollama model: {}", m);
+                    m
+                }
+                None => {
+                    let default = default_model(AiProviderType::Ollama).to_string();
+                    eprintln!("  No models detected, trying default: {}", default);
+                    default
+                }
+            }
+        });
+
+        Self { endpoint, model }
     }
 }
 
@@ -263,7 +363,7 @@ impl AiProvider for OllamaProvider {
         });
 
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| CliError::AiProviderError {
                 provider: "ollama".to_string(),
@@ -277,7 +377,7 @@ impl AiProvider for OllamaProvider {
             .send()
             .map_err(|e| CliError::AiProviderError {
                 provider: "ollama".to_string(),
-                message: format!("Request failed: {}", e),
+                message: format!("Request failed (is Ollama running?): {}", e),
             })?;
 
         if !response.status().is_success() {
@@ -717,7 +817,21 @@ mod tests {
 
         let provider = OllamaProvider::from_config(&config);
         assert_eq!(provider.endpoint, OLLAMA_API_URL);
-        assert_eq!(provider.model, "llama3");
+        // Model is either auto-detected from running Ollama or falls back to default
+        assert!(!provider.model.is_empty(), "model must not be empty");
+    }
+
+    #[test]
+    fn test_ollama_provider_from_config_explicit_model() {
+        let config = AiConfig {
+            enabled: true,
+            provider: AiProviderType::Ollama,
+            model: Some("custom-model".to_string()),
+            ..Default::default()
+        };
+
+        let provider = OllamaProvider::from_config(&config);
+        assert_eq!(provider.model, "custom-model");
     }
 
     #[test]

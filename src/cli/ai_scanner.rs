@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::cli::ai_client::AiProvider;
-use crate::cli::config_parser::AppType;
 use crate::cli::detector::{detect_project, FileSystem, ProjectDetection, RealFileSystem};
 use crate::cli::error::CliError;
 
@@ -337,7 +336,7 @@ pub fn strip_code_fences(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::StackerConfig;
+    use crate::cli::config_parser::{AppType, StackerConfig};
     use crate::cli::detector::FileSystem;
 
     // ── Mock filesystem ─────────────────────────────
