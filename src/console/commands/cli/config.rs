@@ -5,6 +5,7 @@ use crate::cli::config_parser::{
     CloudConfig, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
 };
 use crate::cli::error::CliError;
+use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -308,6 +309,24 @@ impl CallableTrait for ConfigShowCommand {
         let path = resolve_config_path(&self.file);
         let yaml = run_show(&path)?;
         println!("{}", yaml);
+        Ok(())
+    }
+}
+
+/// `stacker config example`
+///
+/// Prints a full commented `stacker.yml` reference example.
+pub struct ConfigExampleCommand;
+
+impl ConfigExampleCommand {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl CallableTrait for ConfigExampleCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        println!("{}", full_config_reference_example());
         Ok(())
     }
 }

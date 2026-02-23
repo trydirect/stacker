@@ -149,17 +149,32 @@ impl DeployStrategy for LocalDeploy {
 
     fn deploy(
         &self,
-        _config: &StackerConfig,
+        config: &StackerConfig,
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
         let compose_path = context.compose_path.to_string_lossy().to_string();
 
-        let args: Vec<String> = if context.dry_run {
-            vec!["compose".into(), "-f".into(), compose_path.clone(), "config".into()]
+        let mut args: Vec<String> = vec!["compose".into()];
+        if let Some(ref env_file) = config.env_file {
+            let env_file_path = if env_file.is_absolute() {
+                env_file.clone()
+            } else {
+                context.project_dir.join(env_file)
+            };
+            args.push("--env-file".into());
+            args.push(env_file_path.to_string_lossy().to_string());
+        }
+        args.push("-f".into());
+        args.push(compose_path.clone());
+
+        if context.dry_run {
+            args.push("config".into());
         } else {
-            vec!["compose".into(), "-f".into(), compose_path.clone(), "up".into(), "-d".into(), "--build".into()]
-        };
+            args.push("up".into());
+            args.push("-d".into());
+            args.push("--build".into());
+        }
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let output = executor.execute("docker", &args_refs)?;
@@ -181,12 +196,25 @@ impl DeployStrategy for LocalDeploy {
 
     fn destroy(
         &self,
-        _config: &StackerConfig,
+        config: &StackerConfig,
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<(), CliError> {
         let compose_path = context.compose_path.to_string_lossy().to_string();
-        let args: Vec<String> = vec!["compose".into(), "-f".into(), compose_path, "down".into(), "--volumes".into()];
+        let mut args: Vec<String> = vec!["compose".into()];
+        if let Some(ref env_file) = config.env_file {
+            let env_file_path = if env_file.is_absolute() {
+                env_file.clone()
+            } else {
+                context.project_dir.join(env_file)
+            };
+            args.push("--env-file".into());
+            args.push(env_file_path.to_string_lossy().to_string());
+        }
+        args.push("-f".into());
+        args.push(compose_path);
+        args.push("down".into());
+        args.push("--volumes".into());
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let output = executor.execute("docker", &args_refs)?;
 
@@ -787,6 +815,24 @@ mod tests {
         let args = executor.last_args();
         assert!(args.contains(&"down".to_string()));
         assert!(args.contains(&"--volumes".to_string()));
+    }
+
+    #[test]
+    fn test_local_deploy_uses_env_file_when_configured() {
+        let config = ConfigBuilder::new()
+            .name("local-app")
+            .env_file(".env")
+            .build()
+            .unwrap();
+        let context = sample_context(true);
+        let executor = MockExecutor::success();
+        let strategy = LocalDeploy;
+
+        strategy.deploy(&config, &context, &executor).unwrap();
+
+        let args = executor.last_args();
+        assert!(args.contains(&"--env-file".to_string()));
+        assert!(args.contains(&"/project/.env".to_string()));
     }
 
     #[test]

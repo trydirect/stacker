@@ -64,7 +64,6 @@ impl From<&ServiceDefinition> for ComposeService {
 
 #[derive(Debug, Clone)]
 pub struct ComposeDefinition {
-    pub version: String,
     pub services: Vec<ComposeService>,
     pub networks: Vec<String>,
     pub volumes: Vec<String>,
@@ -73,7 +72,6 @@ pub struct ComposeDefinition {
 impl Default for ComposeDefinition {
     fn default() -> Self {
         Self {
-            version: "3.8".to_string(),
             services: Vec::new(),
             networks: vec!["app-network".to_string()],
             volumes: Vec::new(),
@@ -235,7 +233,6 @@ impl ComposeDefinition {
     pub fn render(&self) -> String {
         let mut out = String::new();
 
-        out.push_str(&format!("version: \"{}\"\n\n", self.version));
         out.push_str("services:\n");
 
         for svc in &self.services {
@@ -481,11 +478,11 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_render_contains_version() {
+    fn test_compose_render_omits_obsolete_version() {
         let config = minimal_config(AppType::Static);
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let yaml = compose.render();
-        assert!(yaml.contains("version: \"3.8\""));
+        assert!(!yaml.contains("version:"));
     }
 
     #[test]

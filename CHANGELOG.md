@@ -22,6 +22,12 @@ All notable changes to this project will be documented in this file.
   - `--ai-model <MODEL>` — e.g. `qwen2.5-coder`, `deepseek-r1`, `gpt-4o`
   - `--ai-api-key <KEY>` — API key for cloud AI providers
 
+### Added — AI troubleshooting suggestions on deploy failures
+
+- On `stacker deploy` failures (`DeployFailed`), CLI now attempts AI-assisted troubleshooting automatically
+- It sends the deploy error plus generated `.stacker/Dockerfile` and `.stacker/docker-compose.yml` snippets to the configured AI provider
+- If AI is unavailable or not configured, CLI prints deterministic fallback hints for common issues (for example `npm ci` failures, obsolete compose `version`, missing files, permissions, and network timeouts)
+
 ### Fixed
 
 - `stacker-cli init --with-ai --ai-model qwen2.5-coder` no longer fails with an unrecognised flag error

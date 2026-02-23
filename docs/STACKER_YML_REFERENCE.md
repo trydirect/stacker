@@ -911,6 +911,8 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 
 ```
 
+>
+> **Troubleshooting:** On deploy build/runtime failures, Stacker attempts AI-assisted diagnosis using your configured AI provider. If AI is unavailable, it prints fallback fix suggestions.
 > **Note:** `deploy` reuses existing `.stacker/Dockerfile` and `.stacker/docker-compose.yml` if present (e.g. from `stacker init`). Use `--force-rebuild` to regenerate them.
 
 ### Other commands

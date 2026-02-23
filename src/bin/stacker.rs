@@ -149,6 +149,8 @@ enum ConfigCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Print a full commented `stacker.yml` reference example
+    Example,
     /// Interactively fix missing required config fields
     Fix {
         #[arg(long, value_name = "FILE")]
@@ -193,8 +195,12 @@ enum ProxyCommands {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-
-    get_command(cli)?.call()
+    let command = get_command(cli)?;
+    if let Err(err) = command.call() {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn get_command(
@@ -254,6 +260,9 @@ fn get_command(
             ),
             ConfigCommands::Show { file } => Box::new(
                 stacker::console::commands::cli::config::ConfigShowCommand::new(file),
+            ),
+            ConfigCommands::Example => Box::new(
+                stacker::console::commands::cli::config::ConfigExampleCommand::new(),
             ),
             ConfigCommands::Fix { file, interactive } => Box::new(
                 stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),

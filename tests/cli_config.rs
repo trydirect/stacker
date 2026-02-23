@@ -95,3 +95,18 @@ fn test_config_show_missing_file_returns_error() {
         .assert()
         .failure();
 }
+
+      #[test]
+      fn test_config_example_prints_full_reference() {
+          let dir = TempDir::new().unwrap();
+
+          stacker_cmd()
+        .current_dir(dir.path())
+        .args(["config", "example"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FULL COMMENTED REFERENCE"))
+        .stdout(predicate::str::contains("monitoring:"))
+        .stdout(predicate::str::contains("hooks:"))
+        .stdout(predicate::str::contains("deploy:"));
+      }

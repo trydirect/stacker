@@ -177,6 +177,8 @@ enum StackerConfigCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Print a full commented `stacker.yml` reference example
+    Example,
     /// Interactively fix missing required config fields
     Fix {
         #[arg(long, value_name = "FILE")]
@@ -316,6 +318,9 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
                 )),
                 StackerConfigCommands::Show { file } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigShowCommand::new(file),
+                )),
+                StackerConfigCommands::Example => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigExampleCommand::new(),
                 )),
                 StackerConfigCommands::Fix { file, interactive } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),

@@ -1,7 +1,8 @@
 use std::convert::TryFrom;
 use std::path::{Path, PathBuf};
 
-use crate::cli::config_parser::{AppType, DeployTarget, StackerConfig};
+use crate::cli::ai_client::{build_prompt, create_provider, AiTask, PromptContext};
+use crate::cli::config_parser::{AiProviderType, AppType, DeployTarget, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, FileCredentialStore};
 use crate::cli::error::CliError;
 use crate::cli::generator::compose::ComposeDefinition;
@@ -16,6 +17,253 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// Output directory for generated artifacts.
 const OUTPUT_DIR: &str = ".stacker";
+
+fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
+    let json = format!("\"{}\"", s.trim().to_lowercase());
+    serde_json::from_str::<AiProviderType>(&json).map_err(|_| {
+        CliError::ConfigValidation(
+            "Unknown AI provider. Use: openai, anthropic, ollama, custom".to_string(),
+        )
+    })
+}
+
+fn resolve_ai_from_env_or_config(project_dir: &Path, config_file: Option<&str>) -> Result<crate::cli::config_parser::AiConfig, CliError> {
+    let config_path = match config_file {
+        Some(f) => project_dir.join(f),
+        None => project_dir.join(DEFAULT_CONFIG_FILE),
+    };
+
+    let mut ai = if config_path.exists() {
+        StackerConfig::from_file(&config_path)?.ai
+    } else {
+        Default::default()
+    };
+
+    if let Ok(provider) = std::env::var("STACKER_AI_PROVIDER") {
+        ai.provider = parse_ai_provider(&provider)?;
+        ai.enabled = true;
+    }
+
+    if let Ok(model) = std::env::var("STACKER_AI_MODEL") {
+        if !model.trim().is_empty() {
+            ai.model = Some(model);
+            ai.enabled = true;
+        }
+    }
+
+    if let Ok(endpoint) = std::env::var("STACKER_AI_ENDPOINT") {
+        if !endpoint.trim().is_empty() {
+            ai.endpoint = Some(endpoint);
+            ai.enabled = true;
+        }
+    }
+
+    if let Ok(timeout) = std::env::var("STACKER_AI_TIMEOUT") {
+        if let Ok(value) = timeout.parse::<u64>() {
+            ai.timeout = value;
+            ai.enabled = true;
+        }
+    }
+
+    if let Ok(generic_key) = std::env::var("STACKER_AI_API_KEY") {
+        if !generic_key.trim().is_empty() {
+            ai.api_key = Some(generic_key);
+            ai.enabled = true;
+        }
+    }
+
+    if ai.api_key.is_none() {
+        match ai.provider {
+            AiProviderType::Openai => {
+                if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+                    if !key.trim().is_empty() {
+                        ai.api_key = Some(key);
+                        ai.enabled = true;
+                    }
+                }
+            }
+            AiProviderType::Anthropic => {
+                if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+                    if !key.trim().is_empty() {
+                        ai.api_key = Some(key);
+                        ai.enabled = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ai)
+}
+
+fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
+    let lower = reason.to_lowercase();
+    let mut hints = Vec::new();
+
+    if lower.contains("npm ci") {
+        hints.push("npm ci failed: ensure package-lock.json exists and is in sync with package.json".to_string());
+        hints.push("Try locally: npm ci --production (or npm ci) to see the full dependency error".to_string());
+    }
+    if lower.contains("the attribute `version` is obsolete") || lower.contains("attribute `version` is obsolete") {
+        hints.push("docker-compose version warning: remove top-level 'version:' from .stacker/docker-compose.yml".to_string());
+    }
+    if lower.contains("failed to solve") {
+        hints.push("Docker build step failed: inspect the failing Dockerfile line and run docker build manually for verbose output".to_string());
+    }
+    if lower.contains("permission denied") || lower.contains("eacces") {
+        hints.push("Permission issue detected: verify file ownership and executable bits for scripts copied into the image".to_string());
+    }
+    if lower.contains("no such file") || lower.contains("not found") {
+        hints.push("Missing file in build context: confirm COPY paths and .dockerignore rules".to_string());
+    }
+    if lower.contains("network") || lower.contains("timed out") {
+        hints.push("Network/timeout issue: retry build and verify registry connectivity".to_string());
+    }
+    if lower.contains("manifest unknown") || lower.contains("pull access denied") {
+        hints.push("Image pull failed: the configured image tag is not available in the registry".to_string());
+        if let Some(image) = extract_missing_image(reason) {
+            hints.push(format!("Missing image detected: {}", image));
+            hints.push(format!("Build and tag locally: docker build -t {} .", image));
+            hints.push(format!("If using a remote registry, push it first: docker push {}", image));
+        } else {
+            hints.push("Build locally first (docker build -t <image:tag> .) or use an existing published tag".to_string());
+        }
+        hints.push("Alternative: remove app.image in stacker.yml so Stacker generates/uses a local build context".to_string());
+    }
+
+    if hints.is_empty() {
+        hints.push("Run docker compose -f .stacker/docker-compose.yml build --no-cache for detailed build logs".to_string());
+        hints.push("Inspect .stacker/Dockerfile and .stacker/docker-compose.yml for invalid paths and commands".to_string());
+        hints.push("If the issue is dependency-related, run the failing install command locally first".to_string());
+    }
+
+    hints
+}
+
+fn extract_missing_image(reason: &str) -> Option<String> {
+    for marker in ["manifest for ", "pull access denied for "] {
+        if let Some(start) = reason.find(marker) {
+            let image_start = start + marker.len();
+            let tail = &reason[image_start..];
+            let image = tail
+                .split(|c: char| c.is_whitespace() || c == ',' || c == '\n')
+                .next()
+                .unwrap_or("")
+                .trim_matches('"')
+                .to_string();
+            if !image.is_empty() {
+                return Some(image);
+            }
+        }
+    }
+    None
+}
+
+fn ensure_env_file_if_needed(config: &StackerConfig, project_dir: &Path) -> Result<(), CliError> {
+    let env_file = match &config.env_file {
+        Some(path) => path,
+        None => return Ok(()),
+    };
+
+    let env_path = if env_file.is_absolute() {
+        env_file.clone()
+    } else {
+        project_dir.join(env_file)
+    };
+
+    if env_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = env_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut content = String::from("# Auto-created by Stacker because env_file was configured\n");
+    if !config.env.is_empty() {
+        let mut keys: Vec<&String> = config.env.keys().collect();
+        keys.sort();
+        for key in keys {
+            content.push_str(&format!("{}={}\n", key, config.env[key]));
+        }
+    }
+
+    std::fs::write(&env_path, content)?;
+    eprintln!("  Created missing env file: {}", env_path.display());
+    Ok(())
+}
+
+fn build_troubleshoot_error_log(project_dir: &Path, reason: &str) -> String {
+    let dockerfile_path = project_dir.join(OUTPUT_DIR).join("Dockerfile");
+    let compose_path = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
+
+    let dockerfile = std::fs::read_to_string(&dockerfile_path).unwrap_or_default();
+    let compose = std::fs::read_to_string(&compose_path).unwrap_or_default();
+
+    let dockerfile_snippet = if dockerfile.is_empty() {
+        "(not found)".to_string()
+    } else {
+        dockerfile.chars().take(4000).collect()
+    };
+
+    let compose_snippet = if compose.is_empty() {
+        "(not found)".to_string()
+    } else {
+        compose.chars().take(4000).collect()
+    };
+
+    format!(
+        "Deploy error:\n{}\n\nGenerated Dockerfile (.stacker/Dockerfile):\n{}\n\nGenerated Compose (.stacker/docker-compose.yml):\n{}",
+        reason, dockerfile_snippet, compose_snippet
+    )
+}
+
+fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &CliError) {
+    let reason = match err {
+        CliError::DeployFailed { reason, .. } => reason,
+        _ => return,
+    };
+
+    eprintln!("\nTroubleshooting help:");
+
+    let ai_config = match resolve_ai_from_env_or_config(project_dir, config_file) {
+        Ok(cfg) => cfg,
+        Err(load_err) => {
+            eprintln!("  Could not load AI config for troubleshooting: {}", load_err);
+            for hint in fallback_troubleshooting_hints(reason) {
+                eprintln!("  - {}", hint);
+            }
+            eprintln!("  Tip: enable AI with stacker init --with-ai or set STACKER_AI_PROVIDER=ollama");
+            return;
+        }
+    };
+
+    let error_log = build_troubleshoot_error_log(project_dir, reason);
+    let ctx = PromptContext {
+        project_type: None,
+        files: vec![".stacker/Dockerfile".to_string(), ".stacker/docker-compose.yml".to_string()],
+        error_log: Some(error_log),
+        current_config: None,
+    };
+    let (system, prompt) = build_prompt(AiTask::Troubleshoot, &ctx);
+
+    match create_provider(&ai_config).and_then(|provider| provider.complete(&prompt, &system)) {
+        Ok(answer) => {
+            eprintln!("  AI suggestion:");
+            for line in answer.lines().take(20) {
+                eprintln!("    {}", line);
+            }
+        }
+        Err(ai_err) => {
+            eprintln!("  AI troubleshooting unavailable: {}", ai_err);
+            for hint in fallback_troubleshooting_hints(reason) {
+                eprintln!("  - {}", hint);
+            }
+            eprintln!("  Tip: set STACKER_AI_PROVIDER=ollama and ensure Ollama is running");
+        }
+    }
+}
 
 /// `stacker deploy [--target local|cloud|server] [--file stacker.yml] [--dry-run] [--force-rebuild]`
 ///
@@ -73,6 +321,7 @@ pub fn run_deploy(
     };
 
     let config = StackerConfig::from_file(&config_path)?;
+    ensure_env_file_if_needed(&config, project_dir)?;
 
     // 2. Resolve deploy target (flag > config)
     let deploy_target = match target_override {
@@ -155,7 +404,18 @@ impl CallableTrait for DeployCommand {
             self.dry_run,
             self.force_rebuild,
             &executor,
-        )?;
+        );
+
+        let result = match result {
+            Ok(result) => result,
+            Err(err) => {
+                if let CliError::LoginRequired { .. } = &err {
+                    eprintln!("\nHint: run `stacker login` and retry deploy.");
+                }
+                print_ai_deploy_help(&project_dir, self.file.as_deref(), &err);
+                return Err(Box::new(err));
+            }
+        };
 
         eprintln!("✓ {}", result.message);
         if let Some(ip) = &result.server_ip {
@@ -434,6 +694,20 @@ mod tests {
     }
 
     #[test]
+    fn test_fallback_hints_for_npm_ci_error() {
+        let hints = fallback_troubleshooting_hints("failed to solve: /bin/sh -c npm ci --production");
+        assert!(hints.iter().any(|h| h.contains("npm ci failed")));
+    }
+
+    #[test]
+    fn test_build_troubleshoot_error_log_handles_missing_files() {
+        let dir = TempDir::new().unwrap();
+        let log = build_troubleshoot_error_log(dir.path(), "docker compose failed");
+        assert!(log.contains("docker compose failed"));
+        assert!(log.contains("(not found)"));
+    }
+
+    #[test]
     fn test_parse_deploy_target_valid() {
         assert_eq!(parse_deploy_target("local").unwrap(), DeployTarget::Local);
         assert_eq!(parse_deploy_target("cloud").unwrap(), DeployTarget::Cloud);
@@ -447,5 +721,37 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("Unknown deploy target"));
+    }
+
+    #[test]
+    fn test_extract_missing_image_from_manifest_error() {
+        let reason = "manifest for optimum/optimumcode:latest not found: manifest unknown";
+        let image = extract_missing_image(reason);
+        assert_eq!(image.as_deref(), Some("optimum/optimumcode:latest"));
+    }
+
+    #[test]
+    fn test_fallback_hints_for_manifest_unknown() {
+        let hints = fallback_troubleshooting_hints(
+            "docker compose failed: manifest for optimum/optimumcode:latest not found: manifest unknown"
+        );
+        assert!(hints.iter().any(|h| h.contains("Image pull failed")));
+        assert!(hints.iter().any(|h| h.contains("docker build -t optimum/optimumcode:latest .")));
+    }
+
+    #[test]
+    fn test_ensure_env_file_is_created_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let config = StackerConfig::from_str(
+            "name: env-app\napp:\n  type: static\nenv_file: .env\nenv:\n  APP_ENV: production\n"
+        )
+        .unwrap();
+
+        ensure_env_file_if_needed(&config, dir.path()).unwrap();
+
+        let env_path = dir.path().join(".env");
+        assert!(env_path.exists());
+        let content = std::fs::read_to_string(env_path).unwrap();
+        assert!(content.contains("APP_ENV=production"));
     }
 }
