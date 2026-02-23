@@ -69,8 +69,12 @@ pub fn full_config_reference_example() -> &'static str {
 #   cloud:
 #     # provider: hetzner | digitalocean | aws | linode | vultr
 #     provider: "hetzner"
+#     # orchestrator: local | remote
+#     orchestrator: "local"
 #     region: "nbg1"
 #     size: "cx22"
+#     # install_image: "trydirect/install-service:latest" # local orchestrator only
+#     # remote_payload_file: "./stacker.remote.deploy.json" # remote orchestrator request payload
 #     # ssh_key: "~/.ssh/id_rsa"
 #   # server:
 #   #   host: "203.0.113.10"
@@ -117,6 +121,7 @@ pub struct InitCommand {
     pub app_type: Option<String>,
     pub with_proxy: bool,
     pub with_ai: bool,
+    pub with_cloud: bool,
     /// Override AI provider (openai, anthropic, ollama, custom)
     pub ai_provider: Option<String>,
     /// Override AI model name
@@ -126,11 +131,12 @@ pub struct InitCommand {
 }
 
 impl InitCommand {
-    pub fn new(app_type: Option<String>, with_proxy: bool, with_ai: bool) -> Self {
+    pub fn new(app_type: Option<String>, with_proxy: bool, with_ai: bool, with_cloud: bool) -> Self {
         Self {
             app_type,
             with_proxy,
             with_ai,
+            with_cloud,
             ai_provider: None,
             ai_model: None,
             ai_api_key: None,
@@ -567,6 +573,15 @@ impl CallableTrait for InitCommand {
         )?;
 
         eprintln!("✓ Created {}", config_path.display());
+
+        if self.with_cloud {
+            eprintln!("☁ Running cloud setup wizard...");
+            let path_str = config_path.to_string_lossy().to_string();
+            let applied = crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
+            for item in applied {
+                eprintln!("  - {}", item);
+            }
+        }
 
         // Verify the generated file is parseable
         let config = StackerConfig::from_file(&config_path)?;

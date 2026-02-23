@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 
 use crate::cli::config_parser::{
-    CloudConfig, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
+    CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
 };
 use crate::cli::error::CliError;
 use crate::console::commands::cli::init::full_config_reference_example;
@@ -42,6 +42,147 @@ fn parse_cloud_provider(s: &str) -> Result<CloudProvider, CliError> {
                 .to_string(),
         )
     })
+}
+
+fn default_region_for_provider(provider: CloudProvider) -> &'static str {
+    match provider {
+        CloudProvider::Hetzner => "nbg1",
+        CloudProvider::Digitalocean => "fra1",
+        CloudProvider::Aws => "us-east-1",
+        CloudProvider::Linode => "us-east",
+        CloudProvider::Vultr => "ewr",
+    }
+}
+
+fn default_size_for_provider(provider: CloudProvider) -> &'static str {
+    match provider {
+        CloudProvider::Hetzner => "cx22",
+        CloudProvider::Digitalocean => "s-1vcpu-2gb",
+        CloudProvider::Aws => "t3.small",
+        CloudProvider::Linode => "g6-standard-2",
+        CloudProvider::Vultr => "vc2-2c-4gb",
+    }
+}
+
+fn apply_cloud_settings(
+    config: &mut StackerConfig,
+    provider: CloudProvider,
+    region: Option<String>,
+    size: Option<String>,
+    ssh_key: Option<PathBuf>,
+) {
+    let existing_orchestrator = config
+        .deploy
+        .cloud
+        .as_ref()
+        .map(|c| c.orchestrator)
+        .unwrap_or(CloudOrchestrator::Local);
+    let existing_install_image = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.install_image.clone());
+
+    let existing_remote_payload_file = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.remote_payload_file.clone());
+
+    config.deploy.target = DeployTarget::Cloud;
+    config.deploy.cloud = Some(CloudConfig {
+        provider,
+        orchestrator: existing_orchestrator,
+        region,
+        size,
+        install_image: existing_install_image,
+        remote_payload_file: existing_remote_payload_file,
+        ssh_key,
+    });
+}
+
+pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Err(CliError::ConfigNotFound {
+            path: PathBuf::from(config_path),
+        });
+    }
+
+    let mut config = StackerConfig::from_file(path)?;
+    let mut applied = Vec::new();
+
+    eprintln!("Cloud setup wizard:");
+
+    let provider_default = config
+        .deploy
+        .cloud
+        .as_ref()
+        .map(|c| c.provider)
+        .unwrap_or(CloudProvider::Hetzner);
+
+    let provider_input = prompt_with_default(
+        "Cloud provider (hetzner|digitalocean|aws|linode|vultr)",
+        &provider_default.to_string(),
+    )?;
+    let provider = parse_cloud_provider(&provider_input)?;
+
+    let region_default = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.region.clone())
+        .unwrap_or_else(|| default_region_for_provider(provider).to_string());
+    let region = prompt_with_default("Cloud region", &region_default)?;
+
+    let size_default = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.size.clone())
+        .unwrap_or_else(|| default_size_for_provider(provider).to_string());
+    let size = prompt_with_default("Cloud size", &size_default)?;
+
+    let ssh_key_default = config
+        .deploy
+        .cloud
+        .as_ref()
+        .and_then(|c| c.ssh_key.clone())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "~/.ssh/id_rsa".to_string());
+    let ssh_key_input = prompt_with_default(
+        "SSH key path (leave empty to skip)",
+        &ssh_key_default,
+    )?;
+
+    let region_opt = if region.trim().is_empty() {
+        None
+    } else {
+        Some(region)
+    };
+    let size_opt = if size.trim().is_empty() {
+        None
+    } else {
+        Some(size)
+    };
+    let ssh_key_opt = if ssh_key_input.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(ssh_key_input))
+    };
+
+    apply_cloud_settings(&mut config, provider, region_opt, size_opt, ssh_key_opt);
+
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(config_path, &backup_path)?;
+
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, yaml)?;
+
+    applied.push("Set deploy.target=cloud and deploy.cloud.*".to_string());
+    applied.push(format!("Backup written to {}", backup_path));
+    Ok(applied)
 }
 
 /// Interactive fixer for common missing required fields.
@@ -105,9 +246,29 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     .as_ref()
                     .and_then(|c| c.ssh_key.clone());
 
+                let orchestrator = config
+                    .deploy
+                    .cloud
+                    .as_ref()
+                    .map(|c| c.orchestrator)
+                    .unwrap_or(CloudOrchestrator::Local);
+
+                let install_image = config
+                    .deploy
+                    .cloud
+                    .as_ref()
+                    .and_then(|c| c.install_image.clone());
+
+                let remote_payload_file = config
+                    .deploy
+                    .cloud
+                    .as_ref()
+                    .and_then(|c| c.remote_payload_file.clone());
+
                 config.deploy.target = DeployTarget::Cloud;
                 config.deploy.cloud = Some(CloudConfig {
                     provider,
+                    orchestrator,
                     region: if region.trim().is_empty() {
                         None
                     } else {
@@ -118,6 +279,8 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     } else {
                         Some(size)
                     },
+                    install_image,
+                    remote_payload_file,
                     ssh_key,
                 });
 
@@ -266,6 +429,33 @@ pub struct ConfigFixCommand {
     pub interactive: bool,
 }
 
+/// `stacker config setup cloud [--file stacker.yml]`
+///
+/// Interactive cloud setup wizard that writes deploy.target/deploy.cloud.
+pub struct ConfigSetupCloudCommand {
+    pub file: Option<String>,
+}
+
+impl ConfigSetupCloudCommand {
+    pub fn new(file: Option<String>) -> Self {
+        Self { file }
+    }
+}
+
+impl CallableTrait for ConfigSetupCloudCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let applied = run_setup_cloud_interactive(&path)?;
+
+        eprintln!("✓ Updated {}", path);
+        for item in applied {
+            eprintln!("  - {}", item);
+        }
+        eprintln!("Run: stacker config validate");
+        Ok(())
+    }
+}
+
 impl ConfigFixCommand {
     pub fn new(file: Option<String>, interactive: bool) -> Self {
         Self { file, interactive }
@@ -400,5 +590,29 @@ mod tests {
     fn test_parse_cloud_provider_invalid() {
         let result = parse_cloud_provider("gcp");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_default_region_for_provider() {
+        assert_eq!(default_region_for_provider(CloudProvider::Hetzner), "nbg1");
+        assert_eq!(default_region_for_provider(CloudProvider::Aws), "us-east-1");
+    }
+
+    #[test]
+    fn test_apply_cloud_settings_sets_target_and_cloud() {
+        let mut cfg = StackerConfig::from_str(minimal_config_yaml()).unwrap();
+        apply_cloud_settings(
+            &mut cfg,
+            CloudProvider::Hetzner,
+            Some("nbg1".to_string()),
+            Some("cx22".to_string()),
+            None,
+        );
+
+        assert_eq!(cfg.deploy.target, DeployTarget::Cloud);
+        let cloud = cfg.deploy.cloud.unwrap();
+        assert_eq!(cloud.provider, CloudProvider::Hetzner);
+        assert_eq!(cloud.region.as_deref(), Some("nbg1"));
+        assert_eq!(cloud.size.as_deref(), Some("cx22"));
     }
 }

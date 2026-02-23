@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::cli::config_parser::{DeployTarget, StackerConfig};
+use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
+use crate::cli::credentials::{CredentialsManager, FileCredentialStore, DEFAULT_API_URL};
 use crate::cli::error::CliError;
+use crate::connectors::user_service::UserServiceClient;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
@@ -406,6 +408,94 @@ impl DeployStrategy for CloudDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
+                let cred_manager = CredentialsManager::with_default_store();
+                let creds = cred_manager.require_valid_token("remote cloud orchestrator deployment")?;
+
+                if context.dry_run {
+                    return Ok(DeployResult {
+                        target: DeployTarget::Cloud,
+                        message: "Remote cloud deploy dry-run validated payload and credentials".to_string(),
+                        server_ip: None,
+                    });
+                }
+
+                let payload = if let Some(payload_file) = &cloud_cfg.remote_payload_file {
+                    let payload_path = if payload_file.is_absolute() {
+                        payload_file.clone()
+                    } else {
+                        context.project_dir.join(payload_file)
+                    };
+
+                    let raw = std::fs::read_to_string(&payload_path).map_err(|e| {
+                        CliError::DeployFailed {
+                            target: DeployTarget::Cloud,
+                            reason: format!(
+                                "Failed to read remote payload file {}: {}",
+                                payload_path.display(),
+                                e
+                            ),
+                        }
+                    })?;
+
+                    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| {
+                        CliError::DeployFailed {
+                            target: DeployTarget::Cloud,
+                            reason: format!(
+                                "Invalid JSON in remote payload file {}: {}",
+                                payload_path.display(),
+                                e
+                            ),
+                        }
+                    })?
+                } else {
+                    build_remote_deploy_payload(config)
+                };
+
+                let base_url = normalize_user_service_base_url(
+                    creds.server_url.as_deref().unwrap_or(DEFAULT_API_URL),
+                );
+
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| CliError::DeployFailed {
+                        target: DeployTarget::Cloud,
+                        reason: format!("Failed to initialize async runtime: {}", e),
+                    })?;
+
+                let response = rt
+                    .block_on(async {
+                        let client = UserServiceClient::new_public(&base_url);
+                        client
+                            .initiate_deployment(&creds.access_token, payload)
+                            .await
+                    })
+                    .map_err(|e| CliError::DeployFailed {
+                        target: DeployTarget::Cloud,
+                        reason: format!("Remote orchestrator request failed: {}", e),
+                    })?;
+
+                let install_id = response
+                    .get("_id")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| response.get("id").and_then(|v| v.as_i64()));
+
+                let message = if let Some(id) = install_id {
+                    format!("Cloud deployment requested via remote orchestrator (installation_id={})", id)
+                } else {
+                    "Cloud deployment requested via remote orchestrator".to_string()
+                };
+
+                return Ok(DeployResult {
+                    target: DeployTarget::Cloud,
+                    message,
+                    server_ip: None,
+                });
+            }
+        }
+
         let action = if context.dry_run {
             InstallAction::Plan
         } else {
@@ -439,6 +529,15 @@ impl DeployStrategy for CloudDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<(), CliError> {
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
+                return Err(CliError::DeployFailed {
+                    target: DeployTarget::Cloud,
+                    reason: "Remote cloud orchestrator destroy is not implemented yet. Use platform API/UI or switch deploy.cloud.orchestrator=local.".to_string(),
+                });
+            }
+        }
+
         let cmd = InstallContainerCommand::from_config(config, context, InstallAction::Destroy);
         let args = cmd.build_args();
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -454,6 +553,79 @@ impl DeployStrategy for CloudDeploy {
 
         Ok(())
     }
+}
+
+fn provider_code_for_remote(config_provider: &str) -> &str {
+    match config_provider {
+        "hetzner" => "htz",
+        "digitalocean" => "do",
+        "aws" => "aws",
+        "linode" => "linode",
+        "vultr" => "vultr",
+        _ => config_provider,
+    }
+}
+
+fn normalize_user_service_base_url(raw: &str) -> String {
+    let mut url = raw.trim_end_matches('/').to_string();
+    for suffix in [
+        "/oauth_server/token",
+        "/server/user/auth/login",
+        "/auth/login",
+        "/login",
+    ] {
+        if url.ends_with(suffix) {
+            let len = url.len() - suffix.len();
+            url = url[..len].to_string();
+            break;
+        }
+    }
+    url
+}
+
+fn sanitize_stack_code(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in name.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "app-stack".to_string()
+    } else {
+        out
+    }
+}
+
+fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
+    let cloud = config.deploy.cloud.as_ref();
+    let provider = cloud
+        .map(|c| provider_code_for_remote(&c.provider.to_string()).to_string())
+        .unwrap_or_else(|| "htz".to_string());
+    let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
+    let server = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cx22".to_string());
+    let stack_code = sanitize_stack_code(&config.name);
+
+    serde_json::json!({
+        "provider": provider,
+        "region": region,
+        "server": server,
+        "stack_code": stack_code,
+        "project_name": config.name,
+        "save_token": true,
+        "custom": {
+            "project_name": config.name,
+            "custom_stack_code": sanitize_stack_code(&config.name),
+            "project_overview": format!("Generated by stacker-cli for {}", config.name)
+        }
+    })
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -562,7 +734,7 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use crate::cli::config_parser::{CloudConfig, CloudProvider, ConfigBuilder, ServerConfig};
+    use crate::cli::config_parser::{CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig};
 
     // ── Mock executor ───────────────────────────────
 
@@ -636,12 +808,37 @@ mod tests {
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
                 provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
                 region: Some("fsn1".to_string()),
                 size: Some("cx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
                 ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
             })
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn test_normalize_user_service_base_url_from_token_endpoint() {
+        let url = normalize_user_service_base_url("https://api.try.direct/oauth_server/token");
+        assert_eq!(url, "https://api.try.direct");
+    }
+
+    #[test]
+    fn test_provider_code_for_remote_hetzner() {
+        assert_eq!(provider_code_for_remote("hetzner"), "htz");
+        assert_eq!(provider_code_for_remote("aws"), "aws");
+    }
+
+    #[test]
+    fn test_build_remote_deploy_payload_contains_required_fields() {
+        let cfg = sample_cloud_config();
+        let payload = build_remote_deploy_payload(&cfg);
+        assert!(payload.get("provider").is_some());
+        assert!(payload.get("region").is_some());
+        assert!(payload.get("server").is_some());
+        assert!(payload.get("stack_code").is_some());
     }
 
     fn sample_server_config() -> StackerConfig {

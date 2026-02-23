@@ -56,6 +56,9 @@ enum StackerCommands {
         /// Use AI to scan the project and generate a tailored stacker.yml
         #[arg(long)]
         with_ai: bool,
+        /// Immediately run cloud setup wizard after init
+        #[arg(long)]
+        with_cloud: bool,
         /// AI provider: openai, anthropic, ollama, custom (default: ollama)
         #[arg(long, value_name = "PROVIDER")]
         ai_provider: Option<String>,
@@ -159,6 +162,20 @@ enum ConfigCommands {
         #[arg(long, default_value_t = true)]
         interactive: bool,
     },
+    /// Guided setup helpers
+    Setup {
+        #[command(subcommand)]
+        command: ConfigSetupCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigSetupCommands {
+    /// Configure cloud deployment defaults in stacker.yml
+    Cloud {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -218,12 +235,13 @@ fn get_command(
             app_type,
             with_proxy,
             with_ai,
+            with_cloud,
             ai_provider,
             ai_model,
             ai_api_key,
         } => Box::new(
             stacker::console::commands::cli::init::InitCommand::new(
-                app_type, with_proxy, with_ai,
+                app_type, with_proxy, with_ai, with_cloud,
             )
             .with_ai_options(ai_provider, ai_model, ai_api_key),
         ),
@@ -267,6 +285,11 @@ fn get_command(
             ConfigCommands::Fix { file, interactive } => Box::new(
                 stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
             ),
+            ConfigCommands::Setup { command } => match command {
+                ConfigSetupCommands::Cloud { file } => Box::new(
+                    stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
+                ),
+            },
         },
         StackerCommands::Ai { command: ai_cmd } => match ai_cmd {
             AiCommands::Ask {

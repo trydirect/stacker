@@ -417,6 +417,15 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
         }
     };
 
+    if !ai_config.enabled {
+        eprintln!("  AI troubleshooting disabled (ai.enabled=false).");
+        for hint in fallback_troubleshooting_hints(reason) {
+            eprintln!("  - {}", hint);
+        }
+        eprintln!("  Tip: enable AI in stacker.yml if you want AI troubleshooting suggestions");
+        return;
+    }
+
     let error_log = build_troubleshoot_error_log(project_dir, reason);
     let ctx = PromptContext {
         project_type: None,
@@ -620,7 +629,11 @@ pub fn run_deploy(
         compose_path: compose_path.clone(),
         project_dir: project_dir.to_path_buf(),
         dry_run,
-        image: None,
+        image: config
+            .deploy
+            .cloud
+            .as_ref()
+            .and_then(|cloud| cloud.install_image.clone()),
     };
 
     let result = strategy.deploy(&config, &context, executor)?;

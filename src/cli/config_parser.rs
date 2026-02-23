@@ -163,6 +163,15 @@ pub enum CloudProvider {
     Vultr,
 }
 
+/// Cloud orchestration mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudOrchestrator {
+    #[default]
+    Local,
+    Remote,
+}
+
 impl fmt::Display for CloudProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -338,10 +347,19 @@ pub struct CloudConfig {
     pub provider: CloudProvider,
 
     #[serde(default)]
+    pub orchestrator: CloudOrchestrator,
+
+    #[serde(default)]
     pub region: Option<String>,
 
     #[serde(default)]
     pub size: Option<String>,
+
+    #[serde(default)]
+    pub install_image: Option<String>,
+
+    #[serde(default)]
+    pub remote_payload_file: Option<PathBuf>,
 
     #[serde(default)]
     pub ssh_key: Option<PathBuf>,
@@ -1309,8 +1327,11 @@ services:
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
                 provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
                 region: Some("fsn1".to_string()),
                 size: Some("cx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
                 ssh_key: None,
             })
             .build()
