@@ -319,7 +319,6 @@ fn generate_config_template_path(
         builder = builder.ai(AiConfig {
             enabled: true,
             provider: AiProviderType::Ollama,
-            model: Some("llama3".to_string()),
             ..AiConfig::default()
         });
     }

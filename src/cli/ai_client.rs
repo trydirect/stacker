@@ -353,20 +353,46 @@ impl OllamaProvider {
             .clone()
             .unwrap_or_else(|| OLLAMA_API_URL.to_string());
 
-        let model = config.model.clone().unwrap_or_else(|| {
-            // Try to auto-detect the best available model
-            match pick_ollama_model(Some(&endpoint)) {
-                Some(m) => {
-                    eprintln!("  Using Ollama model: {}", m);
+        let model = match config.model.clone() {
+            Some(m) => {
+                // Verify the configured model is actually available
+                let available = list_ollama_models(Some(&endpoint));
+                if available.is_empty() {
+                    // Ollama unreachable — use the configured model as-is
                     m
-                }
-                None => {
-                    let default = default_model(AiProviderType::Ollama).to_string();
-                    eprintln!("  No models detected, trying default: {}", default);
-                    default
+                } else if available.iter().any(|a| {
+                    let base = a.split(':').next().unwrap_or(a);
+                    let m_base = m.split(':').next().unwrap_or(&m);
+                    a == &m || base == m_base
+                }) {
+                    m
+                } else {
+                    // Configured model not found — auto-detect
+                    eprintln!("  ⚠ Model '{}' not found in Ollama, auto-detecting...", m);
+                    match pick_ollama_model(Some(&endpoint)) {
+                        Some(detected) => {
+                            eprintln!("  Using Ollama model: {}", detected);
+                            detected
+                        }
+                        None => m, // nothing else available, try anyway
+                    }
                 }
             }
-        });
+            None => {
+                // No model configured — auto-detect
+                match pick_ollama_model(Some(&endpoint)) {
+                    Some(m) => {
+                        eprintln!("  Using Ollama model: {}", m);
+                        m
+                    }
+                    None => {
+                        let default = default_model(AiProviderType::Ollama).to_string();
+                        eprintln!("  No models detected, trying default: {}", default);
+                        default
+                    }
+                }
+            }
+        };
 
         let timeout_secs = resolve_timeout(config.timeout);
 
