@@ -619,6 +619,7 @@ mod tests {
             model: Some("gpt-4o".to_string()),
             api_key: Some("sk-test-key".to_string()),
             endpoint: None,
+            timeout: 300,
             tasks: vec!["dockerfile".to_string()],
         };
 
@@ -634,6 +635,7 @@ mod tests {
             model: None,
             api_key: None,
             endpoint: Some("http://localhost:11434/api/chat".to_string()),
+            timeout: 300,
             tasks: vec![],
         };
 
@@ -649,6 +651,7 @@ mod tests {
             model: Some("claude-sonnet-4-20250514".to_string()),
             api_key: Some("sk-ant-test".to_string()),
             endpoint: None,
+            timeout: 300,
             tasks: vec![],
         };
 
@@ -758,6 +761,7 @@ mod tests {
             api_key: Some("custom-key".to_string()),
             endpoint: Some("https://my-llm.local/v1/chat/completions".to_string()),
             model: Some("my-model".to_string()),
+            timeout: 300,
             tasks: vec![],
         };
 
@@ -826,6 +830,7 @@ mod tests {
             api_key: Some("sk-test".to_string()),
             model: None,
             endpoint: None,
+            timeout: 300,
             tasks: vec![],
         };
 
