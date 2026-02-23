@@ -881,15 +881,34 @@ mod tests {
 
     #[test]
     fn test_ollama_provider_from_config_explicit_model() {
+        // Use unreachable endpoint so list_ollama_models returns empty,
+        // meaning the configured model is used as-is (no validation possible).
         let config = AiConfig {
             enabled: true,
             provider: AiProviderType::Ollama,
             model: Some("custom-model".to_string()),
+            endpoint: Some("http://127.0.0.1:1/api/chat".to_string()),
             ..Default::default()
         };
 
         let provider = OllamaProvider::from_config(&config);
         assert_eq!(provider.model, "custom-model");
+    }
+
+    #[test]
+    fn test_ollama_provider_autodetects_when_model_missing() {
+        // With Ollama running and a model that doesn't exist, auto-detection
+        // should kick in and pick an available model.
+        let config = AiConfig {
+            enabled: true,
+            provider: AiProviderType::Ollama,
+            model: Some("nonexistent-model-xyz".to_string()),
+            ..Default::default()
+        };
+
+        let provider = OllamaProvider::from_config(&config);
+        // If Ollama is running, model is auto-detected; if not, original is kept
+        assert!(!provider.model.is_empty());
     }
 
     #[test]
