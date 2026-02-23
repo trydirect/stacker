@@ -149,6 +149,14 @@ enum ConfigCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Interactively fix missing required config fields
+    Fix {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Enable interactive prompts (default: true)
+        #[arg(long, default_value_t = true)]
+        interactive: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -160,6 +168,9 @@ enum AiCommands {
         /// Path to a file to include as context
         #[arg(long)]
         context: Option<String>,
+        /// Interactively configure AI in stacker.yml before asking
+        #[arg(long)]
+        configure: bool,
     },
 }
 
@@ -244,10 +255,18 @@ fn get_command(
             ConfigCommands::Show { file } => Box::new(
                 stacker::console::commands::cli::config::ConfigShowCommand::new(file),
             ),
+            ConfigCommands::Fix { file, interactive } => Box::new(
+                stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
+            ),
         },
         StackerCommands::Ai { command: ai_cmd } => match ai_cmd {
-            AiCommands::Ask { question, context } => Box::new(
-                stacker::console::commands::cli::ai::AiAskCommand::new(question, context),
+            AiCommands::Ask {
+                question,
+                context,
+                configure,
+            } => Box::new(
+                stacker::console::commands::cli::ai::AiAskCommand::new(question, context)
+                    .with_configure(configure),
             ),
         },
         StackerCommands::Proxy {

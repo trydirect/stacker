@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::io::{self, Write};
 
 use crate::cli::ai_client::{AiProvider, create_provider};
-use crate::cli::config_parser::{AiConfig, StackerConfig};
+use crate::cli::config_parser::{AiConfig, AiProviderType, StackerConfig};
 use crate::cli::error::CliError;
 use crate::console::commands::CallableTrait;
 
@@ -19,6 +20,107 @@ fn load_ai_config(config_path: &str) -> Result<AiConfig, CliError> {
     if !config.ai.enabled {
         return Err(CliError::AiNotConfigured);
     }
+    Ok(config.ai)
+}
+
+fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
+    let json = format!("\"{}\"", s.trim().to_lowercase());
+    serde_json::from_str::<AiProviderType>(&json).map_err(|_| {
+        CliError::ConfigValidation(
+            "Unknown AI provider. Use: openai, anthropic, ollama, custom".to_string(),
+        )
+    })
+}
+
+fn prompt_line(prompt: &str) -> Result<String, CliError> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String, CliError> {
+    let line = prompt_line(&format!("{} [{}]: ", prompt, default))?;
+    if line.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(line)
+    }
+}
+
+fn configure_ai_interactive(config_path: &str) -> Result<AiConfig, CliError> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Err(CliError::ConfigNotFound {
+            path: PathBuf::from(config_path),
+        });
+    }
+
+    let mut config = StackerConfig::from_file(path)?;
+    let current = config.ai.clone();
+
+    eprintln!("AI interactive setup for {}", config_path);
+
+    let provider_default = current.provider.to_string();
+    let provider_input = prompt_with_default(
+        "AI provider (openai|anthropic|ollama|custom)",
+        &provider_default,
+    )?;
+    let provider = parse_ai_provider(&provider_input)?;
+
+    let model_default = current.model.as_deref().unwrap_or("");
+    let model_input = prompt_with_default("Model (empty = provider default)", model_default)?;
+    let model = if model_input.trim().is_empty() {
+        None
+    } else {
+        Some(model_input)
+    };
+
+    let api_key_default = current.api_key.as_deref().unwrap_or("");
+    let api_key_input = prompt_with_default("API key (empty = keep/none)", api_key_default)?;
+    let api_key = if api_key_input.trim().is_empty() {
+        current.api_key.clone()
+    } else {
+        Some(api_key_input)
+    };
+
+    let endpoint_default = current.endpoint.as_deref().unwrap_or("http://localhost:11434");
+    let endpoint_input = prompt_with_default("Endpoint", endpoint_default)?;
+    let endpoint = if endpoint_input.trim().is_empty() {
+        None
+    } else {
+        Some(endpoint_input)
+    };
+
+    let timeout_default = current.timeout.to_string();
+    let timeout_input = prompt_with_default("Timeout seconds", &timeout_default)?;
+    let timeout = timeout_input.parse::<u64>().unwrap_or(current.timeout);
+
+    let tasks = if current.tasks.is_empty() {
+        vec!["dockerfile".to_string(), "compose".to_string()]
+    } else {
+        current.tasks.clone()
+    };
+
+    config.ai = AiConfig {
+        enabled: true,
+        provider,
+        model,
+        api_key,
+        endpoint,
+        timeout,
+        tasks,
+    };
+
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(config_path, &backup_path)?;
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, yaml)?;
+
+    eprintln!("✓ AI configuration saved to {}", config_path);
+    eprintln!("  Backup written to {}", backup_path);
     Ok(config.ai)
 }
 
@@ -63,17 +165,31 @@ pub fn run_ai_ask(
 pub struct AiAskCommand {
     pub question: String,
     pub context: Option<String>,
+    pub configure: bool,
 }
 
 impl AiAskCommand {
     pub fn new(question: String, context: Option<String>) -> Self {
-        Self { question, context }
+        Self {
+            question,
+            context,
+            configure: false,
+        }
+    }
+
+    pub fn with_configure(mut self, configure: bool) -> Self {
+        self.configure = configure;
+        self
     }
 }
 
 impl CallableTrait for AiAskCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let ai_config = load_ai_config(DEFAULT_CONFIG_FILE)?;
+        let ai_config = if self.configure {
+            configure_ai_interactive(DEFAULT_CONFIG_FILE)?
+        } else {
+            load_ai_config(DEFAULT_CONFIG_FILE)?
+        };
         let provider = create_provider(&ai_config)?;
         let response = run_ai_ask(
             &self.question,

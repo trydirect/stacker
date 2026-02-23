@@ -109,7 +109,14 @@ impl fmt::Display for CliError {
             Self::AiNotConfigured => {
                 write!(
                     f,
-                    "AI is not configured. Add an 'ai' section to stacker.yml"
+                    "AI is not configured in stacker.yml.\n\
+                     Quick fix: run `stacker init --with-ai` (in your project root),\n\
+                     or add this section:\n\
+                     ai:\n\
+                       enabled: true\n\
+                       provider: ollama   # openai | anthropic | ollama | custom\n\
+                       timeout: 300\n\
+                       tasks: [\"dockerfile\", \"compose\"]"
                 )
             }
             Self::AiProviderError { provider, message } => {
