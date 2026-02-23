@@ -132,3 +132,48 @@ fn test_init_detects_python_project() {
     let content = fs::read_to_string(dir.path().join("stacker.yml")).unwrap();
     assert!(content.contains("python"));
 }
+
+// ── AI-powered init integration tests ───────────────
+
+#[test]
+fn test_init_with_ai_help_shows_provider_flags() {
+    stacker_cmd()
+        .args(["init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--ai-provider"))
+        .stdout(predicate::str::contains("--ai-model"))
+        .stdout(predicate::str::contains("--ai-api-key"));
+}
+
+#[test]
+fn test_init_with_ai_and_provider_flags() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("package.json"), r#"{"name":"test"}"#).unwrap();
+
+    // Using ollama with no running instance — should fall back to template
+    stacker_cmd()
+        .current_dir(dir.path())
+        .args(["init", "--with-ai", "--ai-provider", "ollama"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("AI").or(predicate::str::contains("Created")));
+
+    assert!(dir.path().join("stacker.yml").exists());
+    let content = fs::read_to_string(dir.path().join("stacker.yml")).unwrap();
+    // Should still produce a valid config (fallback to template)
+    assert!(content.contains("name:"));
+    assert!(content.contains("ai"));
+}
+
+#[test]
+fn test_init_with_ai_invalid_provider_fails() {
+    let dir = TempDir::new().unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .args(["init", "--with-ai", "--ai-provider", "grok"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown AI provider"));
+}

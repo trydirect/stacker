@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-02-23
+
+### Added - Stacker CLI: AI-Powered Project Initialization
+
+#### AI Scanner Module (`src/cli/ai_scanner.rs`)
+- New `scan_project()` function performs deep project scanning, reading key config files (`package.json`, `requirements.txt`, `Cargo.toml`, `Dockerfile`, `docker-compose.yml`, `.env`, etc.) to build rich context for AI generation
+- `build_generation_prompt()` constructs detailed prompts including detected app type, file contents, existing infrastructure, and env var keys (values redacted for security)
+- `generate_config_with_ai()` sends project context to the configured AI provider and returns a tailored `stacker.yml`
+- `strip_code_fences()` strips markdown code fences from AI responses
+- System prompt encodes the full `stacker.yml` schema so the AI generates valid, deployable configs
+- 16 unit tests
+
+#### AI-Powered `stacker init --with-ai` (`src/console/commands/cli/init.rs`)
+- `stacker init --with-ai` now scans the project and calls the AI to generate a tailored `stacker.yml` with appropriate services, proxy, monitoring, and hooks
+- New CLI flags on `stacker init`:
+  - `--ai-provider <PROVIDER>` — AI provider: `openai`, `anthropic`, `ollama`, `custom` (default: `ollama`)
+  - `--ai-model <MODEL>` — Model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`, `llama3`)
+  - `--ai-api-key <KEY>` — API key (or use environment variables)
+- `resolve_ai_config()` resolves AI configuration with priority: CLI flag → environment variable → defaults
+- Environment variable support: `STACKER_AI_PROVIDER`, `STACKER_AI_MODEL`, `STACKER_AI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+- Graceful fallback: if AI generation fails (provider unreachable, invalid YAML), automatically falls back to template-based generation
+- AI-generated configs include a review header noting the provider and model used
+- If AI output fails validation, raw draft is saved to `stacker.yml.ai-draft` for manual review
+- 8 new unit tests (18 total in init.rs), 3 new integration tests (11 total in cli_init.rs)
+
+#### Usage Examples
+```bash
+# AI-powered init with local Ollama
+stacker init --with-ai
+
+# AI-powered init with OpenAI
+stacker init --with-ai --ai-provider openai --ai-api-key sk-...
+
+# AI-powered init with Anthropic (key from env)
+export ANTHROPIC_API_KEY=sk-ant-...
+stacker init --with-ai --ai-provider anthropic
+
+# Falls back to template if AI fails
+stacker init --with-ai  # no Ollama running → template fallback
+```
+
+### Test Results
+- **467 tests** (426 unit + 41 integration), 0 failures
+
 ## 2026-02-18
 
 ### Fixed

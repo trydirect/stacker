@@ -53,9 +53,18 @@ enum StackerCommands {
         /// Include reverse-proxy configuration
         #[arg(long)]
         with_proxy: bool,
-        /// Include AI assistant configuration
+        /// Use AI to scan the project and generate a tailored stacker.yml
         #[arg(long)]
         with_ai: bool,
+        /// AI provider: openai, anthropic, ollama, custom (default: ollama)
+        #[arg(long, value_name = "PROVIDER")]
+        ai_provider: Option<String>,
+        /// AI model name (e.g. gpt-4o, claude-sonnet-4-20250514, llama3)
+        #[arg(long, value_name = "MODEL")]
+        ai_model: Option<String>,
+        /// AI API key (or set OPENAI_API_KEY / ANTHROPIC_API_KEY env var)
+        #[arg(long, value_name = "KEY")]
+        ai_api_key: Option<String>,
     },
     /// Build & deploy the stack
     Deploy {
@@ -192,9 +201,15 @@ fn get_command(
             app_type,
             with_proxy,
             with_ai,
-        } => Box::new(stacker::console::commands::cli::init::InitCommand::new(
-            app_type, with_proxy, with_ai,
-        )),
+            ai_provider,
+            ai_model,
+            ai_api_key,
+        } => Box::new(
+            stacker::console::commands::cli::init::InitCommand::new(
+                app_type, with_proxy, with_ai,
+            )
+            .with_ai_options(ai_provider, ai_model, ai_api_key),
+        ),
         StackerCommands::Deploy {
             target,
             file,

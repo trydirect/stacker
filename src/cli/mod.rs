@@ -1,4 +1,5 @@
 pub mod ai_client;
+pub mod ai_scanner;
 pub mod config_parser;
 pub mod credentials;
 pub mod detector;

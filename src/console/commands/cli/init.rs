@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::cli::ai_client::{AiProvider, create_provider};
+use crate::cli::ai_scanner::generate_config_with_ai;
 use crate::cli::config_parser::{
     AiConfig, AiProviderType, AppType, ConfigBuilder, DomainConfig, ProxyConfig, ProxyType,
     SslMode, StackerConfig,
@@ -15,10 +17,21 @@ pub const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 ///
 /// Detects the project type in the current directory and generates
 /// a `stacker.yml` configuration file with sensible defaults.
+///
+/// When `--with-ai` is used with an AI provider configured (via flags
+/// or environment variables), Stacker scans the project deeply and
+/// sends the context to the AI to generate a tailored `stacker.yml`
+/// with appropriate services, proxy, monitoring, etc.
 pub struct InitCommand {
     pub app_type: Option<String>,
     pub with_proxy: bool,
     pub with_ai: bool,
+    /// Override AI provider (openai, anthropic, ollama, custom)
+    pub ai_provider: Option<String>,
+    /// Override AI model name
+    pub ai_model: Option<String>,
+    /// Override AI API key
+    pub ai_api_key: Option<String>,
 }
 
 impl InitCommand {
@@ -27,7 +40,22 @@ impl InitCommand {
             app_type,
             with_proxy,
             with_ai,
+            ai_provider: None,
+            ai_model: None,
+            ai_api_key: None,
         }
+    }
+
+    pub fn with_ai_options(
+        mut self,
+        provider: Option<String>,
+        model: Option<String>,
+        api_key: Option<String>,
+    ) -> Self {
+        self.ai_provider = provider;
+        self.ai_model = model;
+        self.ai_api_key = api_key;
+        self
     }
 }
 
@@ -42,6 +70,64 @@ fn parse_app_type(s: &str) -> Result<AppType, CliError> {
     })
 }
 
+/// Build an `AiConfig` from CLI flags and/or environment variables.
+///
+/// Priority: CLI flag > environment variable > defaults.
+pub fn resolve_ai_config(
+    ai_provider: Option<&str>,
+    ai_model: Option<&str>,
+    ai_api_key: Option<&str>,
+) -> Result<AiConfig, CliError> {
+    // Provider: flag > env > default (ollama)
+    let provider_str = ai_provider
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("STACKER_AI_PROVIDER").ok())
+        .unwrap_or_else(|| "ollama".to_string());
+
+    let provider = parse_ai_provider(&provider_str)?;
+
+    // API key: flag > env (provider-specific) > env (generic) > None
+    let api_key = ai_api_key
+        .map(|s| s.to_string())
+        .or_else(|| match provider {
+            AiProviderType::Openai => std::env::var("OPENAI_API_KEY").ok(),
+            AiProviderType::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok(),
+            _ => None,
+        })
+        .or_else(|| std::env::var("STACKER_AI_API_KEY").ok());
+
+    // Model: flag > env > None (provider default will be used)
+    let model = ai_model
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("STACKER_AI_MODEL").ok());
+
+    // Endpoint from env
+    let endpoint = std::env::var("STACKER_AI_ENDPOINT").ok();
+
+    Ok(AiConfig {
+        enabled: true,
+        provider,
+        model,
+        api_key,
+        endpoint,
+        tasks: vec!["dockerfile".to_string(), "compose".to_string()],
+    })
+}
+
+/// Parse an AI provider string into `AiProviderType`.
+fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
+    match s.to_lowercase().as_str() {
+        "openai" => Ok(AiProviderType::Openai),
+        "anthropic" => Ok(AiProviderType::Anthropic),
+        "ollama" => Ok(AiProviderType::Ollama),
+        "custom" => Ok(AiProviderType::Custom),
+        other => Err(CliError::ConfigValidation(format!(
+            "Unknown AI provider '{}'. Valid: openai, anthropic, ollama, custom",
+            other
+        ))),
+    }
+}
+
 /// Generate a `stacker.yml` config in the target directory.
 ///
 /// This is extracted as a standalone function for testability — the
@@ -51,6 +137,27 @@ pub fn generate_config(
     app_type_override: Option<&str>,
     with_proxy: bool,
     with_ai: bool,
+) -> Result<PathBuf, CliError> {
+    generate_config_full(
+        project_dir,
+        app_type_override,
+        with_proxy,
+        with_ai,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Full config generation supporting AI provider options.
+pub fn generate_config_full(
+    project_dir: &Path,
+    app_type_override: Option<&str>,
+    with_proxy: bool,
+    with_ai: bool,
+    ai_provider: Option<&str>,
+    ai_model: Option<&str>,
+    ai_api_key: Option<&str>,
 ) -> Result<PathBuf, CliError> {
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
 
@@ -62,6 +169,94 @@ pub fn generate_config(
         )));
     }
 
+    // If --with-ai is set, try AI-powered generation
+    if with_ai {
+        let ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key)?;
+
+        match create_provider(&ai_config) {
+            Ok(provider) => {
+                match generate_config_ai_path(
+                    project_dir,
+                    &config_path,
+                    provider.as_ref(),
+                    &ai_config,
+                ) {
+                    Ok(path) => return Ok(path),
+                    Err(e) => {
+                        eprintln!("⚠ AI generation failed: {}. Falling back to template-based generation.", e);
+                    }
+                }
+            }
+            Err(_) => {
+                eprintln!("⚠ AI provider not available, falling back to template-based generation");
+            }
+        }
+    }
+
+    // Template-based generation (original flow)
+    generate_config_template_path(
+        project_dir,
+        &config_path,
+        app_type_override,
+        with_proxy,
+        with_ai,
+    )
+}
+
+/// AI-powered config generation path.
+fn generate_config_ai_path(
+    project_dir: &Path,
+    config_path: &Path,
+    provider: &dyn AiProvider,
+    ai_config: &AiConfig,
+) -> Result<PathBuf, CliError> {
+    eprintln!("🤖 Scanning project and generating config with AI...");
+
+    let yaml = generate_config_with_ai(project_dir, provider)?;
+
+    // Validate it parses as StackerConfig
+    match StackerConfig::from_str(&yaml) {
+        Ok(_) => {}
+        Err(e) => {
+            // Save the raw AI output for debugging but warn
+            let debug_path = project_dir.join("stacker.yml.ai-draft");
+            let _ = std::fs::write(&debug_path, &yaml);
+            return Err(CliError::ConfigValidation(format!(
+                "AI generated a config that failed validation: {}. \
+                 Raw output saved to stacker.yml.ai-draft for review.",
+                e
+            )));
+        }
+    }
+
+    // Write with header
+    let content = format!(
+        "# Stacker configuration — generated by `stacker init --with-ai`\n\
+         # AI provider: {} (model: {})\n\
+         # Review this file and adjust as needed before deploying.\n\
+         # Docs: https://docs.try.direct/stacker\n\
+         \n\
+         {yaml}",
+        ai_config.provider,
+        ai_config
+            .model
+            .as_deref()
+            .unwrap_or("default"),
+    );
+
+    std::fs::write(config_path, &content)?;
+
+    Ok(config_path.to_path_buf())
+}
+
+/// Template-based config generation (the original flow).
+fn generate_config_template_path(
+    project_dir: &Path,
+    config_path: &Path,
+    app_type_override: Option<&str>,
+    with_proxy: bool,
+    with_ai: bool,
+) -> Result<PathBuf, CliError> {
     // Determine app type: flag override > detection > default (static)
     let app_type = if let Some(type_str) = app_type_override {
         parse_app_type(type_str)?
@@ -120,20 +315,23 @@ pub fn generate_config(
          {yaml}"
     );
 
-    std::fs::write(&config_path, &content)?;
+    std::fs::write(config_path, &content)?;
 
-    Ok(config_path)
+    Ok(config_path.to_path_buf())
 }
 
 impl CallableTrait for InitCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
 
-        let config_path = generate_config(
+        let config_path = generate_config_full(
             &project_dir,
             self.app_type.as_deref(),
             self.with_proxy,
             self.with_ai,
+            self.ai_provider.as_deref(),
+            self.ai_model.as_deref(),
+            self.ai_api_key.as_deref(),
         )?;
 
         eprintln!("✓ Created {}", config_path.display());
@@ -142,11 +340,14 @@ impl CallableTrait for InitCommand {
         let config = StackerConfig::from_file(&config_path)?;
         eprintln!("  Project: {} ({})", config.name, config.app.app_type);
 
-        if self.with_proxy {
-            eprintln!("  Proxy: enabled (nginx)");
+        if self.with_proxy || config.proxy.proxy_type != ProxyType::None {
+            eprintln!("  Proxy: enabled ({})", config.proxy.proxy_type);
         }
-        if self.with_ai {
-            eprintln!("  AI: enabled (ollama)");
+        if config.ai.enabled {
+            eprintln!("  AI: enabled ({})", config.ai.provider);
+        }
+        if !config.services.is_empty() {
+            eprintln!("  Services: {}", config.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "));
         }
 
         eprintln!("\nNext steps:");
@@ -277,5 +478,90 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("Unknown app type"));
+    }
+
+    // ── AI provider resolution tests ────────────────
+
+    #[test]
+    fn test_resolve_ai_config_defaults_to_ollama() {
+        let config = resolve_ai_config(None, None, None).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.provider, AiProviderType::Ollama);
+        assert!(config.api_key.is_none());
+    }
+
+    #[test]
+    fn test_resolve_ai_config_explicit_provider() {
+        let config = resolve_ai_config(Some("anthropic"), Some("claude-sonnet-4-20250514"), Some("sk-ant-test")).unwrap();
+        assert_eq!(config.provider, AiProviderType::Anthropic);
+        assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(config.api_key.as_deref(), Some("sk-ant-test"));
+    }
+
+    #[test]
+    fn test_resolve_ai_config_openai_with_key() {
+        let config = resolve_ai_config(Some("openai"), None, Some("sk-test123")).unwrap();
+        assert_eq!(config.provider, AiProviderType::Openai);
+        assert_eq!(config.api_key.as_deref(), Some("sk-test123"));
+    }
+
+    #[test]
+    fn test_resolve_ai_config_invalid_provider_errors() {
+        let result = resolve_ai_config(Some("invalid-provider"), None, None);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("Unknown AI provider"));
+    }
+
+    #[test]
+    fn test_resolve_ai_config_env_var_fallback() {
+        std::env::set_var("STACKER_AI_PROVIDER", "openai");
+        std::env::set_var("OPENAI_API_KEY", "sk-from-env");
+        std::env::set_var("STACKER_AI_MODEL", "gpt-4o-mini");
+
+        let config = resolve_ai_config(None, None, None).unwrap();
+        assert_eq!(config.provider, AiProviderType::Openai);
+        assert_eq!(config.api_key.as_deref(), Some("sk-from-env"));
+        assert_eq!(config.model.as_deref(), Some("gpt-4o-mini"));
+
+        std::env::remove_var("STACKER_AI_PROVIDER");
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("STACKER_AI_MODEL");
+    }
+
+    #[test]
+    fn test_resolve_ai_config_flag_overrides_env() {
+        std::env::set_var("STACKER_AI_PROVIDER", "openai");
+
+        // Flag says ollama, env says openai — flag wins
+        let config = resolve_ai_config(Some("ollama"), None, None).unwrap();
+        assert_eq!(config.provider, AiProviderType::Ollama);
+
+        std::env::remove_var("STACKER_AI_PROVIDER");
+    }
+
+    #[test]
+    fn test_parse_ai_provider_all_valid() {
+        assert_eq!(parse_ai_provider("openai").unwrap(), AiProviderType::Openai);
+        assert_eq!(parse_ai_provider("anthropic").unwrap(), AiProviderType::Anthropic);
+        assert_eq!(parse_ai_provider("ollama").unwrap(), AiProviderType::Ollama);
+        assert_eq!(parse_ai_provider("custom").unwrap(), AiProviderType::Custom);
+        // Case insensitive
+        assert_eq!(parse_ai_provider("OpenAI").unwrap(), AiProviderType::Openai);
+        assert_eq!(parse_ai_provider("ANTHROPIC").unwrap(), AiProviderType::Anthropic);
+    }
+
+    #[test]
+    fn test_generate_config_full_template_fallback() {
+        // with_ai=true but no provider available → falls back to template
+        let dir = setup_dir_with_files(&["package.json"]);
+        let result = generate_config_full(dir.path(), None, false, true, None, None, None);
+        assert!(result.is_ok());
+
+        let config = StackerConfig::from_file(&result.unwrap()).unwrap();
+        // Template fallback still generates correct app type
+        assert_eq!(config.app.app_type, AppType::Node);
+        // And includes AI section in config
+        assert!(config.ai.enabled);
     }
 }
