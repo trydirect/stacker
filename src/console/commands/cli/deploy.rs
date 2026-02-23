@@ -122,6 +122,17 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
     if lower.contains("network") || lower.contains("timed out") {
         hints.push("Network/timeout issue: retry build and verify registry connectivity".to_string());
     }
+    if lower.contains("port is already allocated")
+        || lower.contains("bind for 0.0.0.0")
+        || lower.contains("failed programming external connectivity")
+    {
+        hints.push("Port conflict: another process/container already uses this host port (for example 3000).".to_string());
+        hints.push("Find the owner with: lsof -nP -iTCP:3000 -sTCP:LISTEN".to_string());
+        hints.push("Then stop it (docker compose down / docker rm -f <container>) or change ports in stacker.yml".to_string());
+    }
+    if lower.contains("orphan containers") {
+        hints.push("Orphan containers detected: run docker compose -f .stacker/docker-compose.yml down --remove-orphans".to_string());
+    }
     if lower.contains("manifest unknown") || lower.contains("pull access denied") {
         hints.push("Image pull failed: the configured image tag is not available in the registry".to_string());
         if let Some(image) = extract_missing_image(reason) {
@@ -283,6 +294,82 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     }
 
     Ok(())
+}
+
+fn compose_app_build_source(compose_path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(compose_path).ok()?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
+
+    let root = match doc {
+        serde_yaml::Value::Mapping(m) => m,
+        _ => return None,
+    };
+
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let app_key = serde_yaml::Value::String("app".to_string());
+    let build_key = serde_yaml::Value::String("build".to_string());
+    let context_key = serde_yaml::Value::String("context".to_string());
+    let dockerfile_key = serde_yaml::Value::String("dockerfile".to_string());
+
+    let services = match root.get(&services_key) {
+        Some(serde_yaml::Value::Mapping(m)) => m,
+        _ => return None,
+    };
+    let app = match services.get(&app_key) {
+        Some(serde_yaml::Value::Mapping(m)) => m,
+        _ => return None,
+    };
+    let build = app.get(&build_key)?;
+
+    let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
+
+    match build {
+        serde_yaml::Value::String(context_str) => {
+            let context_path = PathBuf::from(context_str);
+            let context_abs = if context_path.is_absolute() {
+                context_path
+            } else {
+                compose_dir.join(context_path)
+            };
+            let dockerfile_abs = context_abs.join("Dockerfile");
+            Some(format!(
+                "context={}, dockerfile={}",
+                context_abs.display(),
+                dockerfile_abs.display()
+            ))
+        }
+        serde_yaml::Value::Mapping(build_map) => {
+            let context_raw = build_map
+                .get(&context_key)
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let dockerfile_raw = build_map
+                .get(&dockerfile_key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("Dockerfile");
+
+            let context_path = PathBuf::from(context_raw);
+            let context_abs = if context_path.is_absolute() {
+                context_path
+            } else {
+                compose_dir.join(context_path)
+            };
+
+            let dockerfile_path = PathBuf::from(dockerfile_raw);
+            let dockerfile_abs = if dockerfile_path.is_absolute() {
+                dockerfile_path
+            } else {
+                context_abs.join(dockerfile_path)
+            };
+
+            Some(format!(
+                "context={}, dockerfile={}",
+                context_abs.display(),
+                dockerfile_abs.display()
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn build_troubleshoot_error_log(project_dir: &Path, reason: &str) -> String {
@@ -471,7 +558,25 @@ pub fn run_deploy(
 
     // 5b. docker-compose.yml
     let compose_path = if let Some(ref existing) = config.deploy.compose_file {
-        project_dir.join(existing)
+        let configured_path = project_dir.join(existing);
+        if configured_path.exists() {
+            configured_path
+        } else {
+            let generated_fallback = output_dir.join("docker-compose.yml");
+            if generated_fallback.exists() {
+                eprintln!(
+                    "  Configured compose file not found: {}. Falling back to {}",
+                    configured_path.display(),
+                    generated_fallback.display()
+                );
+                generated_fallback
+            } else {
+                return Err(CliError::ConfigValidation(format!(
+                    "Compose file not found: {}",
+                    configured_path.display()
+                )));
+            }
+        }
     } else {
         let compose_out = output_dir.join("docker-compose.yml");
         if force_rebuild || !compose_out.exists() {
@@ -484,6 +589,23 @@ pub fn run_deploy(
     };
 
     normalize_generated_compose_paths(&compose_path)?;
+
+    // 5b.1 Surface build source paths to avoid confusion.
+    if let Some(image) = &config.app.image {
+        eprintln!("  App image source: image={} (no local Dockerfile build)", image);
+    } else if let Some(build_src) = compose_app_build_source(&compose_path) {
+        eprintln!("  App build source: {}", build_src);
+    } else if let Some(dockerfile) = &config.app.dockerfile {
+        let dockerfile_display = if dockerfile.is_absolute() {
+            dockerfile.display().to_string()
+        } else {
+            project_dir.join(dockerfile).display().to_string()
+        };
+        eprintln!("  App build source: Dockerfile={}", dockerfile_display);
+    } else {
+        eprintln!("  App build source: Dockerfile={}", dockerfile_path.display());
+    }
+    eprintln!("  Compose file: {}", compose_path.display());
 
     // 5c. Report hooks (dry-run)
     if dry_run {
@@ -666,6 +788,20 @@ mod tests {
     }
 
     #[test]
+    fn test_deploy_falls_back_when_configured_compose_missing() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  compose_file: stacker/docker-compose.yml\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            (".stacker/docker-compose.yml", "services:\n  app:\n    image: nginx\n"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_deploy_local_with_image_skips_build() {
         let config = "name: test-app\napp:\n  type: static\n  path: .\n  image: nginx:latest\n";
         let dir = setup_local_project(&[
@@ -814,6 +950,23 @@ mod tests {
     }
 
     #[test]
+    fn test_compose_app_build_source_reads_context_and_dockerfile() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join(".stacker").join("docker-compose.yml");
+        std::fs::create_dir_all(compose_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &compose_path,
+            "services:\n  app:\n    build:\n      context: ..\n      dockerfile: .stacker/Dockerfile\n",
+        )
+        .unwrap();
+
+        let source = compose_app_build_source(&compose_path).unwrap();
+        assert!(source.contains("context="));
+        assert!(source.contains("dockerfile="));
+        assert!(source.contains(".stacker/Dockerfile"));
+    }
+
+    #[test]
     fn test_build_troubleshoot_error_log_handles_missing_files() {
         let dir = TempDir::new().unwrap();
         let log = build_troubleshoot_error_log(dir.path(), "docker compose failed");
@@ -876,6 +1029,23 @@ services:
         );
         assert!(hints.iter().any(|h| h.contains("Image pull failed")));
         assert!(hints.iter().any(|h| h.contains("docker build -t optimum/optimumcode:latest .")));
+    }
+
+    #[test]
+    fn test_fallback_hints_for_port_conflict() {
+        let hints = fallback_troubleshooting_hints(
+            "failed to set up container networking: driver failed programming external connectivity on endpoint app: Bind for 0.0.0.0:3000 failed: port is already allocated"
+        );
+        assert!(hints.iter().any(|h| h.contains("Port conflict")));
+        assert!(hints.iter().any(|h| h.contains("lsof -nP -iTCP:3000")));
+    }
+
+    #[test]
+    fn test_fallback_hints_for_orphan_containers() {
+        let hints = fallback_troubleshooting_hints(
+            "Found orphan containers ([stackerdb]) for this project"
+        );
+        assert!(hints.iter().any(|h| h.contains("--remove-orphans")));
     }
 
     #[test]
