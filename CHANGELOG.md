@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.3] — 2026-02-23
+
+### Changed — `stacker init` now generates `.stacker/` directory
+
+- `stacker init` now creates `.stacker/Dockerfile` and `.stacker/docker-compose.yml` alongside `stacker.yml`, so the project is ready to deploy immediately without running `deploy --dry-run` first
+- Dockerfile generation is skipped when `app.image` or `app.dockerfile` is set in the config
+- Compose generation is skipped when `deploy.compose_file` is set
+
+### Changed — `stacker deploy` reuses existing `.stacker/` artifacts
+
+- `deploy` no longer errors when `.stacker/Dockerfile` or `.stacker/docker-compose.yml` already exist (e.g. from `stacker init`)
+- Existing artifacts are reused; pass `--force-rebuild` to regenerate them
+
+### Added — `--ai-provider`, `--ai-model`, `--ai-api-key` flags on `stacker-cli init`
+
+- The `stacker-cli` binary (`console/main.rs`) now supports all AI-related flags that the standalone `stacker` binary already had:
+  - `--ai-provider <PROVIDER>` — openai, anthropic, ollama, custom
+  - `--ai-model <MODEL>` — e.g. `qwen2.5-coder`, `deepseek-r1`, `gpt-4o`
+  - `--ai-api-key <KEY>` — API key for cloud AI providers
+
+### Fixed
+
+- `stacker-cli init --with-ai --ai-model qwen2.5-coder` no longer fails with an unrecognised flag error
+- `stacker deploy` after `stacker init` no longer fails with `DockerfileExists` error
+
 ## 2026-02-23
 
 ### Added - Configurable AI Request Timeout

@@ -100,8 +100,12 @@ pub fn run_deploy(
     let dockerfile_path = output_dir.join("Dockerfile");
 
     if needs_dockerfile {
-        let builder = DockerfileBuilder::from(config.app.app_type);
-        builder.write_to(&dockerfile_path, force_rebuild)?;
+        if force_rebuild || !dockerfile_path.exists() {
+            let builder = DockerfileBuilder::from(config.app.app_type);
+            builder.write_to(&dockerfile_path, force_rebuild)?;
+        } else {
+            eprintln!("  Using existing {}/Dockerfile (use --force-rebuild to regenerate)", OUTPUT_DIR);
+        }
     }
 
     // 5b. docker-compose.yml
@@ -109,8 +113,12 @@ pub fn run_deploy(
         project_dir.join(existing)
     } else {
         let compose_out = output_dir.join("docker-compose.yml");
-        let compose = ComposeDefinition::try_from(&config)?;
-        compose.write_to(&compose_out, force_rebuild)?;
+        if force_rebuild || !compose_out.exists() {
+            let compose = ComposeDefinition::try_from(&config)?;
+            compose.write_to(&compose_out, force_rebuild)?;
+        } else {
+            eprintln!("  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)", OUTPUT_DIR);
+        }
         compose_out
     };
 
@@ -383,11 +391,11 @@ mod tests {
         let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
         assert!(result.is_ok());
 
-        // Second deploy without force_rebuild should fail (files exist)
+        // Second deploy without force_rebuild should succeed (reuses existing files)
         let result2 = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
-        assert!(result2.is_err());
+        assert!(result2.is_ok());
 
-        // With force_rebuild should succeed
+        // With force_rebuild should also succeed (regenerates files)
         let result3 = run_deploy(dir.path(), None, Some("local"), true, true, &executor);
         assert!(result3.is_ok());
     }

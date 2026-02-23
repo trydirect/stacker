@@ -1,6 +1,6 @@
 # stacker.yml Configuration Reference
 
-> **Stacker CLI v0.2** — The single-file deployment configuration for containerised applications.
+> **Stacker CLI v0.2.3** — The single-file deployment configuration for containerised applications.
 
 `stacker.yml` is the only file you need to add to your project. Stacker reads it to auto-generate Dockerfiles, docker-compose definitions, and deploy your application locally or to cloud infrastructure.
 
@@ -849,25 +849,45 @@ Configuration issues:
 
 | Command | Description |
 |---------|-------------|
-| `stacker init` | Initialize a new project — generates `stacker.yml` |
-| `stacker deploy` | Build and deploy the stack |
+| `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml) |
+| `stacker deploy` | Build and deploy the stack (reuses existing `.stacker/` artifacts if present) |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
 | `stacker destroy` | Tear down the stack |
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
+| `stacker config fix` | Interactively fix missing required config fields |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
 | `stacker update` | Check for CLI updates |
 
-### Common flags
+### `stacker init` flags
+
+| Flag | Description |
+|------|-------------|
+| `--app-type <TYPE>` | Application type: `static`, `node`, `python`, `rust`, `go`, `php`, `custom` |
+| `--with-proxy` | Include reverse-proxy (nginx) configuration |
+| `--with-ai` | Use AI to scan the project and generate a tailored `stacker.yml` |
+| `--ai-provider <PROVIDER>` | AI provider: `openai`, `anthropic`, `ollama`, `custom` (default: `ollama`) |
+| `--ai-model <MODEL>` | AI model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`, `qwen2.5-coder`, `deepseek-r1`) |
+| `--ai-api-key <KEY>` | AI API key (or set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env var) |
+
+`stacker init` generates:
+- `stacker.yml` — project configuration
+- `.stacker/Dockerfile` — generated Dockerfile (skipped if `app.image` or `app.dockerfile` is set)
+- `.stacker/docker-compose.yml` — generated compose definition (skipped if `deploy.compose_file` is set)
 
 ```bash
 # Init
-stacker init --app-type node --with-proxy --with-ai
+stacker init                                          # Auto-detect project type
+stacker init --app-type node --with-proxy             # Explicit type + proxy
+stacker init --with-ai                                # AI-powered generation (Ollama default)
+stacker init --with-ai --ai-model qwen2.5-coder       # Specify Ollama model
 stacker init --with-ai --ai-provider ollama --ai-model deepseek-r1
+stacker init --with-ai --ai-provider openai --ai-api-key sk-...
+stacker init --with-ai --ai-provider anthropic --ai-model claude-sonnet-4-20250514
 
 # AI init environment variables (override CLI defaults)
 # STACKER_AI_PROVIDER  — AI provider (openai, anthropic, ollama, custom)
@@ -878,14 +898,24 @@ stacker init --with-ai --ai-provider ollama --ai-model deepseek-r1
 # OPENAI_API_KEY       — OpenAI API key (used when provider is openai)
 # ANTHROPIC_API_KEY    — Anthropic API key (used when provider is anthropic)
 STACKER_AI_TIMEOUT=900 stacker init --with-ai  # 15 min timeout for slow models
+```
 
-# Deploy
+### `stacker deploy` flags
+
+```bash
 stacker deploy --target local          # Deploy locally
 stacker deploy --target cloud          # Deploy to cloud
 stacker deploy --target local --dry-run  # Generate files without deploying
 stacker deploy --file custom.yml       # Use a custom config file
-stacker deploy --force-rebuild         # Force rebuild all containers
+stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 
+```
+
+> **Note:** `deploy` reuses existing `.stacker/Dockerfile` and `.stacker/docker-compose.yml` if present (e.g. from `stacker init`). Use `--force-rebuild` to regenerate them.
+
+### Other commands
+
+```bash
 # Logs
 stacker logs                           # All services
 stacker logs --service postgres        # Specific service
@@ -918,6 +948,10 @@ stacker proxy detect
 # Update
 stacker update                         # Check stable channel
 stacker update --channel beta          # Check beta channel
+
+# Config
+stacker config fix                     # Interactively fix missing fields
+stacker config fix --file prod.yml     # Fix a specific config file
 ```
 
 ---
@@ -1074,7 +1108,7 @@ APP_NAME=myapp APP_VERSION=1.2.3 NODE_ENV=production \
 A: In the `.stacker/` directory. This includes `Dockerfile`, `docker-compose.yml`, and any proxy configuration. Add `.stacker/` to your `.gitignore`.
 
 **Q: Can I edit the generated Dockerfile?**
-A: Yes. Run `stacker deploy --dry-run` to generate it, edit `.stacker/Dockerfile`, then `stacker deploy` to build from your modified version.
+A: Yes. After `stacker init` (or `stacker deploy --dry-run`), edit `.stacker/Dockerfile`, then `stacker deploy` to build from your modified version. Stacker reuses existing `.stacker/` files unless `--force-rebuild` is passed.
 
 **Q: What if I already have a Dockerfile?**
 A: Set `app.type: custom` and `app.dockerfile: ./Dockerfile`. Stacker will use yours instead of generating one.
@@ -1095,7 +1129,7 @@ A: Hetzner, DigitalOcean, AWS, Linode, and Vultr. You must `stacker login` first
 
 ## File Structure
 
-After `stacker init` and `stacker deploy --dry-run`, your project will look like:
+After `stacker init`, your project will look like:
 
 ```
 my-project/
