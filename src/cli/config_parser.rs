@@ -363,6 +363,18 @@ pub struct CloudConfig {
 
     #[serde(default)]
     pub ssh_key: Option<PathBuf>,
+
+    /// Name of saved cloud credential on the Stacker server.
+    /// Used with `stacker deploy --key devops` or `deploy.cloud.key: devops` in stacker.yml.
+    /// When set, the CLI looks up saved credentials by provider instead of requiring env vars.
+    #[serde(default)]
+    pub key: Option<String>,
+
+    /// Name of a saved server on the Stacker server.
+    /// Used with `stacker deploy --server bastion` or `deploy.cloud.server: bastion` in stacker.yml.
+    /// When set, the CLI passes the server_id to the deploy form so it is reused.
+    #[serde(default)]
+    pub server: Option<String>,
 }
 
 /// Remote server settings for server deployments.
@@ -474,6 +486,14 @@ pub struct HookConfig {
     pub on_failure: Option<PathBuf>,
 }
 
+/// Project identity metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectConfig {
+    /// Registered User Service identity used as remote deploy payload `stack_code`.
+    #[serde(default)]
+    pub identity: Option<String>,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StackerConfig — the root configuration type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -489,6 +509,9 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub organization: Option<String>,
+
+    #[serde(default)]
+    pub project: ProjectConfig,
 
     #[serde(default)]
     pub app: AppSource,
@@ -566,6 +589,28 @@ impl StackerConfig {
                     message: "Server host is required for server deployment".to_string(),
                     field: Some("deploy.server.host".to_string()),
                 });
+            }
+        }
+
+        if self.deploy.target == DeployTarget::Cloud {
+            if let Some(cloud) = &self.deploy.cloud {
+                if cloud.orchestrator == CloudOrchestrator::Remote {
+                    let identity_empty = self
+                        .project
+                        .identity
+                        .as_ref()
+                        .map(|v| v.trim().is_empty())
+                        .unwrap_or(true);
+
+                    if identity_empty {
+                        issues.push(ValidationIssue {
+                            severity: Severity::Info,
+                            code: "I001".to_string(),
+                            message: "project.identity is not set; remote deploy will use default stack_code 'custom-stack'".to_string(),
+                            field: Some("project.identity".to_string()),
+                        });
+                    }
+                }
             }
         }
 
@@ -726,6 +771,7 @@ pub struct ConfigBuilder {
     name: Option<String>,
     version: Option<String>,
     organization: Option<String>,
+    project_identity: Option<String>,
     app_type: Option<AppType>,
     app_path: Option<PathBuf>,
     app_image: Option<String>,
@@ -760,6 +806,11 @@ impl ConfigBuilder {
 
     pub fn organization<S: Into<String>>(mut self, org: S) -> Self {
         self.organization = Some(org.into());
+        self
+    }
+
+    pub fn project_identity<S: Into<String>>(mut self, identity: S) -> Self {
+        self.project_identity = Some(identity.into());
         self
     }
 
@@ -857,6 +908,9 @@ impl ConfigBuilder {
             name,
             version: self.version,
             organization: self.organization,
+            project: ProjectConfig {
+                identity: self.project_identity,
+            },
             app: AppSource {
                 app_type: self.app_type.unwrap_or_default(),
                 path: self.app_path.unwrap_or_else(|| PathBuf::from(".")),
@@ -1297,6 +1351,43 @@ services:
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
     }
 
+    #[test]
+    fn test_validate_semantics_remote_cloud_defaults_stack_code_without_project_identity() {
+        let config = ConfigBuilder::new()
+            .name("remote-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Remote,
+                region: Some("nbg1".to_string()),
+                size: Some("cx22".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
+        let infos: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Info)
+            .collect();
+        assert!(errors.is_empty(), "Expected no blocking errors, got: {errors:?}");
+        assert!(
+            infos
+                .iter()
+                .any(|e| e.field.as_deref() == Some("project.identity")),
+            "Expected project.identity informational hint"
+        );
+    }
+
     // ━━━ ConfigBuilder tests ━━━
 
     #[test]
@@ -1306,6 +1397,20 @@ services:
         assert_eq!(config.app.app_type, AppType::Static);
         assert_eq!(config.app.path, PathBuf::from("."));
         assert_eq!(config.deploy.target, DeployTarget::Local);
+        assert_eq!(config.project.identity, None);
+    }
+
+    #[test]
+    fn test_config_builder_project_identity() {
+        let config = ConfigBuilder::new()
+            .name("test")
+            .project_identity("registered-stack-code")
+            .build()
+            .unwrap();
+        assert_eq!(
+            config.project.identity.as_deref(),
+            Some("registered-stack-code")
+        );
     }
 
     #[test]
@@ -1333,6 +1438,8 @@ services:
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: None,
+                key: None,
+                server: None,
             })
             .build()
             .unwrap();

@@ -130,6 +130,15 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
         hints.push("Find the owner with: lsof -nP -iTCP:3000 -sTCP:LISTEN".to_string());
         hints.push("Then stop it (docker compose down / docker rm -f <container>) or change ports in stacker.yml".to_string());
     }
+    if lower.contains("remote orchestrator request failed")
+        && lower.contains("http error")
+        && lower.contains("404")
+        && (lower.contains("<!doctype html") || lower.contains("<html"))
+    {
+        hints.push("Remote orchestrator URL looks incorrect (received frontend 404 HTML instead of User Service JSON).".to_string());
+        hints.push("If you logged in with /server/user/auth/login, deploy expects User Service base URL ending with /server/user.".to_string());
+        hints.push("Try re-login with: stacker-cli login --auth-url https://dev.try.direct/server/user/auth/login".to_string());
+    }
     if lower.contains("orphan containers") {
         hints.push("Orphan containers detected: run docker compose -f .stacker/docker-compose.yml down --remove-orphans".to_string());
     }
@@ -474,14 +483,28 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
 }
 
 /// `stacker deploy [--target local|cloud|server] [--file stacker.yml] [--dry-run] [--force-rebuild]`
+/// `stacker deploy --project=myapp --target cloud --key devops --server bastion`
 ///
 /// Generates Dockerfile + docker-compose from stacker.yml, then
 /// deploys using the appropriate strategy (local, cloud, or server).
+///
+/// For remote cloud deploys, the CLI now goes through the Stacker server API
+/// instead of calling User Service directly:
+///   1. Resolves (or auto-creates) the project on the Stacker server
+///   2. Looks up saved cloud credentials by provider (or passes env-var creds)
+///   3. Looks up saved server by name (optional)
+///   4. Calls `POST /project/{id}/deploy[/{cloud_id}]`
 pub struct DeployCommand {
     pub target: Option<String>,
     pub file: Option<String>,
     pub dry_run: bool,
     pub force_rebuild: bool,
+    /// Override project name (--project flag)
+    pub project_name: Option<String>,
+    /// Override cloud key name (--key flag)
+    pub key_name: Option<String>,
+    /// Override server name (--server flag)
+    pub server_name: Option<String>,
 }
 
 impl DeployCommand {
@@ -496,7 +519,23 @@ impl DeployCommand {
             file,
             dry_run,
             force_rebuild,
+            project_name: None,
+            key_name: None,
+            server_name: None,
         }
+    }
+
+    /// Builder method to set remote override flags from CLI args.
+    pub fn with_remote_overrides(
+        mut self,
+        project: Option<String>,
+        key: Option<String>,
+        server: Option<String>,
+    ) -> Self {
+        self.project_name = project;
+        self.key_name = key;
+        self.server_name = server;
+        self
     }
 }
 
@@ -511,6 +550,14 @@ fn parse_deploy_target(s: &str) -> Result<DeployTarget, CliError> {
     })
 }
 
+/// Override values from CLI flags for remote cloud deploys.
+#[derive(Debug, Clone, Default)]
+pub struct RemoteDeployOverrides {
+    pub project_name: Option<String>,
+    pub key_name: Option<String>,
+    pub server_name: Option<String>,
+}
+
 /// Core deploy logic, extracted for testability.
 ///
 /// Takes injectable `CommandExecutor` so tests can mock shell calls.
@@ -521,6 +568,7 @@ pub fn run_deploy(
     dry_run: bool,
     force_rebuild: bool,
     executor: &dyn CommandExecutor,
+    remote_overrides: &RemoteDeployOverrides,
 ) -> Result<DeployResult, CliError> {
     // 1. Load config
     let config_path = match config_file {
@@ -634,6 +682,9 @@ pub fn run_deploy(
             .cloud
             .as_ref()
             .and_then(|cloud| cloud.install_image.clone()),
+        project_name_override: remote_overrides.project_name.clone(),
+        key_name_override: remote_overrides.key_name.clone(),
+        server_name_override: remote_overrides.server_name.clone(),
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -646,6 +697,13 @@ impl CallableTrait for DeployCommand {
         let project_dir = std::env::current_dir()?;
         let executor = ShellExecutor;
 
+        // Build remote overrides from CLI flags
+        let remote_overrides = RemoteDeployOverrides {
+            project_name: self.project_name.clone(),
+            key_name: self.key_name.clone(),
+            server_name: self.server_name.clone(),
+        };
+
         let result = run_deploy(
             &project_dir,
             self.file.as_deref(),
@@ -653,6 +711,7 @@ impl CallableTrait for DeployCommand {
             self.dry_run,
             self.force_rebuild,
             &executor,
+            &remote_overrides,
         );
 
         let result = match result {
@@ -754,7 +813,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Generated files should exist
@@ -772,7 +831,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Custom Dockerfile should not be overwritten
@@ -793,7 +852,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // .stacker/docker-compose.yml should NOT be generated
@@ -810,7 +869,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -822,7 +881,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // No Dockerfile should be generated (using image)
@@ -836,7 +895,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor);
+        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -857,7 +916,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // This should fail at validation since no credentials exist
-        let result = run_deploy(dir.path(), None, None, true, false, &executor);
+        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
     }
 
@@ -869,7 +928,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor);
+        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -882,7 +941,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor);
+        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -898,7 +957,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -911,15 +970,15 @@ mod tests {
         let executor = MockExecutor::success();
 
         // First deploy creates files
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Second deploy without force_rebuild should succeed (reuses existing files)
-        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result2.is_ok());
 
         // With force_rebuild should also succeed (regenerates files)
-        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, &executor);
+        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, &executor, &RemoteDeployOverrides::default());
         assert!(result3.is_ok());
     }
 
@@ -952,7 +1011,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // Dry-run should succeed (hooks are just noted, not executed in dry-run)
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor);
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -1059,6 +1118,15 @@ services:
             "Found orphan containers ([stackerdb]) for this project"
         );
         assert!(hints.iter().any(|h| h.contains("--remove-orphans")));
+    }
+
+    #[test]
+    fn test_fallback_hints_for_remote_orchestrator_html_404() {
+        let hints = fallback_troubleshooting_hints(
+            "Remote orchestrator request failed: HTTP error: User Service error (404): <!DOCTYPE html><html><head><title>Page not found</title></head>"
+        );
+        assert!(hints.iter().any(|h| h.contains("URL looks incorrect")));
+        assert!(hints.iter().any(|h| h.contains("/server/user/auth/login")));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, FileCredentialStore, DEFAULT_API_URL};
 use crate::cli::error::CliError;
-use crate::connectors::user_service::UserServiceClient;
+use crate::cli::stacker_client::{self, StackerClient};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
@@ -89,6 +89,11 @@ pub struct DeployContext {
 
     /// Install container image override.
     pub image: Option<String>,
+
+    /// Remote deploy overrides from CLI flags.
+    pub project_name_override: Option<String>,
+    pub key_name_override: Option<String>,
+    pub server_name_override: Option<String>,
 }
 
 impl DeployContext {
@@ -421,40 +426,27 @@ impl DeployStrategy for CloudDeploy {
                     });
                 }
 
-                let payload = if let Some(payload_file) = &cloud_cfg.remote_payload_file {
-                    let payload_path = if payload_file.is_absolute() {
-                        payload_file.clone()
-                    } else {
-                        context.project_dir.join(payload_file)
-                    };
+                // Resolve project name: CLI flag > config project.identity > config name
+                let project_name = context
+                    .project_name_override
+                    .clone()
+                    .or_else(|| config.project.identity.clone())
+                    .unwrap_or_else(|| config.name.clone());
 
-                    let raw = std::fs::read_to_string(&payload_path).map_err(|e| {
-                        CliError::DeployFailed {
-                            target: DeployTarget::Cloud,
-                            reason: format!(
-                                "Failed to read remote payload file {}: {}",
-                                payload_path.display(),
-                                e
-                            ),
-                        }
-                    })?;
+                // Resolve cloud key name: CLI flag > config deploy.cloud.key
+                let key_name = context
+                    .key_name_override
+                    .clone()
+                    .or_else(|| cloud_cfg.key.clone());
 
-                    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| {
-                        CliError::DeployFailed {
-                            target: DeployTarget::Cloud,
-                            reason: format!(
-                                "Invalid JSON in remote payload file {}: {}",
-                                payload_path.display(),
-                                e
-                            ),
-                        }
-                    })?
-                } else {
-                    build_remote_deploy_payload(config)
-                };
+                // Resolve server name: CLI flag > config deploy.cloud.server
+                let server_name = context
+                    .server_name_override
+                    .clone()
+                    .or_else(|| cloud_cfg.server.clone());
 
-                let base_url = normalize_user_service_base_url(
-                    creds.server_url.as_deref().unwrap_or(DEFAULT_API_URL),
+                let base_url = normalize_stacker_server_url(
+                    stacker_client::DEFAULT_STACKER_URL,
                 );
 
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -465,28 +457,203 @@ impl DeployStrategy for CloudDeploy {
                         reason: format!("Failed to initialize async runtime: {}", e),
                     })?;
 
-                let response = rt
-                    .block_on(async {
-                        let client = UserServiceClient::new_public(&base_url);
-                        client
-                            .initiate_deployment(&creds.access_token, payload)
-                            .await
-                    })
-                    .map_err(|e| CliError::DeployFailed {
-                        target: DeployTarget::Cloud,
-                        reason: format!("Remote orchestrator request failed: {}", e),
-                    })?;
+                let response = rt.block_on(async {
+                    let client = StackerClient::new(&base_url, &creds.access_token);
 
-                let install_id = response
-                    .get("_id")
-                    .and_then(|v| v.as_i64())
-                    .or_else(|| response.get("id").and_then(|v| v.as_i64()));
+                    // Step 1: Resolve or auto-create project
+                    eprintln!("  Resolving project '{}'...", project_name);
+                    let project_body = stacker_client::build_project_body(config);
+                    let project = match client.find_project_by_name(&project_name).await? {
+                        Some(p) => {
+                            eprintln!("  Found project '{}' (id={}), syncing metadata...", p.name, p.id);
+                            let updated = client
+                                .update_project(p.id, project_body)
+                                .await?;
+                            eprintln!("  Updated project '{}' (id={})", updated.name, updated.id);
+                            updated
+                        }
+                        None => {
+                            eprintln!("  Project '{}' not found, creating...", project_name);
+                            let p = client
+                                .create_project(&project_name, project_body)
+                                .await?;
+                            eprintln!("  Created project '{}' (id={})", p.name, p.id);
+                            p
+                        }
+                    };
 
-                let message = if let Some(id) = install_id {
-                    format!("Cloud deployment requested via remote orchestrator (installation_id={})", id)
-                } else {
-                    "Cloud deployment requested via remote orchestrator".to_string()
-                };
+                    // Step 2: Resolve cloud credentials
+                    let cloud_id = if let Some(key_ref) = &key_name {
+                        // Look up saved cloud by provider name
+                        eprintln!("  Looking up saved cloud key '{}'...", key_ref);
+                        match client.find_cloud_by_provider(key_ref).await? {
+                            Some(c) => {
+                                eprintln!(
+                                    "  Found cloud credentials (id={}, provider={})",
+                                    c.id, c.provider
+                                );
+                                Some(c.id)
+                            }
+                            None => {
+                                // Try saving current env-var creds under this provider
+                                let provider_str = cloud_cfg.provider.to_string();
+                                let provider_code = provider_code_for_remote(
+                                    &provider_str,
+                                );
+                                let env_creds =
+                                    resolve_remote_cloud_credentials(provider_code);
+                                let cloud_token = env_creds
+                                    .get("cloud_token")
+                                    .and_then(|v| v.as_str());
+                                let cloud_key = env_creds
+                                    .get("cloud_key")
+                                    .and_then(|v| v.as_str());
+                                let cloud_secret = env_creds
+                                    .get("cloud_secret")
+                                    .and_then(|v| v.as_str());
+
+                                if cloud_token.is_some()
+                                    || cloud_key.is_some()
+                                    || cloud_secret.is_some()
+                                {
+                                    eprintln!(
+                                        "  No saved cloud '{}', saving from env vars...",
+                                        key_ref
+                                    );
+                                    let saved = client
+                                        .save_cloud(
+                                            provider_code,
+                                            cloud_token,
+                                            cloud_key,
+                                            cloud_secret,
+                                        )
+                                        .await?;
+                                    eprintln!(
+                                        "  Saved cloud credentials (id={})",
+                                        saved.id
+                                    );
+                                    Some(saved.id)
+                                } else {
+                                    return Err(CliError::DeployFailed {
+                                        target: DeployTarget::Cloud,
+                                        reason: format!(
+                                            "Cloud key '{}' not found on server and no cloud credentials in env vars (STACKER_CLOUD_TOKEN, HCLOUD_TOKEN, etc.)",
+                                            key_ref
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        // No key specified: try to find existing cloud creds for this provider,
+                        // or pass creds directly in deploy form from env vars
+                        let provider_str = cloud_cfg.provider.to_string();
+                        let provider_code =
+                            provider_code_for_remote(&provider_str);
+                        match client.find_cloud_by_provider(provider_code).await? {
+                            Some(c) => {
+                                eprintln!(
+                                    "  Using saved cloud credentials (id={}, provider={})",
+                                    c.id, c.provider
+                                );
+                                Some(c.id)
+                            }
+                            None => None,
+                        }
+                    };
+
+                    // Step 3: Resolve server by name
+                    let server_id = if let Some(srv_name) = &server_name {
+                        eprintln!("  Looking up server '{}'...", srv_name);
+                        match client.find_server_by_name(srv_name).await? {
+                            Some(s) => {
+                                eprintln!(
+                                    "  Found server '{}' (id={})",
+                                    s.name.as_deref().unwrap_or("unnamed"),
+                                    s.id
+                                );
+                                Some(s.id)
+                            }
+                            None => {
+                                return Err(CliError::DeployFailed {
+                                    target: DeployTarget::Cloud,
+                                    reason: format!(
+                                        "Server '{}' not found. Create it on the Stacker server first or remove --server flag.",
+                                        srv_name
+                                    ),
+                                });
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Step 4: Build deploy form
+                    let mut deploy_form = stacker_client::build_deploy_form(config);
+                    if let Some(sid) = server_id {
+                        if let Some(server_obj) = deploy_form.get_mut("server") {
+                            if let Some(obj) = server_obj.as_object_mut() {
+                                obj.insert(
+                                    "server_id".to_string(),
+                                    serde_json::Value::Number(sid.into()),
+                                );
+                            }
+                        }
+                    }
+
+                    // Include env-var cloud creds in form if no saved cloud
+                    if cloud_id.is_none() {
+                        let provider_str = cloud_cfg.provider.to_string();
+                        let provider_code =
+                            provider_code_for_remote(&provider_str);
+                        let env_creds = resolve_remote_cloud_credentials(provider_code);
+                        if let Some(cloud_obj) = deploy_form.get_mut("cloud") {
+                            if let Some(obj) = cloud_obj.as_object_mut() {
+                                for (k, v) in &env_creds {
+                                    obj.insert(k.clone(), v.clone());
+                                }
+                                obj.insert(
+                                    "save_token".to_string(),
+                                    serde_json::Value::Bool(true),
+                                );
+                            }
+                        }
+                    }
+
+                    // Step 5: Deploy
+                    eprintln!("  Deploying project '{}' (id={})...", project_name, project.id);
+                    let resp = client.deploy(project.id, cloud_id, deploy_form).await?;
+
+                    Ok(resp)
+                }).map_err(|e: CliError| e)?;
+
+                let deploy_id = response
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.get("deployment_id"))
+                    .and_then(|v| v.as_i64());
+
+                let project_id = response.id;
+
+                let mut message = format!(
+                    "Cloud deployment requested via Stacker server (project='{}'",
+                    project_name
+                );
+
+                if let Some(pid) = project_id {
+                    message.push_str(&format!(", project_id={}", pid));
+                }
+                if let Some(did) = deploy_id {
+                    message.push_str(&format!(", deployment_id={}", did));
+                }
+                message.push(')');
+
+                if let Some(srv) = &server_name {
+                    message.push_str(&format!("; server='{}'", srv));
+                }
+                if let Some(key) = &key_name {
+                    message.push_str(&format!("; cloud_key='{}'", key));
+                }
 
                 return Ok(DeployResult {
                     target: DeployTarget::Cloud,
@@ -555,25 +722,40 @@ impl DeployStrategy for CloudDeploy {
     }
 }
 
-fn provider_code_for_remote(config_provider: &str) -> &str {
+pub fn provider_code_for_remote(config_provider: &str) -> &str {
     match config_provider {
         "hetzner" => "htz",
         "digitalocean" => "do",
         "aws" => "aws",
-        "linode" => "linode",
-        "vultr" => "vultr",
+        "linode" => "lo",
+        "vultr" => "vu",
         _ => config_provider,
     }
 }
 
 fn normalize_user_service_base_url(raw: &str) -> String {
     let mut url = raw.trim_end_matches('/').to_string();
-    for suffix in [
-        "/oauth_server/token",
-        "/server/user/auth/login",
-        "/auth/login",
-        "/login",
-    ] {
+    if url.ends_with("/server/user/auth/login") {
+        let len = url.len() - "/auth/login".len();
+        return url[..len].to_string();
+    }
+
+    for suffix in ["/oauth_server/token", "/auth/login", "/login"] {
+        if url.ends_with(suffix) {
+            let len = url.len() - suffix.len();
+            url = url[..len].to_string();
+            break;
+        }
+    }
+    url
+}
+
+/// Normalize the Stacker server URL from stored credentials.
+/// Strips trailing slashes and known auth path suffixes to get the base API URL.
+fn normalize_stacker_server_url(raw: &str) -> String {
+    let mut url = raw.trim_end_matches('/').to_string();
+    // Strip known auth endpoints that might be stored as server_url
+    for suffix in ["/oauth_server/token", "/auth/login", "/server/user/auth/login", "/login", "/api"] {
         if url.ends_with(suffix) {
             let len = url.len() - suffix.len();
             url = url[..len].to_string();
@@ -604,6 +786,78 @@ fn sanitize_stack_code(name: &str) -> String {
     }
 }
 
+fn default_common_domain(project_name: &str) -> String {
+    format!("{}.example.com", sanitize_stack_code(project_name))
+}
+
+fn first_non_empty_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut creds = serde_json::Map::new();
+
+    match provider {
+        "htz" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_HETZNER_TOKEN",
+                "HETZNER_TOKEN",
+                "HCLOUD_TOKEN",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "do" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_DIGITALOCEAN_TOKEN",
+                "DIGITALOCEAN_TOKEN",
+                "DO_API_TOKEN",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "lo" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_LINODE_TOKEN",
+                "LINODE_TOKEN",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "vu" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_VULTR_TOKEN",
+                "VULTR_TOKEN",
+                "VULTR_API_KEY",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "aws" => {
+            if let Some(key) = first_non_empty_env(&["STACKER_CLOUD_KEY", "AWS_ACCESS_KEY_ID"]) {
+                creds.insert("cloud_key".to_string(), serde_json::Value::String(key));
+            }
+            if let Some(secret) =
+                first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
+            {
+                creds.insert("cloud_secret".to_string(), serde_json::Value::String(secret));
+            }
+        }
+        _ => {}
+    }
+
+    creds
+}
+
 fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
@@ -611,21 +865,195 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
         .unwrap_or_else(|| "htz".to_string());
     let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
     let server = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cx22".to_string());
-    let stack_code = sanitize_stack_code(&config.name);
+    let stack_code = config
+        .project
+        .identity
+        .clone()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "custom-stack".to_string());
+    let os = match provider.as_str() {
+        "do" => "docker-20-04",
+        _ => "ubuntu-22.04",
+    };
 
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "provider": provider,
         "region": region,
         "server": server,
+        "os": os,
+        "ssl": "letsencrypt",
+        "commonDomain": default_common_domain(&config.name),
+        "domainList": {},
         "stack_code": stack_code,
         "project_name": config.name,
+        "selected_plan": "free",
+        "payment_type": "subscription",
+        "subscriptions": [],
+        "vars": [],
+        "integrated_features": [],
+        "extended_features": [],
         "save_token": true,
         "custom": {
             "project_name": config.name,
             "custom_stack_code": sanitize_stack_code(&config.name),
             "project_overview": format!("Generated by stacker-cli for {}", config.name)
         }
-    })
+    });
+
+    if let Some(obj) = payload.as_object_mut() {
+        for (key, value) in resolve_remote_cloud_credentials(&provider) {
+            obj.insert(key, value);
+        }
+    }
+
+    payload
+}
+
+fn validate_remote_deploy_payload(payload: &serde_json::Value) -> Result<(), CliError> {
+    let required = [
+        "provider",
+        "region",
+        "server",
+        "os",
+        "commonDomain",
+        "stack_code",
+        "selected_plan",
+        "payment_type",
+        "subscriptions",
+    ];
+
+    let mut missing = Vec::new();
+
+    for key in required {
+        match payload.get(key) {
+            Some(v) if !v.is_null() => {
+                if key == "subscriptions" && !v.is_array() {
+                    missing.push("subscriptions(array)");
+                }
+                if key == "stack_code"
+                    && v
+                        .as_str()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                {
+                    missing.push("stack_code(non-empty)");
+                }
+            }
+            _ => missing.push(key),
+        }
+    }
+
+    if !missing.is_empty() {
+        let identity_hint = if missing
+            .iter()
+            .any(|item| item.contains("stack_code"))
+        {
+            " stack_code defaults to 'custom-stack'. Optionally set project.identity in stacker.yml to a registered catalog stack code."
+        } else {
+            ""
+        };
+        Err(CliError::DeployFailed {
+            target: DeployTarget::Cloud,
+            reason: format!(
+                "Remote deploy payload is missing required fields: {}. Preferred flow: remove `deploy.cloud.remote_payload_file` and run `stacker deploy --target cloud` so payload is generated automatically. For advanced/debug use `stacker-cli config setup remote-payload`.{}",
+                missing.join(", "),
+                identity_hint
+            ),
+        })
+    } else {
+        let mut invalid = Vec::new();
+
+        if let Some(domain) = payload.get("commonDomain").and_then(|v| v.as_str()) {
+            let normalized = domain.trim().to_ascii_lowercase();
+            if normalized == "localhost" || !normalized.contains('.') {
+                invalid.push("commonDomain(valid domain required)");
+            }
+        }
+
+        let provider = payload
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        match provider {
+            "htz" | "lo" | "vu" => {
+                let has_token = payload
+                    .get("cloud_token")
+                    .and_then(|v| v.as_str())
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false);
+                if !has_token {
+                    invalid.push("cloud_token");
+                }
+            }
+            "aws" => {
+                let has_key = payload
+                    .get("cloud_key")
+                    .and_then(|v| v.as_str())
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false);
+                let has_secret = payload
+                    .get("cloud_secret")
+                    .and_then(|v| v.as_str())
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false);
+
+                if !has_key {
+                    invalid.push("cloud_key");
+                }
+                if !has_secret {
+                    invalid.push("cloud_secret");
+                }
+            }
+            _ => {}
+        }
+
+        if invalid.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::DeployFailed {
+                target: DeployTarget::Cloud,
+                reason: format!(
+                    "Remote deploy payload has invalid/missing provider credentials: {}. Set env vars before deploy (e.g. STACKER_CLOUD_TOKEN or provider-specific token vars; for AWS use AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY).",
+                    invalid.join(", ")
+                ),
+            })
+        }
+    }
+}
+
+fn persist_remote_payload_snapshot(project_dir: &Path, payload: &serde_json::Value) -> Option<PathBuf> {
+    let stacker_dir = project_dir.join(".stacker");
+    let snapshot_path = stacker_dir.join("remote-payload.last.json");
+
+    if let Err(err) = std::fs::create_dir_all(&stacker_dir) {
+        eprintln!(
+            "Warning: failed to create payload snapshot directory {}: {}",
+            stacker_dir.display(),
+            err
+        );
+        return None;
+    }
+
+    let payload_str = match serde_json::to_string_pretty(payload) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("Warning: failed to serialize remote payload snapshot: {}", err);
+            return None;
+        }
+    };
+
+    if let Err(err) = std::fs::write(&snapshot_path, payload_str) {
+        eprintln!(
+            "Warning: failed to write payload snapshot {}: {}",
+            snapshot_path.display(),
+            err
+        );
+        return None;
+    }
+
+    Some(snapshot_path)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -814,6 +1242,8 @@ mod tests {
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
+                key: None,
+                server: None,
             })
             .build()
             .unwrap()
@@ -826,9 +1256,17 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_user_service_base_url_from_direct_login_endpoint() {
+        let url = normalize_user_service_base_url("https://dev.try.direct/server/user/auth/login");
+        assert_eq!(url, "https://dev.try.direct/server/user");
+    }
+
+    #[test]
     fn test_provider_code_for_remote_hetzner() {
         assert_eq!(provider_code_for_remote("hetzner"), "htz");
         assert_eq!(provider_code_for_remote("aws"), "aws");
+        assert_eq!(provider_code_for_remote("linode"), "lo");
+        assert_eq!(provider_code_for_remote("vultr"), "vu");
     }
 
     #[test]
@@ -838,7 +1276,114 @@ mod tests {
         assert!(payload.get("provider").is_some());
         assert!(payload.get("region").is_some());
         assert!(payload.get("server").is_some());
+        assert!(payload.get("os").is_some());
+        assert!(payload.get("commonDomain").is_some());
+        assert!(payload.get("selected_plan").is_some());
+        assert!(payload.get("payment_type").is_some());
+        assert!(payload.get("subscriptions").is_some());
         assert!(payload.get("stack_code").is_some());
+        assert_eq!(
+            payload.get("stack_code").and_then(|v| v.as_str()),
+            Some("custom-stack")
+        );
+    }
+
+    #[test]
+    fn test_build_remote_deploy_payload_uses_project_identity_when_set() {
+        let cfg = ConfigBuilder::new()
+            .name("test-cloud-app")
+            .project_identity("registered-stack-code")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
+                key: None,
+                server: None,
+            })
+            .build()
+            .unwrap();
+
+        let payload = build_remote_deploy_payload(&cfg);
+        assert_eq!(
+            payload.get("stack_code").and_then(|v| v.as_str()),
+            Some("registered-stack-code")
+        );
+    }
+
+    #[test]
+    fn test_validate_remote_deploy_payload_accepts_generated_payload() {
+        std::env::set_var("STACKER_CLOUD_TOKEN", "test-token-value");
+        let cfg = sample_cloud_config();
+        let payload = build_remote_deploy_payload(&cfg);
+        let result = validate_remote_deploy_payload(&payload);
+        std::env::remove_var("STACKER_CLOUD_TOKEN");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_remote_deploy_payload_rejects_missing_common_domain() {
+        let payload = serde_json::json!({
+            "provider": "htz",
+            "region": "nbg1",
+            "server": "cx22",
+            "os": "ubuntu-22.04",
+            "stack_code": "demo",
+            "selected_plan": "free",
+            "payment_type": "subscription",
+            "subscriptions": []
+        });
+
+        let err = validate_remote_deploy_payload(&payload).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("commonDomain"));
+    }
+
+    #[test]
+    fn test_validate_remote_deploy_payload_rejects_empty_stack_code() {
+        let payload = serde_json::json!({
+            "provider": "htz",
+            "region": "nbg1",
+            "server": "cx22",
+            "os": "ubuntu-22.04",
+            "commonDomain": "example.com",
+            "stack_code": "",
+            "selected_plan": "free",
+            "payment_type": "subscription",
+            "subscriptions": [],
+            "cloud_token": "token"
+        });
+
+        let err = validate_remote_deploy_payload(&payload).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("stack_code"));
+    }
+
+    #[test]
+    fn test_persist_remote_payload_snapshot_writes_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let payload = serde_json::json!({
+            "provider": "htz",
+            "region": "nbg1",
+            "server": "cx22",
+            "os": "ubuntu-22.04",
+            "commonDomain": "localhost",
+            "stack_code": "demo-stack",
+            "selected_plan": "free",
+            "payment_type": "subscription",
+            "subscriptions": []
+        });
+
+        let path = persist_remote_payload_snapshot(dir.path(), &payload).unwrap();
+        assert!(path.exists());
+
+        let raw = std::fs::read_to_string(path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.get("provider").and_then(|v| v.as_str()), Some("htz"));
     }
 
     fn sample_server_config() -> StackerConfig {
@@ -861,6 +1406,9 @@ mod tests {
             project_dir: PathBuf::from("/project"),
             dry_run,
             image: None,
+            project_name_override: None,
+            key_name_override: None,
+            server_name_override: None,
         }
     }
 
@@ -959,6 +1507,9 @@ mod tests {
             project_dir: PathBuf::from("/p"),
             dry_run: false,
             image: Some("mycompany/install:v3".to_string()),
+            project_name_override: None,
+            key_name_override: None,
+            server_name_override: None,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }

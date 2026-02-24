@@ -24,6 +24,10 @@ pub fn full_config_reference_example() -> &'static str {
 # Uncomment and adapt the sections you need.
 # -----------------------------------------------------------------------------
 # organization: "acme-inc"
+# project:
+#   # Optional: registered platform catalog stack code for remote cloud deploy.
+#   # If omitted, remote deploy uses stack_code "custom-stack" by default.
+#   identity: "your-registered-stack-code"
 # env_file: ".env"
 # env:
 #   LOG_LEVEL: "info"

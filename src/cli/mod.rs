@@ -7,3 +7,4 @@ pub mod error;
 pub mod generator;
 pub mod install_runner;
 pub mod proxy_manager;
+pub mod stacker_client;

@@ -83,6 +83,15 @@ enum StackerCommands {
         /// Force rebuild of all containers
         #[arg(long)]
         force_rebuild: bool,
+        /// Project name on the Stacker server (overrides project.identity in stacker.yml)
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
+        /// Name of saved cloud credential to reuse (overrides deploy.cloud.key in stacker.yml)
+        #[arg(long, value_name = "KEY_NAME")]
+        key: Option<String>,
+        /// Name of saved server to reuse (overrides deploy.cloud.server in stacker.yml)
+        #[arg(long, value_name = "SERVER_NAME")]
+        server: Option<String>,
     },
     /// Show container logs
     Logs {
@@ -176,6 +185,13 @@ enum ConfigSetupCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
+    RemotePayload {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        #[arg(long, value_name = "OUT")]
+        out: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -250,13 +266,17 @@ fn get_command(
             file,
             dry_run,
             force_rebuild,
+            project,
+            key,
+            server,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
                 file,
                 dry_run,
                 force_rebuild,
-            ),
+            )
+            .with_remote_overrides(project, key, server),
         ),
         StackerCommands::Logs {
             service,
@@ -288,6 +308,9 @@ fn get_command(
             ConfigCommands::Setup { command } => match command {
                 ConfigSetupCommands::Cloud { file } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
+                ),
+                ConfigSetupCommands::RemotePayload { file, out } => Box::new(
+                    stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(file, out),
                 ),
             },
         },

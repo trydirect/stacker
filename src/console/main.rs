@@ -120,6 +120,15 @@ enum StackerCommands {
         dry_run: bool,
         #[arg(long)]
         force_rebuild: bool,
+        /// Project name on the Stacker server
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
+        /// Name of saved cloud credential to reuse
+        #[arg(long, value_name = "KEY_NAME")]
+        key: Option<String>,
+        /// Name of saved server to reuse
+        #[arg(long, value_name = "SERVER_NAME")]
+        server: Option<String>,
     },
     /// Show container logs
     Logs {
@@ -202,6 +211,13 @@ enum StackerConfigSetupCommands {
     Cloud {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+    },
+    /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
+    RemotePayload {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        #[arg(long, value_name = "OUT")]
+        out: Option<String>,
     },
 }
 
@@ -306,13 +322,17 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
                 file,
                 dry_run,
                 force_rebuild,
+                project,
+                key,
+                server,
             } => Ok(Box::new(
                 stacker::console::commands::cli::deploy::DeployCommand::new(
                     target,
                     file,
                     dry_run,
                     force_rebuild,
-                ),
+                )
+                .with_remote_overrides(project, key, server),
             )),
             StackerCommands::Logs {
                 service,
@@ -346,6 +366,9 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
                 StackerConfigCommands::Setup { command } => match command {
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
+                    )),
+                    StackerConfigSetupCommands::RemotePayload { file, out } => Ok(Box::new(
+                        stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(file, out),
                     )),
                 },
             },

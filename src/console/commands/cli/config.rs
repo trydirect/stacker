@@ -64,6 +64,245 @@ fn default_size_for_provider(provider: CloudProvider) -> &'static str {
     }
 }
 
+fn sanitize_stack_code(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+
+    for ch in name.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "app-stack".to_string()
+    } else {
+        out
+    }
+}
+
+fn provider_code_for_remote(provider: CloudProvider) -> &'static str {
+    match provider {
+        CloudProvider::Hetzner => "htz",
+        CloudProvider::Digitalocean => "do",
+        CloudProvider::Aws => "aws",
+        CloudProvider::Linode => "lo",
+        CloudProvider::Vultr => "vu",
+    }
+}
+
+fn first_non_empty_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+fn resolve_remote_cloud_credentials(provider_code: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut creds = serde_json::Map::new();
+
+    match provider_code {
+        "htz" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_HETZNER_TOKEN",
+                "HETZNER_TOKEN",
+                "HCLOUD_TOKEN",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "do" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_DIGITALOCEAN_TOKEN",
+                "DIGITALOCEAN_TOKEN",
+                "DO_API_TOKEN",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "lo" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_LINODE_TOKEN",
+                "LINODE_TOKEN",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "vu" => {
+            if let Some(token) = first_non_empty_env(&[
+                "STACKER_CLOUD_TOKEN",
+                "STACKER_VULTR_TOKEN",
+                "VULTR_TOKEN",
+                "VULTR_API_KEY",
+            ]) {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+        "aws" => {
+            if let Some(key) = first_non_empty_env(&["STACKER_CLOUD_KEY", "AWS_ACCESS_KEY_ID"]) {
+                creds.insert("cloud_key".to_string(), serde_json::Value::String(key));
+            }
+            if let Some(secret) =
+                first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
+            {
+                creds.insert("cloud_secret".to_string(), serde_json::Value::String(secret));
+            }
+        }
+        _ => {}
+    }
+
+    creds
+}
+
+pub fn run_generate_remote_payload(
+    config_path: &str,
+    output: Option<&str>,
+) -> Result<Vec<String>, CliError> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Err(CliError::ConfigNotFound {
+            path: PathBuf::from(config_path),
+        });
+    }
+
+    let mut config = StackerConfig::from_file(path)?;
+    let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+
+    let output_path = match output {
+        Some(out) => {
+            let p = PathBuf::from(out);
+            if p.is_absolute() {
+                p
+            } else {
+                config_dir.join(p)
+            }
+        }
+        None => config_dir.join("stacker.remote.deploy.json"),
+    };
+
+    let cloud = config.deploy.cloud.clone();
+    let provider = cloud
+        .as_ref()
+        .map(|c| c.provider)
+        .unwrap_or(CloudProvider::Hetzner);
+    let region = cloud
+        .as_ref()
+        .and_then(|c| c.region.clone())
+        .unwrap_or_else(|| default_region_for_provider(provider).to_string());
+    let size = cloud
+        .as_ref()
+        .and_then(|c| c.size.clone())
+        .unwrap_or_else(|| default_size_for_provider(provider).to_string());
+    let stack_code = config
+        .project
+        .identity
+        .clone()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "custom-stack".to_string());
+    let provider_code = provider_code_for_remote(provider);
+    let os = match provider_code {
+        "do" => "docker-20-04",
+        _ => "ubuntu-22.04",
+    };
+
+    let mut payload = serde_json::json!({
+        "provider": provider_code,
+        "region": region,
+        "server": size,
+        "os": os,
+        "ssl": "letsencrypt",
+        "commonDomain": format!("{}.example.com", sanitize_stack_code(&config.name)),
+        "domainList": {},
+        "stack_code": stack_code,
+        "project_name": config.name,
+        "selected_plan": "free",
+        "payment_type": "subscription",
+        "subscriptions": [],
+        "vars": [],
+        "integrated_features": [],
+        "extended_features": [],
+        "save_token": true,
+        "custom": {
+            "project_name": config.name,
+            "custom_stack_code": sanitize_stack_code(&config.name),
+            "project_overview": format!("Generated by stacker-cli for {}", config.name)
+        }
+    });
+
+    if let Some(obj) = payload.as_object_mut() {
+        for (key, value) in resolve_remote_cloud_credentials(provider_code) {
+            obj.insert(key, value);
+        }
+    }
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let payload_str = serde_json::to_string_pretty(&payload)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize payload: {}", e)))?;
+    std::fs::write(&output_path, payload_str)?;
+
+    let remote_payload_file = output_path
+        .strip_prefix(config_dir)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| output_path.clone());
+
+    let existing_cloud = config.deploy.cloud.clone().unwrap_or(CloudConfig {
+        provider,
+        orchestrator: CloudOrchestrator::Remote,
+        region: Some(default_region_for_provider(provider).to_string()),
+        size: Some(default_size_for_provider(provider).to_string()),
+        install_image: None,
+        remote_payload_file: None,
+        ssh_key: None,
+        key: None,
+        server: None,
+    });
+
+    config.deploy.target = DeployTarget::Cloud;
+    config.deploy.cloud = Some(CloudConfig {
+        provider: existing_cloud.provider,
+        orchestrator: CloudOrchestrator::Remote,
+        region: existing_cloud.region,
+        size: existing_cloud.size,
+        install_image: existing_cloud.install_image,
+        remote_payload_file: Some(remote_payload_file),
+        ssh_key: existing_cloud.ssh_key,
+        key: existing_cloud.key,
+        server: existing_cloud.server,
+    });
+
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(config_path, &backup_path)?;
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, yaml)?;
+
+    Ok(vec![
+        format!(
+            "Generated remote payload (advanced/debug): {}",
+            output_path.display()
+        ),
+        "Set deploy.target=cloud and deploy.cloud.orchestrator=remote (advanced mode)"
+            .to_string(),
+        "Tip: regular users can skip this and run `stacker deploy --target cloud` directly"
+            .to_string(),
+        format!("Backup written to {}", backup_path),
+    ])
+}
+
 fn apply_cloud_settings(
     config: &mut StackerConfig,
     provider: CloudProvider,
@@ -98,6 +337,8 @@ fn apply_cloud_settings(
         install_image: existing_install_image,
         remote_payload_file: existing_remote_payload_file,
         ssh_key,
+        key: None,
+        server: None,
     });
 }
 
@@ -282,6 +523,8 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     install_image,
                     remote_payload_file,
                     ssh_key,
+                    key: None,
+                    server: None,
                 });
 
                 applied.push("Set deploy.target=cloud and deploy.cloud.*".to_string());
@@ -456,6 +699,35 @@ impl CallableTrait for ConfigSetupCloudCommand {
     }
 }
 
+/// `stacker config setup remote-payload [--file stacker.yml] [--out stacker.remote.deploy.json]`
+///
+/// Advanced/debug helper: generate a User Service `/install/init/` payload file and wire config for remote orchestrator.
+pub struct ConfigSetupRemotePayloadCommand {
+    pub file: Option<String>,
+    pub out: Option<String>,
+}
+
+impl ConfigSetupRemotePayloadCommand {
+    pub fn new(file: Option<String>, out: Option<String>) -> Self {
+        Self { file, out }
+    }
+}
+
+impl CallableTrait for ConfigSetupRemotePayloadCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let applied = run_generate_remote_payload(&path, self.out.as_deref())?;
+
+        eprintln!("✓ Updated {}", path);
+        for item in applied {
+            eprintln!("  - {}", item);
+        }
+        eprintln!("Run: stacker deploy --target cloud");
+        eprintln!("Note: this command is mainly for troubleshooting and integrations.");
+        Ok(())
+    }
+}
+
 impl ConfigFixCommand {
     pub fn new(file: Option<String>, interactive: bool) -> Self {
         Self { file, interactive }
@@ -529,7 +801,7 @@ mod tests {
     use std::io::Write;
 
     fn minimal_config_yaml() -> &'static str {
-        "name: test-app\nversion: \"1.0\"\napp:\n  type: static\n  source: \"./dist\"\ndeploy:\n  target: local\n"
+        "name: test-app\nversion: \"1.0\"\nproject:\n  identity: \"registered-stack-code\"\napp:\n  type: static\n  source: \"./dist\"\ndeploy:\n  target: local\n"
     }
 
     fn write_config(dir: &Path, content: &str) -> String {
@@ -614,5 +886,40 @@ mod tests {
         assert_eq!(cloud.provider, CloudProvider::Hetzner);
         assert_eq!(cloud.region.as_deref(), Some("nbg1"));
         assert_eq!(cloud.size.as_deref(), Some("cx22"));
+    }
+
+    #[test]
+    fn test_run_generate_remote_payload_writes_file_and_updates_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = write_config(dir.path(), minimal_config_yaml());
+
+        let applied = run_generate_remote_payload(&config_path, Some("stacker.remote.deploy.json")).unwrap();
+        assert!(!applied.is_empty());
+
+        let payload_path = dir.path().join("stacker.remote.deploy.json");
+        assert!(payload_path.exists());
+
+        let payload_raw = std::fs::read_to_string(&payload_path).unwrap();
+        let payload_json: serde_json::Value = serde_json::from_str(&payload_raw).unwrap();
+        assert!(payload_json.get("provider").is_some());
+        assert!(payload_json.get("commonDomain").is_some());
+        assert!(payload_json.get("os").is_some());
+        assert!(payload_json.get("selected_plan").is_some());
+        assert!(payload_json.get("payment_type").is_some());
+        assert!(payload_json.get("subscriptions").is_some());
+        assert!(payload_json.get("stack_code").is_some());
+        assert_eq!(
+            payload_json.get("stack_code").and_then(|v| v.as_str()),
+            Some("registered-stack-code")
+        );
+
+        let updated = StackerConfig::from_file(Path::new(&config_path)).unwrap();
+        assert_eq!(updated.deploy.target, DeployTarget::Cloud);
+        let cloud = updated.deploy.cloud.unwrap();
+        assert_eq!(cloud.orchestrator, CloudOrchestrator::Remote);
+        assert_eq!(
+            cloud.remote_payload_file.as_deref(),
+            Some(Path::new("stacker.remote.deploy.json"))
+        );
     }
 }
