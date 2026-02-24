@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stacker — AI-Powered Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Deploy infrastructure with AI. Stacker scans your project, generates Docker Compose configs, and deploys to any cloud — all from your terminal.">
+  <meta name="theme-color" content="#7e57c2">
+  <link rel="icon" type="image/png" href="assets/stacker-logo.png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Particle canvas background -->
+  <canvas id="particles" aria-hidden="true"></canvas>
+
+  <!-- Navigation -->
+  <nav class="nav" id="nav">
+    <div class="nav__inner">
+      <a href="#" class="nav__logo">
+        <img src="assets/stacker-logo.png" alt="Stacker" class="nav__logo-img">
+        <span class="nav__logo-text">stacker</span>
+      </a>
+      <div class="nav__links" id="navLinks">
+        <a href="#features" class="nav__link">Features</a>
+        <a href="#ai" class="nav__link">AI Engine</a>
+        <a href="#quickstart" class="nav__link">Quick Start</a>
+        <a href="#commands" class="nav__link">Commands</a>
+        <a href="#providers" class="nav__link">Providers</a>
+      </div>
+      <div class="nav__actions">
+        <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="nav__github">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          <span>GitHub</span>
+        </a>
+        <a href="https://try.direct" target="_blank" rel="noopener" class="btn btn--accent btn--sm">TryDirect Platform</a>
+      </div>
+      <button class="nav__mobile-toggle" id="mobileToggle" aria-label="Toggle menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <header class="hero" id="hero">
+    <div class="hero__bg-grid" aria-hidden="true"></div>
+    <div class="hero__glow" aria-hidden="true"></div>
+    <div class="container">
+      <div class="hero__content">
+        <div class="hero__badge" data-animate="fade-up">
+          <span class="hero__badge-dot"></span>
+          Open Source &middot; AI-Powered &middot; Multi-Cloud
+        </div>
+        <h1 class="hero__title" data-animate="fade-up" data-delay="100">
+          Deploy infrastructure<br>
+          <span class="gradient-text">with a single command.</span>
+        </h1>
+        <p class="hero__subtitle" data-animate="fade-up" data-delay="200">
+          Stacker scans your project, leverages AI to generate perfect Docker&nbsp;Compose 
+          configurations, and deploys to any cloud provider — all from your terminal.
+        </p>
+        <div class="hero__actions" data-animate="fade-up" data-delay="300">
+          <a href="#quickstart" class="btn btn--primary btn--lg">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            Get Started
+          </a>
+          <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="btn btn--ghost btn--lg">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+            View on GitHub
+          </a>
+        </div>
+        <div class="hero__terminal" data-animate="fade-up" data-delay="400">
+          <div class="terminal">
+            <div class="terminal__header">
+              <div class="terminal__dots">
+                <span class="terminal__dot terminal__dot--red"></span>
+                <span class="terminal__dot terminal__dot--yellow"></span>
+                <span class="terminal__dot terminal__dot--green"></span>
+              </div>
+              <span class="terminal__title">terminal</span>
+            </div>
+            <div class="terminal__body">
+              <div class="terminal__line">
+                <span class="terminal__prompt">$</span>
+                <span class="terminal__command" id="heroCommand"></span>
+                <span class="terminal__cursor">|</span>
+              </div>
+              <div class="terminal__output" id="heroOutput"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Features Section -->
+  <section class="section features" id="features">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Features</span>
+        <h2 class="section__title">Everything you need to deploy.<br><span class="gradient-text">Nothing you don't.</span></h2>
+        <p class="section__desc">From project scanning to cloud deployment, Stacker handles the entire infrastructure lifecycle.</p>
+      </div>
+      <div class="features__grid">
+        <div class="feature-card feature-card--highlight" data-animate="fade-up" data-delay="0">
+          <div class="feature-card__icon feature-card__icon--ai">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2a4 4 0 0 1 4 4v1a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><circle cx="12" cy="6" r="1"/><path d="M9 10l3 2 3-2"/></svg>
+          </div>
+          <h3 class="feature-card__title">AI-Powered Configuration</h3>
+          <p class="feature-card__desc">Run <code>stacker init --with-ai</code> and watch as AI deeply scans your project structure, detects frameworks, databases, and services — then generates a production-ready <code>stacker.yml</code>.</p>
+          <div class="feature-card__tag">Flagship Feature</div>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="100">
+          <div class="feature-card__icon feature-card__icon--scan">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+          </div>
+          <h3 class="feature-card__title">Deep Project Scanning</h3>
+          <p class="feature-card__desc">Automatically detects <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>package.json</code>, <code>Cargo.toml</code>, <code>requirements.txt</code>, and 20+ other project files to build a complete picture.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="200">
+          <div class="feature-card__icon feature-card__icon--providers">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          </div>
+          <h3 class="feature-card__title">Multi-Provider AI</h3>
+          <p class="feature-card__desc">Supports <strong>OpenAI</strong>, <strong>Anthropic</strong>, <strong>Ollama</strong> (local), and custom endpoints. Auto-detects available Ollama models — no manual configuration needed.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="0">
+          <div class="feature-card__icon feature-card__icon--cloud">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Multi-Cloud Deploy</h3>
+          <p class="feature-card__desc">Deploy to <strong>DigitalOcean</strong>, <strong>Hetzner</strong>, <strong>AWS</strong>, <strong>Linode</strong>, <strong>UpCloud</strong>, or your own server. One config, any cloud.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="100">
+          <div class="feature-card__icon feature-card__icon--docker">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M6 8h4v4H6z"/><path d="M10 8h4v4h-4z"/><path d="M14 8h4v4h-4z"/><path d="M6 12h4v4H6z"/><path d="M10 12h4v4h-4z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Docker Compose Generation</h3>
+          <p class="feature-card__desc">Generates production-ready <code>docker-compose.yml</code> with proper networking, volumes, healthchecks, and environment variables.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="200">
+          <div class="feature-card__icon feature-card__icon--proxy">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Proxy & SSL</h3>
+          <p class="feature-card__desc">Auto-configures Nginx or Traefik reverse proxy with Let's Encrypt SSL certificates. Zero-touch HTTPS for all your services.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AI Deep Dive Section -->
+  <section class="section ai-section" id="ai">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">AI Engine</span>
+        <h2 class="section__title">Your infrastructure,<br><span class="gradient-text">understood by AI.</span></h2>
+        <p class="section__desc">Stacker's AI engine doesn't just guess — it deeply analyzes your project to generate the perfect deployment configuration.</p>
+      </div>
+      <div class="ai-section__flow" data-animate="fade-up" data-delay="100">
+        <div class="ai-step">
+          <div class="ai-step__number">1</div>
+          <div class="ai-step__content">
+            <h3>Project Scanning</h3>
+            <p>Detects languages, frameworks, databases, message queues, and services from your codebase.</p>
+          </div>
+          <div class="ai-step__code">
+            <code>Detected: Rust + PostgreSQL + Redis + RabbitMQ</code>
+          </div>
+        </div>
+        <div class="ai-step__connector" aria-hidden="true">
+          <svg width="24" height="40" viewBox="0 0 24 40"><path d="M12 0v40" stroke="currentColor" stroke-width="2" stroke-dasharray="4 4"/><path d="M6 34l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="ai-step">
+          <div class="ai-step__number">2</div>
+          <div class="ai-step__content">
+            <h3>Prompt Building</h3>
+            <p>Constructs a rich context prompt with all discovered files, dependencies, and port mappings.</p>
+          </div>
+          <div class="ai-step__code">
+            <code>Context: 47 files analyzed, 12 dependencies mapped</code>
+          </div>
+        </div>
+        <div class="ai-step__connector" aria-hidden="true">
+          <svg width="24" height="40" viewBox="0 0 24 40"><path d="M12 0v40" stroke="currentColor" stroke-width="2" stroke-dasharray="4 4"/><path d="M6 34l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="ai-step">
+          <div class="ai-step__number">3</div>
+          <div class="ai-step__content">
+            <h3>Config Generation</h3>
+            <p>AI generates a complete <code>stacker.yml</code> with services, networking, volumes, and deployment targets.</p>
+          </div>
+          <div class="ai-step__code">
+            <code>Generated: stacker.yml (14 services, 3 networks)</code>
+          </div>
+        </div>
+        <div class="ai-step__connector" aria-hidden="true">
+          <svg width="24" height="40" viewBox="0 0 24 40"><path d="M12 0v40" stroke="currentColor" stroke-width="2" stroke-dasharray="4 4"/><path d="M6 34l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="ai-step">
+          <div class="ai-step__number ai-step__number--final">4</div>
+          <div class="ai-step__content">
+            <h3>Deploy</h3>
+            <p>One command deployes your entire stack to any cloud provider with Terraform + Ansible.</p>
+          </div>
+          <div class="ai-step__code">
+            <code>$ stacker deploy --cloud hetzner --region eu-central</code>
+          </div>
+        </div>
+      </div>
+      <div class="ai-section__providers" data-animate="fade-up" data-delay="200">
+        <h3 class="ai-section__providers-title">Supported AI Providers</h3>
+        <div class="providers__grid">
+          <div class="provider-card">
+            <div class="provider-card__icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/><path d="M8 12h8M12 8v8" stroke="currentColor" stroke-width="1.5"/></svg>
+            </div>
+            <span class="provider-card__name">OpenAI</span>
+            <span class="provider-card__detail">GPT-4o, GPT-4, GPT-3.5</span>
+          </div>
+          <div class="provider-card">
+            <div class="provider-card__icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 2L4 6v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V6l-8-4z" stroke="currentColor" stroke-width="1.5"/></svg>
+            </div>
+            <span class="provider-card__name">Anthropic</span>
+            <span class="provider-card__detail">Claude 4, Sonnet, Haiku</span>
+          </div>
+          <div class="provider-card provider-card--highlight">
+            <div class="provider-card__icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/></svg>
+            </div>
+            <span class="provider-card__name">Ollama</span>
+            <span class="provider-card__detail">Local models, auto-detect</span>
+            <span class="provider-card__badge">Free &amp; Private</span>
+          </div>
+          <div class="provider-card">
+            <div class="provider-card__icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" stroke="currentColor" stroke-width="1.5"/><polyline points="13 2 13 9 20 9" stroke="currentColor" stroke-width="1.5"/></svg>
+            </div>
+            <span class="provider-card__name">Custom</span>
+            <span class="provider-card__detail">Any OpenAI-compatible API</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quick Start Section -->
+  <section class="section quickstart" id="quickstart">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Quick Start</span>
+        <h2 class="section__title">Up and running<br><span class="gradient-text">in seconds.</span></h2>
+      </div>
+      <div class="quickstart__steps" data-animate="fade-up" data-delay="100">
+        <div class="quickstart__step">
+          <div class="quickstart__step-num">1</div>
+          <div class="quickstart__step-content">
+            <h3>Install</h3>
+            <div class="quickstart__code">
+              <div class="terminal terminal--compact">
+                <div class="terminal__header">
+                  <div class="terminal__dots"><span class="terminal__dot terminal__dot--red"></span><span class="terminal__dot terminal__dot--yellow"></span><span class="terminal__dot terminal__dot--green"></span></div>
+                </div>
+                <div class="terminal__body">
+                  <div class="terminal__line">
+                    <span class="terminal__prompt">$</span>
+                    <span class="terminal__text">curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="quickstart__step">
+          <div class="quickstart__step-num">2</div>
+          <div class="quickstart__step-content">
+            <h3>Initialize with AI</h3>
+            <div class="quickstart__code">
+              <div class="terminal terminal--compact">
+                <div class="terminal__header">
+                  <div class="terminal__dots"><span class="terminal__dot terminal__dot--red"></span><span class="terminal__dot terminal__dot--yellow"></span><span class="terminal__dot terminal__dot--green"></span></div>
+                </div>
+                <div class="terminal__body">
+                  <div class="terminal__line">
+                    <span class="terminal__prompt">$</span>
+                    <span class="terminal__text">cd your-project</span>
+                  </div>
+                  <div class="terminal__line">
+                    <span class="terminal__prompt">$</span>
+                    <span class="terminal__text">stacker init --with-ai</span>
+                  </div>
+                  <div class="terminal__line terminal__line--output">
+                    <span class="terminal__text terminal__text--success">✓ Scanning project structure...</span>
+                  </div>
+                  <div class="terminal__line terminal__line--output">
+                    <span class="terminal__text terminal__text--success">✓ Detected: Node.js + PostgreSQL + Redis</span>
+                  </div>
+                  <div class="terminal__line terminal__line--output">
+                    <span class="terminal__text terminal__text--success">✓ Generated stacker.yml with 5 services</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="quickstart__step">
+          <div class="quickstart__step-num">3</div>
+          <div class="quickstart__step-content">
+            <h3>Deploy</h3>
+            <div class="quickstart__code">
+              <div class="terminal terminal--compact">
+                <div class="terminal__header">
+                  <div class="terminal__dots"><span class="terminal__dot terminal__dot--red"></span><span class="terminal__dot terminal__dot--yellow"></span><span class="terminal__dot terminal__dot--green"></span></div>
+                </div>
+                <div class="terminal__body">
+                  <div class="terminal__line">
+                    <span class="terminal__prompt">$</span>
+                    <span class="terminal__text">stacker deploy</span>
+                  </div>
+                  <div class="terminal__line terminal__line--output">
+                    <span class="terminal__text terminal__text--info">▸ Provisioning infrastructure on Hetzner...</span>
+                  </div>
+                  <div class="terminal__line terminal__line--output">
+                    <span class="terminal__text terminal__text--success">✓ Stack deployed! https://your-app.example.com</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Commands Section -->
+  <section class="section commands" id="commands">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Commands</span>
+        <h2 class="section__title">10 commands.<br><span class="gradient-text">Complete control.</span></h2>
+        <p class="section__desc">Every stage of your infrastructure lifecycle, covered.</p>
+      </div>
+      <div class="commands__grid" data-animate="fade-up" data-delay="100">
+        <div class="command-card" data-command="login">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker login</code>
+          </div>
+          <p class="command-card__desc">Authenticate with TryDirect platform using API key or OAuth.</p>
+        </div>
+        <div class="command-card" data-command="init">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker init</code>
+            <span class="command-card__flag">--with-ai</span>
+          </div>
+          <p class="command-card__desc">Scan your project and generate <code>stacker.yml</code> — with optional AI assistance.</p>
+        </div>
+        <div class="command-card" data-command="deploy">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker deploy</code>
+          </div>
+          <p class="command-card__desc">Deploy your stack to the configured cloud provider via Terraform + Ansible.</p>
+        </div>
+        <div class="command-card" data-command="logs">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker logs</code>
+            <span class="command-card__flag">--follow</span>
+          </div>
+          <p class="command-card__desc">Stream real-time logs from your deployed services with color-coded output.</p>
+        </div>
+        <div class="command-card" data-command="status">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker status</code>
+          </div>
+          <p class="command-card__desc">View current deployment status, service health, and resource usage.</p>
+        </div>
+        <div class="command-card" data-command="destroy">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker destroy</code>
+          </div>
+          <p class="command-card__desc">Tear down infrastructure cleanly. All cloud resources removed.</p>
+        </div>
+        <div class="command-card" data-command="config">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker config</code>
+          </div>
+          <p class="command-card__desc">View and edit your <code>stacker.yml</code> configuration interactively.</p>
+        </div>
+        <div class="command-card" data-command="ai">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker ai</code>
+            <span class="command-card__flag">ask</span>
+          </div>
+          <p class="command-card__desc">Ask questions about your infrastructure or get deployment advice from AI.</p>
+        </div>
+        <div class="command-card" data-command="proxy">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker proxy</code>
+          </div>
+          <p class="command-card__desc">Auto-configure Nginx/Traefik reverse proxy with SSL certificates.</p>
+        </div>
+        <div class="command-card" data-command="update">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker update</code>
+          </div>
+          <p class="command-card__desc">Update Stacker CLI to the latest version with a single command.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Cloud Providers Section -->
+  <section class="section providers" id="providers">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Providers</span>
+        <h2 class="section__title">Deploy anywhere.<br><span class="gradient-text">Your cloud, your choice.</span></h2>
+      </div>
+      <div class="providers__logos" data-animate="fade-up" data-delay="100">
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><path d="M12 12v4"/><path d="M10 14l2 2 2-2"/></svg>
+          </div>
+          <span>DigitalOcean</span>
+        </div>
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="4"/><path d="M7 8h10M7 12h10M7 16h6"/></svg>
+          </div>
+          <span>Hetzner</span>
+        </div>
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+          </div>
+          <span>AWS</span>
+        </div>
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <span>Linode</span>
+        </div>
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 14l8-12 8 12"/><path d="M8 14l4 6 4-6"/></svg>
+          </div>
+          <span>UpCloud</span>
+        </div>
+        <div class="cloud-logo">
+          <div class="cloud-logo__icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M2 9h20"/><circle cx="7" cy="6" r="1" fill="currentColor"/><circle cx="11" cy="6" r="1" fill="currentColor"/></svg>
+          </div>
+          <span>Own Server</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="section cta" id="cta">
+    <div class="container">
+      <div class="cta__inner" data-animate="fade-up">
+        <div class="cta__glow" aria-hidden="true"></div>
+        <h2 class="cta__title">Ready to deploy<br><span class="gradient-text">smarter?</span></h2>
+        <p class="cta__desc">Join developers who ship infrastructure with AI. Open source, free forever.</p>
+        <div class="cta__actions">
+          <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="btn btn--primary btn--lg">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+            Star on GitHub
+          </a>
+          <a href="https://try.direct" target="_blank" rel="noopener" class="btn btn--ghost btn--lg">
+            Explore TryDirect Platform
+          </a>
+        </div>
+        <div class="cta__stats">
+          <div class="cta__stat">
+            <span class="cta__stat-value" data-count="10">0</span>
+            <span class="cta__stat-label">CLI Commands</span>
+          </div>
+          <div class="cta__stat">
+            <span class="cta__stat-value" data-count="4">0</span>
+            <span class="cta__stat-label">AI Providers</span>
+          </div>
+          <div class="cta__stat">
+            <span class="cta__stat-value" data-count="6">0</span>
+            <span class="cta__stat-label">Cloud Platforms</span>
+          </div>
+          <div class="cta__stat">
+            <span class="cta__stat-value" data-count="536">0</span>
+            <span class="cta__stat-label">Tests Passing</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__inner">
+        <div class="footer__brand">
+          <img src="assets/stacker-logo.png" alt="Stacker" class="footer__logo">
+          <p class="footer__tagline">AI-powered infrastructure CLI by <a href="https://try.direct" target="_blank" rel="noopener">TryDirect</a></p>
+        </div>
+        <div class="footer__links">
+          <div class="footer__col">
+            <h4>Product</h4>
+            <a href="#features">Features</a>
+            <a href="#ai">AI Engine</a>
+            <a href="#commands">Commands</a>
+            <a href="#quickstart">Quick Start</a>
+          </div>
+          <div class="footer__col">
+            <h4>Resources</h4>
+            <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/trydirect/stacker/blob/main/docs/STACKER_YML_REFERENCE.md" target="_blank" rel="noopener">Documentation</a>
+            <a href="https://github.com/trydirect/stacker/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+          </div>
+          <div class="footer__col">
+            <h4>TryDirect</h4>
+            <a href="https://try.direct" target="_blank" rel="noopener">Platform</a>
+            <a href="https://try.direct/applications" target="_blank" rel="noopener">Stacks</a>
+            <a href="https://try.direct/pricing" target="_blank" rel="noopener">Pricing</a>
+            <a href="https://try.direct/blog" target="_blank" rel="noopener">Blog</a>
+          </div>
+          <div class="footer__col">
+            <h4>Community</h4>
+            <a href="https://github.com/trydirect" target="_blank" rel="noopener">GitHub Org</a>
+            <a href="https://discord.gg/svjG29X" target="_blank" rel="noopener">Discord</a>
+            <a href="https://t.me/trydirecthelp" target="_blank" rel="noopener">Telegram</a>
+            <a href="https://twitter.com/TryDirect" target="_blank" rel="noopener">Twitter</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer__bottom">
+        <p>&copy; 2024-2026 <a href="https://try.direct" target="_blank" rel="noopener">TryDirect</a>. All rights reserved. Open source under MIT License.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>

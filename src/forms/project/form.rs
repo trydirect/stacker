@@ -27,6 +27,10 @@ pub struct DockerImageReadResult {
 impl ProjectForm {
     pub async fn is_readable_docker_image(&self) -> Result<DockerImageReadResult, String> {
         for app in &self.custom.web {
+            // Skip Docker Hub validation for custom/CLI-originated apps
+            if app.custom == Some(true) {
+                continue;
+            }
             if !app.app.docker_image.is_active().await? {
                 return Ok(DockerImageReadResult {
                     id: app.app.id.clone(),
@@ -37,6 +41,10 @@ impl ProjectForm {
 
         if let Some(service) = &self.custom.service {
             for app in service {
+                // Skip Docker Hub validation for custom/CLI-originated apps
+                if app.custom == Some(true) {
+                    continue;
+                }
                 if !app.app.docker_image.is_active().await? {
                     return Ok(DockerImageReadResult {
                         id: app.app.id.clone(),
@@ -48,6 +56,10 @@ impl ProjectForm {
 
         if let Some(features) = &self.custom.feature {
             for app in features {
+                // Skip Docker Hub validation for custom/CLI-originated apps
+                if app.custom == Some(true) {
+                    continue;
+                }
                 if !app.app.docker_image.is_active().await? {
                     return Ok(DockerImageReadResult {
                         id: app.app.id.clone(),

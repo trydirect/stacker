@@ -1,6 +1,6 @@
 [package]
 name = "stacker"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 default-run= "server"
 
@@ -15,6 +15,10 @@ name = "server"
 path = "src/console/main.rs"
 name = "console"
 required-features = ["explain"]
+
+[[bin]]
+path = "src/bin/stacker.rs"
+name = "stacker-cli"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -93,3 +97,7 @@ explain = ["actix-casbin-auth/explain", "actix-casbin-auth/logging"]
 [dev-dependencies]
 glob = "0.3"
 wiremock = "0.5.22"
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = "3"
+mockito = "1"

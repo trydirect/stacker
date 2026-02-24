@@ -14,7 +14,6 @@ use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serde_json::json;
 use std::collections::HashMap;
 use tera::{Context as TeraContext, Tera};
 
@@ -779,6 +778,7 @@ const SERVICE_TEMPLATE: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_parse_environment_object() {

@@ -1,5 +1,6 @@
 pub mod agent;
 pub(crate) mod agreement;
+pub mod chat;
 pub mod client;
 pub(crate) mod cloud;
 pub mod command;

@@ -210,7 +210,9 @@ pub async fn run(
                     )
                     .service(
                         web::scope("/v1/deployments")
-                            .service(routes::deployment::capabilities_handler),
+                            .service(routes::deployment::capabilities_handler)
+                            .service(routes::deployment::status_handler)
+                            .service(routes::deployment::status_by_project_handler),
                     )
                     .service(
                         web::scope("/v1/commands")
@@ -265,6 +267,12 @@ pub async fn run(
                     .service(crate::routes::agreement::user_add_handler)
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
+            )
+            .service(
+                web::scope("/chat")
+                    .service(crate::routes::chat::get::item)
+                    .service(crate::routes::chat::upsert::item)
+                    .service(crate::routes::chat::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())
