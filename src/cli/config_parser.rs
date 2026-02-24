@@ -205,6 +205,20 @@ pub struct AppSource {
 
     #[serde(default)]
     pub build: Option<BuildConfig>,
+
+    /// Explicit port mappings (e.g. `"8080:80"`).  When empty the CLI
+    /// derives a default from `app_type`.
+    #[serde(default)]
+    pub ports: Vec<String>,
+
+    /// Volume mounts (e.g. `"./data:/app/data"`).
+    #[serde(default)]
+    pub volumes: Vec<String>,
+
+    /// Per-app environment variables.  Merged with the top-level `env:`
+    /// section (app-level wins on conflict).
+    #[serde(default)]
+    pub environment: HashMap<String, String>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -917,6 +931,9 @@ impl ConfigBuilder {
                 dockerfile: self.app_dockerfile,
                 image: self.app_image,
                 build: build_config,
+                ports: Vec::new(),
+                volumes: Vec::new(),
+                environment: HashMap::new(),
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),

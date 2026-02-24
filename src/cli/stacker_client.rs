@@ -661,19 +661,35 @@ fn generate_app_id() -> String {
 }
 
 /// Parse a Docker image string like `user/repo:tag`, `repo:tag`, or `repo`
-/// into (dockerhub_user, dockerhub_name) tuple.
-fn parse_docker_image(image: &str) -> (Option<String>, String) {
-    // Handle images like "user/repo:tag" or "repo:tag" or "repo"
-    if let Some((user_part, repo_part)) = image.split_once('/') {
-        // Could be "namespace/repo:tag" or "registry.io/repo:tag"
-        // If it looks like a registry (contains dots), treat the whole thing as image
-        if user_part.contains('.') {
-            (None, image.to_string())
+/// into (dockerhub_user, dockerhub_name, dockerhub_tag) tuple.
+///
+/// The tag is separated from the name so the server / Python side doesn't
+/// accidentally append `:latest` again.
+fn parse_docker_image(image: &str) -> (Option<String>, String, Option<String>) {
+    // Split off tag first ("repo:tag" → "repo", Some("tag"))
+    let (image_no_tag, tag) = if let Some(pos) = image.rfind(':') {
+        // Avoid splitting on registry port like "registry.io:5000/repo"
+        let after_colon = &image[pos + 1..];
+        if after_colon.contains('/') {
+            // The colon is part of a registry address, not a tag
+            (image, None)
         } else {
-            (Some(user_part.to_string()), repo_part.to_string())
+            (&image[..pos], Some(after_colon.to_string()))
         }
     } else {
-        (None, image.to_string())
+        (image, None)
+    };
+
+    // Now split user/name
+    if let Some((user_part, repo_part)) = image_no_tag.split_once('/') {
+        if user_part.contains('.') {
+            // Registry address (e.g. "ghcr.io/owner/repo") — keep as-is
+            (None, image_no_tag.to_string(), tag)
+        } else {
+            (Some(user_part.to_string()), repo_part.to_string(), tag)
+        }
+    } else {
+        (None, image_no_tag.to_string(), tag)
     }
 }
 
@@ -702,7 +718,7 @@ fn parse_volume_mapping(vol_str: &str) -> (String, String) {
 /// Convert a `ServiceDefinition` from stacker.yml into the Stacker server's
 /// app JSON format (matching `forms::project::App` / `forms::project::Web`).
 fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde_json::Value {
-    let (dockerhub_user, dockerhub_name) = parse_docker_image(&svc.image);
+    let (dockerhub_user, dockerhub_name, dockerhub_tag) = parse_docker_image(&svc.image);
     let id = generate_app_id();
 
     let shared_ports: Vec<serde_json::Value> = svc
@@ -754,13 +770,116 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
         "network": network_ids,
     });
 
+    let obj = app.as_object_mut().unwrap();
     if let Some(user) = dockerhub_user {
-        app.as_object_mut()
-            .unwrap()
-            .insert("dockerhub_user".to_string(), serde_json::json!(user));
+        obj.insert("dockerhub_user".to_string(), serde_json::json!(user));
+    }
+    if let Some(tag) = dockerhub_tag {
+        obj.insert("dockerhub_tag".to_string(), serde_json::json!(tag));
     }
 
     app
+}
+
+/// Convert the `app` section of stacker.yml into the Stacker server's app JSON
+/// format. Returns `None` if the app has no image (build-only local apps).
+fn app_source_to_app_json(
+    config: &StackerConfig,
+    network_ids: &[String],
+) -> Option<serde_json::Value> {
+    let image = config.app.image.as_deref()?;
+    let (dockerhub_user, dockerhub_name, dockerhub_tag) = parse_docker_image(image);
+    let id = generate_app_id();
+
+    let app_name = config
+        .project
+        .identity
+        .clone()
+        .unwrap_or_else(|| config.name.clone());
+
+    // Ports: use explicit ports if provided, otherwise default from app type
+    let shared_ports: Vec<serde_json::Value> = if config.app.ports.is_empty() {
+        let default_port = default_port_for_app_type(config.app.app_type);
+        vec![serde_json::json!({
+            "host_port": default_port.to_string(),
+            "container_port": default_port.to_string(),
+        })]
+    } else {
+        config
+            .app
+            .ports
+            .iter()
+            .map(|p| {
+                let (host, container) = parse_port_mapping(p);
+                serde_json::json!({
+                    "host_port": host,
+                    "container_port": container,
+                })
+            })
+            .collect()
+    };
+
+    // Volumes
+    let volumes: Vec<serde_json::Value> = config
+        .app
+        .volumes
+        .iter()
+        .map(|v| {
+            let (host, container) = parse_volume_mapping(v);
+            serde_json::json!({
+                "host_path": host,
+                "container_path": container,
+            })
+        })
+        .collect();
+
+    // Environment: merge top-level env + app-level (app wins)
+    let mut merged_env: std::collections::HashMap<String, String> = config.env.clone();
+    for (k, v) in &config.app.environment {
+        merged_env.insert(k.clone(), v.clone());
+    }
+    let environment: Vec<serde_json::Value> = merged_env
+        .iter()
+        .map(|(k, v)| serde_json::json!({ "key": k, "value": v }))
+        .collect();
+
+    let mut app = serde_json::json!({
+        "_id": id,
+        "name": app_name,
+        "code": app_name.to_lowercase(),
+        "type": "web",
+        "dockerhub_name": dockerhub_name,
+        "restart": "always",
+        "custom": true,
+        "shared_ports": shared_ports,
+        "volumes": volumes,
+        "environment": environment,
+        "network": network_ids,
+    });
+
+    let obj = app.as_object_mut().unwrap();
+    if let Some(user) = dockerhub_user {
+        obj.insert("dockerhub_user".to_string(), serde_json::json!(user));
+    }
+    if let Some(tag) = dockerhub_tag {
+        obj.insert("dockerhub_tag".to_string(), serde_json::json!(tag));
+    }
+
+    Some(app)
+}
+
+/// Map CLI AppType to default port (same as compose generator).
+fn default_port_for_app_type(app_type: crate::cli::config_parser::AppType) -> u16 {
+    use crate::cli::config_parser::AppType;
+    match app_type {
+        AppType::Static => 80,
+        AppType::Node => 3000,
+        AppType::Python => 8000,
+        AppType::Rust => 8080,
+        AppType::Go => 8080,
+        AppType::Php => 9000,
+        AppType::Custom => 8080,
+    }
 }
 
 /// Build the project creation body (matching `forms::project::ProjectForm`)
@@ -783,12 +902,20 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
 
     let network_ids = vec![network_id.clone()];
 
-    // Convert services from stacker.yml to Stacker server app format
-    let web_apps: Vec<serde_json::Value> = config
-        .services
-        .iter()
-        .map(|svc| service_to_app_json(svc, &network_ids))
-        .collect();
+    // Convert the main app + services from stacker.yml to Stacker server
+    // app format.  The main `app` section is the primary web application;
+    // additional `services` are supporting containers.
+    let mut web_apps: Vec<serde_json::Value> = Vec::new();
+
+    // Include the main app (if it has an image)
+    if let Some(main_app) = app_source_to_app_json(config, &network_ids) {
+        web_apps.push(main_app);
+    }
+
+    // Include additional services
+    for svc in &config.services {
+        web_apps.push(service_to_app_json(svc, &network_ids));
+    }
 
     serde_json::json!({
         "custom": {

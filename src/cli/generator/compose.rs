@@ -143,12 +143,22 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
         }
     }
 
-    // Default port based on app type
-    let default_port = default_port_for_app_type(config.app.app_type);
-    svc.ports.push(format!("{}:{}", default_port, default_port));
+    // Ports: use explicit ports if provided, otherwise default from app type
+    if config.app.ports.is_empty() {
+        let default_port = default_port_for_app_type(config.app.app_type);
+        svc.ports.push(format!("{}:{}", default_port, default_port));
+    } else {
+        svc.ports.extend(config.app.ports.clone());
+    }
 
-    // Merge environment variables from config.env
+    // Volumes from app section
+    svc.volumes.extend(config.app.volumes.clone());
+
+    // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
+        svc.environment.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &config.app.environment {
         svc.environment.insert(k.clone(), v.clone());
     }
 
