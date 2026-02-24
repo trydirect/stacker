@@ -337,9 +337,9 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
             StackerCommands::Logs {
                 service,
                 follow,
-                auth_url,
+                tail,
                 since,
-                stacker::console::commands::cli::login::LoginCommand::new(org, domain, auth_url),
+            } => Ok(Box::new(
                 stacker::console::commands::cli::logs::LogsCommand::new(
                     service, follow, tail, since,
                 ),

@@ -76,7 +76,7 @@ pub fn full_config_reference_example() -> &'static str {
 #     # orchestrator: local | remote
 #     orchestrator: "local"
 #     region: "nbg1"
-#     size: "cx22"
+#     size: "cx11"
 #     # install_image: "trydirect/install-service:latest" # local orchestrator only
 #     # remote_payload_file: "./stacker.remote.deploy.json" # remote orchestrator request payload
 #     # ssh_key: "~/.ssh/id_rsa"

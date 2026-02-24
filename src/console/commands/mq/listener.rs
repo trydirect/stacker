@@ -186,6 +186,22 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                     Ok(Some(mut row)) => {
                                         row.status = msg.status;
                                         row.updated_at = Utc::now();
+
+                                        // Persist the progress message in metadata so the
+                                        // status API can surface error details to CLI users.
+                                        if !msg.message.is_empty() {
+                                            if let Some(obj) = row.metadata.as_object_mut() {
+                                                obj.insert(
+                                                    "status_message".to_string(),
+                                                    serde_json::Value::String(msg.message.clone()),
+                                                );
+                                            } else {
+                                                row.metadata = serde_json::json!({
+                                                    "status_message": msg.message
+                                                });
+                                            }
+                                        }
+
                                         println!(
                                             "Deployment {} updated with status {}",
                                             &row.id, &row.status

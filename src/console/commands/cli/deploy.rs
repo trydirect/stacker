@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
-use crate::cli::config_parser::{AiProviderType, AppType, DeployTarget, StackerConfig};
-use crate::cli::credentials::{CredentialsManager, FileCredentialStore};
+use crate::cli::config_parser::{AiProviderType, DeployTarget, StackerConfig};
+use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::generator::dockerfile::DockerfileBuilder;

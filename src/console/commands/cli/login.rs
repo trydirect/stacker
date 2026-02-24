@@ -1,6 +1,6 @@
 use crate::console::commands::CallableTrait;
 use crate::cli::credentials::{
-    CredentialsManager, FileCredentialStore, HttpOAuthClient, LoginRequest, login,
+    CredentialsManager, HttpOAuthClient, LoginRequest, login,
 };
 
 /// `stacker login [--org <name>] [--domain <domain>] [--auth-url <url>]`

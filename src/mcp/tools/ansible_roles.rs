@@ -271,7 +271,7 @@ pub struct GetRoleDetailsTool;
 
 #[async_trait]
 impl ToolHandler for GetRoleDetailsTool {
-    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolContent, String> {
         #[derive(Deserialize)]
         struct Args {
             role_name: String,
@@ -467,7 +467,7 @@ pub struct DeployRoleTool;
 
 #[async_trait]
 impl ToolHandler for DeployRoleTool {
-    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolContent, String> {
         #[derive(Deserialize)]
         struct Args {
             server_ip: String,

@@ -1,14 +1,15 @@
 use std::path::Path;
 
-use crate::cli::config_parser::{DeployTarget, StackerConfig};
+use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{
-    strategy_for, CommandExecutor, CommandOutput, DeployContext, ShellExecutor,
+    CommandExecutor, CommandOutput, ShellExecutor,
 };
 use crate::console::commands::CallableTrait;
 
 /// Output directory for generated artifacts.
 const OUTPUT_DIR: &str = ".stacker";
+#[allow(dead_code)]
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// `stacker destroy [--volumes] [--confirm]`

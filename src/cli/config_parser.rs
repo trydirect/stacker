@@ -1360,7 +1360,7 @@ services:
                 provider: CloudProvider::Hetzner,
                 orchestrator: CloudOrchestrator::Remote,
                 region: Some("nbg1".to_string()),
-                size: Some("cx22".to_string()),
+                size: Some("cx11".to_string()),
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: None,

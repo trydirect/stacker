@@ -13,17 +13,27 @@ pub struct DeploymentStatusResponse {
     pub project_id: i32,
     pub deployment_hash: String,
     pub status: String,
+    /// Human-readable status/error message from the deployment pipeline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl From<models::Deployment> for DeploymentStatusResponse {
     fn from(d: models::Deployment) -> Self {
+        let status_message = d
+            .metadata
+            .get("status_message")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         Self {
             id: d.id,
             project_id: d.project_id,
             deployment_hash: d.deployment_hash,
             status: d.status,
+            status_message,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }

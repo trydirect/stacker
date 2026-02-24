@@ -77,6 +77,7 @@ const TERMINAL_STATUSES: &[&str] = &[
     "failed",
     "cancelled",
     "error",
+    "paused",
 ];
 
 /// Check if a status is terminal (deployment finished or failed).
@@ -105,6 +106,9 @@ fn print_deployment_status(info: &DeploymentStatusInfo, json: bool) {
             "{} Deployment #{} — status: {}",
             status_icon, info.id, info.status
         );
+        if let Some(ref msg) = info.status_message {
+            println!("  Message:         {}", msg);
+        }
         println!("  Project ID:      {}", info.project_id);
         println!("  Deployment hash: {}", info.deployment_hash);
         println!("  Created:         {}", info.created_at);
@@ -321,10 +325,10 @@ mod tests {
         assert!(is_terminal("failed"));
         assert!(is_terminal("cancelled"));
         assert!(is_terminal("error"));
+        assert!(is_terminal("paused"));
         assert!(!is_terminal("pending"));
         assert!(!is_terminal("in_progress"));
         assert!(!is_terminal("wait_start"));
-        assert!(!is_terminal("paused"));
     }
 
     #[test]

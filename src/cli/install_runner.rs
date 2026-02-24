@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
-use crate::cli::credentials::{CredentialsManager, FileCredentialStore, DEFAULT_API_URL};
+use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::{self, StackerClient};
 
@@ -733,6 +733,7 @@ pub fn provider_code_for_remote(config_provider: &str) -> &str {
     }
 }
 
+#[allow(dead_code)]
 fn normalize_user_service_base_url(raw: &str) -> String {
     let mut url = raw.trim_end_matches('/').to_string();
     if url.ends_with("/server/user/auth/login") {
@@ -765,6 +766,7 @@ fn normalize_stacker_server_url(raw: &str) -> String {
     url
 }
 
+#[allow(dead_code)]
 fn sanitize_stack_code(name: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
@@ -786,6 +788,7 @@ fn sanitize_stack_code(name: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn default_common_domain(project_name: &str) -> String {
     format!("{}.example.com", sanitize_stack_code(project_name))
 }
@@ -858,13 +861,14 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
     creds
 }
 
+#[allow(dead_code)]
 fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
         .map(|c| provider_code_for_remote(&c.provider.to_string()).to_string())
         .unwrap_or_else(|| "htz".to_string());
     let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
-    let server = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cx22".to_string());
+    let server = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cx11".to_string());
     let stack_code = config
         .project
         .identity
@@ -910,6 +914,7 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
     payload
 }
 
+#[allow(dead_code)]
 fn validate_remote_deploy_payload(payload: &serde_json::Value) -> Result<(), CliError> {
     let required = [
         "provider",
@@ -1023,6 +1028,7 @@ fn validate_remote_deploy_payload(payload: &serde_json::Value) -> Result<(), Cli
     }
 }
 
+#[allow(dead_code)]
 fn persist_remote_payload_snapshot(project_dir: &Path, payload: &serde_json::Value) -> Option<PathBuf> {
     let stacker_dir = project_dir.join(".stacker");
     let snapshot_path = stacker_dir.join("remote-payload.last.json");
@@ -1330,7 +1336,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cx22",
+            "server": "cx11",
             "os": "ubuntu-22.04",
             "stack_code": "demo",
             "selected_plan": "free",
@@ -1348,7 +1354,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cx22",
+            "server": "cx11",
             "os": "ubuntu-22.04",
             "commonDomain": "example.com",
             "stack_code": "",
@@ -1369,7 +1375,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cx22",
+            "server": "cx11",
             "os": "ubuntu-22.04",
             "commonDomain": "localhost",
             "stack_code": "demo-stack",

@@ -240,7 +240,7 @@ impl CredentialsManager<FileCredentialStore> {
 pub const DEFAULT_API_URL: &str = "https://api.try.direct";
 
 /// OAuth token endpoint path (relative to auth_url).
-const TOKEN_ENDPOINT: &str = "/oauth_server/token";
+const TOKEN_ENDPOINT: &str = "/auth/login";
 
 fn is_direct_login_endpoint(auth_url: &str) -> bool {
     let url = auth_url.trim_end_matches('/').to_lowercase();
@@ -280,6 +280,9 @@ impl OAuthClient for HttpOAuthClient {
         } else {
             format!("{}{}", auth_url.trim_end_matches('/'), TOKEN_ENDPOINT)
         };
+
+        // Re-check: the constructed URL may now be a direct login endpoint
+        let direct_login = direct_login || is_direct_login_endpoint(&url);
 
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
