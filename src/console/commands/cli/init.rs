@@ -42,6 +42,14 @@ pub fn full_config_reference_example() -> &'static str {
 #   #   context: "."
 #   #   args:
 #   #     APP_ENV: "production"
+#   # ports:                          # explicit port mappings (override default)
+#   #   - "8080:3000"
+#   # volumes:                        # volume mounts for the main app container
+#   #   - "./data:/app/data"
+#   #   - "app_uploads:/app/uploads"
+#   # environment:                    # per-app env vars (merged with top-level env)
+#   #   NODE_ENV: "production"
+#   #   DATABASE_URL: "postgres://app:${DB_PASSWORD}@postgres:5432/myapp"
 #
 # services:
 #   - name: "postgres"

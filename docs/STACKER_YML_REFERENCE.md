@@ -14,7 +14,7 @@
 - [Top-Level Fields](#top-level-fields)
   - [name](#name) · [version](#version) · [organization](#organization)
 - [app — Application Source](#app)
-  - [type](#apptype) · [path](#apppath) · [dockerfile](#appdockerfile) · [image](#appimage) · [build](#appbuild)
+  - [type](#apptype) · [path](#apppath) · [dockerfile](#appdockerfile) · [image](#appimage) · [build](#appbuild) · [ports](#appports) · [volumes](#appvolumes) · [environment](#appenvironment)
 - [services — Sidecar Containers](#services)
 - [proxy — Reverse Proxy](#proxy)
   - [type](#proxytype) · [auto_detect](#proxyauto_detect) · [domains](#proxydomains) · [config](#proxyconfig)
@@ -89,6 +89,10 @@ organization: acme-corp
 app:
   type: node
   path: ./src
+  ports:
+    - "8080:3000"
+  environment:
+    NODE_ENV: production
   build:
     context: .
     args:
@@ -288,6 +292,48 @@ app:
     args:
       NODE_ENV: production
       API_URL: https://api.example.com
+```
+
+### `app.ports`
+
+*Optional* · `string[]` · Default: `[]` (auto-derived from `type`)
+
+Explicit port mappings for the main app container in `"host:container"` format. When omitted, Stacker derives a default port from `app.type` (e.g. node → 3000, python → 8000).
+
+```yaml
+app:
+  type: node
+  ports:
+    - "8080:3000"
+    - "9229:9229"   # Node debugger
+```
+
+### `app.volumes`
+
+*Optional* · `string[]` · Default: `[]`
+
+Volume mounts for the main app container. Supports bind mounts (`./host:/container`) and named volumes (`name:/path`).
+
+```yaml
+app:
+  type: node
+  volumes:
+    - "./uploads:/app/uploads"
+    - "app_cache:/app/.cache"
+```
+
+### `app.environment`
+
+*Optional* · `map<string, string>` · Default: `{}`
+
+Per-app environment variables. Merged with the top-level `env:` section — app-level values take precedence on conflict. Supports `${VAR}` interpolation.
+
+```yaml
+app:
+  type: node
+  environment:
+    NODE_ENV: production
+    DATABASE_URL: postgres://app:${DB_PASSWORD}@postgres:5432/myapp
 ```
 
 ---
