@@ -2,6 +2,8 @@ name: website
 version: 1.0.0
 project:
   identity: stacker-website
+  _id: 44
+
 app:
   type: node
   path: '.'
@@ -12,26 +14,10 @@ services:
     image: ${DOCKER_USERNAME}/stacker-website:latest
     ports:
       - "3456:3456"
-    environment:
-      DB_PASSWORD: ${DB_PASSWORD}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - .:/app
-    depends_on:
-      - db
-  db:
-    name: db
-    image: postgres:14
-    environment:
-      POSTGRES_DB: stacker_db
-      POSTGRES_USER: stacker_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-    ports:
-      - "5432:5432"
-    volumes:
-      - db-data:/var/lib/postgresql/data
 
-monitors:
+monitoring:
   status_panel: true
   healthcheck:
     endpoint: /healthz
