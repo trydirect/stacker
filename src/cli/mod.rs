@@ -6,5 +6,6 @@ pub mod detector;
 pub mod error;
 pub mod generator;
 pub mod install_runner;
+pub mod progress;
 pub mod proxy_manager;
 pub mod stacker_client;

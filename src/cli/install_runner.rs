@@ -108,6 +108,10 @@ pub struct DeployResult {
     pub target: DeployTarget,
     pub message: String,
     pub server_ip: Option<String>,
+    /// Cloud deployment ID (set for remote orchestrator deploys).
+    pub deployment_id: Option<i64>,
+    /// Stacker server project ID (set for remote orchestrator deploys).
+    pub project_id: Option<i64>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -205,6 +209,8 @@ impl DeployStrategy for LocalDeploy {
             target: DeployTarget::Local,
             message: format!("Local deployment {} successfully", action),
             server_ip: None,
+            deployment_id: None,
+            project_id: None,
         })
     }
 
@@ -423,6 +429,8 @@ impl DeployStrategy for CloudDeploy {
                         target: DeployTarget::Cloud,
                         message: "Remote cloud deploy dry-run validated payload and credentials".to_string(),
                         server_ip: None,
+                        deployment_id: None,
+                        project_id: None,
                     });
                 }
 
@@ -659,6 +667,8 @@ impl DeployStrategy for CloudDeploy {
                     target: DeployTarget::Cloud,
                     message,
                     server_ip: None,
+                    deployment_id: deploy_id,
+                    project_id: project_id.map(|id| id as i64),
                 });
             }
         }
@@ -687,6 +697,8 @@ impl DeployStrategy for CloudDeploy {
             target: DeployTarget::Cloud,
             message: format!("Cloud deployment {}", action_str),
             server_ip: extract_server_ip(&output.stdout),
+            deployment_id: None,
+            project_id: None,
         })
     }
 
@@ -753,7 +765,7 @@ fn normalize_user_service_base_url(raw: &str) -> String {
 
 /// Normalize the Stacker server URL from stored credentials.
 /// Strips trailing slashes and known auth path suffixes to get the base API URL.
-fn normalize_stacker_server_url(raw: &str) -> String {
+pub fn normalize_stacker_server_url(raw: &str) -> String {
     let mut url = raw.trim_end_matches('/').to_string();
     // Strip known auth endpoints that might be stored as server_url
     for suffix in ["/oauth_server/token", "/auth/login", "/server/user/auth/login", "/login", "/api"] {
@@ -1157,6 +1169,8 @@ impl DeployStrategy for ServerDeploy {
             target: DeployTarget::Server,
             message: format!("Server deployment {}", action_str),
             server_ip: server_host,
+            deployment_id: None,
+            project_id: None,
         })
     }
 

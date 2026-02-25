@@ -92,6 +92,12 @@ enum StackerCommands {
         /// Name of saved server to reuse (overrides deploy.cloud.server in stacker.yml)
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
+        /// Watch deployment progress until complete (default for cloud deploys)
+        #[arg(long)]
+        watch: bool,
+        /// Disable automatic progress watching after deploy
+        #[arg(long)]
+        no_watch: bool,
     },
     /// Show container logs
     Logs {
@@ -269,6 +275,8 @@ fn get_command(
             project,
             key,
             server,
+            watch,
+            no_watch,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -276,7 +284,8 @@ fn get_command(
                 dry_run,
                 force_rebuild,
             )
-            .with_remote_overrides(project, key, server),
+            .with_remote_overrides(project, key, server)
+            .with_watch(watch, no_watch),
         ),
         StackerCommands::Logs {
             service,

@@ -187,7 +187,12 @@ The `stacker.yml` schema supports these top-level keys:
   - type: nginx|nginx-proxy-manager|traefik|none
   - auto_detect: bool
   - domains: [{ domain, ssl: auto|manual|off, upstream }]
-- deploy: { target: local|cloud|server }
+- deploy:
+  - target: local|cloud|server
+  - cloud: { provider: hetzner|digitalocean|aws|linode|vultr, orchestrator: local|remote, region, size, ssh_key }
+  - server: { host (REQUIRED), user (default 'root'), port (default 22), ssh_key }
+  - registry: { username, password, server } — Docker registry credentials for private images
+  - compose_file: path to existing docker-compose (skips generation)
 - monitoring: { status_panel: bool, healthcheck: { endpoint, interval }, metrics: { enabled, telegraf } }
 - hooks: { pre_build, post_deploy, on_failure } (paths to scripts)
 - env_file: Path to .env file
