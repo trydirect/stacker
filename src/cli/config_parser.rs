@@ -167,8 +167,8 @@ pub enum CloudProvider {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CloudOrchestrator {
-    #[default]
     Local,
+    #[default]
     Remote,
 }
 

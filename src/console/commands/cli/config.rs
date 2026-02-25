@@ -315,7 +315,7 @@ fn apply_cloud_settings(
         .cloud
         .as_ref()
         .map(|c| c.orchestrator)
-        .unwrap_or(CloudOrchestrator::Local);
+        .unwrap_or(CloudOrchestrator::Remote);
     let existing_install_image = config
         .deploy
         .cloud
@@ -492,7 +492,7 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     .cloud
                     .as_ref()
                     .map(|c| c.orchestrator)
-                    .unwrap_or(CloudOrchestrator::Local);
+                    .unwrap_or(CloudOrchestrator::Remote);
 
                 let install_image = config
                     .deploy

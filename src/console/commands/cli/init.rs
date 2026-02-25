@@ -82,7 +82,7 @@ pub fn full_config_reference_example() -> &'static str {
 #     # provider: hetzner | digitalocean | aws | linode | vultr
 #     provider: "hetzner"
 #     # orchestrator: local | remote
-#     orchestrator: "local"
+#     orchestrator: "remote"
 #     region: "nbg1"
 #     size: "cx11"
 #     # install_image: "trydirect/install-service:latest" # local orchestrator only

@@ -1,0 +1,74 @@
+name: website
+version: 1.0.0
+project:
+  identity: stacker-website
+app:
+  type: node
+  path: '.'
+  dockerfile: Dockerfile
+services:
+  web:
+    name: web
+    image: ${DOCKER_USERNAME}/stacker-website:latest
+    ports:
+      - "3456:3456"
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+  db:
+    name: db
+    image: postgres:14
+    environment:
+      POSTGRES_DB: stacker_db
+      POSTGRES_USER: stacker_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+monitors:
+  status_panel: true
+  healthcheck:
+    endpoint: /healthz
+    interval: 10s
+volumes:
+  db-data:
+
+proxy:
+   # type: none | nginx | traefik
+   type: "nginx"
+   auto_detect: true
+   domains:
+     - domain: "stacker.my"
+       # ssl: none | auto | manual
+       ssl: "auto"
+       upstream: "app:3456"
+
+deploy:
+  # target: local | cloud | server
+  target: cloud
+  cloud:
+    provider: hetzner
+    orchestrator: remote
+  #target: "server"
+  # server:
+  #   host: "46.224.85.9"
+  #   user: "root"
+  #   ssh_key: "~/.ssh/stacker"
+  #   port: 22
+  registry:                          # Docker registry credentials for private images
+    username: "${DOCKER_USERNAME}"
+    password: "${DOCKER_PASSWORD}"
+    server: "https://index.docker.io/v1/"  # optional, defaults to Docker Hub
+
+hooks:
+  pre_build: scripts/pre-build.sh
+  post_deploy: scripts/post-deploy.sh
+  on_failure: scripts/on-failure.sh
+
+env_file: .env
