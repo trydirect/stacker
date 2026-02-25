@@ -23,13 +23,13 @@ Stacker is a platform for turning any project into a deployable Docker stack. Ad
 
 ```
 ┌──────────────┐         ┌──────────────────┐         ┌─────────────────────┐
-│  Stacker CLI │────────►│  Stacker Server   │────────►│  Status Panel Agent │
-│              │  REST   │                   │  queue  │  (on target server) │
-│  stacker.yml │  API    │  Stack Builder UI │  pull   │                     │
-│  init/deploy │         │  48+ MCP tools    │◄────────│  health / logs /    │
-│  status/logs │         │  Vault · AMQP     │  HMAC   │  restart / exec /   │
+│  Stacker CLI │────────►│  Stacker Server  │────────►│  Status Panel Agent │
+│              │  REST   │                  │  queue  │  (on target server) │
+│  stacker.yml │  API    │  Stack Builder UI│  pull   │                     │
+│  init/deploy │         │  48+ MCP tools   │◄────────│  health / logs /    │
+│  status/logs │         │  Vault · AMQP    │  HMAC   │  restart / exec /   │
 └──────────────┘         └──────────────────┘         │  deploy_app / proxy │
-                                │                      └─────────────────────┘
+                                │                     └─────────────────────┘
                                 ▼
                     Terraform + Ansible ──► Cloud
                     (Hetzner, DO, AWS, Linode)
