@@ -39,7 +39,7 @@ fn test_config_validate_missing_file_returns_error() {
         .args(["config", "validate"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ConfigNotFound"));
+        .stderr(predicate::str::contains("Configuration file not found"));
 }
 
 #[test]

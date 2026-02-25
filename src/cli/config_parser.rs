@@ -167,8 +167,8 @@ pub enum CloudProvider {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CloudOrchestrator {
-    #[default]
     Local,
+    #[default]
     Remote,
 }
 
@@ -339,6 +339,27 @@ pub struct DomainConfig {
     pub upstream: String,
 }
 
+/// Docker registry credentials for pulling private images during deployment.
+///
+/// TODO: Currently these credentials are passed through on every deploy (env vars or stacker.yml).
+/// In the future, store docker credentials server-side (similar to how `cloud_token` is persisted
+/// in the `clouds` table) or in HashiCorp Vault, so users only need to provide them once.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RegistryConfig {
+    /// Docker registry username (or from env `STACKER_DOCKER_USERNAME`).
+    #[serde(default)]
+    pub username: Option<String>,
+
+    /// Docker registry password (or from env `STACKER_DOCKER_PASSWORD`).
+    #[serde(default)]
+    pub password: Option<String>,
+
+    /// Docker registry server URL (default: docker.io).
+    /// Use for private registries like `ghcr.io`, `registry.example.com`.
+    #[serde(default)]
+    pub server: Option<String>,
+}
+
 /// Deployment target configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeployConfig {
@@ -353,6 +374,10 @@ pub struct DeployConfig {
 
     #[serde(default)]
     pub server: Option<ServerConfig>,
+
+    /// Docker registry credentials for pulling private images.
+    #[serde(default)]
+    pub registry: Option<RegistryConfig>,
 }
 
 /// Cloud provider settings for cloud deployments.
@@ -542,7 +567,7 @@ pub struct StackerConfig {
     #[serde(default)]
     pub ai: AiConfig,
 
-    #[serde(default)]
+    #[serde(default, alias = "monitors")]
     pub monitoring: MonitoringConfig,
 
     #[serde(default)]
@@ -566,16 +591,18 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
+        let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
-        let resolved_content = resolve_env_vars_with_fallback(&raw_content, &env_file_vars)?;
-        let config: StackerConfig = serde_yaml::from_str(&resolved_content)?;
+        resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
+        let config: StackerConfig = serde_yaml::from_value(parsed)?;
         Ok(config)
     }
 
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
-        let resolved = resolve_env_vars(yaml)?;
-        let config: StackerConfig = serde_yaml::from_str(&resolved)?;
+        let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+        resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
+        let config: StackerConfig = serde_yaml::from_value(parsed)?;
         Ok(config)
     }
 
@@ -743,6 +770,31 @@ fn resolve_env_vars(content: &str) -> Result<String, CliError> {
     resolve_env_vars_with_fallback(content, &HashMap::new())
 }
 
+fn resolve_env_placeholders_in_value(
+    value: &mut serde_yaml::Value,
+    fallback_vars: &HashMap<String, String>,
+) -> Result<(), CliError> {
+    match value {
+        serde_yaml::Value::String(raw) => {
+            let resolved = resolve_env_vars_with_fallback(raw, fallback_vars)?;
+            *raw = resolved;
+        }
+        serde_yaml::Value::Sequence(items) => {
+            for item in items.iter_mut() {
+                resolve_env_placeholders_in_value(item, fallback_vars)?;
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for (_key, map_value) in map.iter_mut() {
+                resolve_env_placeholders_in_value(map_value, fallback_vars)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn resolve_env_vars_with_fallback(
     content: &str,
     fallback_vars: &HashMap<String, String>,
@@ -796,6 +848,7 @@ pub struct ConfigBuilder {
     deploy_target: Option<DeployTarget>,
     cloud: Option<CloudConfig>,
     server: Option<ServerConfig>,
+    registry: Option<RegistryConfig>,
     ai: Option<AiConfig>,
     monitoring: Option<MonitoringConfig>,
     hooks: Option<HookConfig>,
@@ -878,6 +931,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn registry(mut self, registry: RegistryConfig) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     pub fn ai(mut self, ai: AiConfig) -> Self {
         self.ai = Some(ai);
         self
@@ -942,6 +1000,7 @@ impl ConfigBuilder {
                 compose_file: None,
                 cloud: self.cloud,
                 server: self.server,
+                registry: self.registry,
             },
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
@@ -1046,6 +1105,24 @@ env:
     }
 
     #[test]
+    fn test_monitors_alias_for_monitoring() {
+        let yaml = r#"
+name: monitors-alias-test
+monitors:
+  status_panel: true
+  healthcheck:
+    endpoint: /healthz
+    interval: 10s
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.monitoring.status_panel);
+        assert!(config.monitoring.healthcheck.is_some());
+        let hc = config.monitoring.healthcheck.unwrap();
+        assert_eq!(hc.endpoint, "/healthz");
+        assert_eq!(hc.interval, "10s");
+    }
+
+    #[test]
     fn test_parse_env_var_interpolation() {
         env::set_var("STACKER_TEST_DB_PASS", "secret123");
         let yaml = r#"
@@ -1077,6 +1154,20 @@ env:
             msg.contains("STACKER_TEST_NONEXISTENT_VAR_12345"),
             "Expected var name in error: {msg}"
         );
+    }
+
+    #[test]
+    fn test_from_str_ignores_env_placeholders_in_comments() {
+        let yaml = r#"
+name: comment-test
+app:
+  type: static
+# DATABASE_URL: postgres://user:${STACKER_TEST_NONEXISTENT_VAR_54321}@db:5432/app
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.name, "comment-test");
+        assert_eq!(config.app.app_type, AppType::Static);
     }
 
         #[test]

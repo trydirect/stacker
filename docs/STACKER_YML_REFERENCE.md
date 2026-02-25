@@ -14,7 +14,7 @@
 - [Top-Level Fields](#top-level-fields)
   - [name](#name) · [version](#version) · [organization](#organization)
 - [app — Application Source](#app)
-  - [type](#apptype) · [path](#apppath) · [dockerfile](#appdockerfile) · [image](#appimage) · [build](#appbuild)
+  - [type](#apptype) · [path](#apppath) · [dockerfile](#appdockerfile) · [image](#appimage) · [build](#appbuild) · [ports](#appports) · [volumes](#appvolumes) · [environment](#appenvironment)
 - [services — Sidecar Containers](#services)
 - [proxy — Reverse Proxy](#proxy)
   - [type](#proxytype) · [auto_detect](#proxyauto_detect) · [domains](#proxydomains) · [config](#proxyconfig)
@@ -89,6 +89,10 @@ organization: acme-corp
 app:
   type: node
   path: ./src
+  ports:
+    - "8080:3000"
+  environment:
+    NODE_ENV: production
   build:
     context: .
     args:
@@ -288,6 +292,48 @@ app:
     args:
       NODE_ENV: production
       API_URL: https://api.example.com
+```
+
+### `app.ports`
+
+*Optional* · `string[]` · Default: `[]` (auto-derived from `type`)
+
+Explicit port mappings for the main app container in `"host:container"` format. When omitted, Stacker derives a default port from `app.type` (e.g. node → 3000, python → 8000).
+
+```yaml
+app:
+  type: node
+  ports:
+    - "8080:3000"
+    - "9229:9229"   # Node debugger
+```
+
+### `app.volumes`
+
+*Optional* · `string[]` · Default: `[]`
+
+Volume mounts for the main app container. Supports bind mounts (`./host:/container`) and named volumes (`name:/path`).
+
+```yaml
+app:
+  type: node
+  volumes:
+    - "./uploads:/app/uploads"
+    - "app_cache:/app/.cache"
+```
+
+### `app.environment`
+
+*Optional* · `map<string, string>` · Default: `{}`
+
+Per-app environment variables. Merged with the top-level `env:` section — app-level values take precedence on conflict. Supports `${VAR}` interpolation.
+
+```yaml
+app:
+  type: node
+  environment:
+    NODE_ENV: production
+    DATABASE_URL: postgres://app:${DB_PASSWORD}@postgres:5432/myapp
 ```
 
 ---
@@ -521,6 +567,43 @@ deploy:
     ssh_key: ~/.ssh/deploy_key
     port: 22
 ```
+
+### `deploy.registry`
+
+*Optional* · `object`
+
+Docker registry credentials for pulling private images during cloud/server deployment. When provided, `docker login` is executed on the target server before `docker compose pull`.
+
+Credentials can be specified in `stacker.yml` or via environment variables. Environment variables take precedence.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `username` | `string` | **yes** | — | Registry username |
+| `password` | `string` | **yes** | — | Registry password or access token |
+| `server` | `string` | no | Docker Hub | Registry server URL |
+
+**Environment variables** (override `stacker.yml` values):
+
+| Variable | Fallback | Description |
+|----------|----------|-------------|
+| `STACKER_DOCKER_USERNAME` | `DOCKER_USERNAME` | Registry username |
+| `STACKER_DOCKER_PASSWORD` | `DOCKER_PASSWORD` | Registry password |
+| `STACKER_DOCKER_REGISTRY` | `DOCKER_REGISTRY` | Registry server URL |
+
+```yaml
+deploy:
+  target: cloud
+  cloud:
+    provider: hetzner
+    region: fsn1
+    size: cx21
+  registry:
+    username: "${DOCKER_USERNAME}"
+    password: "${DOCKER_PASSWORD}"
+    # server: "https://index.docker.io/v1/"  # Docker Hub (default)
+```
+
+> **Security tip:** Use environment variables or `${VAR}` syntax to keep credentials out of version control.
 
 ---
 

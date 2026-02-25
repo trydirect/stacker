@@ -2,7 +2,7 @@
 //!
 //! Provides abstractions for delegating deployments to the external install service.
 
-use crate::forms::project::Stack;
+use crate::forms::project::{RegistryForm, Stack};
 use crate::helpers::MqManager;
 use crate::models;
 use async_trait::async_trait;
@@ -29,6 +29,7 @@ pub trait InstallServiceConnector: Send + Sync {
         cloud_creds: models::Cloud,
         server: models::Server,
         form_stack: &Stack,
+        registry: Option<RegistryForm>,
         fc: String,
         mq_manager: &MqManager,
     ) -> Result<i32, String>;

@@ -108,6 +108,10 @@ pub struct DeployResult {
     pub target: DeployTarget,
     pub message: String,
     pub server_ip: Option<String>,
+    /// Cloud deployment ID (set for remote orchestrator deploys).
+    pub deployment_id: Option<i64>,
+    /// Stacker server project ID (set for remote orchestrator deploys).
+    pub project_id: Option<i64>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -205,6 +209,8 @@ impl DeployStrategy for LocalDeploy {
             target: DeployTarget::Local,
             message: format!("Local deployment {} successfully", action),
             server_ip: None,
+            deployment_id: None,
+            project_id: None,
         })
     }
 
@@ -423,6 +429,8 @@ impl DeployStrategy for CloudDeploy {
                         target: DeployTarget::Cloud,
                         message: "Remote cloud deploy dry-run validated payload and credentials".to_string(),
                         server_ip: None,
+                        deployment_id: None,
+                        project_id: None,
                     });
                 }
 
@@ -659,6 +667,8 @@ impl DeployStrategy for CloudDeploy {
                     target: DeployTarget::Cloud,
                     message,
                     server_ip: None,
+                    deployment_id: deploy_id,
+                    project_id: project_id.map(|id| id as i64),
                 });
             }
         }
@@ -687,6 +697,8 @@ impl DeployStrategy for CloudDeploy {
             target: DeployTarget::Cloud,
             message: format!("Cloud deployment {}", action_str),
             server_ip: extract_server_ip(&output.stdout),
+            deployment_id: None,
+            project_id: None,
         })
     }
 
@@ -753,7 +765,7 @@ fn normalize_user_service_base_url(raw: &str) -> String {
 
 /// Normalize the Stacker server URL from stored credentials.
 /// Strips trailing slashes and known auth path suffixes to get the base API URL.
-fn normalize_stacker_server_url(raw: &str) -> String {
+pub fn normalize_stacker_server_url(raw: &str) -> String {
     let mut url = raw.trim_end_matches('/').to_string();
     // Strip known auth endpoints that might be stored as server_url
     for suffix in ["/oauth_server/token", "/auth/login", "/server/user/auth/login", "/login", "/api"] {
@@ -856,6 +868,50 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
             }
         }
         _ => {}
+    }
+
+    creds
+}
+
+/// Resolve Docker registry credentials from the stacker.yml `deploy.registry` section
+/// and/or environment variables. Env vars override config values (same pattern as cloud_token).
+///
+/// Returns a map with optional keys: `docker_username`, `docker_password`, `docker_registry`.
+pub(crate) fn resolve_docker_registry_credentials(
+    config: &super::config_parser::StackerConfig,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut creds = serde_json::Map::new();
+    let registry = config.deploy.registry.as_ref();
+
+    // Username: env var > config
+    let username = first_non_empty_env(&[
+        "STACKER_DOCKER_USERNAME",
+        "DOCKER_USERNAME",
+    ])
+    .or_else(|| registry.and_then(|r| r.username.clone()));
+
+    // Password: env var > config
+    let password = first_non_empty_env(&[
+        "STACKER_DOCKER_PASSWORD",
+        "DOCKER_PASSWORD",
+    ])
+    .or_else(|| registry.and_then(|r| r.password.clone()));
+
+    // Registry server: env var > config > default "docker.io"
+    let server = first_non_empty_env(&[
+        "STACKER_DOCKER_REGISTRY",
+        "DOCKER_REGISTRY",
+    ])
+    .or_else(|| registry.and_then(|r| r.server.clone()));
+
+    if let Some(u) = username {
+        creds.insert("docker_username".to_string(), serde_json::Value::String(u));
+    }
+    if let Some(p) = password {
+        creds.insert("docker_password".to_string(), serde_json::Value::String(p));
+    }
+    if let Some(s) = server {
+        creds.insert("docker_registry".to_string(), serde_json::Value::String(s));
     }
 
     creds
@@ -1113,6 +1169,8 @@ impl DeployStrategy for ServerDeploy {
             target: DeployTarget::Server,
             message: format!("Server deployment {}", action_str),
             server_ip: server_host,
+            deployment_id: None,
+            project_id: None,
         })
     }
 

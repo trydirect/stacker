@@ -18,7 +18,7 @@ fn test_ai_ask_no_config_returns_error() {
         .args(["ai", "ask", "How to optimize my Dockerfile?"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ConfigNotFound"));
+        .stderr(predicate::str::contains("Configuration file not found"));
 }
 
 #[test]
@@ -43,7 +43,7 @@ ai:
         .args(["ai", "ask", "Question?"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("AiNotConfigured"));
+        .stderr(predicate::str::contains("AI is not configured"));
 }
 
 #[test]

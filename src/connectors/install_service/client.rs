@@ -1,5 +1,5 @@
 use super::InstallServiceConnector;
-use crate::forms::project::Stack;
+use crate::forms::project::{RegistryForm, Stack};
 use crate::helpers::{compressor::compress, MqManager};
 use crate::models;
 use async_trait::async_trait;
@@ -20,6 +20,7 @@ impl InstallServiceConnector for InstallServiceClient {
         cloud_creds: models::Cloud,
         server: models::Server,
         form_stack: &Stack,
+        registry: Option<RegistryForm>,
         fc: String,
         mq_manager: &MqManager,
     ) -> Result<i32, String> {
@@ -42,6 +43,7 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.user_token = Some(user_id);
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
+        payload.registry = registry;
 
         tracing::debug!(
             "Send project data (deployment_hash = {:?}): {:?}",

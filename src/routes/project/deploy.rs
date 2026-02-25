@@ -238,6 +238,7 @@ pub async fn item(
             cloud_creds,
             server,
             &form.stack,
+            form.registry.clone(),
             fc,
             mq_manager.get_ref(),
         )
@@ -480,6 +481,7 @@ pub async fn saved_item(
             cloud,
             server,
             &form.stack,
+            form.registry.clone(),
             fc,
             mq_manager.get_ref(),
         )

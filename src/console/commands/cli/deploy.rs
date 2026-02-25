@@ -1,10 +1,11 @@
 use std::convert::TryFrom;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
-use crate::cli::config_parser::{AiProviderType, DeployTarget, StackerConfig};
+use crate::cli::config_parser::{AiProviderType, DeployTarget, ServerConfig, StackerConfig};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::generator::compose::ComposeDefinition;
@@ -12,6 +13,9 @@ use crate::cli::generator::dockerfile::DockerfileBuilder;
 use crate::cli::install_runner::{
     strategy_for, CommandExecutor, DeployContext, DeployResult, ShellExecutor,
 };
+use crate::cli::progress;
+use crate::cli::stacker_client::{self, StackerClient};
+use crate::helpers::ssh_client;
 use crate::console::commands::CallableTrait;
 
 /// Default config filename.
@@ -216,6 +220,106 @@ fn ensure_env_file_if_needed(config: &StackerConfig, project_dir: &Path) -> Resu
     Ok(())
 }
 
+/// SSH connection timeout for server pre-check (seconds).
+const SSH_CHECK_TIMEOUT_SECS: u64 = 15;
+
+/// Resolve the path to an SSH key, expanding `~` to the user's home directory.
+fn resolve_ssh_key_path(key_path: &Path) -> PathBuf {
+    let path_str = key_path.to_string_lossy();
+    if path_str.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(&path_str[2..]);
+        }
+    }
+    key_path.to_path_buf()
+}
+
+/// Try SSH connection to the server defined in `deploy.server` and return
+/// the system check result. Returns `None` if no server section is configured
+/// or if the SSH key cannot be read.
+fn try_ssh_server_check(server: &ServerConfig) -> Option<ssh_client::SystemCheckResult> {
+    let ssh_key_path = match &server.ssh_key {
+        Some(key) => resolve_ssh_key_path(key),
+        None => {
+            // Try default SSH key locations
+            let home = match std::env::var("HOME") {
+                Ok(h) => PathBuf::from(h),
+                Err(_) => {
+                    eprintln!("  Cannot determine home directory for SSH key lookup");
+                    return None;
+                }
+            };
+            let candidates = [
+                home.join(".ssh/id_ed25519"),
+                home.join(".ssh/id_rsa"),
+            ];
+            match candidates.iter().find(|p| p.exists()) {
+                Some(p) => p.clone(),
+                None => {
+                    eprintln!("  No SSH key specified and no default key found (~/.ssh/id_ed25519 or ~/.ssh/id_rsa)");
+                    return None;
+                }
+            }
+        }
+    };
+
+    let key_content = match std::fs::read_to_string(&ssh_key_path) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("  Cannot read SSH key {}: {}", ssh_key_path.display(), e);
+            return None;
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("  Failed to initialize async runtime for SSH check: {}", e);
+            return None;
+        }
+    };
+
+    let result = rt.block_on(ssh_client::check_server(
+        &server.host,
+        server.port,
+        &server.user,
+        &key_content,
+        Duration::from_secs(SSH_CHECK_TIMEOUT_SECS),
+    ));
+
+    Some(result)
+}
+
+/// Print a helpful message when the existing server is not reachable,
+/// suggesting how to fix or proceed with a new cloud server.
+fn print_server_unreachable_hint(server: &ServerConfig, check: &ssh_client::SystemCheckResult) {
+    eprintln!();
+    eprintln!("  ╭─ Existing server check failed ──────────────────────────────────╮");
+    eprintln!("  │ Host: {}:{}", server.host, server.port);
+    eprintln!("  │ User: {}", server.user);
+    if let Some(ref err) = check.error {
+        eprintln!("  │ Error: {}", err);
+    }
+    eprintln!("  ├─────────────────────────────────────────────────────────────────┤");
+    eprintln!("  │ To deploy to this server, fix the connection issue and retry:   │");
+    eprintln!("  │                                                                 │");
+    if let Some(ref key) = server.ssh_key {
+        eprintln!("  │   ssh -i {} -p {} {}@{}", key.display(), server.port, server.user, server.host);
+    } else {
+        eprintln!("  │   ssh -p {} {}@{}", server.port, server.user, server.host);
+    }
+    eprintln!("  │                                                                 │");
+    eprintln!("  │ Or, to provision a new cloud server instead, remove the         │");
+    eprintln!("  │ 'server' section from stacker.yml and re-run:                   │");
+    eprintln!("  │                                                                 │");
+    eprintln!("  │   stacker deploy --target cloud                                 │");
+    eprintln!("  ╰─────────────────────────────────────────────────────────────────╯");
+    eprintln!();
+}
+
 fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError> {
     let is_stacker_compose = compose_path
         .components()
@@ -289,6 +393,20 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
                         context_key,
                         serde_yaml::Value::String("..".to_string()),
                     );
+
+                    let dockerfile_needs_rewrite = match dockerfile.as_deref() {
+                        None => true,
+                        Some("Dockerfile") | Some("./Dockerfile") => true,
+                        _ => false,
+                    };
+
+                    if dockerfile_needs_rewrite {
+                        build_map.insert(
+                            dockerfile_key,
+                            serde_yaml::Value::String(".stacker/Dockerfile".to_string()),
+                        );
+                    }
+
                     changed = true;
                 }
             }
@@ -505,6 +623,9 @@ pub struct DeployCommand {
     pub key_name: Option<String>,
     /// Override server name (--server flag)
     pub server_name: Option<String>,
+    /// Watch deployment progress until complete (--watch / --no-watch).
+    /// `None` means "auto" (watch for cloud, health-check for local).
+    pub watch: Option<bool>,
 }
 
 impl DeployCommand {
@@ -522,6 +643,7 @@ impl DeployCommand {
             project_name: None,
             key_name: None,
             server_name: None,
+            watch: None,
         }
     }
 
@@ -535,6 +657,19 @@ impl DeployCommand {
         self.project_name = project;
         self.key_name = key;
         self.server_name = server;
+        self
+    }
+
+    /// Builder method to set watch behaviour.
+    /// `--watch` forces watch on; `--no-watch` forces it off.
+    /// Neither flag → auto (cloud=watch, local=health-check).
+    pub fn with_watch(mut self, watch: bool, no_watch: bool) -> Self {
+        if no_watch {
+            self.watch = Some(false);
+        } else if watch {
+            self.watch = Some(true);
+        }
+        // else remains None → auto
         self
     }
 }
@@ -580,10 +715,71 @@ pub fn run_deploy(
     ensure_env_file_if_needed(&config, project_dir)?;
 
     // 2. Resolve deploy target (flag > config)
-    let deploy_target = match target_override {
+    let mut deploy_target = match target_override {
         Some(t) => parse_deploy_target(t)?,
         None => config.deploy.target,
     };
+
+    // 2b. Server pre-check: when target is Cloud but deploy.server section
+    //     is defined with a host, try SSH connectivity first.
+    //     If the server is reachable, automatically switch to Server target.
+    //     If not, show diagnostics and abort so the user can fix or remove the section.
+    if deploy_target == DeployTarget::Cloud {
+        if let Some(ref server_cfg) = config.deploy.server {
+            eprintln!("  Found deploy.server section (host={}). Checking SSH connectivity...", server_cfg.host);
+
+            match try_ssh_server_check(server_cfg) {
+                Some(check) if check.connected && check.authenticated => {
+                    eprintln!("  ✓ Server {} is reachable ({})", server_cfg.host, check.summary());
+
+                    if !check.docker_installed {
+                        eprintln!("  ⚠ Docker is NOT installed on the server.");
+                        eprintln!("    Install Docker first:  ssh {}@{} 'curl -fsSL https://get.docker.com | sh'",
+                            server_cfg.user, server_cfg.host);
+                        return Err(CliError::DeployFailed {
+                            target: DeployTarget::Server,
+                            reason: format!(
+                                "Server {} is reachable but Docker is not installed. \
+                                 Install Docker and retry, or remove the 'server' section from stacker.yml \
+                                 to provision a new cloud server.",
+                                server_cfg.host
+                            ),
+                        });
+                    }
+
+                    eprintln!("  Switching deploy target from 'cloud' → 'server' (using existing server)");
+                    deploy_target = DeployTarget::Server;
+                }
+                Some(check) => {
+                    // Server defined but not reachable — abort with helpful hints
+                    print_server_unreachable_hint(server_cfg, &check);
+                    return Err(CliError::DeployFailed {
+                        target: DeployTarget::Cloud,
+                        reason: format!(
+                            "deploy.server section defines host {} but the server is not reachable: {}. \
+                             Fix the connection or remove the 'server' section to provision a new cloud server.",
+                            server_cfg.host,
+                            check.error.as_deref().unwrap_or("unknown error")
+                        ),
+                    });
+                }
+                None => {
+                    // Could not perform SSH check (missing key, etc.) — warn and abort
+                    eprintln!("  ⚠ Could not verify server connectivity (see above).");
+                    eprintln!("    Remove the 'server' section from stacker.yml to provision a new cloud server,");
+                    eprintln!("    or fix the SSH key configuration and retry.");
+                    return Err(CliError::DeployFailed {
+                        target: DeployTarget::Cloud,
+                        reason: format!(
+                            "deploy.server section defines host {} but SSH connectivity check could not be performed. \
+                             Fix the SSH key or remove the 'server' section to provision a new cloud server.",
+                            server_cfg.host
+                        ),
+                    });
+                }
+            }
+        }
+    }
 
     // 3. Cloud/server prerequisites
     if deploy_target == DeployTarget::Cloud {
@@ -704,6 +900,9 @@ impl CallableTrait for DeployCommand {
             server_name: self.server_name.clone(),
         };
 
+        // ── Spinner while deploying ──────────────────
+        let spin = progress::deploy_spinner("starting...");
+
         let result = run_deploy(
             &project_dir,
             self.file.as_deref(),
@@ -715,8 +914,12 @@ impl CallableTrait for DeployCommand {
         );
 
         let result = match result {
-            Ok(result) => result,
+            Ok(result) => {
+                progress::finish_success(&spin, &result.message);
+                result
+            }
             Err(err) => {
+                progress::finish_error(&spin, &format!("{}", err));
                 if let CliError::LoginRequired { .. } = &err {
                     eprintln!("\nHint: run `stacker login` and retry deploy.");
                 }
@@ -725,13 +928,282 @@ impl CallableTrait for DeployCommand {
             }
         };
 
-        eprintln!("✓ {}", result.message);
         if let Some(ip) = &result.server_ip {
             eprintln!("  Server IP: {}", ip);
         }
 
+        // ── Post-deploy progress tracking ────────────
+        if self.dry_run {
+            return Ok(());
+        }
+
+        // Resolve whether to watch: explicit flag > auto-detect
+        let should_watch = self.watch.unwrap_or_else(|| {
+            // Auto: watch for cloud remote deploys, health-check for local
+            matches!(result.target, DeployTarget::Cloud | DeployTarget::Server)
+                && (result.deployment_id.is_some() || result.project_id.is_some())
+        });
+
+        match result.target {
+            DeployTarget::Local => {
+                // Always do a quick health check for local deploy unless --no-watch
+                if self.watch != Some(false) {
+                    watch_local_containers(&project_dir, self.file.as_deref())?;
+                }
+            }
+            DeployTarget::Cloud if should_watch => {
+                watch_cloud_deployment(&result)?;
+            }
+            _ => {}
+        }
+
         Ok(())
     }
+}
+
+// ── Local container health-check after `docker compose up` ───
+
+/// Poll `docker compose ps` until all containers are running/healthy
+/// or a timeout is reached.
+fn watch_local_containers(
+    project_dir: &Path,
+    config_file: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    let compose_path = {
+        let output_dir = project_dir.join(OUTPUT_DIR);
+        let config_path = match config_file {
+            Some(f) => project_dir.join(f),
+            None => project_dir.join(DEFAULT_CONFIG_FILE),
+        };
+        // Try to read compose_file from config; fall back to .stacker/docker-compose.yml
+        if let Ok(config) = StackerConfig::from_file(&config_path) {
+            if let Some(ref existing) = config.deploy.compose_file {
+                let p = project_dir.join(existing);
+                if p.exists() { p } else { output_dir.join("docker-compose.yml") }
+            } else {
+                output_dir.join("docker-compose.yml")
+            }
+        } else {
+            output_dir.join("docker-compose.yml")
+        }
+    };
+
+    if !compose_path.exists() {
+        return Ok(());
+    }
+
+    let compose_str = compose_path.to_string_lossy().to_string();
+    let executor = ShellExecutor;
+    let timeout = Duration::from_secs(120);
+    let poll = Duration::from_secs(3);
+    let start = Instant::now();
+
+    let spin = progress::spinner("Checking container health...");
+
+    loop {
+        let args = vec![
+            "compose", "-f", &compose_str, "ps",
+            "--format", "json",
+        ];
+        if let Ok(output) = executor.execute("docker", &args) {
+            if output.success() {
+                let stdout = output.stdout.trim();
+                if !stdout.is_empty() {
+                    match parse_container_statuses(stdout) {
+                        Some((running, total)) if total > 0 => {
+                            progress::update_health(&spin, running, total);
+                            if running == total {
+                                progress::finish_success(
+                                    &spin,
+                                    &format!("All {}/{} containers running", running, total),
+                                );
+                                // Show container summary
+                                print_container_summary(&compose_str, &executor);
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if start.elapsed() > timeout {
+            progress::finish_error(&spin, "Timeout waiting for containers — check `stacker status`");
+            return Ok(());
+        }
+
+        std::thread::sleep(poll);
+    }
+}
+
+/// Parse `docker compose ps --format json` output and count running containers.
+/// Returns `(running_count, total_count)`.
+fn parse_container_statuses(json_str: &str) -> Option<(usize, usize)> {
+    // docker compose ps --format json outputs one JSON object per line,
+    // or a JSON array depending on the version.
+    let containers: Vec<serde_json::Value> = if json_str.trim_start().starts_with('[') {
+        serde_json::from_str(json_str).ok()?
+    } else {
+        // One JSON object per line
+        json_str
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect()
+    };
+
+    let total = containers.len();
+    let running = containers
+        .iter()
+        .filter(|c| {
+            let state = c.get("State").and_then(|v| v.as_str()).unwrap_or("");
+            state == "running"
+        })
+        .count();
+
+    Some((running, total))
+}
+
+/// Print a brief container summary table.
+fn print_container_summary(compose_str: &str, executor: &dyn CommandExecutor) {
+    let args = vec!["compose", "-f", compose_str, "ps", "--format", "table"];
+    if let Ok(output) = executor.execute("docker", &args) {
+        if output.success() && !output.stdout.trim().is_empty() {
+            eprintln!();
+            eprint!("{}", output.stdout);
+        }
+    }
+}
+
+// ── Cloud deployment status polling after remote deploy ──────
+
+/// Terminal statuses — once reached, watching stops.
+const TERMINAL_STATUSES: &[&str] = &[
+    "completed",
+    "failed",
+    "cancelled",
+    "error",
+    "paused",
+];
+
+fn is_terminal(status: &str) -> bool {
+    TERMINAL_STATUSES.iter().any(|s| *s == status)
+}
+
+/// Watch cloud deployment status until it reaches a terminal state.
+fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    let cred_manager = CredentialsManager::with_default_store();
+    let creds = match cred_manager.require_valid_token("deployment status") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("  Cannot watch deployment status: {}", e);
+            eprintln!("  Run `stacker status --watch` later to check progress.");
+            return Ok(());
+        }
+    };
+
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
+        stacker_client::DEFAULT_STACKER_URL,
+    );
+
+    let project_id = match result.project_id {
+        Some(id) => id as i32,
+        None => {
+            eprintln!("  No project ID — run `stacker status --watch` to check progress.");
+            return Ok(());
+        }
+    };
+
+    eprintln!();
+    let spin = progress::spinner("Watching deployment progress...");
+
+    let poll_interval = Duration::from_secs(5);
+    let timeout = Duration::from_secs(600); // 10 min max watch
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let client = StackerClient::new(&base_url, &creds.access_token);
+        let start = std::time::Instant::now();
+        let mut last_status = String::new();
+
+        loop {
+            match client.get_deployment_status_by_project(project_id).await {
+                Ok(Some(info)) => {
+                    if info.status != last_status {
+                        let icon = progress::status_icon(&info.status);
+                        progress::update_message(
+                            &spin,
+                            &format!(
+                                "{} Deployment #{} — {}{}",
+                                icon,
+                                info.id,
+                                info.status,
+                                info.status_message
+                                    .as_ref()
+                                    .map(|m| format!(": {}", m))
+                                    .unwrap_or_default(),
+                            ),
+                        );
+                        last_status = info.status.clone();
+                    }
+
+                    if is_terminal(&info.status) {
+                        if info.status == "completed" {
+                            progress::finish_success(
+                                &spin,
+                                &format!("Deployment #{} completed", info.id),
+                            );
+                        } else {
+                            let msg = info
+                                .status_message
+                                .as_deref()
+                                .unwrap_or(&info.status);
+                            progress::finish_error(
+                                &spin,
+                                &format!("Deployment #{} — {}", info.id, msg),
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
+                Ok(None) => {
+                    if last_status.is_empty() {
+                        progress::update_message(
+                            &spin,
+                            "Waiting for deployment to appear...",
+                        );
+                        last_status = "<none>".to_string();
+                    }
+                }
+                Err(e) => {
+                    progress::finish_error(
+                        &spin,
+                        &format!("Error polling status: {}", e),
+                    );
+                    eprintln!("  Run `stacker status --watch` to retry.");
+                    return Ok(());
+                }
+            }
+
+            if start.elapsed() > timeout {
+                progress::finish_error(
+                    &spin,
+                    "Watch timeout (10m) — deployment still in progress",
+                );
+                eprintln!("  Run `stacker status --watch` to continue watching.");
+                return Ok(());
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    })
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1071,6 +1543,28 @@ services:
                 assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
         }
 
+        #[test]
+        fn test_normalize_generated_compose_paths_adds_stacker_dockerfile_for_app_when_missing() {
+                let dir = TempDir::new().unwrap();
+                let stacker_dir = dir.path().join(".stacker");
+                std::fs::create_dir_all(&stacker_dir).unwrap();
+
+                let compose_path = stacker_dir.join("docker-compose.yml");
+                let compose = r#"
+services:
+    app:
+        build:
+            context: .
+"#;
+                std::fs::write(&compose_path, compose).unwrap();
+
+                normalize_generated_compose_paths(&compose_path).unwrap();
+
+                let normalized = std::fs::read_to_string(&compose_path).unwrap();
+                assert!(normalized.contains("context: .."));
+                assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+        }
+
     #[test]
     fn test_parse_deploy_target_valid() {
         assert_eq!(parse_deploy_target("local").unwrap(), DeployTarget::Local);
@@ -1143,5 +1637,79 @@ services:
         assert!(env_path.exists());
         let content = std::fs::read_to_string(env_path).unwrap();
         assert!(content.contains("APP_ENV=production"));
+    }
+
+    // ── Progress / health-check helpers ──────────────
+
+    #[test]
+    fn test_parse_container_statuses_json_array() {
+        let json = r#"[
+            {"State": "running", "Name": "app"},
+            {"State": "running", "Name": "db"},
+            {"State": "exited", "Name": "worker"}
+        ]"#;
+        let (running, total) = parse_container_statuses(json).unwrap();
+        assert_eq!(running, 2);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_parse_container_statuses_ndjson() {
+        let json = "{\"State\": \"running\", \"Name\": \"app\"}\n{\"State\": \"running\", \"Name\": \"db\"}";
+        let (running, total) = parse_container_statuses(json).unwrap();
+        assert_eq!(running, 2);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_parse_container_statuses_empty() {
+        let (running, total) = parse_container_statuses("[]").unwrap();
+        assert_eq!(running, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_is_terminal_statuses() {
+        assert!(is_terminal("completed"));
+        assert!(is_terminal("failed"));
+        assert!(is_terminal("cancelled"));
+        assert!(is_terminal("error"));
+        assert!(is_terminal("paused"));
+        assert!(!is_terminal("in_progress"));
+        assert!(!is_terminal("pending"));
+        assert!(!is_terminal("wait_start"));
+    }
+
+    #[test]
+    fn test_deploy_result_has_watch_fields() {
+        let result = DeployResult {
+            target: DeployTarget::Cloud,
+            message: "test".to_string(),
+            server_ip: None,
+            deployment_id: Some(42),
+            project_id: Some(7),
+        };
+        assert_eq!(result.deployment_id, Some(42));
+        assert_eq!(result.project_id, Some(7));
+    }
+
+    #[test]
+    fn test_with_watch_flags() {
+        let cmd = DeployCommand::new(None, None, false, false)
+            .with_watch(false, false);
+        assert_eq!(cmd.watch, None); // auto
+
+        let cmd = DeployCommand::new(None, None, false, false)
+            .with_watch(true, false);
+        assert_eq!(cmd.watch, Some(true));
+
+        let cmd = DeployCommand::new(None, None, false, false)
+            .with_watch(false, true);
+        assert_eq!(cmd.watch, Some(false));
+
+        // --no-watch wins over --watch
+        let cmd = DeployCommand::new(None, None, false, false)
+            .with_watch(true, true);
+        assert_eq!(cmd.watch, Some(false));
     }
 }

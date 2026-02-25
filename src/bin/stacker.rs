@@ -92,6 +92,12 @@ enum StackerCommands {
         /// Name of saved server to reuse (overrides deploy.cloud.server in stacker.yml)
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
+        /// Watch deployment progress until complete (default for cloud deploys)
+        #[arg(long)]
+        watch: bool,
+        /// Disable automatic progress watching after deploy
+        #[arg(long)]
+        no_watch: bool,
     },
     /// Show container logs
     Logs {
@@ -141,11 +147,39 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ProxyCommands,
     },
+    /// List resources (projects, servers, ssh-keys)
+    List {
+        #[command(subcommand)]
+        command: ListCommands,
+    },
     /// Check for updates and self-update
     Update {
         /// Release channel: stable, beta
         #[arg(long)]
         channel: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ListCommands {
+    /// List all projects
+    Projects {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all servers
+    Servers {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List SSH keys (per-server key status)
+    #[command(name = "ssh-keys")]
+    SshKeys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -269,6 +303,8 @@ fn get_command(
             project,
             key,
             server,
+            watch,
+            no_watch,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -276,7 +312,8 @@ fn get_command(
                 dry_run,
                 force_rebuild,
             )
-            .with_remote_overrides(project, key, server),
+            .with_remote_overrides(project, key, server)
+            .with_watch(watch, no_watch),
         ),
         StackerCommands::Logs {
             service,
@@ -338,6 +375,17 @@ fn get_command(
             ),
             ProxyCommands::Detect => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(),
+            ),
+        },
+        StackerCommands::List { command: list_cmd } => match list_cmd {
+            ListCommands::Projects { json } => Box::new(
+                stacker::console::commands::cli::list::ListProjectsCommand::new(json),
+            ),
+            ListCommands::Servers { json } => Box::new(
+                stacker::console::commands::cli::list::ListServersCommand::new(json),
+            ),
+            ListCommands::SshKeys { json } => Box::new(
+                stacker::console::commands::cli::list::ListSshKeysCommand::new(json),
             ),
         },
         StackerCommands::Update { channel } => Box::new(
