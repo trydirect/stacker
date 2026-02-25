@@ -926,8 +926,12 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         crate::cli::config_parser::ProxyType::Nginx
         | crate::cli::config_parser::ProxyType::NginxProxyManager => {
             features.push(serde_json::json!({
+                "_id": generate_app_id(),
+                "name": "Nginx Proxy Manager",
                 "code": "nginx_proxy_manager",
                 "type": "feature",
+                "restart": "always",
+                "custom": true,
                 "shared_ports": [],
                 "network": [],
             }));
@@ -1187,6 +1191,10 @@ mod tests {
         assert_eq!(features.len(), 1, "feature array should have 1 entry");
         assert_eq!(features[0]["code"], "nginx_proxy_manager");
         assert_eq!(features[0]["type"], "feature");
+        assert_eq!(features[0]["name"], "Nginx Proxy Manager");
+        assert_eq!(features[0]["restart"], "always");
+        assert!(features[0]["_id"].is_string(), "_id must be present");
+        assert_eq!(features[0]["custom"], true);
     }
 
     #[test]
