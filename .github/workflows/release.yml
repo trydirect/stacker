@@ -32,7 +32,7 @@ jobs:
             asset_arch: aarch64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
