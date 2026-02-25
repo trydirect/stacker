@@ -88,11 +88,13 @@ pub async fn run(
                     .allow_any_origin()
                     .allow_any_method()
                     .allowed_headers(vec![
-                        actix_web::http::header::AUTHORIZATION,
-                        actix_web::http::header::CONTENT_TYPE,
-                        actix_web::http::header::ACCEPT,
+                        http::header::AUTHORIZATION,
+                        http::header::CONTENT_TYPE,
+                        http::header::ACCEPT,
+                        http::header::ORIGIN,
+                        http::header::HeaderName::from_static("x-requested-with"),
                     ])
-                    .supports_credentials()
+                    .expose_any_header()
                     .max_age(3600),
             )
             .wrap(TracingLogger::default())
@@ -208,7 +210,9 @@ pub async fn run(
                     )
                     .service(
                         web::scope("/v1/deployments")
-                            .service(routes::deployment::capabilities_handler),
+                            .service(routes::deployment::capabilities_handler)
+                            .service(routes::deployment::status_handler)
+                            .service(routes::deployment::status_by_project_handler),
                     )
                     .service(
                         web::scope("/v1/commands")
@@ -250,6 +254,7 @@ pub async fn run(
                     .service(crate::routes::server::get::list)
                     .service(crate::routes::server::get::list_by_project)
                     .service(crate::routes::server::update::item)
+                    .service(crate::routes::server::delete::delete_preview)
                     .service(crate::routes::server::delete::item)
                     .service(crate::routes::server::ssh_key::generate_key)
                     .service(crate::routes::server::ssh_key::upload_key)
@@ -262,6 +267,12 @@ pub async fn run(
                     .service(crate::routes::agreement::user_add_handler)
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
+            )
+            .service(
+                web::scope("/chat")
+                    .service(crate::routes::chat::get::item)
+                    .service(crate::routes::chat::upsert::item)
+                    .service(crate::routes::chat::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())

@@ -8,6 +8,85 @@ use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::services::ProjectAppService;
 use serde::Deserialize;
 use std::sync::Arc;
+use uuid::Uuid;
+
+fn build_project_payload(
+    name: &str,
+    description: Option<&str>,
+    apps: &[Value],
+) -> (serde_json::Value, serde_json::Value) {
+    let mut stack_code = crate::models::sanitize_project_name(name);
+    if stack_code.len() < 3 {
+        stack_code = "app-stack".to_string();
+    }
+
+    let project_name = if name.trim().is_empty() {
+        "New project".to_string()
+    } else {
+        name.to_string()
+    };
+
+    let network_id = Uuid::new_v4().simple().to_string()[..16].to_string();
+
+    let metadata = json!({
+        "custom": {
+            "web": [],
+            "feature": [],
+            "service": [],
+            "networks": [
+                {
+                    "id": network_id,
+                    "ipam": null,
+                    "name": "default_network",
+                    "driver": null,
+                    "labels": null,
+                    "external": null,
+                    "internal": null,
+                    "attachable": null,
+                    "driver_opts": null,
+                    "enable_ipv6": null
+                }
+            ],
+            "project_name": project_name,
+            "project_git_url": null,
+            "project_overview": description,
+            "custom_stack_code": stack_code,
+            "project_description": description,
+            "custom_stack_category": null,
+            "custom_stack_description": null,
+            "custom_stack_short_description": null,
+            "apps": apps
+        }
+    });
+
+    let request_json = json!({
+        "ssl": "letsencrypt",
+        "custom": {
+            "web": [],
+            "code": stack_code,
+            "feature": [],
+            "service": [],
+            "networks": [
+                {
+                    "id": network_id,
+                    "name": "default_network"
+                }
+            ],
+            "project_name": project_name,
+            "connection_mode": "ssh",
+            "project_git_url": null,
+            "project_overview": description,
+            "custom_stack_code": stack_code,
+            "project_description": description,
+            "custom_stack_category": null,
+            "custom_stack_description": null,
+            "custom_stack_short_description": null,
+            "apps": apps
+        }
+    });
+
+    (metadata, request_json)
+}
 
 /// List user's projects
 pub struct ListProjectsTool;
@@ -118,12 +197,15 @@ impl ToolHandler for CreateProjectTool {
             return Err("Project name too long (max 255 characters)".to_string());
         }
 
-        // Create a new Project model with empty metadata/request
+        let (metadata, request_json) =
+            build_project_payload(&params.name, params.description.as_deref(), &params.apps);
+
+        // Create a new Project model with normalized metadata/request payload
         let project = crate::models::Project::new(
             context.user.id.clone(),
             params.name.clone(),
-            serde_json::json!({}),
-            serde_json::json!(params.apps),
+            metadata,
+            request_json,
         );
 
         let project = db::project::insert(&context.pg_pool, project)

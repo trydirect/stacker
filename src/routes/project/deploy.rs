@@ -4,9 +4,8 @@ use crate::connectors::{
 };
 use crate::db;
 use crate::forms;
-use crate::helpers::compressor::compress;
 use crate::helpers::project::builder::DcBuilder;
-use crate::helpers::{JsonResponse, MqManager};
+use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde_valid::Validate;
@@ -14,7 +13,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[tracing::instrument(name = "Deploy for every user", skip(user_service, install_service))]
+#[tracing::instrument(name = "Deploy for every user", skip(user_service, install_service, vault_client))]
 #[post("/{id}/deploy")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
@@ -25,6 +24,7 @@ pub async fn item(
     sets: Data<Settings>,
     user_service: Data<Arc<dyn UserServiceConnector>>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: Data<VaultClient>,
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("User {:?} is deploying project: {}", user, id);
@@ -88,31 +88,124 @@ pub async fn item(
 
     form.cloud.user_id = Some(user.id.clone());
     form.cloud.project_id = Some(id);
-    // Save cloud credentials if requested
+    // Save cloud credentials if requested, capturing the returned cloud with its DB id
     let cloud_creds: models::Cloud = (&form.cloud).into();
 
-    // let cloud_creds = forms::Cloud::decode_model(cloud_creds, false);
-
-    if Some(true) == cloud_creds.save_token {
+    let cloud_creds = if Some(true) == cloud_creds.save_token {
         db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
             .await
-            .map(|cloud| cloud)
             .map_err(|_| {
                 JsonResponse::<models::Cloud>::build()
                     .internal_server_error("Internal Server Error")
-            })?;
-    }
+            })?
+    } else {
+        cloud_creds
+    };
 
-    // Save server type and region
-    let mut server: models::Server = (&form.server).into();
-    server.user_id = user.id.clone();
-    server.project_id = id;
-    let server = db::server::insert(pg_pool.get_ref(), server)
-        .await
-        .map(|server| server)
-        .map_err(|_| {
-            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
-        })?;
+    // Handle server: if server_id provided, update existing; otherwise create new
+    let server = if let Some(server_id) = form.server.server_id {
+        // Update existing server
+        let existing = db::server::fetch(pg_pool.get_ref(), server_id)
+            .await
+            .map_err(|_| {
+                JsonResponse::<models::Server>::build().internal_server_error("Failed to fetch server")
+            })?
+            .ok_or_else(|| {
+                JsonResponse::<models::Server>::build().not_found("Server not found")
+            })?;
+
+        // Verify ownership
+        if existing.user_id != user.id {
+            return Err(JsonResponse::<models::Server>::build().not_found("Server not found"));
+        }
+
+        let mut server = existing;
+        server.disk_type = form.server.disk_type.clone();
+        server.region = form.server.region.clone();
+        server.server = form.server.server.clone();
+        server.zone = form.server.zone.clone().or(server.zone);
+        server.os = form.server.os.clone();
+        server.project_id = id;
+        // Preserve existing srv_ip if form doesn't provide one
+        server.srv_ip = form.server.srv_ip.clone().or(server.srv_ip);
+        server.ssh_user = form.server.ssh_user.clone().or(server.ssh_user);
+        server.ssh_port = form.server.ssh_port.or(server.ssh_port);
+        server.name = form.server.name.clone().or(server.name);
+        if form.server.connection_mode.is_some() {
+            server.connection_mode = form.server.connection_mode.clone().unwrap();
+        }
+
+        db::server::update(pg_pool.get_ref(), server)
+            .await
+            .map_err(|_| {
+                JsonResponse::<models::Server>::build().internal_server_error("Failed to update server")
+            })?
+    } else {
+        // Create new server
+        let mut server: models::Server = (&form.server).into();
+        server.user_id = user.id.clone();
+        server.project_id = id;
+        // Set cloud_id from saved cloud credentials (if cloud was saved, it has a DB id)
+        if cloud_creds.id != 0 {
+            server.cloud_id = Some(cloud_creds.id);
+        }
+
+        db::server::insert(pg_pool.get_ref(), server)
+            .await
+            .map_err(|_| {
+                JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+            })?
+    };
+
+    // Auto-generate SSH key for new servers that don't have one yet
+    let server = if server.key_status != "active" {
+        match VaultClient::generate_ssh_keypair() {
+            Ok((public_key, private_key)) => {
+                match vault_client
+                    .get_ref()
+                    .store_ssh_key(&user.id, server.id, &public_key, &private_key)
+                    .await
+                {
+                    Ok(vault_path) => {
+                        tracing::info!(
+                            "Auto-generated SSH key for server {} (vault_key_path: {})",
+                            server.id,
+                            vault_path
+                        );
+                        db::server::update_ssh_key_status(
+                            pg_pool.get_ref(),
+                            server.id,
+                            Some(vault_path),
+                            "active",
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to update SSH key status: {}", e);
+                            server
+                        })
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to store auto-generated SSH key in Vault for server {}: {}",
+                            server.id,
+                            e
+                        );
+                        server
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to auto-generate SSH keypair for server {}: {}",
+                    server.id,
+                    e
+                );
+                server
+            }
+        }
+    } else {
+        server
+    };
 
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.metadata.clone();
@@ -145,6 +238,7 @@ pub async fn item(
             cloud_creds,
             server,
             &form.stack,
+            form.registry.clone(),
             fc,
             mq_manager.get_ref(),
         )
@@ -157,7 +251,7 @@ pub async fn item(
         })
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
 }
-#[tracing::instrument(name = "Deploy, when cloud token is saved", skip(user_service))]
+#[tracing::instrument(name = "Deploy, when cloud token is saved", skip(user_service, install_service, vault_client))]
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
@@ -167,6 +261,8 @@ pub async fn saved_item(
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
     user_service: Data<Arc<dyn UserServiceConnector>>,
+    install_service: Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: Data<VaultClient>,
 ) -> Result<impl Responder> {
     let id = path.0;
     let cloud_id = path.1;
@@ -270,11 +366,12 @@ pub async fn saved_item(
         server.disk_type = form.server.disk_type.clone();
         server.region = form.server.region.clone();
         server.server = form.server.server.clone();
-        server.zone = form.server.zone.clone();
+        server.zone = form.server.zone.clone().or(server.zone);
         server.os = form.server.os.clone();
         server.project_id = id;
-        server.srv_ip = form.server.srv_ip.clone();
-        server.ssh_user = form.server.ssh_user.clone();
+        // Preserve existing srv_ip if form doesn't provide one
+        server.srv_ip = form.server.srv_ip.clone().or(server.srv_ip);
+        server.ssh_user = form.server.ssh_user.clone().or(server.ssh_user);
         server.ssh_port = form.server.ssh_port.or(server.ssh_port);
         server.name = form.server.name.clone().or(server.name);
         if form.server.connection_mode.is_some() {
@@ -301,17 +398,55 @@ pub async fn saved_item(
             })?
     };
 
-    // Building Payload for the 3-d party service through RabbitMQ
-    // let mut payload = forms::project::Payload::default();
-    let mut payload = forms::project::Payload::try_from(&dc.project)
-        .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
-
-    payload.server = Some(server.into());
-    payload.cloud = Some(cloud.into());
-    payload.stack = form.stack.clone().into();
-    payload.user_token = Some(user.id.clone());
-    payload.user_email = Some(user.email.clone());
-    payload.docker_compose = Some(compress(fc.as_str()));
+    // Auto-generate SSH key for new servers that don't have one yet
+    let server = if server.key_status != "active" {
+        match VaultClient::generate_ssh_keypair() {
+            Ok((public_key, private_key)) => {
+                match vault_client
+                    .get_ref()
+                    .store_ssh_key(&user.id, server.id, &public_key, &private_key)
+                    .await
+                {
+                    Ok(vault_path) => {
+                        tracing::info!(
+                            "Auto-generated SSH key for server {} (vault_key_path: {})",
+                            server.id,
+                            vault_path
+                        );
+                        db::server::update_ssh_key_status(
+                            pg_pool.get_ref(),
+                            server.id,
+                            Some(vault_path),
+                            "active",
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to update SSH key status: {}", e);
+                            server
+                        })
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to store auto-generated SSH key in Vault for server {}: {}",
+                            server.id,
+                            e
+                        );
+                        server
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to auto-generate SSH keypair for server {}: {}",
+                    server.id,
+                    e
+                );
+                server
+            }
+        }
+    } else {
+        server
+    };
 
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.metadata.clone();
@@ -326,39 +461,36 @@ pub async fn saved_item(
 
     let result = db::deployment::insert(pg_pool.get_ref(), deployment)
         .await
-        .map(|deployment| {
-            payload.id = Some(deployment.id);
-            deployment
-        })
         .map_err(|_| {
             JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
         })?;
 
     let deployment_id = result.id;
 
-    // Set deployment_hash in payload before publishing to RabbitMQ
-    payload.deployment_hash = Some(deployment_hash);
-
     tracing::debug!("Save deployment result: {:?}", result);
-    tracing::debug!(
-        "Send project data (deployment_hash = {:?}): {:?}",
-        payload.deployment_hash,
-        payload
-    );
 
-    // Send Payload
-    mq_manager
-        .publish(
-            "install".to_string(),
-            "install.start.tfa.all.all".to_string(),
-            &payload,
+    // Delegate to install service connector (determines own vs tfa routing)
+    install_service
+        .deploy(
+            user.id.clone(),
+            user.email.clone(),
+            id,
+            deployment_id,
+            deployment_hash,
+            &dc.project,
+            cloud,
+            server,
+            &form.stack,
+            form.registry.clone(),
+            fc,
+            mq_manager.get_ref(),
         )
         .await
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
-        .map(|_| {
+        .map(|project_id| {
             JsonResponse::<models::Project>::build()
-                .set_id(id)
+                .set_id(project_id)
                 .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
                 .ok("Success")
         })
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
 }

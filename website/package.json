@@ -1,0 +1,14 @@
+{
+  "name": "stacker-website",
+  "version": "1.0.0",
+  "description": "Stacker CLI - Modern landing page",
+  "scripts": {
+    "build": "tsc && cp src/index.html dist/ && cp src/styles.css dist/ && cp -r assets dist/",
+    "dev": "tsc --watch",
+    "serve": "npx serve dist -p 3456"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "serve": "^14.2.0"
+  }
+}

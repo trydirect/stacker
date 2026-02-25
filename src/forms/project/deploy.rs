@@ -4,6 +4,17 @@ use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_valid::Validate;
 
+/// Docker registry credentials for pulling private images during deployment.
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegistryForm {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_registry: Option<String>,
+}
+
 /// Validates that cloud deployments have required instance configuration
 fn validate_cloud_instance_config(deploy: &Deploy) -> Result<(), serde_valid::validation::Error> {
     // Skip validation for "own" server deployments
@@ -42,6 +53,9 @@ pub struct Deploy {
     pub(crate) server: ServerForm,
     #[validate]
     pub(crate) cloud: CloudForm,
+    /// Optional Docker registry credentials for pulling private images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) registry: Option<RegistryForm>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]

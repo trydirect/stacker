@@ -67,11 +67,16 @@ jobs:
 
       - name: Build console (release with features)
         run: cargo build --release --target ${{ matrix.target }} --bin console --features explain --verbose
+
+      - name: Build stacker-cli (release)
+        run: cargo build --release --target ${{ matrix.target }} --bin stacker-cli --verbose
+
       - name: Prepare binaries
         run: |
           mkdir -p artifacts
           cp target/${{ matrix.target }}/release/server artifacts/server
           cp target/${{ matrix.target }}/release/console artifacts/console
+          cp target/${{ matrix.target }}/release/stacker-cli artifacts/stacker-cli
           tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
       - name: Upload binaries
         uses: actions/upload-artifact@v4

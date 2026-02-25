@@ -4,6 +4,13 @@
 
 ---
 
+## ✅ Recent Fixes
+
+### February 16, 2026 - CORS Headers Fix
+- [x] Fixed CORS configuration to properly support Authorization header with credentials
+- [x] Changed from whitelist (`allowed_headers(vec![...])`) to `.allow_any_header()` + `.expose_any_header()`
+- [x] Resolves browser console warning about Authorization header not being covered
+
 ## 🚨 CRITICAL BUGS - ENV VARS NOT SAVED TO project_app
 
 > **Date Identified**: 2026-02-02  

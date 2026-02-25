@@ -1,0 +1,62 @@
+name: website
+version: 1.0.0
+project:
+  identity: stacker-website
+  _id: 44
+
+app:
+  type: node
+  path: '.'
+  dockerfile: Dockerfile
+services:
+  web:
+    name: web
+    image: ${DOCKER_USERNAME}/stacker-website:latest
+    ports:
+      - "3456:3456"
+    volumes:
+      - .:/app
+
+monitoring:
+  status_panel: true
+  healthcheck:
+    endpoint: /healthz
+    interval: 10s
+volumes:
+  db-data:
+
+proxy:
+   # type: none | nginx | traefik
+   type: "nginx"
+   auto_detect: true
+   domains:
+     - domain: "stacker.my"
+       # ssl: none | auto | manual
+       ssl: "auto"
+       upstream: "app:3456"
+
+deploy:
+  # target: local | cloud | server
+  target: cloud
+  cloud:
+    provider: hetzner
+    orchestrator: remote
+    region: nbg1
+    size: cpx22
+  #target: "server"
+  # server:
+  #   host: "192.168.1.100"
+  #   user: "root"
+  #   ssh_key: "~/.ssh/stacker"
+  #   port: 22
+  registry:                          # Docker registry credentials for private images
+    username: "${DOCKER_USERNAME}"
+    password: "${DOCKER_PASSWORD}"
+    server: "https://index.docker.io/v1/"  # optional, defaults to Docker Hub
+
+hooks:
+  pre_build: scripts/pre-build.sh
+  post_deploy: scripts/post-deploy.sh
+  on_failure: scripts/on-failure.sh
+
+env_file: .env
