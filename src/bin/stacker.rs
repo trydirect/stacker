@@ -147,11 +147,39 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ProxyCommands,
     },
+    /// List resources (projects, servers, ssh-keys)
+    List {
+        #[command(subcommand)]
+        command: ListCommands,
+    },
     /// Check for updates and self-update
     Update {
         /// Release channel: stable, beta
         #[arg(long)]
         channel: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ListCommands {
+    /// List all projects
+    Projects {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all servers
+    Servers {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List SSH keys (per-server key status)
+    #[command(name = "ssh-keys")]
+    SshKeys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -347,6 +375,17 @@ fn get_command(
             ),
             ProxyCommands::Detect => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(),
+            ),
+        },
+        StackerCommands::List { command: list_cmd } => match list_cmd {
+            ListCommands::Projects { json } => Box::new(
+                stacker::console::commands::cli::list::ListProjectsCommand::new(json),
+            ),
+            ListCommands::Servers { json } => Box::new(
+                stacker::console::commands::cli::list::ListServersCommand::new(json),
+            ),
+            ListCommands::SshKeys { json } => Box::new(
+                stacker::console::commands::cli::list::ListSshKeysCommand::new(json),
             ),
         },
         StackerCommands::Update { channel } => Box::new(
