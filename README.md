@@ -1,277 +1,227 @@
-<a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<br>
 <div align="center">
-<img width="300" src="https://repository-images.githubusercontent.com/448846514/3468f301-0ba6-4b61-9bf1-164c06c06b08"> 
- </div>
 
-# Stacker Project Overview
-Stacker - is an application that helps users to create custom IT solutions based on dockerized open 
-source apps and user's custom applications docker containers. Users can build their own project of applications, and 
-deploy the final result to their favorite clouds using TryDirect API. See [CHANGELOG.md](CHANGELOG.md) for the latest platform updates.
+<a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
+<img alt="Version" src="https://img.shields.io/badge/version-0.2.3-blue">
+<img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
+<br><br>
+<img width="300" src="https://repository-images.githubusercontent.com/448846514/3468f301-0ba6-4b61-9bf1-164c06c06b08">
 
-```
- ██████ ████████ █████   ██████ ██   ██ ███████ ██████  
-██         ██    ██   ██ ██     ██  ██  ██      ██   ██ 
-███████    ██    ███████ ██     █████   █████   ██████  
-     ██    ██    ██   ██ ██     ██  ██  ██      ██   ██ 
-██████     ██    ██   ██  █████ ██   ██ ███████ ██   ██ 
+**Build, deploy, and manage containerised applications with a single config file.**
 
-╭────────────────────────────────────────────────────────╮
-│  Stacker                                               │
-│  Version: 0.2.2                                        │
-│  Build: 0.2.2                                          │
-│  Edition: 2021                                         │
-╰────────────────────────────────────────────────────────╯
+</div>
 
-📋 Configuration Loaded
-  🌐 Server Address: http://127.0.0.1:8000
-  📦 Ready to accept connections
-```
+ install.shStacker is a CLI + server platform that turns any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
 
+---
 
-## Core Purpose
-- Allows users to build projects using both open source and custom Docker containers
-- Provides deployment capabilities to various cloud platforms through TryDirect API
-- Helps manage and orchestrate Docker-based application stacks
+## Quick Start
 
-## Main Components
+### Install
 
-1. **Project Structure**
-- Web UI (Stack Builder)
-- Command Line Interface
-- RESTful API Backend
-
-2. **Key Features**
-- User Authentication (via TryDirect OAuth)
-- API Client Management
-- Cloud Provider Key Management
-- Docker Compose Generation
-- Project Rating System
-- Project Deployment Management
-
-3. **Technical Architecture**
-- Written in Rust
-- Uses PostgreSQL database
-- Implements REST API endpoints
-- Includes Docker image validation
-- Supports project deployment workflows
-- Has RabbitMQ integration for deployment status updates
-
-4. **Data Models**
-The core Project model includes:
-- Unique identifiers (id, stack_id)
-- User identification
-- Project metadata (name, metadata, request_json)
-- Timestamps (created_at, updated_at)
-
-5. **API Endpoints (user-facing)**
-- `/project` - Project management
-- `/project/deploy` - Deployment handling
-- `/project/deploy/status` - Deployment status tracking
-- `/rating` - Rating system
-- `/client` - API client management
-
-6. **Agent + Command Flow (self-hosted runner)**
-- Register agent (no auth required): `POST /api/v1/agent/register`
-  - Body: `deployment_hash`, optional `capabilities`, `system_info`
-  - Response: `agent_id`, `agent_token`
-- Agent long-poll for commands: `GET /api/v1/agent/commands/wait/:deployment_hash`
-  - Headers: `X-Agent-Id: <agent_id>`, `Authorization: Bearer <agent_token>`
-  - Optional query params: `timeout` (seconds), `interval` (seconds)
-- Agent report command result: `POST /api/v1/agent/commands/report`
-  - Headers: `X-Agent-Id`, `Authorization: Bearer <agent_token>`
-  - Body: `command_id`, `deployment_hash`, `status` (`completed|failed`), `result`/`error`, optional `started_at`, required `completed_at`
-- **Get deployment snapshot**: `GET /api/v1/agent/deployments/:deployment_hash`
-  - Query params (optional):
-    - `command_limit` (default: 50) - Number of recent commands to return
-    - `include_command_results` (default: false) - Whether to include command result/error fields
-  - Response: `agent`, `commands`, `containers`, `apps`
-  - **Note**: Use `include_command_results=false` (default) for lightweight snapshots to avoid large payloads when commands contain log data
-- Create command (user auth via OAuth Bearer): `POST /api/v1/commands`
-  - Body: `deployment_hash`, `command_type`, `priority` (`low|normal|high|critical`), `parameters`, optional `timeout_seconds`
-- **List commands for a deployment**: `GET /api/v1/commands/:deployment_hash`
-  - Query params (optional):
-    - `limit` (default: 50, max: 500) - Number of commands to return
-    - `include_results` (default: false) - Whether to include command result/error fields
-    - `since` (ISO 8601 timestamp) - Only return commands updated after this time
-    - `wait_ms` (max: 30000) - Long-poll timeout when using `since`
-  - Response: `list` of commands
-  - **Note**: Use `include_results=true` when you need log data or command execution results
-
-7. **Stacker → Agent HMAC-signed POSTs (v2)**
-- All POST calls from Stacker to the agent must be signed per [STACKER_INTEGRATION_REQUIREMENTS.md](STACKER_INTEGRATION_REQUIREMENTS.md)
-- Required headers: `X-Agent-Id`, `X-Timestamp`, `X-Request-Id`, `X-Agent-Signature`
-- Signature: base64(HMAC_SHA256(AGENT_TOKEN, raw_body_bytes))
-- Helper available: `helpers::AgentClient`
- - Base URL: set `AGENT_BASE_URL` to point Stacker at the target agent (e.g., `http://agent:5000`).
-
-Example:
-```rust
-use stacker::helpers::AgentClient;
-use serde_json::json;
-
-let client = AgentClient::new("http://agent:5000", agent_id, agent_token);
-let payload = json!({"deployment_hash": dh, "type": "restart_service", "parameters": {"service": "web"}});
-let resp = client.get("/api/v1/status").await?;
-``` 
-
-### Pull-Only Command Architecture
-
-Stacker uses a pull-only architecture for agent communication. **Stacker never dials out to agents.** Commands are enqueued in the database; agents poll and sign their own requests.
-
-**Flow:**
-1. UI/API calls `POST /api/v1/commands` or `POST /api/v1/agent/commands/enqueue`
-2. Command is inserted into `commands` + `command_queue` tables
-3. Agent polls `GET /api/v1/agent/commands/wait/{deployment_hash}` with HMAC headers
-4. Stacker verifies agent's HMAC, returns queued commands
-5. Agent executes locally and calls `POST /api/v1/agent/commands/report`
-
-**Note:** `AGENT_BASE_URL` environment variable is NOT required for Status Panel commands.
-
-Token rotation (writes to Vault; agent pulls latest):
-```rust
-use stacker::services::agent_dispatcher;
-
-// Rotate token - stored in Vault, agent fetches on next poll
-agent_dispatcher::rotate_token(&pg, &vault, &deployment_hash, "NEW_TOKEN").await?;
-```
-
-Console token rotation:
 ```bash
-cargo run --bin console -- Agent rotate-token \
-  --deployment-hash <hash> \
-  --new-token <NEW_TOKEN>
+curl -fsSL https://raw.githubusercontent.com/trydirect/stacker/main/install.sh | bash
 ```
 
-### Configuration: Vault
-- In configuration.yaml.dist, set:
-  - vault.address: Vault URL (e.g., http://127.0.0.1:8200)
-  - vault.token: Vault access token (dev/test only)
-  - vault.agent_path_prefix: KV mount/prefix for agent tokens (e.g., agent or kv/agent)
-- Environment variable overrides (optional): VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
-- Agent tokens are stored at: {vault.agent_path_prefix}/{deployment_hash}/token
+### Create a project
 
-### Configuration: Agent Polling & Casbin Reload
-- `agent_command_poll_timeout_secs` (default 30)
-- `agent_command_poll_interval_secs` (default 3)
-- `casbin_reload_enabled` (default true)
-- `casbin_reload_interval_secs` (default 10)
-
-Environment overrides:
-- `STACKER_AGENT_POLL_TIMEOUT_SECS`
-- `STACKER_AGENT_POLL_INTERVAL_SECS`
-- `STACKER_CASBIN_RELOAD_ENABLED`
-- `STACKER_CASBIN_RELOAD_INTERVAL_SECS`
-
-The project appears to be a sophisticated orchestration platform that bridges the gap between Docker container management and cloud deployment, with a focus on user-friendly application stack building and management.
-
-This is a high-level overview based on the code snippets provided. The project seems to be actively developed with features being added progressively, as indicated by the TODO sections in the documentation.
-
-
-## How to start 
-
-
-## Structure
-
-Stacker (User's dashboard) - Management 
-----------
-Authentication through TryDirect OAuth
-/api/auth checks client's creds, api token, api secret
-/apiclient (Create/Manage user's api clients) example: BeerMaster (email, callback)
-/rating   
-
-
-Stacker (API) - Serves API clients 
-----------
-Authentication made through TryDirect OAuth, here we have only client 
-Database (Read only)
-Logging/Tracing (Files) / Quickwit for future 
-/project (WebUI, as a result we have a JSON)
-/project/deploy -> sends deploy command to TryDirect Install service 
-/project/deploy/status - get installation progress (rabbitmq client),
-
-#### TODO 
-Find out how to get user's token for queue
-Limit Requests Frequency (Related to user's settings/role/group etc)
-Callback event, example: subscribe on get_report (internally from rabbitmq client),
-
-
-main client (AllMasters) ->  client (Beermaster) 
-
-
-#### Run db migration
-
-```
-sqlx migrate run
-
+```bash
+cd my-project
+stacker init              # auto-detects project type, generates stacker.yml
+stacker deploy            # builds and runs locally via docker compose
+stacker status            # check running containers
 ```
 
+### AI-powered init (optional)
 
-#### Down migration
+Stacker can scan your project files and use an LLM to generate a tailored `stacker.yml`:
 
-```
-sqlx migrate revert 
-```
+```bash
+# Local AI with Ollama (free, private, default)
+stacker init --with-ai
 
+# OpenAI
+stacker init --with-ai --ai-provider openai --ai-api-key sk-...
 
-## Testing
-
-Stacker ships targeted tests for the new User Service marketplace integrations. Run them with:
-
-```
-cargo test user_service_client
-cargo test marketplace_webhook
-cargo test deployment_validator
+# Anthropic (key from env)
+export ANTHROPIC_API_KEY=sk-ant-...
+stacker init --with-ai --ai-provider anthropic
 ```
 
-Each suite uses WireMock-backed HTTP servers, so they run offline and cover the actual request/response flows for the connector, webhook sender, and deployment validator.
+If the AI provider is unreachable, Stacker falls back to template-based generation automatically.
 
+---
 
-## CURL examples
+## What `stacker.yml` looks like
 
+```yaml
+name: my-app
+app:
+  type: node
+  path: ./src
+  ports:
+    - "8080:3000"
+  environment:
+    NODE_ENV: production
 
-#### Authentication 
+services:
+  - name: postgres
+    image: postgres:16
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
 
+proxy:
+  type: nginx
+  auto_detect: true
+  domains:
+    - domain: app.example.com
+      ssl: auto
+      upstream: app:3000
 
-curl -X POST 
+deploy:
+  target: local    # or: cloud, server
 
+ai:
+  enabled: true
+  provider: ollama
+  model: llama3
 
-#### Rate Product 
-
+monitoring:
+  status_panel: true
+  healthcheck:
+    endpoint: /health
+    interval: 30s
 ```
 
- curl -vX POST 'http://localhost:8000/rating' -d '{"obj_id": 1, "category": "application", "comment":"some comment", "rate": 10}' --header 'Content-Type: application/json'
+See the full schema reference in [docs/STACKER_YML_REFERENCE.md](docs/STACKER_YML_REFERENCE.md).
 
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `stacker init` | Detect project type, generate `stacker.yml` + `.stacker/` artifacts |
+| `stacker deploy` | Build & deploy the stack (local, cloud, or server) |
+| `stacker status` | Show running containers and health |
+| `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker destroy` | Tear down the deployed stack |
+| `stacker config validate` | Validate `stacker.yml` syntax |
+| `stacker config show` | Show resolved configuration |
+| `stacker config example` | Print a full commented `stacker.yml` reference |
+| `stacker config setup cloud` | Guided cloud deployment setup |
+| `stacker ai ask "question"` | Ask the AI about your stack |
+| `stacker proxy add` | Add a reverse-proxy domain entry |
+| `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
+| `stacker login` | Authenticate with the TryDirect platform |
+| `stacker update` | Check for updates and self-update |
+
+### Deploy targets
+
+```bash
+# Local (default) — docker compose up
+stacker deploy --target local
+
+# Cloud — provisions infrastructure via Terraform + Ansible
+stacker deploy --target cloud
+
+# Existing server — deploys via SSH
+stacker deploy --target server
+
+# Dry run — show what would be generated without executing
+stacker deploy --dry-run
 ```
 
+---
 
-#### Deploy 
-```
-curl -X POST -H "Content-Type: application/json" -d @tests/mock_data/custom-stack-payload.json http://127.0.0.1:8000/project -H "Authorization: Bearer $TD_BEARER"
-```
+## Features
 
+- **Auto-detection** — identifies Node, Python, Rust, Go, PHP, static sites from project files
+- **Dockerfile generation** — produces optimised multi-stage Dockerfiles per app type
+- **Docker Compose generation** — wires app + services + proxy + monitoring into a single compose
+- **AI-assisted config** — scans project context, calls LLM to generate tailored `stacker.yml`
+- **AI troubleshooting** — on deploy failures, suggests fixes using AI or deterministic fallback hints
+- **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
+- **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode via Terraform + Ansible
+- **Status Panel agent** — deployed alongside your app for real-time monitoring, logs, and remote commands
+- **MCP Server** — 48+ Model Context Protocol tools for AI-agent-driven infrastructure management
+- **Vault integration** — secrets and config stored in HashiCorp Vault, synced to deployments
+- **Marketplace** — publish and deploy community stacks via TryDirect platform
 
-#### Create API Client
-```
-curl -X POST http://localhost:8000/client  --header 'Content-Type: application/json' -H "Authorization: Bearer $TD_BEARER"
-```
+---
 
+## Server (for platform operators)
 
-test client deploy
-http://localhost:8000/test/deploy
+Stacker also runs as a web server powering the Stack Builder UI, API, and deployment orchestration.
 
+### Setup
 
-Test casbin rule
-```
-cargo r --bin console --features=explain debug casbin --path /client --action POST --subject admin_petru
-```
-
-
-
-"cargo sqlx prepare" requires setting the DATABASE_URL environment variable to a valid database URL. 
-
-## TODOs
-```
+```bash
+cp configuration.yaml.dist configuration.yaml   # edit database, vault, AMQP settings
+cp access_control.conf.dist access_control.conf
 export DATABASE_URL=postgres://postgres:postgres@localhost:5432/stacker
+sqlx migrate run
+cargo run --bin server
 ```
+
+Server runs on `http://127.0.0.1:8000` by default.
+
+### Key API endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /project` | Create a project from a stack definition |
+| `POST /{id}/deploy/{cloud_id}` | Deploy to a cloud provider |
+| `GET /project/{id}/apps` | List apps in a project |
+| `PUT /project/{id}/apps/{code}/env` | Update app environment variables |
+| `POST /api/v1/commands` | Enqueue a command for the Status Panel agent |
+| `GET /api/v1/agent/commands/wait/{hash}` | Agent long-polls for commands (HMAC-authenticated) |
+| `POST /api/v1/agent/commands/report` | Agent reports command results |
+
+### Database migrations
+
+```bash
+sqlx migrate run      # apply
+sqlx migrate revert   # rollback
+```
+
+### Testing
+
+```bash
+cargo test                         # all tests (467+)
+cargo test user_service_client     # User Service connector
+cargo test marketplace_webhook     # Marketplace webhook flows
+cargo test deployment_validator    # Deployment validation
+```
+
+---
+
+## Architecture
+
+```
+stacker CLI (stacker.yml) ──► Dockerfile + docker-compose.yml ──► docker compose up
+                          └──► Stacker Server API ──► Terraform/Ansible ──► Cloud
+                                    │
+                          Status Panel Agent ◄──── pull-only command queue
+                                    │
+                              HashiCorp Vault (secrets & config)
+```
+
+- **CLI binary** (`src/bin/stacker.rs`) — end-user tool, no server needed for local deploys
+- **Server binary** (`src/main.rs`) — REST API, Stack Builder UI, deployment orchestration
+- **Console binary** (`src/console/main.rs`) — admin tools (agent token rotation, Casbin debug, etc.)
+
+---
+
+## Documentation
+
+- [stacker.yml reference](docs/STACKER_YML_REFERENCE.md) — full configuration schema
+- [CLI implementation plan](docs/STACKER_CLI_PLAN.md) — architecture and design decisions
+- [Changelog](CHANGELOG.md) — release history
+
+---
+
+## License
+
+[MIT](LICENSE)
