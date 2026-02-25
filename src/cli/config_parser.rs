@@ -567,7 +567,7 @@ pub struct StackerConfig {
     #[serde(default)]
     pub ai: AiConfig,
 
-    #[serde(default)]
+    #[serde(default, alias = "monitors")]
     pub monitoring: MonitoringConfig,
 
     #[serde(default)]
@@ -1102,6 +1102,24 @@ env:
         assert_eq!(config.ai.provider, AiProviderType::Ollama);
         assert!(config.monitoring.status_panel);
         assert_eq!(config.env.get("APP_PORT").unwrap(), "3000");
+    }
+
+    #[test]
+    fn test_monitors_alias_for_monitoring() {
+        let yaml = r#"
+name: monitors-alias-test
+monitors:
+  status_panel: true
+  healthcheck:
+    endpoint: /healthz
+    interval: 10s
+"#;
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.monitoring.status_panel);
+        assert!(config.monitoring.healthcheck.is_some());
+        let hc = config.monitoring.healthcheck.unwrap();
+        assert_eq!(hc.endpoint, "/healthz");
+        assert_eq!(hc.interval, "10s");
     }
 
     #[test]

@@ -917,12 +917,30 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         web_apps.push(service_to_app_json(svc, &network_ids));
     }
 
+    // Build the feature list based on proxy config.
+    // When proxy type is Nginx or NginxProxyManager, include it as a feature
+    // so the install service's collect_props() picks it up into extended_features
+    // and the Ansible playbook runs the nginx_proxy_manager role.
+    let mut features: Vec<serde_json::Value> = Vec::new();
+    match config.proxy.proxy_type {
+        crate::cli::config_parser::ProxyType::Nginx
+        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+            features.push(serde_json::json!({
+                "code": "nginx_proxy_manager",
+                "type": "feature",
+                "shared_ports": [],
+                "network": [],
+            }));
+        }
+        _ => {}
+    }
+
     serde_json::json!({
         "custom": {
             "custom_stack_code": stack_code,
             "project_name": config.name.clone(),
             "web": web_apps,
-            "feature": [],
+            "feature": features,
             "service": [],
             "networks": [{
                 "id": network_id,
@@ -975,6 +993,50 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             obj.insert(
                 "registry".to_string(),
                 serde_json::Value::Object(registry_creds),
+            );
+        }
+    }
+
+    // When proxy type is Nginx or NginxProxyManager, inject "nginx_proxy_manager"
+    // into extended_features so the install service's Ansible playbook runs the
+    // nginx_proxy_manager role (collect_roles checks selected_features).
+    match config.proxy.proxy_type {
+        crate::cli::config_parser::ProxyType::Nginx
+        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([])); 
+                if let Some(arr) = features.as_array_mut() {
+                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                    if !arr.contains(&npm) {
+                        arr.push(npm);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // When monitoring.status_panel is enabled, inject the "statuspanel" role into
+    // integrated_features and set connection_mode so the install service's Ansible
+    // playbook picks it up (get_features_roles checks connection_mode == "status_panel").
+    if config.monitoring.status_panel {
+        if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+            let features = stack_obj
+                .entry("integrated_features")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = features.as_array_mut() {
+                let sp = serde_json::Value::String("statuspanel".to_string());
+                if !arr.contains(&sp) {
+                    arr.push(sp);
+                }
+            }
+        }
+        if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+            server_obj.insert(
+                "connection_mode".to_string(),
+                serde_json::Value::String("status_panel".to_string()),
             );
         }
     }
@@ -1034,5 +1096,108 @@ mod tests {
 
         let form = build_deploy_form(&config);
         assert_eq!(form["stack"]["stack_code"], "optimumcode");
+    }
+
+    #[test]
+    fn test_build_deploy_form_with_status_panel() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .cloud(crate::cli::config_parser::CloudConfig {
+                provider: crate::cli::config_parser::CloudProvider::Hetzner,
+                orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
+                region: Some("nbg1".to_string()),
+                size: Some("cx22".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+            })
+            .monitoring(crate::cli::config_parser::MonitoringConfig {
+                status_panel: true,
+                healthcheck: None,
+                metrics: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        // status_panel should inject "statuspanel" into integrated_features
+        let features = form["stack"]["integrated_features"].as_array().unwrap();
+        assert!(
+            features.contains(&serde_json::json!("statuspanel")),
+            "integrated_features should contain 'statuspanel': {:?}",
+            features
+        );
+        // connection_mode should be set to "status_panel"
+        assert_eq!(form["server"]["connection_mode"], "status_panel");
+    }
+
+    #[test]
+    fn test_build_deploy_form_with_nginx_proxy() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .cloud(crate::cli::config_parser::CloudConfig {
+                provider: crate::cli::config_parser::CloudProvider::Hetzner,
+                orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
+                region: Some("nbg1".to_string()),
+                size: Some("cx22".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+            })
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::Nginx,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        // proxy type nginx should inject "nginx_proxy_manager" into extended_features
+        let ext_features = form["stack"]["extended_features"].as_array().unwrap();
+        assert!(
+            ext_features.contains(&serde_json::json!("nginx_proxy_manager")),
+            "extended_features should contain 'nginx_proxy_manager': {:?}",
+            ext_features
+        );
+    }
+
+    #[test]
+    fn test_build_project_body_with_nginx_proxy() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::Nginx,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let features = body["custom"]["feature"].as_array().unwrap();
+        assert_eq!(features.len(), 1, "feature array should have 1 entry");
+        assert_eq!(features[0]["code"], "nginx_proxy_manager");
+        assert_eq!(features[0]["type"], "feature");
+    }
+
+    #[test]
+    fn test_build_project_body_without_proxy() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let features = body["custom"]["feature"].as_array().unwrap();
+        assert!(features.is_empty(), "feature array should be empty when no proxy configured");
     }
 }

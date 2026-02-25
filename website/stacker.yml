@@ -55,9 +55,11 @@ deploy:
   cloud:
     provider: hetzner
     orchestrator: remote
+    region: nbg1
+    size: cpx22
   #target: "server"
   # server:
-  #   host: "46.224.85.9"
+  #   host: "192.168.1.100"
   #   user: "root"
   #   ssh_key: "~/.ssh/stacker"
   #   port: 22
