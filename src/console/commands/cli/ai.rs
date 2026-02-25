@@ -135,6 +135,46 @@ pub fn build_ai_prompt(question: &str, context_content: Option<&str>) -> String 
     }
 }
 
+fn build_default_project_context(project_dir: &Path) -> Option<String> {
+    let mut blocks: Vec<String> = Vec::new();
+
+    let stacker_path = project_dir.join("stacker.yml");
+    if let Ok(content) = std::fs::read_to_string(&stacker_path) {
+        blocks.push(format!("stacker.yml:\n{}", content));
+    }
+
+    let package_json_path = project_dir.join("package.json");
+    if let Ok(content) = std::fs::read_to_string(&package_json_path) {
+        blocks.push(format!("package.json:\n{}", content));
+    }
+
+    let dockerfile_path = project_dir.join("Dockerfile");
+    if let Ok(content) = std::fs::read_to_string(&dockerfile_path) {
+        blocks.push(format!("Dockerfile:\n{}", content));
+    }
+
+    let generated_dockerfile_path = project_dir.join(".stacker").join("Dockerfile");
+    if let Ok(content) = std::fs::read_to_string(&generated_dockerfile_path) {
+        blocks.push(format!(".stacker/Dockerfile:\n{}", content));
+    }
+
+    let compose_path = project_dir.join("docker-compose.yml");
+    if let Ok(content) = std::fs::read_to_string(&compose_path) {
+        blocks.push(format!("docker-compose.yml:\n{}", content));
+    }
+
+    let generated_compose_path = project_dir.join(".stacker").join("docker-compose.yml");
+    if let Ok(content) = std::fs::read_to_string(&generated_compose_path) {
+        blocks.push(format!(".stacker/docker-compose.yml:\n{}", content));
+    }
+
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(blocks.join("\n\n"))
+    }
+}
+
 /// Core AI ask logic, extracted for testability.
 pub fn run_ai_ask(
     question: &str,
@@ -151,7 +191,10 @@ pub fn run_ai_ask(
             }
             Some(std::fs::read_to_string(p)?)
         }
-        None => None,
+        None => {
+            let cwd = std::env::current_dir()?;
+            build_default_project_context(&cwd)
+        }
     };
 
     let prompt = build_ai_prompt(question, context_content.as_deref());

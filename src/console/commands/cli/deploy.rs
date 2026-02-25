@@ -289,6 +289,20 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
                         context_key,
                         serde_yaml::Value::String("..".to_string()),
                     );
+
+                    let dockerfile_needs_rewrite = match dockerfile.as_deref() {
+                        None => true,
+                        Some("Dockerfile") | Some("./Dockerfile") => true,
+                        _ => false,
+                    };
+
+                    if dockerfile_needs_rewrite {
+                        build_map.insert(
+                            dockerfile_key,
+                            serde_yaml::Value::String(".stacker/Dockerfile".to_string()),
+                        );
+                    }
+
                     changed = true;
                 }
             }
@@ -1067,6 +1081,28 @@ services:
 
                 let normalized = std::fs::read_to_string(&compose_path).unwrap();
                 assert!(!normalized.contains("version:"));
+                assert!(normalized.contains("context: .."));
+                assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+        }
+
+        #[test]
+        fn test_normalize_generated_compose_paths_adds_stacker_dockerfile_for_app_when_missing() {
+                let dir = TempDir::new().unwrap();
+                let stacker_dir = dir.path().join(".stacker");
+                std::fs::create_dir_all(&stacker_dir).unwrap();
+
+                let compose_path = stacker_dir.join("docker-compose.yml");
+                let compose = r#"
+services:
+    app:
+        build:
+            context: .
+"#;
+                std::fs::write(&compose_path, compose).unwrap();
+
+                normalize_generated_compose_paths(&compose_path).unwrap();
+
+                let normalized = std::fs::read_to_string(&compose_path).unwrap();
                 assert!(normalized.contains("context: .."));
                 assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
         }

@@ -478,22 +478,56 @@ fn generate_config_template_path(
 /// Output directory for generated artifacts.
 const OUTPUT_DIR: &str = ".stacker";
 
-fn generate_dockerfile_with_ai(
-    project_dir: &Path,
-    config: &StackerConfig,
-    ai_config: &AiConfig,
-    provider: &dyn AiProvider,
-) -> Result<String, CliError> {
+fn summarize_top_level_entries(project_dir: &Path, limit: usize) -> String {
+    let mut entries: Vec<String> = match std::fs::read_dir(project_dir) {
+        Ok(iter) => iter
+            .filter_map(|item| item.ok())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect(),
+        Err(_) => return "(unable to read project directory)".to_string(),
+    };
+
+    entries.sort();
+    if entries.len() > limit {
+        entries.truncate(limit);
+    }
+
+    if entries.is_empty() {
+        "(empty directory)".to_string()
+    } else {
+        entries.join(", ")
+    }
+}
+
+fn collect_generation_context(project_dir: &Path, config: &StackerConfig) -> Vec<String> {
     let mut context = Vec::new();
+
     let config_yaml = serde_yaml::to_string(config)
-        .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
+        .unwrap_or_else(|_| "(failed to serialize stacker.yml context)".to_string());
 
     context.push(format!("Project path: {}", project_dir.display()));
+    context.push(format!("Detected app type: {}", config.app.app_type));
+    context.push(format!(
+        "Top-level project entries: {}",
+        summarize_top_level_entries(project_dir, 50)
+    ));
     context.push(format!("stacker.yml:\n{}", config_yaml));
 
     let package_json_path = project_dir.join("package.json");
     if let Ok(package_json) = std::fs::read_to_string(&package_json_path) {
         context.push(format!("package.json:\n{}", package_json));
+
+        if let Ok(pkg_json) = serde_json::from_str::<serde_json::Value>(&package_json) {
+            if let Some(scripts) = pkg_json.get("scripts") {
+                context.push(format!("Detected package.json scripts: {}", scripts));
+            }
+            if let Some(main) = pkg_json.get("main").and_then(|v| v.as_str()) {
+                context.push(format!("Detected package.json main entry: {}", main));
+            }
+            if let Some(module) = pkg_json.get("module").and_then(|v| v.as_str()) {
+                context.push(format!("Detected package.json module entry: {}", module));
+            }
+        }
     }
 
     let pyproject_path = project_dir.join("pyproject.toml");
@@ -501,8 +535,60 @@ fn generate_dockerfile_with_ai(
         context.push(format!("pyproject.toml:\n{}", pyproject));
     }
 
+    let requirements_path = project_dir.join("requirements.txt");
+    if let Ok(requirements) = std::fs::read_to_string(&requirements_path) {
+        context.push(format!("requirements.txt:\n{}", requirements));
+    }
+
+    let candidate_entries = [
+        "server.js",
+        "app.js",
+        "index.js",
+        "main.js",
+        "dist/index.js",
+        "dist/server.js",
+        "src/main.rs",
+        "main.py",
+    ];
+
+    let existing_entries: Vec<&str> = candidate_entries
+        .iter()
+        .copied()
+        .filter(|path| project_dir.join(path).exists())
+        .collect();
+
+    context.push(format!(
+        "Known entrypoint candidates found: {}",
+        if existing_entries.is_empty() {
+            "(none)".to_string()
+        } else {
+            existing_entries.join(", ")
+        }
+    ));
+
+    let lockfiles = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock"];
+    let found_lockfiles: Vec<&str> = lockfiles
+        .iter()
+        .copied()
+        .filter(|file| project_dir.join(file).exists())
+        .collect();
+    if !found_lockfiles.is_empty() {
+        context.push(format!("Detected lockfiles: {}", found_lockfiles.join(", ")));
+    }
+
+    context
+}
+
+fn generate_dockerfile_with_ai(
+    project_dir: &Path,
+    config: &StackerConfig,
+    ai_config: &AiConfig,
+    provider: &dyn AiProvider,
+) -> Result<String, CliError> {
+    let context = collect_generation_context(project_dir, config);
+
     let prompt = format!(
-        "Generate a production-ready Dockerfile for this project.\n\n{}\n\nRequirements:\n- Output ONLY Dockerfile text, no markdown fences or explanation.\n- The Dockerfile must be runnable for the detected app type.\n- Prefer startup commands that exist in project metadata (e.g., package.json scripts).\n- Avoid placeholder commands for files that may not exist (like hardcoded server.js) unless clearly present.\n- Expose the correct application port.",
+        "Generate a production-ready Dockerfile for this project.\n\n{}\n\nRequirements:\n- Output ONLY Dockerfile text, no markdown fences or explanation.\n- The Dockerfile must be runnable for the detected app type.\n- Prefer startup commands that exist in project metadata (e.g., package.json scripts).\n- Do NOT reference files unless they exist in the provided context.\n- Avoid placeholder commands (like hardcoded server.js) unless that file is explicitly present.\n- Expose the correct application port.\n- Keep the build deterministic and cache-friendly (copy lockfiles first where applicable).",
         context.join("\n\n")
     );
 
@@ -536,8 +622,7 @@ fn generate_compose_with_ai(
     ai_config: &AiConfig,
     provider: &dyn AiProvider,
 ) -> Result<String, CliError> {
-    let config_yaml = serde_yaml::to_string(config)
-        .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
+    let context = collect_generation_context(project_dir, config);
 
     let dockerfile_rel = dockerfile_path
         .strip_prefix(project_dir)
@@ -546,8 +631,8 @@ fn generate_compose_with_ai(
         .to_string();
 
     let prompt = format!(
-        "Generate a docker compose YAML file for this project.\n\nstacker.yml:\n{}\n\nRequirements:\n- Output ONLY YAML, no markdown fences or explanation.\n- Include a top-level 'services' map.\n- Main app service should build from context '.' and use dockerfile '{}'.\n- Include ports based on app type and include sidecar services from stacker.yml where relevant.\n- Keep the file compatible with `docker compose` (plugin).",
-        config_yaml, dockerfile_rel
+        "Generate a docker compose YAML file for this project.\n\n{}\n\nRequirements:\n- Output ONLY YAML, no markdown fences or explanation.\n- Include a top-level 'services' map.\n- The compose file will be written under `.stacker/`, so for the main app service set build context to `..` and dockerfile to '{}'.\n- Do NOT use build context '.' when dockerfile points to `.stacker/` because Docker would miss project files.\n- Include ports based on app type and include sidecar services from stacker.yml where relevant.\n- Keep the file compatible with `docker compose` (plugin).",
+        context.join("\n\n"), dockerfile_rel
     );
 
     let system = "You are an expert Docker Compose engineer. Return only valid docker compose YAML.";

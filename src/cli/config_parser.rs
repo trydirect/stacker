@@ -591,16 +591,18 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
+        let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
-        let resolved_content = resolve_env_vars_with_fallback(&raw_content, &env_file_vars)?;
-        let config: StackerConfig = serde_yaml::from_str(&resolved_content)?;
+        resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
+        let config: StackerConfig = serde_yaml::from_value(parsed)?;
         Ok(config)
     }
 
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
-        let resolved = resolve_env_vars(yaml)?;
-        let config: StackerConfig = serde_yaml::from_str(&resolved)?;
+        let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
+        resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
+        let config: StackerConfig = serde_yaml::from_value(parsed)?;
         Ok(config)
     }
 
@@ -766,6 +768,31 @@ fn extract_host_port(port_str: &str) -> String {
 /// Resolve `${VAR_NAME}` references in a string using process environment.
 fn resolve_env_vars(content: &str) -> Result<String, CliError> {
     resolve_env_vars_with_fallback(content, &HashMap::new())
+}
+
+fn resolve_env_placeholders_in_value(
+    value: &mut serde_yaml::Value,
+    fallback_vars: &HashMap<String, String>,
+) -> Result<(), CliError> {
+    match value {
+        serde_yaml::Value::String(raw) => {
+            let resolved = resolve_env_vars_with_fallback(raw, fallback_vars)?;
+            *raw = resolved;
+        }
+        serde_yaml::Value::Sequence(items) => {
+            for item in items.iter_mut() {
+                resolve_env_placeholders_in_value(item, fallback_vars)?;
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for (_key, map_value) in map.iter_mut() {
+                resolve_env_placeholders_in_value(map_value, fallback_vars)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn resolve_env_vars_with_fallback(
@@ -1109,6 +1136,20 @@ env:
             msg.contains("STACKER_TEST_NONEXISTENT_VAR_12345"),
             "Expected var name in error: {msg}"
         );
+    }
+
+    #[test]
+    fn test_from_str_ignores_env_placeholders_in_comments() {
+        let yaml = r#"
+name: comment-test
+app:
+  type: static
+# DATABASE_URL: postgres://user:${STACKER_TEST_NONEXISTENT_VAR_54321}@db:5432/app
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.name, "comment-test");
+        assert_eq!(config.app.app_type, AppType::Static);
     }
 
         #[test]
