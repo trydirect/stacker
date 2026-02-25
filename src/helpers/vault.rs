@@ -167,13 +167,13 @@ impl VaultClient {
 
     // ============ SSH Key Management Methods ============
 
-    /// Build the Vault path for SSH keys: {base}/v1/secret/users/{user_id}/ssh_keys/{server_id}
+    /// Build the Vault API URL for SSH keys (KV v1).
+    /// Path: `{address}/{api_prefix}/secret/{prefix}/{user_id}/ssh_keys/{server_id}`
     fn ssh_key_path(&self, user_id: &str, server_id: i32) -> String {
         let base = self.address.trim_end_matches('/');
         let api_prefix = self.api_prefix.trim_matches('/');
         let prefix = self.ssh_key_path_prefix.trim_matches('/');
 
-        // Path without 'data' segment (KV v1 or custom mount)
         if api_prefix.is_empty() {
             format!(
                 "{}/secret/{}/{}/ssh_keys/{}",
@@ -219,13 +219,11 @@ impl VaultClient {
         let path = self.ssh_key_path(user_id, server_id);
 
         let payload = json!({
-            "data": {
-                "public_key": public_key,
-                "private_key": private_key,
-                "user_id": user_id,
-                "server_id": server_id,
-                "created_at": chrono::Utc::now().to_rfc3339()
-            }
+            "public_key": public_key,
+            "private_key": private_key,
+            "user_id": user_id,
+            "server_id": server_id,
+            "created_at": chrono::Utc::now().to_rfc3339()
         });
 
         self.client
@@ -244,7 +242,7 @@ impl VaultClient {
                 format!("Vault error: {}", e)
             })?;
 
-        // Return the vault path for storage in database
+        // Return the logical vault path for storage in database
         let vault_key_path = format!(
             "secret/{}/{}/ssh_keys/{}",
             self.ssh_key_path_prefix.trim_matches('/'),
@@ -293,7 +291,7 @@ impl VaultClient {
                 format!("Vault parse error: {}", e)
             })?;
 
-        vault_response["data"]["data"]["private_key"]
+        vault_response["data"]["private_key"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| {
@@ -339,7 +337,7 @@ impl VaultClient {
                 format!("Vault parse error: {}", e)
             })?;
 
-        vault_response["data"]["data"]["public_key"]
+        vault_response["data"]["public_key"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| {
