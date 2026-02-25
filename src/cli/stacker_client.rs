@@ -947,7 +947,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         _ => "ubuntu-22.04",
     };
 
-    serde_json::json!({
+    let mut form = serde_json::json!({
         "cloud": {
             "provider": provider,
             "save_token": true,
@@ -964,7 +964,22 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             "extended_features": [],
             "subscriptions": [],
         }
-    })
+    });
+
+    // Inject Docker registry credentials if provided (env vars or stacker.yml).
+    // These flow through the Stacker server to the Install Service, which passes
+    // them as Ansible extra vars (docker_registry, docker_username, docker_password).
+    let registry_creds = super::install_runner::resolve_docker_registry_credentials(config);
+    if !registry_creds.is_empty() {
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert(
+                "registry".to_string(),
+                serde_json::Value::Object(registry_creds),
+            );
+        }
+    }
+
+    form
 }
 
 #[cfg(test)]

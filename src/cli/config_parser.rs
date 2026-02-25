@@ -339,6 +339,27 @@ pub struct DomainConfig {
     pub upstream: String,
 }
 
+/// Docker registry credentials for pulling private images during deployment.
+///
+/// TODO: Currently these credentials are passed through on every deploy (env vars or stacker.yml).
+/// In the future, store docker credentials server-side (similar to how `cloud_token` is persisted
+/// in the `clouds` table) or in HashiCorp Vault, so users only need to provide them once.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RegistryConfig {
+    /// Docker registry username (or from env `STACKER_DOCKER_USERNAME`).
+    #[serde(default)]
+    pub username: Option<String>,
+
+    /// Docker registry password (or from env `STACKER_DOCKER_PASSWORD`).
+    #[serde(default)]
+    pub password: Option<String>,
+
+    /// Docker registry server URL (default: docker.io).
+    /// Use for private registries like `ghcr.io`, `registry.example.com`.
+    #[serde(default)]
+    pub server: Option<String>,
+}
+
 /// Deployment target configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeployConfig {
@@ -353,6 +374,10 @@ pub struct DeployConfig {
 
     #[serde(default)]
     pub server: Option<ServerConfig>,
+
+    /// Docker registry credentials for pulling private images.
+    #[serde(default)]
+    pub registry: Option<RegistryConfig>,
 }
 
 /// Cloud provider settings for cloud deployments.
@@ -796,6 +821,7 @@ pub struct ConfigBuilder {
     deploy_target: Option<DeployTarget>,
     cloud: Option<CloudConfig>,
     server: Option<ServerConfig>,
+    registry: Option<RegistryConfig>,
     ai: Option<AiConfig>,
     monitoring: Option<MonitoringConfig>,
     hooks: Option<HookConfig>,
@@ -878,6 +904,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn registry(mut self, registry: RegistryConfig) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     pub fn ai(mut self, ai: AiConfig) -> Self {
         self.ai = Some(ai);
         self
@@ -942,6 +973,7 @@ impl ConfigBuilder {
                 compose_file: None,
                 cloud: self.cloud,
                 server: self.server,
+                registry: self.registry,
             },
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),

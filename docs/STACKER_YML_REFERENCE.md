@@ -568,6 +568,43 @@ deploy:
     port: 22
 ```
 
+### `deploy.registry`
+
+*Optional* · `object`
+
+Docker registry credentials for pulling private images during cloud/server deployment. When provided, `docker login` is executed on the target server before `docker compose pull`.
+
+Credentials can be specified in `stacker.yml` or via environment variables. Environment variables take precedence.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `username` | `string` | **yes** | — | Registry username |
+| `password` | `string` | **yes** | — | Registry password or access token |
+| `server` | `string` | no | Docker Hub | Registry server URL |
+
+**Environment variables** (override `stacker.yml` values):
+
+| Variable | Fallback | Description |
+|----------|----------|-------------|
+| `STACKER_DOCKER_USERNAME` | `DOCKER_USERNAME` | Registry username |
+| `STACKER_DOCKER_PASSWORD` | `DOCKER_PASSWORD` | Registry password |
+| `STACKER_DOCKER_REGISTRY` | `DOCKER_REGISTRY` | Registry server URL |
+
+```yaml
+deploy:
+  target: cloud
+  cloud:
+    provider: hetzner
+    region: fsn1
+    size: cx21
+  registry:
+    username: "${DOCKER_USERNAME}"
+    password: "${DOCKER_PASSWORD}"
+    # server: "https://index.docker.io/v1/"  # Docker Hub (default)
+```
+
+> **Security tip:** Use environment variables or `${VAR}` syntax to keep credentials out of version control.
+
 ---
 
 ## `ai`

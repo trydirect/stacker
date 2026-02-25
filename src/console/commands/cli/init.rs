@@ -93,6 +93,10 @@ pub fn full_config_reference_example() -> &'static str {
 #   #   user: "root"
 #   #   port: 22
 #   #   ssh_key: "~/.ssh/id_rsa"
+#   # registry:                          # Docker registry credentials for private images
+#   #   username: "${DOCKER_USERNAME}"
+#   #   password: "${DOCKER_PASSWORD}"
+#   #   server: "https://index.docker.io/v1/"  # optional, defaults to Docker Hub
 #
 # ai:
 #   enabled: true

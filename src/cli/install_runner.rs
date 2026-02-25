@@ -861,6 +861,50 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
     creds
 }
 
+/// Resolve Docker registry credentials from the stacker.yml `deploy.registry` section
+/// and/or environment variables. Env vars override config values (same pattern as cloud_token).
+///
+/// Returns a map with optional keys: `docker_username`, `docker_password`, `docker_registry`.
+pub(crate) fn resolve_docker_registry_credentials(
+    config: &super::config_parser::StackerConfig,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut creds = serde_json::Map::new();
+    let registry = config.deploy.registry.as_ref();
+
+    // Username: env var > config
+    let username = first_non_empty_env(&[
+        "STACKER_DOCKER_USERNAME",
+        "DOCKER_USERNAME",
+    ])
+    .or_else(|| registry.and_then(|r| r.username.clone()));
+
+    // Password: env var > config
+    let password = first_non_empty_env(&[
+        "STACKER_DOCKER_PASSWORD",
+        "DOCKER_PASSWORD",
+    ])
+    .or_else(|| registry.and_then(|r| r.password.clone()));
+
+    // Registry server: env var > config > default "docker.io"
+    let server = first_non_empty_env(&[
+        "STACKER_DOCKER_REGISTRY",
+        "DOCKER_REGISTRY",
+    ])
+    .or_else(|| registry.and_then(|r| r.server.clone()));
+
+    if let Some(u) = username {
+        creds.insert("docker_username".to_string(), serde_json::Value::String(u));
+    }
+    if let Some(p) = password {
+        creds.insert("docker_password".to_string(), serde_json::Value::String(p));
+    }
+    if let Some(s) = server {
+        creds.insert("docker_registry".to_string(), serde_json::Value::String(s));
+    }
+
+    creds
+}
+
 #[allow(dead_code)]
 fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
