@@ -39,6 +39,8 @@ services:
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
+      # Inherit Vault token from host environment (set VAULT_TOKEN in your shell or main .env)
+      - VAULT_TOKEN
     depends_on:
       stackerdb:
         condition: service_healthy
