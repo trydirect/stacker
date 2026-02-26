@@ -7,5 +7,6 @@ configuration.yaml.backup
 configuration.yaml.orig
 .vscode/
 .env
+docker/local/
 docs/*.sql
 config-to-validate.yaml
