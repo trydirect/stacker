@@ -15,11 +15,3 @@ amqp:
   port: 5672
   username: guest
   password: guest
-
-# Vault: address set here, token comes from VAULT_TOKEN env var (see docker-compose)
-vault:
-  address: http://37.139.9.187:8200
-  token: change-me
-  api_prefix: v1
-  agent_path_prefix: agent
-  ssh_key_path_prefix: users
