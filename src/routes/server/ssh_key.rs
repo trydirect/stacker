@@ -211,6 +211,11 @@ pub async fn get_public_key(
             .not_found("No active SSH key found for this server"));
     }
 
+    if server.vault_key_path.is_none() {
+        return Err(JsonResponse::<PublicKeyResponse>::build()
+            .bad_request("SSH key is not stored in Vault (Vault was unavailable when the key was generated). Please delete this key and generate a new one."));
+    }
+
     let public_key = vault_client
         .get_ref()
         .fetch_ssh_public_key(&user.id, server_id)
@@ -304,6 +309,19 @@ pub async fn validate_key(
             server_id,
             srv_ip: server.srv_ip.clone(),
             message: format!("SSH key status is '{}', not active", server.key_status),
+            ..Default::default()
+        };
+        return Ok(JsonResponse::build()
+            .set_item(Some(response))
+            .ok("Validation failed"));
+    }
+
+    if server.vault_key_path.is_none() {
+        let response = ValidateResponse {
+            valid: false,
+            server_id,
+            srv_ip: server.srv_ip.clone(),
+            message: "SSH key is not stored in Vault (Vault was unavailable when the key was generated). Please delete this key and generate a new one.".to_string(),
             ..Default::default()
         };
         return Ok(JsonResponse::build()
