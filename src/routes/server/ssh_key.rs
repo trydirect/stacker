@@ -222,8 +222,13 @@ pub async fn get_public_key(
         .await
         .map_err(|e| {
             tracing::error!("Failed to fetch public key from Vault: {}", e);
-            JsonResponse::<PublicKeyResponse>::build()
-                .internal_server_error("Failed to retrieve public key")
+            if e.to_lowercase().contains("not found") {
+                JsonResponse::<PublicKeyResponse>::build()
+                    .not_found("SSH key not found in Vault. The key may have been lost or Vault was restored without its data. Please delete this key and generate a new one.")
+            } else {
+                JsonResponse::<PublicKeyResponse>::build()
+                    .bad_request("Failed to retrieve SSH key from Vault. Please try again or regenerate the key.")
+            }
         })?;
 
     let response = PublicKeyResponse {
