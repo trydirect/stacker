@@ -147,6 +147,20 @@
           <h3 class="feature-card__title">Proxy & SSL</h3>
           <p class="feature-card__desc">Auto-configures Nginx or Traefik reverse proxy with Let's Encrypt SSL certificates. Zero-touch HTTPS for all your services.</p>
         </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="0">
+          <div class="feature-card__icon feature-card__icon--catalog">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          </div>
+          <h3 class="feature-card__title">Service Catalog</h3>
+          <p class="feature-card__desc">20+ built-in service templates — Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI do it.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="100">
+          <div class="feature-card__icon feature-card__icon--ssh">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+          </div>
+          <h3 class="feature-card__title">SSH Key Management</h3>
+          <p class="feature-card__desc">Generate, view, and upload SSH keys for your servers — all stored securely in HashiCorp Vault. No manual key juggling.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -340,7 +354,7 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Commands</span>
-        <h2 class="section__title">10 commands.<br><span class="gradient-text">Complete control.</span></h2>
+        <h2 class="section__title">14 commands.<br><span class="gradient-text">Complete control.</span></h2>
         <p class="section__desc">Every stage of your infrastructure lifecycle, covered.</p>
       </div>
       <div class="commands__grid" data-animate="fade-up" data-delay="100">
@@ -400,6 +414,19 @@
             <code class="command-card__cmd">stacker proxy</code>
           </div>
           <p class="command-card__desc">Auto-configure Nginx/Traefik reverse proxy with SSL certificates.</p>
+        </div>
+        <div class="command-card" data-command="service">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker service</code>
+            <span class="command-card__flag">add &lt;name&gt;</span>
+          </div>
+          <p class="command-card__desc">Add services from 20+ built-in templates — Postgres, Redis, WordPress, and more. Auto-adds dependencies.</p>
+        </div>
+        <div class="command-card" data-command="ssh-key">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker ssh-key</code>
+          </div>
+          <p class="command-card__desc">Generate, view, and upload Vault-backed SSH keys for your servers.</p>
         </div>
         <div class="command-card" data-command="update">
           <div class="command-card__header">
@@ -477,7 +504,7 @@
         </div>
         <div class="cta__stats">
           <div class="cta__stat">
-            <span class="cta__stat-value" data-count="10">0</span>
+            <span class="cta__stat-value" data-count="14">0</span>
             <span class="cta__stat-label">CLI Commands</span>
           </div>
           <div class="cta__stat">

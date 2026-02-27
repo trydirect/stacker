@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.3-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.2.4-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -140,6 +140,11 @@ The end-user tool. No server required for local deploys.
 | `stacker ai ask "question"` | Ask the AI about your stack |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
+| `stacker ssh-key generate` | Generate a new SSH key pair for a server (Vault-backed) |
+| `stacker ssh-key show` | Display the public SSH key for a server |
+| `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker service add` | Add a service from the template catalog to `stacker.yml` |
+| `stacker service list` | List available service templates (20+ built-in) |
 | `stacker login` | Authenticate with the TryDirect platform |
 | `stacker update` | Check for updates and self-update |
 
@@ -159,6 +164,9 @@ stacker deploy --dry-run          # preview generated files without executing
 - **Docker Compose generation** — wires app + services + proxy + monitoring
 - **AI-assisted config** — scans project, calls LLM to generate tailored `stacker.yml`
 - **AI troubleshooting** — on deploy failure, suggests fixes via AI or deterministic fallback hints
+- **Service catalog** — 20+ built-in service templates (Postgres, Redis, WordPress, etc.) — add with `stacker service add`
+- **AI service addition** — ask `stacker ai ask --write "add wordpress"` and the AI uses the template catalog
+- **SSH key management** — generate, view, and upload server SSH keys (Vault-backed)
 - **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
 - **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode
 

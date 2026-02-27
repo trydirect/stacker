@@ -7,5 +7,7 @@ pub mod list;
 pub mod login;
 pub mod logs;
 pub mod proxy;
+pub mod service;
+pub mod ssh_key;
 pub mod status;
 pub mod update;

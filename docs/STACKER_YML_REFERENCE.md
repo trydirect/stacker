@@ -1,6 +1,6 @@
 # stacker.yml Configuration Reference
 
-> **Stacker CLI v0.2.3** — The single-file deployment configuration for containerised applications.
+> **Stacker CLI v0.2.4** — The single-file deployment configuration for containerised applications.
 
 `stacker.yml` is the only file you need to add to your project. Stacker reads it to auto-generate Dockerfiles, docker-compose definitions, and deploy your application locally or to cloud infrastructure.
 
@@ -30,6 +30,8 @@
 - [Generated Dockerfiles](#generated-dockerfiles)
 - [Validation Rules](#validation-rules)
 - [CLI Commands Reference](#cli-commands-reference)
+  - [SSH Key Management](#stacker-ssh-key--ssh-key-management)
+  - [Service Template Catalog](#stacker-service--service-template-catalog)
 - [Recipes](#recipes)
 - [FAQ](#faq)
 
@@ -944,6 +946,11 @@ Configuration issues:
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
+| `stacker ssh-key generate` | Generate a Vault-backed SSH key pair for a server |
+| `stacker ssh-key show` | Display the public SSH key for a server |
+| `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker service add` | Add a service from the template catalog to `stacker.yml` |
+| `stacker service list` | List available service templates (20+ built-in) |
 | `stacker update` | Check for CLI updates |
 
 ### `stacker init` flags
@@ -1037,6 +1044,68 @@ stacker update --channel beta          # Check beta channel
 # Config
 stacker config fix                     # Interactively fix missing fields
 stacker config fix --file prod.yml     # Fix a specific config file
+```
+
+### `stacker ssh-key` — SSH Key Management
+
+Manage Vault-backed SSH keys for your deployed servers. Keys are stored securely in HashiCorp Vault.
+
+```bash
+# Generate a new SSH key pair for a server
+stacker ssh-key generate --server-id 42
+
+# Generate and save the private key locally
+stacker ssh-key generate --server-id 42 --save-to ~/.ssh/my-server.pem
+
+# Show the public SSH key
+stacker ssh-key show --server-id 42
+stacker ssh-key show --server-id 42 --json         # JSON output
+
+# Upload an existing SSH key pair
+stacker ssh-key upload --server-id 42 \
+  --public-key ~/.ssh/id_rsa.pub \
+  --private-key ~/.ssh/id_rsa
+```
+
+### `stacker service` — Service Template Catalog
+
+Add services to your `stacker.yml` from a built-in catalog of 20+ templates. Each template includes a production-ready image, default ports, environment variables, and volumes.
+
+```bash
+# Add a service (creates backup, checks for duplicates)
+stacker service add postgres
+stacker service add redis
+stacker service add wordpress              # auto-adds mysql dependency
+
+# Use aliases
+stacker service add wp                     # → wordpress + mysql
+stacker service add pg                     # → postgres
+stacker service add es                     # → elasticsearch
+
+# Specify a custom stacker.yml path
+stacker service add mongodb --file ./configs/stacker.yml
+
+# List all available templates
+stacker service list                       # offline catalog (20+ services)
+stacker service list --online              # also query marketplace API
+```
+
+**Built-in services:** postgres, mysql, mariadb, mongodb, redis, memcached, rabbitmq, traefik, nginx, nginx_proxy_manager, wordpress, elasticsearch, kibana, qdrant, telegraf, phpmyadmin, mailhog, minio, portainer
+
+**Aliases:** `wp`→wordpress, `pg`/`postgresql`→postgres, `my`→mysql, `mongo`→mongodb, `es`→elasticsearch, `mq`→rabbitmq, `pma`→phpmyadmin, `mh`→mailhog, `npm`→nginx_proxy_manager
+
+### AI-assisted service addition
+
+The AI assistant can also add services via the `add_service` tool:
+
+```bash
+# AI adds services using the template catalog
+stacker ai ask --write "add wordpress and redis to my stack"
+stacker ai ask --write "I need a postgres database with custom port 5433"
+
+# Interactive chat mode
+stacker ai --write
+> add elasticsearch and kibana for logging
 ```
 
 ---
