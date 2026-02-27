@@ -67,13 +67,27 @@ pub fn resolve_timeout(config_timeout: u64) -> u64 {
     }
 }
 
+/// Normalise a user-supplied Ollama endpoint.
+///
+/// If the URL has no `/api/` path component (e.g. `http://host:11434`)
+/// the standard chat path `/api/chat` is appended automatically.
+pub fn normalize_ollama_endpoint(endpoint: &str) -> String {
+    if endpoint.contains("/api/") {
+        endpoint.to_string()
+    } else {
+        format!("{}/api/chat", endpoint.trim_end_matches('/'))
+    }
+}
+
 /// Query the local Ollama instance for available models.
 /// Returns a list of model names, or an empty vec if Ollama is unreachable.
 pub fn list_ollama_models(base_url: Option<&str>) -> Vec<String> {
     let tags_url = base_url
         .map(|u| {
-            // Convert chat endpoint to tags endpoint
-            u.replace("/api/chat", "/api/tags")
+            // Normalise base URLs first, then convert chat path → tags path
+            let normalised = normalize_ollama_endpoint(u);
+            normalised
+                .replace("/api/chat", "/api/tags")
                 .replace("/api/generate", "/api/tags")
         })
         .unwrap_or_else(|| OLLAMA_TAGS_URL.to_string());
@@ -351,7 +365,8 @@ impl OllamaProvider {
     pub fn from_config(config: &AiConfig) -> Self {
         let endpoint = config
             .endpoint
-            .clone()
+            .as_deref()
+            .map(normalize_ollama_endpoint)
             .unwrap_or_else(|| OLLAMA_API_URL.to_string());
 
         let model = match config.model.clone() {
