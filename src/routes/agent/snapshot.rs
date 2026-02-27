@@ -146,12 +146,26 @@ pub async fn snapshot_handler(
         containers
     );
 
-    let agent_snapshot = agent.map(|a| AgentSnapshot {
-        version: a.version,
-        capabilities: a.capabilities,
-        system_info: a.system_info,
-        status: Some(a.status),
-        last_heartbeat: a.last_heartbeat,
+    // Derive effective status: if heartbeat is stale (>5 min), override to "offline"
+    let agent_snapshot = agent.map(|a| {
+        let effective_status = match a.last_heartbeat {
+            Some(hb) => {
+                let stale_threshold = chrono::Duration::seconds(300); // 5 minutes
+                if chrono::Utc::now() - hb > stale_threshold {
+                    "offline".to_string()
+                } else {
+                    a.status.clone()
+                }
+            }
+            None => "offline".to_string(), // Never had a heartbeat
+        };
+        AgentSnapshot {
+            version: a.version,
+            capabilities: a.capabilities,
+            system_info: a.system_info,
+            status: Some(effective_status),
+            last_heartbeat: a.last_heartbeat,
+        }
     });
     tracing::debug!("[SNAPSHOT HANDLER] Agent Snapshot : {:?}", agent_snapshot);
 

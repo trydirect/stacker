@@ -291,6 +291,38 @@ pub async fn update_connection_mode(
     })
 }
 
+/// Update server IP and SSH port after a successful cloud deployment.
+/// Called by the MQ listener when a "completed" status message includes srv_ip.
+#[tracing::instrument(name = "Update server IP from deployment completion.")]
+pub async fn update_srv_ip(
+    pool: &PgPool,
+    project_id: i32,
+    srv_ip: &str,
+    ssh_port: Option<i32>,
+) -> Result<models::Server, String> {
+    sqlx::query_as!(
+        models::Server,
+        r#"
+        UPDATE server
+        SET
+            srv_ip = $2,
+            ssh_port = COALESCE($3, ssh_port),
+            updated_at = NOW() at time zone 'utc'
+        WHERE project_id = $1
+        RETURNING *
+        "#,
+        project_id,
+        Some(srv_ip.to_string()),
+        ssh_port,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to update server IP: {:?}", err);
+        "Failed to update server IP".to_string()
+    })
+}
+
 #[tracing::instrument(name = "Delete user's server.")]
 pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     tracing::info!("Delete server {}", id);

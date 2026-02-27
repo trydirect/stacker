@@ -1,8 +1,8 @@
 name: website
 version: 1.0.0
 organization: null
-project:
-  identity: stacker-website
+#project:
+#  identity: stacker-website
 app:
   type: node
   path: .
@@ -56,7 +56,7 @@ deploy:
   server: null
   registry:
     username: trydirect
-    password: 363322c0-cf6f-4d56-abc2-72e43614c13b
+    password: *******-*******-4d56-abc2-*******
     server: https://index.docker.io/v1/
 ai:
   enabled: true
@@ -69,7 +69,7 @@ ai:
   - dockerfile
   - compose
 monitoring:
-  status_panel: true
+  status_panel: false
   healthcheck:
     endpoint: /healthz
     interval: 10s
