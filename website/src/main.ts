@@ -411,9 +411,11 @@ document.addEventListener('DOMContentLoaded', () => {
       heroOutput,
       [
         'stacker init --with-ai',
+        'stacker service add wordpress',
         'stacker deploy --cloud hetzner',
         'stacker status',
-        'stacker ai ask "optimize my config"',
+        'stacker ai ask "add redis to my stack" --write',
+        'stacker ssh-key generate --server-id 42',
       ],
       [
         [
@@ -421,6 +423,12 @@ document.addEventListener('DOMContentLoaded', () => {
           '✓ Detected: Python + FastAPI + PostgreSQL + Redis',
           '✓ AI generating configuration via Ollama (deepseek-r1)',
           '✓ stacker.yml created with 6 services',
+        ],
+        [
+          '▸ Resolving template: wordpress...',
+          '✓ Added service \'wordpress\' (wordpress:latest)',
+          '  Also added dependency: mysql',
+          '✓ stacker.yml updated (backup: stacker.yml.bak)',
         ],
         [
           '▸ Provisioning infrastructure on Hetzner Cloud...',
@@ -435,10 +443,14 @@ document.addEventListener('DOMContentLoaded', () => {
           '✓ All systems operational',
         ],
         [
-          '▸ Analyzing your stacker.yml...',
-          '✓ Suggestion: Add health checks to redis service',
-          '✓ Suggestion: Set memory limits for postgres (512MB → 1GB)',
-          '✓ Config optimized. Run "stacker deploy" to apply.',
+          '▸ AI using add_service tool...',
+          '✓ Added service \'redis\' (redis:7-alpine)',
+          '✓ stacker.yml updated. Run "stacker deploy" to apply.',
+        ],
+        [
+          '▸ Generating SSH key pair for server #42...',
+          '✓ Key pair generated and stored in Vault',
+          '✓ Public key: ssh-ed25519 AAAAC3Nz...xK2m stacker@server-42',
         ],
       ],
       45

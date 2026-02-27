@@ -14,7 +14,7 @@
 //! alongside other admin tools), this binary is a lightweight entry point
 //! designed for end-user distribution.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -24,11 +24,13 @@ use clap::{Parser, Subcommand};
     long_about = "Stacker CLI — build, deploy, and manage containerised applications\n\n\
         Create a stacker.yml configuration file, and Stacker will generate\n\
         Dockerfiles, docker-compose definitions, and deploy your stack locally\n\
-        or to cloud providers with a single command."
+        or to cloud providers with a single command.",
+    subcommand_required = false,
+    arg_required_else_help = false
 )]
 struct Cli {
     #[command(subcommand)]
-    command: StackerCommands,
+    command: Option<StackerCommands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -137,11 +139,8 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
-    /// AI-assisted operations
-    Ai {
-        #[command(subcommand)]
-        command: AiCommands,
-    },
+    /// AI-assisted operations — run `stacker ai` for interactive chat
+    Ai(AiArgs),
     /// Reverse-proxy management
     Proxy {
         #[command(subcommand)]
@@ -151,6 +150,17 @@ enum StackerCommands {
     List {
         #[command(subcommand)]
         command: ListCommands,
+    },
+    /// SSH key management (generate, show, upload)
+    #[command(name = "ssh-key")]
+    SshKey {
+        #[command(subcommand)]
+        command: SshKeyCommands,
+    },
+    /// Service template management (add services to stacker.yml)
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommands,
     },
     /// Check for updates and self-update
     Update {
@@ -180,6 +190,58 @@ enum ListCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SshKeyCommands {
+    /// Generate a new SSH key pair for a server (stored in Vault)
+    Generate {
+        /// Server ID to generate the key for
+        #[arg(long)]
+        server_id: i32,
+        /// Save private key to this file (if Vault storage fails)
+        #[arg(long, value_name = "PATH")]
+        save_to: Option<std::path::PathBuf>,
+    },
+    /// Show the public SSH key for a server
+    Show {
+        /// Server ID to show the key for
+        #[arg(long)]
+        server_id: i32,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upload an existing SSH key pair for a server
+    Upload {
+        /// Server ID to upload the key for
+        #[arg(long)]
+        server_id: i32,
+        /// Path to public key file
+        #[arg(long, value_name = "FILE")]
+        public_key: std::path::PathBuf,
+        /// Path to private key file
+        #[arg(long, value_name = "FILE")]
+        private_key: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceCommands {
+    /// Add a service from the template catalog to stacker.yml
+    Add {
+        /// Service name (e.g. postgres, redis, wordpress, mysql)
+        name: String,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// List available service templates
+    List {
+        /// Also query the marketplace API for online templates
+        #[arg(long)]
+        online: bool,
     },
 }
 
@@ -228,6 +290,20 @@ enum ConfigSetupCommands {
     },
 }
 
+/// Arguments for `stacker ai`.
+/// Using a separate struct lets `subcommand_required = false` work so
+/// bare `stacker ai` launches the interactive chat mode.
+#[derive(Debug, Args)]
+#[command(subcommand_required = false, arg_required_else_help = false)]
+struct AiArgs {
+    #[command(subcommand)]
+    command: Option<AiCommands>,
+    /// Write mode: AI may create/edit `stacker.yml` and files under `.stacker/`.
+    /// Requires a tool-capable model (Ollama: llama3.1/qwen2.5-coder, OpenAI: any).
+    #[arg(long)]
+    write: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum AiCommands {
     /// Ask the AI a question about your stack
@@ -240,6 +316,9 @@ enum AiCommands {
         /// Interactively configure AI in stacker.yml before asking
         #[arg(long)]
         configure: bool,
+        /// Write mode: AI may create/edit `stacker.yml` and files under `.stacker/`
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -262,7 +341,13 @@ enum ProxyCommands {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let command = get_command(cli)?;
+
+    let Some(subcommand) = cli.command else {
+        println!("stacker-cli {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    };
+
+    let command = get_command(subcommand)?;
     if let Err(err) = command.call() {
         eprintln!("Error: {}", err);
         std::process::exit(1);
@@ -271,9 +356,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn get_command(
-    cli: Cli,
+    subcommand: StackerCommands,
 ) -> Result<Box<dyn stacker::console::commands::CallableTrait>, Box<dyn std::error::Error>> {
-    let cmd: Box<dyn stacker::console::commands::CallableTrait> = match cli.command {
+    let cmd: Box<dyn stacker::console::commands::CallableTrait> = match subcommand {
         StackerCommands::Login {
             org,
             domain,
@@ -351,14 +436,19 @@ fn get_command(
                 ),
             },
         },
-        StackerCommands::Ai { command: ai_cmd } => match ai_cmd {
-            AiCommands::Ask {
+        StackerCommands::Ai(ai_args) => match ai_args.command {
+            None => Box::new(
+                stacker::console::commands::cli::ai::AiChatCommand::new(ai_args.write),
+            ),
+            Some(AiCommands::Ask {
                 question,
                 context,
                 configure,
-            } => Box::new(
+                write,
+            }) => Box::new(
                 stacker::console::commands::cli::ai::AiAskCommand::new(question, context)
-                    .with_configure(configure),
+                    .with_configure(configure)
+                    .with_write(ai_args.write || write),
             ),
         },
         StackerCommands::Proxy {
@@ -386,6 +476,33 @@ fn get_command(
             ),
             ListCommands::SshKeys { json } => Box::new(
                 stacker::console::commands::cli::list::ListSshKeysCommand::new(json),
+            ),
+        },
+        StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {
+            SshKeyCommands::Generate { server_id, save_to } => Box::new(
+                stacker::console::commands::cli::ssh_key::SshKeyGenerateCommand::new(
+                    server_id, save_to,
+                ),
+            ),
+            SshKeyCommands::Show { server_id, json } => Box::new(
+                stacker::console::commands::cli::ssh_key::SshKeyShowCommand::new(server_id, json),
+            ),
+            SshKeyCommands::Upload {
+                server_id,
+                public_key,
+                private_key,
+            } => Box::new(
+                stacker::console::commands::cli::ssh_key::SshKeyUploadCommand::new(
+                    server_id, public_key, private_key,
+                ),
+            ),
+        },
+        StackerCommands::Service { command: svc_cmd } => match svc_cmd {
+            ServiceCommands::Add { name, file } => Box::new(
+                stacker::console::commands::cli::service::ServiceAddCommand::new(name, file),
+            ),
+            ServiceCommands::List { online } => Box::new(
+                stacker::console::commands::cli::service::ServiceListCommand::new(online),
             ),
         },
         StackerCommands::Update { channel } => Box::new(

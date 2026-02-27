@@ -84,6 +84,44 @@ fn default_key_status() -> String {
     "none".to_string()
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SSH key response types
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Response from `POST /server/{id}/ssh-key/generate`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateKeyResponse {
+    pub public_key: String,
+    pub private_key: Option<String>,
+    pub fingerprint: Option<String>,
+    pub message: String,
+}
+
+/// Response from `GET /server/{id}/ssh-key/public`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicKeyResponse {
+    pub public_key: String,
+    pub fingerprint: Option<String>,
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Marketplace response types
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Marketplace template summary as returned by `GET /marketplace`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceTemplate {
+    pub id: Option<serde_json::Value>,
+    pub slug: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category_code: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub status: Option<String>,
+    pub stack_definition: Option<serde_json::Value>,
+}
+
 /// Deploy response from `/project/{id}/deploy`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployResponse {
@@ -504,6 +542,229 @@ impl StackerClient {
                 .map(|n| n.to_lowercase() == lower)
                 .unwrap_or(false)
         }))
+    }
+
+    // ── SSH Keys ─────────────────────────────────────
+
+    /// Generate a new SSH key pair for a server (stored in Vault).
+    pub async fn generate_ssh_key(&self, server_id: i32) -> Result<GenerateKeyResponse, CliError> {
+        let url = format!("{}/server/{}/ssh-key/generate", self.base_url, server_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "SSH key generation failed for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<GenerateKeyResponse> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "Server generated key but returned no item".to_string(),
+        })
+    }
+
+    /// Get the public SSH key for a server from Vault.
+    pub async fn get_ssh_public_key(&self, server_id: i32) -> Result<PublicKeyResponse, CliError> {
+        let url = format!("{}/server/{}/ssh-key/public", self.base_url, server_id);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "Failed to fetch SSH public key for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<PublicKeyResponse> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "No SSH key found for this server".to_string(),
+        })
+    }
+
+    /// Upload an existing SSH key pair to Vault for a server.
+    pub async fn upload_ssh_key(
+        &self,
+        server_id: i32,
+        public_key: &str,
+        private_key: &str,
+    ) -> Result<ServerInfo, CliError> {
+        let url = format!("{}/server/{}/ssh-key/upload", self.base_url, server_id);
+        let body = serde_json::json!({
+            "public_key": public_key,
+            "private_key": private_key,
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "SSH key upload failed for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<ServerInfo> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "Server accepted key upload but returned no item".to_string(),
+        })
+    }
+
+    // ── Marketplace ──────────────────────────────────
+
+    /// List approved marketplace templates.
+    pub async fn list_marketplace_templates(
+        &self,
+        category: Option<&str>,
+        tag: Option<&str>,
+    ) -> Result<Vec<MarketplaceTemplate>, CliError> {
+        let mut url = format!("{}/marketplace", self.base_url);
+        let mut params: Vec<String> = Vec::new();
+        if let Some(c) = category {
+            params.push(format!("category={}", c));
+        }
+        if let Some(t) = tag {
+            params.push(format!("tag={}", t));
+        }
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Marketplace listing failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<MarketplaceTemplate> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get a single marketplace template by slug.
+    pub async fn get_marketplace_template(
+        &self,
+        slug: &str,
+    ) -> Result<Option<MarketplaceTemplate>, CliError> {
+        let url = format!("{}/marketplace/{}", self.base_url, slug);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "Marketplace template fetch failed ({}): {}",
+                    status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<MarketplaceTemplate> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        Ok(api.item)
     }
 
     // ── Deploy ───────────────────────────────────────

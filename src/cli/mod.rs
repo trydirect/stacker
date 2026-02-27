@@ -8,4 +8,5 @@ pub mod generator;
 pub mod install_runner;
 pub mod progress;
 pub mod proxy_manager;
+pub mod service_catalog;
 pub mod stacker_client;

@@ -67,13 +67,27 @@ pub fn resolve_timeout(config_timeout: u64) -> u64 {
     }
 }
 
+/// Normalise a user-supplied Ollama endpoint.
+///
+/// If the URL has no `/api/` path component (e.g. `http://host:11434`)
+/// the standard chat path `/api/chat` is appended automatically.
+pub fn normalize_ollama_endpoint(endpoint: &str) -> String {
+    if endpoint.contains("/api/") {
+        endpoint.to_string()
+    } else {
+        format!("{}/api/chat", endpoint.trim_end_matches('/'))
+    }
+}
+
 /// Query the local Ollama instance for available models.
 /// Returns a list of model names, or an empty vec if Ollama is unreachable.
 pub fn list_ollama_models(base_url: Option<&str>) -> Vec<String> {
     let tags_url = base_url
         .map(|u| {
-            // Convert chat endpoint to tags endpoint
-            u.replace("/api/chat", "/api/tags")
+            // Normalise base URLs first, then convert chat path → tags path
+            let normalised = normalize_ollama_endpoint(u);
+            normalised
+                .replace("/api/chat", "/api/tags")
                 .replace("/api/generate", "/api/tags")
         })
         .unwrap_or_else(|| OLLAMA_TAGS_URL.to_string());
@@ -138,6 +152,282 @@ pub fn pick_ollama_model(base_url: Option<&str>) -> Option<String> {
 // AiProvider trait — abstraction over LLM backends (DIP)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Tool calling types
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// A message in a multi-turn chat conversation (used by the agentic loop).
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    /// Tool calls requested by the assistant.
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// For role="tool": the id of the call this result belongs to.
+    pub tool_call_id: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self { role: "system".to_string(), content: content.into(), tool_calls: None, tool_call_id: None }
+    }
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { role: "user".to_string(), content: content.into(), tool_calls: None, tool_call_id: None }
+    }
+    pub fn tool_result(id: Option<String>, content: impl Into<String>) -> Self {
+        Self { role: "tool".to_string(), content: content.into(), tool_calls: None, tool_call_id: id }
+    }
+}
+
+/// Definition of a tool the AI may call.
+#[derive(Debug, Clone)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema for the parameters object.
+    pub parameters: serde_json::Value,
+}
+
+/// A tool call requested by the AI.
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    /// Provider-assigned call id (used when replying with results).
+    pub id: Option<String>,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Response from `complete_with_tools`: either plain text or tool invocations.
+#[derive(Debug)]
+pub enum AiResponse {
+    Text(String),
+    /// (assistant narration, tool calls)
+    ToolCalls(String, Vec<ToolCall>),
+}
+
+/// Built-in tool definitions exposed to the AI in write mode.
+pub fn write_file_tool() -> ToolDef {
+    ToolDef {
+        name: "write_file".to_string(),
+        description: "Write content to a file on disk. Creates parent directories as needed.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Relative path to the file" },
+                "content": { "type": "string", "description": "Full file content to write" }
+            },
+            "required": ["path", "content"]
+        }),
+    }
+}
+
+pub fn read_file_tool() -> ToolDef {
+    ToolDef {
+        name: "read_file".to_string(),
+        description: "Read the current content of a file on disk.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Relative path to the file" }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+pub fn list_directory_tool() -> ToolDef {
+    ToolDef {
+        name: "list_directory".to_string(),
+        description: "List files and folders in a directory within the project. \
+                      Use '.' for the project root.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative directory path (e.g. '.', '.stacker', 'src')"
+                }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+pub fn config_validate_tool() -> ToolDef {
+    ToolDef {
+        name: "config_validate".to_string(),
+        description: "Validate the stacker.yml configuration file and report any errors.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+pub fn config_show_tool() -> ToolDef {
+    ToolDef {
+        name: "config_show".to_string(),
+        description: "Show the fully-resolved stacker.yml configuration (with env vars expanded).".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+pub fn stacker_status_tool() -> ToolDef {
+    ToolDef {
+        name: "stacker_status".to_string(),
+        description: "Show the current deployment status of running containers.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+pub fn stacker_logs_tool() -> ToolDef {
+    ToolDef {
+        name: "stacker_logs".to_string(),
+        description: "Retrieve container logs. Optionally filter by service name and limit line count.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "service": {
+                    "type": "string",
+                    "description": "Service name to filter logs (omit for all services)"
+                },
+                "tail": {
+                    "type": "integer",
+                    "description": "Number of recent lines to show (default 50)"
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+pub fn stacker_deploy_tool() -> ToolDef {
+    ToolDef {
+        name: "stacker_deploy".to_string(),
+        description: "Build and deploy the stack. Use dry_run=true to preview what would happen \
+                      without making changes.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["local", "cloud", "server"],
+                    "description": "Deployment target (omit to use stacker.yml default)"
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview deployment plan without executing (default: true for safety)"
+                },
+                "force_rebuild": {
+                    "type": "boolean",
+                    "description": "Force rebuild of all container images"
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+pub fn proxy_add_tool() -> ToolDef {
+    ToolDef {
+        name: "proxy_add".to_string(),
+        description: "Add a reverse-proxy entry mapping a domain to an upstream service.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Domain name (e.g. 'example.com')"
+                },
+                "upstream": {
+                    "type": "string",
+                    "description": "Upstream URL (e.g. 'http://app:3000')"
+                },
+                "ssl": {
+                    "type": "string",
+                    "enum": ["auto", "manual", "off"],
+                    "description": "SSL mode"
+                }
+            },
+            "required": ["domain"]
+        }),
+    }
+}
+
+pub fn proxy_detect_tool() -> ToolDef {
+    ToolDef {
+        name: "proxy_detect".to_string(),
+        description: "Detect running reverse-proxy containers (nginx, Traefik, etc.) on the host.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+pub fn add_service_tool() -> ToolDef {
+    ToolDef {
+        name: "add_service".to_string(),
+        description: "Add a service from the built-in template catalog to stacker.yml. \
+                      Supports common services: postgres, mysql, redis, mongodb, rabbitmq, \
+                      elasticsearch, wordpress, traefik, nginx, qdrant, minio, portainer, etc. \
+                      Aliases work too: wp→wordpress, pg→postgres, es→elasticsearch."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "service_name": {
+                    "type": "string",
+                    "description": "Service name or alias (e.g. 'postgres', 'wp', 'redis')"
+                },
+                "custom_ports": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Override default port mappings (e.g. ['5433:5432'])"
+                },
+                "custom_env": {
+                    "type": "object",
+                    "description": "Extra environment variables to merge (e.g. {'POSTGRES_DB': 'mydb'})"
+                }
+            },
+            "required": ["service_name"]
+        }),
+    }
+}
+
+/// Returns all tools available in write mode, ordered from least to most impactful.
+pub fn all_write_mode_tools() -> Vec<ToolDef> {
+    vec![
+        // Read-only
+        read_file_tool(),
+        list_directory_tool(),
+        config_validate_tool(),
+        config_show_tool(),
+        stacker_status_tool(),
+        stacker_logs_tool(),
+        proxy_detect_tool(),
+        // Write / action
+        write_file_tool(),
+        add_service_tool(),
+        stacker_deploy_tool(),
+        proxy_add_tool(),
+    ]
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AiProvider trait
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 /// Abstraction for LLM completion providers.
 ///
 /// Production: `OpenAiProvider`, `AnthropicProvider`, `OllamaProvider`.
@@ -148,6 +438,27 @@ pub trait AiProvider: Send + Sync {
 
     /// Send a completion request and return the response text.
     fn complete(&self, prompt: &str, context: &str) -> Result<String, CliError>;
+
+    /// Whether this provider supports tool calling / function calling.
+    fn supports_tools(&self) -> bool {
+        false
+    }
+
+    /// Send a multi-turn chat request with tool definitions.
+    /// The default implementation returns an error; override for providers that
+    /// support function / tool calling.
+    fn complete_with_tools(
+        &self,
+        _messages: &[ChatMessage],
+        _tools: &[ToolDef],
+    ) -> Result<AiResponse, CliError> {
+        Err(CliError::AiProviderError {
+            provider: self.name().to_string(),
+            message: "Tool calling is not supported by this provider. \
+                      Use openai or ollama (model with tool support required)."
+                .to_string(),
+        })
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -188,6 +499,122 @@ impl OpenAiProvider {
 impl AiProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
+    }
+
+    fn supports_tools(&self) -> bool {
+        true
+    }
+
+    fn complete_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<AiResponse, CliError> {
+        let messages_json: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "role": m.role, "content": m.content });
+                if let Some(tcs) = &m.tool_calls {
+                    obj["tool_calls"] = serde_json::json!(tcs
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id.as_deref().unwrap_or("call_0"),
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments.to_string()
+                                }
+                            })
+                        })
+                        .collect::<Vec<_>>());
+                }
+                if let Some(id) = &m.tool_call_id {
+                    obj["tool_call_id"] = serde_json::json!(id);
+                }
+                obj
+            })
+            .collect();
+
+        let tools_json: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect();
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": messages_json,
+            "tools": tools_json,
+            "tool_choice": "auto",
+            "temperature": 0.3
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .build()
+            .map_err(|e| CliError::AiProviderError {
+                provider: "openai".to_string(),
+                message: format!("Failed to build HTTP client: {}", e),
+            })?;
+
+        let response = client
+            .post(&self.endpoint)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| CliError::AiProviderError {
+                provider: "openai".to_string(),
+                message: format!("Request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().unwrap_or_default();
+            return Err(CliError::AiProviderError {
+                provider: "openai".to_string(),
+                message: format!("HTTP {} — {}", status, text),
+            });
+        }
+
+        let json: serde_json::Value =
+            response.json().map_err(|e| CliError::AiProviderError {
+                provider: "openai".to_string(),
+                message: format!("Failed to parse response: {}", e),
+            })?;
+
+        let msg = &json["choices"][0]["message"];
+        let content = msg["content"].as_str().unwrap_or("").to_string();
+
+        if let Some(tcs) = msg["tool_calls"].as_array() {
+            if !tcs.is_empty() {
+                let calls: Vec<ToolCall> = tcs
+                    .iter()
+                    .filter_map(|tc| {
+                        let id = tc["id"].as_str().map(|s| s.to_string());
+                        let func = &tc["function"];
+                        let name = func["name"].as_str()?.to_string();
+                        // OpenAI encodes arguments as a JSON string
+                        let arguments: serde_json::Value =
+                            serde_json::from_str(func["arguments"].as_str().unwrap_or("{}")
+                            ).unwrap_or(serde_json::json!({}));
+                        Some(ToolCall { id, name, arguments })
+                    })
+                    .collect();
+                return Ok(AiResponse::ToolCalls(content, calls));
+            }
+        }
+
+        Ok(AiResponse::Text(content))
     }
 
     fn complete(&self, prompt: &str, context: &str) -> Result<String, CliError> {
@@ -351,7 +778,8 @@ impl OllamaProvider {
     pub fn from_config(config: &AiConfig) -> Self {
         let endpoint = config
             .endpoint
-            .clone()
+            .as_deref()
+            .map(normalize_ollama_endpoint)
             .unwrap_or_else(|| OLLAMA_API_URL.to_string());
 
         let model = match config.model.clone() {
@@ -404,6 +832,123 @@ impl OllamaProvider {
 impl AiProvider for OllamaProvider {
     fn name(&self) -> &str {
         "ollama"
+    }
+
+    fn supports_tools(&self) -> bool {
+        true
+    }
+
+    fn complete_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> Result<AiResponse, CliError> {
+        let messages_json: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "role": m.role, "content": m.content });
+                // Include previous assistant tool_calls in history so the model
+                // understands its own prior turn.
+                if let Some(tcs) = &m.tool_calls {
+                    obj["tool_calls"] = serde_json::json!(tcs
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments
+                                }
+                            })
+                        })
+                        .collect::<Vec<_>>());
+                }
+                obj
+            })
+            .collect();
+
+        let tools_json: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
+                })
+            })
+            .collect();
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "stream": false,
+            "messages": messages_json,
+            "tools": tools_json
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .build()
+            .map_err(|e| CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("Failed to build HTTP client: {}", e),
+            })?;
+
+        let response = client
+            .post(&self.endpoint)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("Request failed (is Ollama running?): {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().unwrap_or_default();
+            return Err(CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("HTTP {} — {}", status, text),
+            });
+        }
+
+        let json: serde_json::Value =
+            response.json().map_err(|e| CliError::AiProviderError {
+                provider: "ollama".to_string(),
+                message: format!("Failed to parse response: {}", e),
+            })?;
+
+        let msg = &json["message"];
+        let content = msg["content"].as_str().unwrap_or("").to_string();
+
+        // Ollama returns tool calls as message.tool_calls (array of objects
+        // with a "function" sub-object whose "arguments" is already a JSON
+        // object, not a string).
+        if let Some(tcs) = msg["tool_calls"].as_array() {
+            if !tcs.is_empty() {
+                let calls: Vec<ToolCall> = tcs
+                    .iter()
+                    .filter_map(|tc| {
+                        let func = &tc["function"];
+                        let name = func["name"].as_str()?.to_string();
+                        // arguments may be a JSON object or a JSON string
+                        let arguments = if func["arguments"].is_object() {
+                            func["arguments"].clone()
+                        } else if let Some(s) = func["arguments"].as_str() {
+                            serde_json::from_str(s).unwrap_or(serde_json::json!({}))
+                        } else {
+                            serde_json::json!({})
+                        };
+                        Some(ToolCall { id: None, name, arguments })
+                    })
+                    .collect();
+                return Ok(AiResponse::ToolCalls(content, calls));
+            }
+        }
+
+        Ok(AiResponse::Text(content))
     }
 
     fn complete(&self, prompt: &str, context: &str) -> Result<String, CliError> {

@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] — 2026-02-27
+
+### Added — SSH key management (`stacker ssh-key`)
+
+- New `stacker ssh-key generate --server-id N` command — generates a Vault-backed SSH key pair for a server; optional `--save-to PATH` to save the private key locally
+- New `stacker ssh-key show --server-id N` command — displays the public SSH key (`--json` for machine-readable output)
+- New `stacker ssh-key upload --server-id N --public-key FILE --private-key FILE` — uploads an existing SSH key pair to the server
+- StackerClient: added `generate_ssh_key()`, `get_ssh_public_key()`, `upload_ssh_key()` API methods
+
+### Added — Service template catalog (`stacker service`)
+
+- New `stacker service add <name>` command — resolves a service template and appends it to `stacker.yml`
+  - 20+ built-in templates: postgres, mysql, mongodb, redis, memcached, rabbitmq, traefik, nginx, nginx_proxy_manager, wordpress, elasticsearch, kibana, qdrant, telegraf, phpmyadmin, mailhog, minio, portainer
+  - Alias support: `wp`→wordpress, `pg`→postgres, `my`→mysql, `mongo`→mongodb, `es`→elasticsearch, `mq`→rabbitmq, `pma`→phpmyadmin, `mh`→mailhog
+  - Auto-adds dependencies (e.g. `wordpress` pulls in `mysql` if missing)
+  - Creates `.yml.bak` backup before modifying, checks for duplicate services
+  - Falls back to offline catalog if marketplace API is unreachable
+- New `stacker service list [--online]` — shows available service templates grouped by category
+
+### Added — AI `add_service` tool (write mode)
+
+- In `stacker ai ask --write` and `stacker ai` (chat), the AI can now call `add_service` to add services from the built-in catalog to `stacker.yml`
+- The AI system prompt is enriched with the full service catalog so it knows what templates are available
+- Supports custom overrides: `custom_ports` and `custom_env` parameters on the tool call
+- Example: `stacker ai ask --write "add postgres and redis to my stack"`
+
+### Added — Marketplace template API methods
+
+- StackerClient: added `list_marketplace_templates()` and `get_marketplace_template(slug)` for fetching templates from the Stacker server marketplace
+
 ## [0.2.3] — 2026-02-23
 
 ### Changed — `stacker init` now generates `.stacker/` directory

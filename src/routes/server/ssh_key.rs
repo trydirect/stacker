@@ -211,14 +211,24 @@ pub async fn get_public_key(
             .not_found("No active SSH key found for this server"));
     }
 
+    if server.vault_key_path.is_none() {
+        return Err(JsonResponse::<PublicKeyResponse>::build()
+            .bad_request("SSH key is not stored in Vault (Vault was unavailable when the key was generated). Please delete this key and generate a new one."));
+    }
+
     let public_key = vault_client
         .get_ref()
         .fetch_ssh_public_key(&user.id, server_id)
         .await
         .map_err(|e| {
             tracing::error!("Failed to fetch public key from Vault: {}", e);
-            JsonResponse::<PublicKeyResponse>::build()
-                .internal_server_error("Failed to retrieve public key")
+            if e.to_lowercase().contains("not found") {
+                JsonResponse::<PublicKeyResponse>::build()
+                    .not_found("SSH key not found in Vault. The key may have been lost or Vault was restored without its data. Please delete this key and generate a new one.")
+            } else {
+                JsonResponse::<PublicKeyResponse>::build()
+                    .bad_request("Failed to retrieve SSH key from Vault. Please try again or regenerate the key.")
+            }
         })?;
 
     let response = PublicKeyResponse {
@@ -304,6 +314,19 @@ pub async fn validate_key(
             server_id,
             srv_ip: server.srv_ip.clone(),
             message: format!("SSH key status is '{}', not active", server.key_status),
+            ..Default::default()
+        };
+        return Ok(JsonResponse::build()
+            .set_item(Some(response))
+            .ok("Validation failed"));
+    }
+
+    if server.vault_key_path.is_none() {
+        let response = ValidateResponse {
+            valid: false,
+            server_id,
+            srv_ip: server.srv_ip.clone(),
+            message: "SSH key is not stored in Vault (Vault was unavailable when the key was generated). Please delete this key and generate a new one.".to_string(),
             ..Default::default()
         };
         return Ok(JsonResponse::build()

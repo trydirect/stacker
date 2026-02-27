@@ -1,9 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 
-use crate::cli::ai_client::{AiProvider, create_provider};
+use crate::cli::ai_client::{
+    AiProvider, AiResponse, ChatMessage, ToolCall, ToolDef,
+    all_write_mode_tools, create_provider,
+};
 use crate::cli::config_parser::{AiConfig, AiProviderType, StackerConfig};
 use crate::cli::error::CliError;
+use crate::cli::service_catalog::{ServiceCatalog, catalog_summary_for_ai};
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -99,8 +103,35 @@ Use it to answer user questions with concrete YAML examples.
   stacker ai ask \"question\" [--context file]\n\
   stacker proxy add DOMAIN --upstream URL --ssl auto|off\n\
   stacker proxy detect\n\
+  stacker ssh-key generate --server-id N [--save-to PATH]\n\
+  stacker ssh-key show --server-id N [--json]\n\
+  stacker ssh-key upload --server-id N --public-key FILE --private-key FILE\n\
+  stacker service add NAME [--file stacker.yml]\n\
+  stacker service list [--online]\n\
   stacker login\n\
   stacker update [--channel beta]\n\
+\n\
+## Available tools (in --write mode)\n\
+You have direct access to these tools. Prefer reading before writing.\n\
+  read_file(path)                    — read any project file\n\
+  list_directory(path)               — list files in a directory\n\
+  config_validate()                  — validate stacker.yml\n\
+  config_show()                      — show resolved configuration\n\
+  stacker_status()                   — show container status\n\
+  stacker_logs(service?, tail?)      — get container logs\n\
+  proxy_detect()                     — detect running proxy containers\n\
+  write_file(path, content)          — write stacker.yml or .stacker/* only\n\
+  add_service(service_name, custom_ports?, custom_env?) — add a service template to stacker.yml\n\
+  stacker_deploy(target?, dry_run?, force_rebuild?) — deploy the stack\n\
+  proxy_add(domain, upstream?, ssl?) — add a proxy entry\n\
+\n\
+IMPORTANT tool rules:\n\
+  - Never use stacker_deploy without first calling stacker_deploy(dry_run=true)\n\
+    to preview the plan and confirm with the user.\n\
+  - Never delete files or call destroy.\n\
+  - write_file is sandboxed: only stacker.yml and .stacker/* are permitted.\n\
+  - When the user asks to 'add wordpress' or 'add redis' etc., use the add_service tool \
+    rather than manually writing YAML — it handles defaults, dependencies, and backup.\n\
 \n\
 When answering, always provide concrete stacker.yml YAML snippets. \
 Keep answers concise and actionable.";
@@ -298,14 +329,627 @@ pub fn run_ai_ask(
     provider.complete(&prompt, STACKER_SCHEMA_SYSTEM_PROMPT)
 }
 
-/// `stacker ai ask "<question>" [--context <file>]`
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Agentic write loop
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Try to extract tool calls embedded as JSON text.
+///
+/// Many Ollama models (qwen2.5-coder, deepseek-r1, etc.) do not return a
+/// structured `tool_calls` field — they write the call as JSON in the content
+/// text.  This function detects the common patterns and converts them to
+/// `Vec<ToolCall>` so the agentic loop can execute them.
+///
+/// Supported patterns (with or without surrounding markdown code fences):
+///   {"name": "tool_name", "arguments": {...}}
+///   [{"name": ..., "arguments": ...}, ...]
+///   {"tool": "tool_name", "parameters": {...}}
+///   {"function": {"name": ..., "arguments": ...}}
+fn try_extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
+    // Strip markdown code fences and collect candidate JSON substrings
+    let stripped = text
+        .replace("```json", "")
+        .replace("```", "")
+        .trim()
+        .to_string();
+
+    // Try full string first, then scan for the first '{' / '['
+    let candidates: Vec<&str> = {
+        let mut v = vec![stripped.as_str()];
+        if let Some(idx) = stripped.find('{') { v.push(&stripped[idx..]); }
+        if let Some(idx) = stripped.find('[') { v.push(&stripped[idx..]); }
+        v
+    };
+
+    for candidate in candidates {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(candidate.trim()) {
+            let calls = parse_tool_calls_from_json(&json);
+            if !calls.is_empty() {
+                return calls;
+            }
+        }
+    }
+    vec![]
+}
+
+/// Recursively normalise different JSON shapes into ToolCall list.
+fn parse_tool_calls_from_json(json: &serde_json::Value) -> Vec<ToolCall> {
+    // Array of calls
+    if let Some(arr) = json.as_array() {
+        let calls: Vec<ToolCall> = arr.iter()
+            .flat_map(|v| parse_tool_calls_from_json(v))
+            .collect();
+        if !calls.is_empty() { return calls; }
+    }
+
+    // {"name": ..., "arguments": {...}}
+    if let (Some(name), Some(args)) = (
+        json["name"].as_str(),
+        json.get("arguments"),
+    ) {
+        let arguments = if args.is_object() {
+            args.clone()
+        } else if let Some(s) = args.as_str() {
+            serde_json::from_str(s).unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        return vec![ToolCall { id: None, name: name.to_string(), arguments }];
+    }
+
+    // {"tool": ..., "parameters": {...}}
+    if let (Some(name), Some(args)) = (
+        json["tool"].as_str(),
+        json.get("parameters"),
+    ) {
+        return vec![ToolCall {
+            id: None,
+            name: name.to_string(),
+            arguments: if args.is_object() { args.clone() } else { serde_json::json!({}) },
+        }];
+    }
+
+    // {"function": {"name": ..., "arguments": ...}}
+    if let Some(func) = json.get("function") {
+        return parse_tool_calls_from_json(func);
+    }
+
+    vec![]
+}
+
+/// Maximum number of tool-call iterations to prevent runaway loops.
+const MAX_TOOL_ITERATIONS: usize = 10;
+
+/// Guard: returns true only for paths the AI is allowed to write.
+/// Permitted: `stacker.yml` (project root) and anything under `.stacker/`.
+fn is_write_allowed(path_str: &str) -> bool {
+    // Normalise away leading "./" or "/" so the AI cannot escape with "../"
+    let p = path_str
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_start_matches('\\');
+    // Reject any path that tries to escape with "../"
+    if p.contains("../") || p.contains("..\\" ) || p == ".." {
+        return false;
+    }
+    p == "stacker.yml" || p.starts_with(".stacker/") || p.starts_with(".stacker\\")
+}
+
+/// Run a stacker-cli subprocess, capture combined stdout+stderr, return the output.
+/// Uses the same binary that is currently executing so the path resolves correctly.
+fn run_subprocess(args: &[&str]) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return format!("Error: could not resolve binary path: {}", e),
+    };
+
+    match std::process::Command::new(&exe)
+        .args(args)
+        .output()
+    {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let combined = format!("{}{}", stdout, stderr).trim().to_string();
+            if out.status.success() {
+                if combined.is_empty() { "OK (no output)".to_string() } else { combined }
+            } else {
+                format!("Exit {}: {}", out.status.code().unwrap_or(-1), combined)
+            }
+        }
+        Err(e) => format!("Error running subprocess: {}", e),
+    }
+}
+
+/// Execute a single tool call, return the result string to feed back to the AI.
+/// Writes are sandboxed: only `stacker.yml` and `.stacker/*` are allowed.
+fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
+    match call.name.as_str() {
+        // ── file primitives ────────────────────────────────────────────────
+        "write_file" => {
+            let path_str = match call.arguments["path"].as_str() {
+                Some(p) => p,
+                None => return "Error: missing 'path' argument".to_string(),
+            };
+            // Enforce sandbox
+            if !is_write_allowed(path_str) {
+                return format!(
+                    "Error: write denied — AI may only write to `stacker.yml` \
+                     or files inside `.stacker/`. Requested path: {}",
+                    path_str
+                );
+            }
+            let content = match call.arguments["content"].as_str() {
+                Some(c) => c,
+                None => return "Error: missing 'content' argument".to_string(),
+            };
+            let full_path = cwd.join(path_str);
+            // Create parent directories if needed
+            if let Some(parent) = full_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return format!("Error creating directories: {}", e);
+                }
+            }
+            match std::fs::write(&full_path, content) {
+                Ok(()) => {
+                    eprintln!("  ✓ wrote {}", path_str);
+                    format!("Successfully wrote {} bytes to {}", content.len(), path_str)
+                }
+                Err(e) => format!("Error writing {}: {}", path_str, e),
+            }
+        }
+        "read_file" => {
+            let path_str = match call.arguments["path"].as_str() {
+                Some(p) => p,
+                None => return "Error: missing 'path' argument".to_string(),
+            };
+            let full_path = cwd.join(path_str);
+            match std::fs::read_to_string(&full_path) {
+                Ok(content) => content,
+                Err(e) => format!("Error reading {}: {}", path_str, e),
+            }
+        }
+        "list_directory" => {
+            let path_str = call.arguments["path"].as_str().unwrap_or(".");
+            // Prevent escaping the project directory
+            let p = path_str.trim_start_matches("./").trim_start_matches('/');
+            if p.contains("../") || p == ".." {
+                return "Error: path traversal denied".to_string();
+            }
+            let dir = cwd.join(p);
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    let mut lines: Vec<String> = entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| {
+                            let name = e.file_name().to_string_lossy().to_string();
+                            let suffix = if e.path().is_dir() { "/" } else { "" };
+                            format!("{}{}", name, suffix)
+                        })
+                        .collect();
+                    lines.sort();
+                    if lines.is_empty() {
+                        format!("(empty directory: {})", path_str)
+                    } else {
+                        lines.join("\n")
+                    }
+                }
+                Err(e) => format!("Error listing {}: {}", path_str, e),
+            }
+        }
+
+        // ── read-only CLI tools ────────────────────────────────────────────
+        "config_validate" => {
+            eprintln!("  ⚙ running: stacker config validate");
+            run_subprocess(&["config", "validate"])
+        }
+        "config_show" => {
+            eprintln!("  ⚙ running: stacker config show");
+            run_subprocess(&["config", "show"])
+        }
+        "stacker_status" => {
+            eprintln!("  ⚙ running: stacker status");
+            run_subprocess(&["status"])
+        }
+        "stacker_logs" => {
+            let mut args: Vec<String> = vec!["logs".to_string()];
+            if let Some(svc) = call.arguments["service"].as_str() {
+                args.push("--service".to_string());
+                args.push(svc.to_string());
+            }
+            let tail = call.arguments["tail"].as_u64().unwrap_or(50);
+            args.push("--tail".to_string());
+            args.push(tail.to_string());
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            eprintln!("  ⚙ running: stacker {}", args.join(" "));
+            run_subprocess(&arg_refs)
+        }
+        "proxy_detect" => {
+            eprintln!("  ⚙ running: stacker proxy detect");
+            run_subprocess(&["proxy", "detect"])
+        }
+
+        // ── action CLI tools ───────────────────────────────────────────────
+        "stacker_deploy" => {
+            let dry_run = call.arguments["dry_run"].as_bool().unwrap_or(true);
+            let mut args: Vec<String> = vec!["deploy".to_string()];
+            if let Some(target) = call.arguments["target"].as_str() {
+                args.push("--target".to_string());
+                args.push(target.to_string());
+            }
+            if dry_run {
+                args.push("--dry-run".to_string());
+            }
+            if call.arguments["force_rebuild"].as_bool().unwrap_or(false) {
+                args.push("--force-rebuild".to_string());
+            }
+            let label = if dry_run { "stacker deploy --dry-run" } else { "stacker deploy" };
+            eprintln!("  ⚙ running: {}", label);
+            run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        }
+        "proxy_add" => {
+            let domain = match call.arguments["domain"].as_str() {
+                Some(d) => d,
+                None => return "Error: missing 'domain' argument".to_string(),
+            };
+            let mut args: Vec<String> = vec!["proxy".to_string(), "add".to_string(), domain.to_string()];
+            if let Some(upstream) = call.arguments["upstream"].as_str() {
+                args.push("--upstream".to_string());
+                args.push(upstream.to_string());
+            }
+            if let Some(ssl) = call.arguments["ssl"].as_str() {
+                args.push("--ssl".to_string());
+                args.push(ssl.to_string());
+            }
+            eprintln!("  ⚙ running: stacker proxy add {}", domain);
+            run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        }
+
+        // ── add_service — add a service template to stacker.yml ────────────
+        "add_service" => {
+            let service_name = match call.arguments["service_name"].as_str() {
+                Some(n) => n,
+                None => return "Error: missing 'service_name' argument".to_string(),
+            };
+            eprintln!("  ⚙ adding service: {}", service_name);
+
+            // Resolve the template from offline catalog
+            let catalog = ServiceCatalog::offline();
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => return format!("Error creating runtime: {}", e),
+            };
+            let entry = match rt.block_on(catalog.resolve(service_name)) {
+                Ok(entry) => entry,
+                Err(e) => return format!("Error: {}", e),
+            };
+
+            // Apply custom overrides from AI arguments
+            let mut svc = entry.service.clone();
+            if let Some(ports) = call.arguments["custom_ports"].as_array() {
+                let custom: Vec<String> = ports
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if !custom.is_empty() {
+                    svc.ports = custom;
+                }
+            }
+            if let Some(env_obj) = call.arguments["custom_env"].as_object() {
+                for (k, v) in env_obj {
+                    if let Some(val) = v.as_str() {
+                        svc.environment.insert(k.clone(), val.to_string());
+                    }
+                }
+            }
+
+            // Load stacker.yml, check for duplicates, append, save
+            let config_path = cwd.join("stacker.yml");
+            if !config_path.exists() {
+                return format!(
+                    "Error: stacker.yml not found at {}. Run `stacker init` first.",
+                    config_path.display()
+                );
+            }
+
+            match StackerConfig::from_file(&config_path) {
+                Ok(mut config) => {
+                    // Duplicate check
+                    if config.services.iter().any(|s| s.name == svc.name) {
+                        return format!(
+                            "Service '{}' already exists in stacker.yml. \
+                             Remove it first or choose a different name.",
+                            svc.name
+                        );
+                    }
+
+                    // Auto-add dependencies
+                    let mut deps_added: Vec<String> = Vec::new();
+                    for dep in &entry.related {
+                        if !config.services.iter().any(|s| s.name == *dep) {
+                            if let Ok(dep_entry) = rt.block_on(catalog.resolve(dep)) {
+                                config.services.push(dep_entry.service);
+                                deps_added.push(dep.clone());
+                            }
+                        }
+                    }
+
+                    config.services.push(svc.clone());
+
+                    // Backup then write
+                    let backup = config_path.with_extension("yml.bak");
+                    let _ = std::fs::copy(&config_path, &backup);
+
+                    match serde_yaml::to_string(&config) {
+                        Ok(yaml) => match std::fs::write(&config_path, &yaml) {
+                            Ok(()) => {
+                                let mut msg = format!(
+                                    "✓ Added service '{}' ({}) to stacker.yml",
+                                    svc.name, entry.name
+                                );
+                                if !deps_added.is_empty() {
+                                    msg.push_str(&format!(
+                                        "\n  Also added dependencies: {}",
+                                        deps_added.join(", ")
+                                    ));
+                                }
+                                eprintln!("  {}", msg);
+                                msg
+                            }
+                            Err(e) => format!("Error writing stacker.yml: {}", e),
+                        },
+                        Err(e) => format!("Error serializing config: {}", e),
+                    }
+                }
+                Err(e) => format!("Error parsing stacker.yml: {}", e),
+            }
+        }
+
+        unknown => format!("Unknown tool: {}", unknown),
+    }
+}
+
+/// Drive one tool-loop turn over an **existing** message history.
+///
+/// Appends the user input, executes any tool calls the AI requests, and
+/// returns the AI's final plain-text reply.  The `messages` vec is mutated
+/// in-place so the caller can keep multi-turn context.
+fn run_chat_turn(
+    messages: &mut Vec<ChatMessage>,
+    user_input: &str,
+    provider: &dyn AiProvider,
+    with_tools: bool,
+) -> Result<String, CliError> {
+    messages.push(ChatMessage::user(user_input));
+    let cwd = std::env::current_dir()?;
+
+    if !with_tools || !provider.supports_tools() {
+        // Plain completion — feed the whole history as a single concatenated
+        // prompt so the provider's simple `complete()` path gets the context.
+        let history_text: String = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let system = messages
+            .first()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+        let reply = provider.complete(&history_text, system)?;
+        messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: reply.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        return Ok(reply);
+    }
+
+    let tools: Vec<ToolDef> = all_write_mode_tools();
+
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        let response = provider.complete_with_tools(messages, &tools)?;
+
+        match response {
+            AiResponse::Text(text) => {
+                // Fallback: some models embed tool calls as JSON text instead
+                // of the structured tool_calls API field (common with Ollama).
+                let embedded = try_extract_tool_calls_from_text(&text);
+                if !embedded.is_empty() {
+                    // Treat exactly like a proper ToolCalls response
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        tool_calls: Some(embedded.clone()),
+                        tool_call_id: None,
+                    });
+                    for call in &embedded {
+                        let result = execute_tool(call, &cwd);
+                        messages.push(ChatMessage::tool_result(call.id.clone(), result));
+                    }
+                    if iteration + 1 == MAX_TOOL_ITERATIONS {
+                        return Err(CliError::AiProviderError {
+                            provider: provider.name().to_string(),
+                            message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                        });
+                    }
+                    continue;
+                }
+                messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: text.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+                return Ok(text);
+            }
+            AiResponse::ToolCalls(narration, calls) => {
+                if !narration.is_empty() {
+                    eprintln!("{}", narration);
+                }
+                messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: narration,
+                    tool_calls: Some(calls.clone()),
+                    tool_call_id: None,
+                });
+                for call in &calls {
+                    let result = execute_tool(call, &cwd);
+                    messages.push(ChatMessage::tool_result(call.id.clone(), result));
+                }
+                if iteration + 1 == MAX_TOOL_ITERATIONS {
+                    return Err(CliError::AiProviderError {
+                        provider: provider.name().to_string(),
+                        message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                    });
+                }
+            }
+        }
+    }
+    Ok(String::new())
+}
+
+/// Agentic loop: send question to AI with write_file / read_file tools, execute
+/// any tool calls, feed results back, repeat until the AI returns plain text
+/// or the iteration limit is reached.
+pub fn run_ai_ask_agentic(
+    question: &str,
+    context: Option<&str>,
+    provider: &dyn AiProvider,
+    system_prompt: &str,
+) -> Result<String, CliError> {
+    if !provider.supports_tools() {
+        return Err(CliError::AiProviderError {
+            provider: provider.name().to_string(),
+            message: "--write requires a provider that supports tool calling. \
+                      Configure ollama (llama3.1/qwen2.5-coder) or openai."
+                .to_string(),
+        });
+    }
+
+    let context_content = match context {
+        Some(path) => {
+            let p = Path::new(path);
+            if !p.exists() {
+                return Err(CliError::ConfigNotFound {
+                    path: PathBuf::from(path),
+                });
+            }
+            Some(std::fs::read_to_string(p)?)
+        }
+        None => {
+            let cwd = std::env::current_dir()?;
+            build_default_project_context(&cwd)
+        }
+    };
+
+    let user_message = build_ai_prompt(question, context_content.as_deref());
+    let cwd = std::env::current_dir()?;
+    let tools: Vec<ToolDef> = all_write_mode_tools();
+
+    let mut messages: Vec<ChatMessage> = vec![
+        ChatMessage::system(system_prompt),
+        ChatMessage::user(user_message),
+    ];
+
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        let response = provider.complete_with_tools(&messages, &tools)?;
+
+        match response {
+            AiResponse::Text(text) => {
+                // Fallback for models that emit tool calls as JSON text
+                let embedded = try_extract_tool_calls_from_text(&text);
+                if !embedded.is_empty() {
+                    if !text.trim().is_empty() {
+                        // strip the JSON before showing narration to user
+                        let narration = text
+                            .lines()
+                            .filter(|l| !l.trim().starts_with('{') && !l.trim().starts_with('[') && !l.trim().starts_with('`'))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !narration.trim().is_empty() {
+                            eprintln!("{}", narration.trim());
+                        }
+                    }
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        tool_calls: Some(embedded.clone()),
+                        tool_call_id: None,
+                    });
+                    for call in &embedded {
+                        let result = execute_tool(call, &cwd);
+                        messages.push(ChatMessage::tool_result(call.id.clone(), result));
+                    }
+                    if iteration + 1 == MAX_TOOL_ITERATIONS {
+                        return Err(CliError::AiProviderError {
+                            provider: provider.name().to_string(),
+                            message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                        });
+                    }
+                    continue;
+                }
+                return Ok(text);
+            }
+            AiResponse::ToolCalls(narration, calls) => {
+                if !narration.is_empty() {
+                    eprintln!("{}", narration);
+                }
+                // Record the assistant turn (with its tool calls)
+                messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: narration,
+                    tool_calls: Some(calls.clone()),
+                    tool_call_id: None,
+                });
+
+                // Execute each tool and append results
+                for call in &calls {
+                    let result = execute_tool(call, &cwd);
+                    messages.push(ChatMessage::tool_result(
+                        call.id.clone(),
+                        result,
+                    ));
+                }
+
+                if iteration + 1 == MAX_TOOL_ITERATIONS {
+                    return Err(CliError::AiProviderError {
+                        provider: provider.name().to_string(),
+                        message: format!(
+                            "Reached maximum tool iterations ({})",
+                            MAX_TOOL_ITERATIONS
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(String::new())
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AiAskCommand
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker ai ask "<question>" [--context <file>] [--write]`
 ///
 /// Sends a question to the configured AI provider for assistance
 /// with Dockerfile, docker-compose, or deployment troubleshooting.
+///
+/// With `--write` the command activates an agentic loop: the AI may call
+/// `write_file` / `read_file` tools to directly create or modify project files.
+/// Requires a tool-capable model (Ollama: llama3.1, qwen2.5-coder; OpenAI: any).
 pub struct AiAskCommand {
     pub question: String,
     pub context: Option<String>,
     pub configure: bool,
+    pub write: bool,
 }
 
 impl AiAskCommand {
@@ -314,11 +958,17 @@ impl AiAskCommand {
             question,
             context,
             configure: false,
+            write: false,
         }
     }
 
     pub fn with_configure(mut self, configure: bool) -> Self {
         self.configure = configure;
+        self
+    }
+
+    pub fn with_write(mut self, write: bool) -> Self {
+        self.write = write;
         self
     }
 }
@@ -331,12 +981,148 @@ impl CallableTrait for AiAskCommand {
             load_ai_config(DEFAULT_CONFIG_FILE)?
         };
         let provider = create_provider(&ai_config)?;
-        let response = run_ai_ask(
-            &self.question,
-            self.context.as_deref(),
-            provider.as_ref(),
-        )?;
-        println!("{}", response);
+
+        if self.write {
+            let enriched_prompt = format!(
+                "{}\n\n{}",
+                STACKER_SCHEMA_SYSTEM_PROMPT,
+                catalog_summary_for_ai()
+            );
+            let response = run_ai_ask_agentic(
+                &self.question,
+                self.context.as_deref(),
+                provider.as_ref(),
+                &enriched_prompt,
+            )?;
+            if !response.is_empty() {
+                println!("{}", response);
+            }
+        } else {
+            let response = run_ai_ask(
+                &self.question,
+                self.context.as_deref(),
+                provider.as_ref(),
+            )?;
+            println!("{}", response);
+        }
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AiChatCommand — interactive REPL
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Help text shown inside the REPL.
+const CHAT_HELP: &str = "\
+Commands available in the AI chat session:
+  help          Show this message
+  clear         Reset conversation history (keeps system context)
+  exit / quit   End the session
+  Ctrl-D        End the session
+
+Tips:
+  - Ask anything about your stacker.yml, Dockerfile, or deployment.
+  - With --write the AI can create/edit files in .stacker/ and stacker.yml.
+  - Conversation history is kept across turns — the AI remembers context.";
+
+/// `stacker ai [--write]`
+///
+/// Starts an interactive chat session with the configured AI provider.
+/// History is preserved across turns for multi-step conversations.
+/// With `--write` the AI may call `write_file` / `read_file` tools,
+/// but only for `stacker.yml` and files inside `.stacker/`.
+pub struct AiChatCommand {
+    pub write: bool,
+}
+
+impl AiChatCommand {
+    pub fn new(write: bool) -> Self {
+        Self { write }
+    }
+}
+
+impl CallableTrait for AiChatCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = load_ai_config(DEFAULT_CONFIG_FILE)?;
+        let provider = create_provider(&ai_config)?;
+        let model_name = ai_config.model.as_deref().unwrap_or("default");
+        let provider_name = provider.name();
+
+        let write_active = self.write && provider.supports_tools();
+
+        // Banner
+        eprintln!(
+            "Stacker AI  ({provider} · {model}){tools}",
+            provider = provider_name,
+            model = model_name,
+            tools = if write_active { "  [write mode — .stacker/ + stacker.yml]" } else { "" }
+        );
+        eprintln!("Type your question and press Enter.  `help` for tips, `exit` to quit.");
+        eprintln!();
+
+        // Seed project context into the initial system message
+        let cwd = std::env::current_dir()?;
+        let project_ctx = build_default_project_context(&cwd);
+        let catalog_ctx = catalog_summary_for_ai();
+        let system = match project_ctx {
+            Some(ctx) => format!(
+                "{}\n\n{}\n\n## Current project files\n{}",
+                STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx, ctx
+            ),
+            None => format!(
+                "{}\n\n{}",
+                STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx
+            ),
+        };
+
+        let mut messages: Vec<ChatMessage> = vec![ChatMessage::system(&system)];
+
+        loop {
+            // Prompt
+            print!("\x1b[1;36m>\x1b[0m ");
+            io::stdout().flush()?;
+
+            // Read a line (Ctrl-D → EOF → break)
+            let mut line = String::new();
+            let bytes = io::stdin().read_line(&mut line)?;
+            if bytes == 0 {
+                eprintln!("\nBye!");
+                break;
+            }
+
+            let input = line.trim();
+            if input.is_empty() {
+                continue;
+            }
+
+            match input.to_lowercase().as_str() {
+                "exit" | "quit" | ":q" => {
+                    eprintln!("Bye!");
+                    break;
+                }
+                "help" | ":help" | "?" => {
+                    eprintln!("{}", CHAT_HELP);
+                    continue;
+                }
+                "clear" | ":clear" => {
+                    messages.truncate(1); // keep system message
+                    eprintln!("  ↺ conversation cleared");
+                    continue;
+                }
+                _ => {}
+            }
+
+            match run_chat_turn(&mut messages, input, provider.as_ref(), write_active) {
+                Ok(reply) => {
+                    println!("\n{}\n", reply);
+                }
+                Err(e) => {
+                    eprintln!("  ✗ error: {}", e);
+                }
+            }
+        }
+
         Ok(())
     }
 }

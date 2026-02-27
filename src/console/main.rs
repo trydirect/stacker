@@ -1,9 +1,16 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
+#[command(
+    name = "stacker-cli",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "Stacker multi-tool CLI",
+    subcommand_required = false,
+    arg_required_else_help = false
+)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -160,10 +167,14 @@ enum StackerCommands {
         #[command(subcommand)]
         command: StackerConfigCommands,
     },
-    /// AI-assisted operations
+    /// AI-assisted operations — run without a subcommand to start interactive chat
     Ai {
         #[command(subcommand)]
-        command: StackerAiCommands,
+        command: Option<StackerAiCommands>,
+        /// Enable write mode: AI may create/edit files in `.stacker/` and
+        /// `stacker.yml`. Applies to both interactive chat and `ask`.
+        #[arg(long, global = true)]
+        write: bool,
     },
     /// Reverse-proxy management
     Proxy {
@@ -230,6 +241,11 @@ enum StackerAiCommands {
         context: Option<String>,
         #[arg(long)]
         configure: bool,
+        /// Enable agentic mode: the AI may call write_file / read_file tools to
+        /// directly modify project files. Requires a tool-capable model
+        /// (Ollama: llama3.1 / qwen2.5-coder; OpenAI: any).
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -250,11 +266,16 @@ enum StackerProxyCommands {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    get_command(cli)?.call()
+    let Some(command) = cli.command else {
+        println!("stacker-cli {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    };
+
+    get_command(command)?.call()
 }
 
-fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableTrait>, String> {
-    match cli.command {
+fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::CallableTrait>, String> {
+    match command {
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(
                 stacker::console::commands::appclient::NewCommand::new(user_id),
@@ -372,14 +393,19 @@ fn get_command(cli: Cli) -> Result<Box<dyn stacker::console::commands::CallableT
                     )),
                 },
             },
-            StackerCommands::Ai { command: ai_cmd } => match ai_cmd {
-                StackerAiCommands::Ask {
+            StackerCommands::Ai { command: ai_cmd, write } => match ai_cmd {
+                None => Ok(Box::new(
+                    stacker::console::commands::cli::ai::AiChatCommand::new(write),
+                )),
+                Some(StackerAiCommands::Ask {
                     question,
                     context,
                     configure,
-                } => Ok(Box::new(
+                    write: ask_write,
+                }) => Ok(Box::new(
                     stacker::console::commands::cli::ai::AiAskCommand::new(question, context)
-                        .with_configure(configure),
+                        .with_configure(configure)
+                        .with_write(write || ask_write),
                 )),
             },
             StackerCommands::Proxy {
