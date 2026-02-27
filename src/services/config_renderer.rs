@@ -200,6 +200,17 @@ impl ConfigRenderer {
         app: &ProjectApp,
         _project: &Project,
     ) -> Result<AppRenderContext> {
+        // Validate that the app has a non-empty image to prevent generating
+        // `image: ` in docker-compose.yml (Docker interprets this as `:latest`
+        // with no name, producing "invalid reference format" error)
+        if app.image.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "App '{}' has no Docker image specified. Cannot generate docker-compose.yml \
+                 with an empty image field.",
+                app.code
+            ));
+        }
+
         // Parse environment variables from JSON
         let environment = self.parse_environment(&app.environment)?;
 
@@ -956,5 +967,74 @@ mod tests {
             let env_key = format!("{}_env", app_code);
             assert!(env_key.ends_with("_env"));
         }
+    }
+
+    // =========================================================================
+    // Empty image validation tests
+    // =========================================================================
+
+    #[test]
+    fn test_empty_image_rejected() {
+        use crate::models::project::Project;
+        use crate::models::project_app::ProjectApp;
+
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project::default();
+        let app = ProjectApp {
+            code: "broken_app".to_string(),
+            image: "".to_string(),
+            ..ProjectApp::default()
+        };
+
+        let result = renderer.project_app_to_context(&app, &project);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("broken_app"),
+            "Error should mention the app code, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("no Docker image"),
+            "Error should mention missing image, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_whitespace_only_image_rejected() {
+        use crate::models::project::Project;
+        use crate::models::project_app::ProjectApp;
+
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project::default();
+        let app = ProjectApp {
+            code: "spacey".to_string(),
+            image: "   ".to_string(),
+            ..ProjectApp::default()
+        };
+
+        let result = renderer.project_app_to_context(&app, &project);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_valid_image_accepted() {
+        use crate::models::project::Project;
+        use crate::models::project_app::ProjectApp;
+
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project::default();
+        let app = ProjectApp {
+            code: "nginx".to_string(),
+            name: "Nginx".to_string(),
+            image: "nginx:latest".to_string(),
+            ..ProjectApp::default()
+        };
+
+        let result = renderer.project_app_to_context(&app, &project);
+        assert!(result.is_ok());
+        let ctx = result.unwrap();
+        assert_eq!(ctx.image, "nginx:latest");
     }
 }

@@ -208,28 +208,30 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                             }
                                         }
 
-                                        // Update server.srv_ip when deployment completes
-                                        // with an IP from the cloud provisioner
-                                        if row.status == "completed" {
-                                            if let Some(ref ip) = msg.srv_ip {
-                                                if !ip.is_empty() {
-                                                    match db::server::update_srv_ip(
-                                                        db_pool.get_ref(),
-                                                        row.project_id,
-                                                        ip,
-                                                        msg.ssh_port,
-                                                    )
-                                                    .await
-                                                    {
-                                                        Ok(s) => println!(
-                                                            "Updated server {} srv_ip={} for project {}",
-                                                            s.id, ip, row.project_id
-                                                        ),
-                                                        Err(e) => eprintln!(
-                                                            "Failed to update srv_ip for project {}: {}",
-                                                            row.project_id, e
-                                                        ),
-                                                    }
+                                        // Update server.srv_ip whenever the progress
+                                        // message carries an IP from the cloud provisioner.
+                                        // Previously this was gated on status == "completed",
+                                        // but the IP is already known after Terraform succeeds
+                                        // even when the subsequent Ansible step fails (status
+                                        // "paused" / "failed").
+                                        if let Some(ref ip) = msg.srv_ip {
+                                            if !ip.is_empty() {
+                                                match db::server::update_srv_ip(
+                                                    db_pool.get_ref(),
+                                                    row.project_id,
+                                                    ip,
+                                                    msg.ssh_port,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(s) => println!(
+                                                        "Updated server {} srv_ip={} for project {}",
+                                                        s.id, ip, row.project_id
+                                                    ),
+                                                    Err(e) => eprintln!(
+                                                        "Failed to update srv_ip for project {}: {}",
+                                                        row.project_id, e
+                                                    ),
                                                 }
                                             }
                                         }
