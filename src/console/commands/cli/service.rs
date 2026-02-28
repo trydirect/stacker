@@ -21,17 +21,20 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 // service add
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// `stacker service add <name> [--file <stacker.yml>]`
+/// `stacker service add [<name>] [--file <stacker.yml>]`
 ///
 /// Resolves a service template (e.g. "postgres", "redis", "wordpress") and
 /// appends it to the `services` array in stacker.yml.
+///
+/// When `name` is `None` an interactive fuzzy-select picker is shown so the
+/// user can browse the catalog without memorising service names.
 pub struct ServiceAddCommand {
-    pub name: String,
+    pub name: Option<String>,
     pub file: Option<String>,
 }
 
 impl ServiceAddCommand {
-    pub fn new(name: String, file: Option<String>) -> Self {
+    pub fn new(name: Option<String>, file: Option<String>) -> Self {
         Self { name, file }
     }
 }
@@ -50,8 +53,31 @@ impl CallableTrait for ServiceAddCommand {
         // Load existing config
         let mut config = StackerConfig::from_file(path)?;
 
+        // Resolve name: explicit arg or interactive fuzzy picker
+        let resolved_name: String = match &self.name {
+            Some(n) => n.clone(),
+            None => {
+                let catalog = ServiceCatalog::offline();
+                let entries = catalog.list_available();
+                let items: Vec<String> = entries
+                    .iter()
+                    .map(|e| format!("{:<22} [{:<10}]  {}", e.code, e.category, e.description))
+                    .collect();
+
+                let selection = dialoguer::FuzzySelect::with_theme(
+                    &dialoguer::theme::ColorfulTheme::default(),
+                )
+                .with_prompt("Select a service to add")
+                .items(&items)
+                .interact()
+                .map_err(|e| CliError::ConfigValidation(format!("Selection cancelled: {e}")))?;
+
+                entries[selection].code.clone()
+            }
+        };
+
         // Resolve canonical name
-        let canonical = ServiceCatalog::resolve_alias(&self.name);
+        let canonical = ServiceCatalog::resolve_alias(&resolved_name);
 
         // Check for duplicates
         if config.services.iter().any(|s| s.name == canonical) {
@@ -219,6 +245,81 @@ impl CallableTrait for ServiceListCommand {
                 }
             }
         }
+
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// service remove
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker service remove <name> [--file <stacker.yml>]`
+///
+/// Removes a service from the `services` array in stacker.yml after
+/// prompting for confirmation. A `.bak` file is written before changes.
+pub struct ServiceRemoveCommand {
+    pub name: String,
+    pub file: Option<String>,
+}
+
+impl ServiceRemoveCommand {
+    pub fn new(name: String, file: Option<String>) -> Self {
+        Self { name, file }
+    }
+}
+
+impl CallableTrait for ServiceRemoveCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = self.file.as_deref().unwrap_or(DEFAULT_CONFIG_FILE);
+        let path = Path::new(config_path);
+
+        if !path.exists() {
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: path.to_path_buf(),
+            }));
+        }
+
+        let mut config = StackerConfig::from_file(path)?;
+
+        // Resolve alias so "pg" finds "postgres"
+        let canonical = ServiceCatalog::resolve_alias(&self.name);
+
+        let pos = config.services.iter().position(|s| s.name == canonical);
+        let Some(idx) = pos else {
+            eprintln!(
+                "⚠ Service '{}' not found in {config_path}.",
+                canonical
+            );
+            eprintln!("  Available: {}", config.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "));
+            return Ok(());
+        };
+
+        // Confirm removal
+        let confirmed = dialoguer::Confirm::with_theme(
+            &dialoguer::theme::ColorfulTheme::default(),
+        )
+        .with_prompt(format!("Remove '{}' from {config_path}?", canonical))
+        .default(false)
+        .interact()
+        .map_err(|e| CliError::ConfigValidation(format!("Prompt error: {e}")))?;
+
+        if !confirmed {
+            println!("Aborted.");
+            return Ok(());
+        }
+
+        config.services.remove(idx);
+
+        let yaml = serde_yaml::to_string(&config)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {e}")))?;
+
+        let backup_path = format!("{config_path}.bak");
+        std::fs::copy(config_path, &backup_path)?;
+        std::fs::write(config_path, &yaml)?;
+
+        println!("✓ Removed '{}' from {config_path}", canonical);
+        eprintln!("  Backup saved to {backup_path}");
 
         Ok(())
     }

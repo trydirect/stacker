@@ -43,6 +43,10 @@ pub enum CliError {
     // Proxy errors
     ProxyConfigFailed(String),
 
+    // Secrets/env errors
+    EnvFileNotFound { path: std::path::PathBuf },
+    SecretKeyNotFound { key: String },
+
     // IO errors
     Io(std::io::Error),
 }
@@ -124,6 +128,12 @@ impl fmt::Display for CliError {
             }
             Self::ProxyConfigFailed(msg) => {
                 write!(f, "Proxy configuration failed: {msg}")
+            }
+            Self::EnvFileNotFound { path } => {
+                write!(f, "Env file not found: {}", path.display())
+            }
+            Self::SecretKeyNotFound { key } => {
+                write!(f, "Secret key not found: {key}")
             }
             Self::Io(err) => {
                 write!(f, "I/O error: {err}")

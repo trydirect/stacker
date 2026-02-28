@@ -65,6 +65,8 @@ serde_yaml = "0.9"
 lapin = { version = "2.3.1", features = ["serde_json"] }
 futures-lite = "2.2.0"
 clap = { version = "4.4.8", features = ["derive"] }
+clap_complete = "4"
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 indicatif = "0.17"
 brotli = "3.4.0"
 serde_path_to_error = "0.1.14"

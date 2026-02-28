@@ -14,7 +14,7 @@
 //! alongside other admin tools), this binary is a lightweight entry point
 //! designed for end-user distribution.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -168,6 +168,22 @@ enum StackerCommands {
         #[arg(long)]
         channel: Option<String>,
     },
+    /// Generate shell completion scripts
+    Completion {
+        /// Shell: bash, zsh, fish, elvish, powershell
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Manage secrets and environment variables in .env
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommands,
+    },
+    /// CI/CD pipeline export and validation
+    Ci {
+        #[command(subcommand)]
+        command: CiCommands,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,9 +245,17 @@ enum SshKeyCommands {
 
 #[derive(Debug, Subcommand)]
 enum ServiceCommands {
-    /// Add a service from the template catalog to stacker.yml
+    /// Add a service from the template catalog to stacker.yml (interactive picker when no name given)
     Add {
-        /// Service name (e.g. postgres, redis, wordpress, mysql)
+        /// Service name (e.g. postgres, redis, wordpress, mysql) — omit for interactive picker
+        name: Option<String>,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Remove a service from stacker.yml
+    Remove {
+        /// Service name to remove
         name: String,
         /// Path to stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
@@ -287,6 +311,71 @@ enum ConfigSetupCommands {
         file: Option<String>,
         #[arg(long, value_name = "OUT")]
         out: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretsCommands {
+    /// Set or update a secret in the .env file
+    Set {
+        /// KEY=VALUE pair (e.g. DB_PASS=s3cr3t)
+        key_value: String,
+        /// Path to .env file (default: from stacker.yml env_file, or .env)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Get a secret value from the .env file
+    Get {
+        /// Key name to retrieve
+        key: String,
+        /// Path to .env file
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Show the actual value instead of masking it
+        #[arg(long)]
+        show: bool,
+    },
+    /// List all secrets in the .env file
+    List {
+        /// Path to .env file
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Show actual values (default: mask with ***)
+        #[arg(long)]
+        show: bool,
+    },
+    /// Delete a secret from the .env file
+    Delete {
+        /// Key name to delete
+        key: String,
+        /// Path to .env file
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Validate all ${VAR} references in stacker.yml are set in .env or environment
+    Validate {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CiCommands {
+    /// Export a CI/CD pipeline configuration file
+    Export {
+        /// Platform: github, gitlab
+        #[arg(long)]
+        platform: String,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Validate that the CI/CD pipeline is in sync with stacker.yml
+    Validate {
+        /// Platform: github, gitlab
+        #[arg(long)]
+        platform: String,
     },
 }
 
@@ -346,6 +435,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("stacker-cli {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     };
+
+    // Shell completions need access to the CLI Command object directly.
+    if let StackerCommands::Completion { shell } = subcommand {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "stacker", &mut std::io::stdout());
+        eprintln!();
+        eprintln!("# Reload your shell or run:  source ~/.zshrc  (for zsh)");
+        return Ok(());
+    }
 
     let command = get_command(subcommand)?;
     if let Err(err) = command.call() {
@@ -501,6 +599,9 @@ fn get_command(
             ServiceCommands::Add { name, file } => Box::new(
                 stacker::console::commands::cli::service::ServiceAddCommand::new(name, file),
             ),
+            ServiceCommands::Remove { name, file } => Box::new(
+                stacker::console::commands::cli::service::ServiceRemoveCommand::new(name, file),
+            ),
             ServiceCommands::List { online } => Box::new(
                 stacker::console::commands::cli::service::ServiceListCommand::new(online),
             ),
@@ -508,6 +609,33 @@ fn get_command(
         StackerCommands::Update { channel } => Box::new(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),
         ),
+        StackerCommands::Secrets { command: sec_cmd } => match sec_cmd {
+            SecretsCommands::Set { key_value, file } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsSetCommand::new(key_value, file),
+            ),
+            SecretsCommands::Get { key, file, show } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsGetCommand::new(key, file, show),
+            ),
+            SecretsCommands::List { file, show } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsListCommand::new(file, show),
+            ),
+            SecretsCommands::Delete { key, file } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsDeleteCommand::new(key, file),
+            ),
+            SecretsCommands::Validate { file } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsValidateCommand::new(file),
+            ),
+        },
+        StackerCommands::Ci { command: ci_cmd } => match ci_cmd {
+            CiCommands::Export { platform, file } => Box::new(
+                stacker::console::commands::cli::ci::CiExportCommand::new(platform, file),
+            ),
+            CiCommands::Validate { platform } => Box::new(
+                stacker::console::commands::cli::ci::CiValidateCommand::new(platform),
+            ),
+        },
+        // Completion is handled in main() before this function is called.
+        StackerCommands::Completion { .. } => unreachable!(),
     };
 
     Ok(cmd)

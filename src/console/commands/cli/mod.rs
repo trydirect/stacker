@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod ci;
 pub mod config;
 pub mod deploy;
 pub mod destroy;
@@ -7,6 +8,7 @@ pub mod list;
 pub mod login;
 pub mod logs;
 pub mod proxy;
+pub mod secrets;
 pub mod service;
 pub mod ssh_key;
 pub mod status;

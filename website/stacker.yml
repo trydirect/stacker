@@ -4,6 +4,8 @@ organization: null
 #project:
 #  identity: stacker-website
 #
+project:
+  identity: optimize
 env_file: .env
 app:
   type: node
