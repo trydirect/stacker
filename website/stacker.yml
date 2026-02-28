@@ -3,6 +3,8 @@ version: 1.0.0
 organization: null
 #project:
 #  identity: stacker-website
+#
+env_file: .env
 app:
   type: node
   path: .
@@ -56,7 +58,7 @@ deploy:
   server: null
   registry:
     username: ${DOCKER_USERNAME}
-    password: ${DOCKER_PASWORD}
+    password: ${DOCKER_PASSWORD}
     server: https://index.docker.io/v1/
 ai:
   enabled: true
@@ -78,5 +80,4 @@ hooks:
   pre_build: scripts/pre-build.sh
   post_deploy: scripts/post-deploy.sh
   on_failure: scripts/on-failure.sh
-env_file: .env
 env: {}
