@@ -55,8 +55,8 @@ deploy:
     server: null
   server: null
   registry:
-    username: trydirect
-    password: *******-*******-4d56-abc2-*******
+    username: ${DOCKER_USERNAME}
+    password: ${DOCKER_PASWORD}
     server: https://index.docker.io/v1/
 ai:
   enabled: true
