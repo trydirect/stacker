@@ -157,7 +157,11 @@ pub async fn item(
             })?
     };
 
-    // Auto-generate SSH key for new servers that don't have one yet
+    // Ensure every deploy payload carries the Stacker public key so the Install
+    // Service can inject it into authorized_keys on the remote server.
+    // - If the server has no active key yet: generate one, store in Vault, capture public key.
+    // - If the key is already active: fetch the public key from Vault.
+    let mut new_public_key: Option<String> = None;
     let server = if server.key_status != "active" {
         match VaultClient::generate_ssh_keypair() {
             Ok((public_key, private_key)) => {
@@ -172,6 +176,7 @@ pub async fn item(
                             server.id,
                             vault_path
                         );
+                        new_public_key = Some(public_key);
                         db::server::update_ssh_key_status(
                             pg_pool.get_ref(),
                             server.id,
@@ -204,6 +209,28 @@ pub async fn item(
             }
         }
     } else {
+        // Key already in Vault — fetch the public key so the Install Service can
+        // append it to authorized_keys on every deploy (idempotent on the remote side).
+        match vault_client
+            .get_ref()
+            .fetch_ssh_public_key(&user.id, server.id)
+            .await
+        {
+            Ok(pk) => {
+                tracing::info!(
+                    "Fetched existing public key from Vault for server {}",
+                    server.id
+                );
+                new_public_key = Some(pk);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch public key from Vault for server {}: {}",
+                    server.id,
+                    e
+                );
+            }
+        }
         server
     };
 
@@ -241,6 +268,7 @@ pub async fn item(
             form.registry.clone(),
             fc,
             mq_manager.get_ref(),
+            new_public_key,
         )
         .await
         .map(|project_id| {
@@ -398,7 +426,11 @@ pub async fn saved_item(
             })?
     };
 
-    // Auto-generate SSH key for new servers that don't have one yet
+    // Ensure every deploy payload carries the Stacker public key so the Install
+    // Service can inject it into authorized_keys on the remote server.
+    // - If the server has no active key yet: generate one, store in Vault, capture public key.
+    // - If the key is already active: fetch the public key from Vault.
+    let mut new_public_key: Option<String> = None;
     let server = if server.key_status != "active" {
         match VaultClient::generate_ssh_keypair() {
             Ok((public_key, private_key)) => {
@@ -413,6 +445,7 @@ pub async fn saved_item(
                             server.id,
                             vault_path
                         );
+                        new_public_key = Some(public_key);
                         db::server::update_ssh_key_status(
                             pg_pool.get_ref(),
                             server.id,
@@ -445,6 +478,28 @@ pub async fn saved_item(
             }
         }
     } else {
+        // Key already in Vault — fetch the public key so the Install Service can
+        // append it to authorized_keys on every deploy (idempotent on the remote side).
+        match vault_client
+            .get_ref()
+            .fetch_ssh_public_key(&user.id, server.id)
+            .await
+        {
+            Ok(pk) => {
+                tracing::info!(
+                    "Fetched existing public key from Vault for server {}",
+                    server.id
+                );
+                new_public_key = Some(pk);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch public key from Vault for server {}: {}",
+                    server.id,
+                    e
+                );
+            }
+        }
         server
     };
 
@@ -484,6 +539,7 @@ pub async fn saved_item(
             form.registry.clone(),
             fc,
             mq_manager.get_ref(),
+            new_public_key,
         )
         .await
         .map(|project_id| {

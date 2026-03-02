@@ -23,6 +23,7 @@ impl InstallServiceConnector for InstallServiceClient {
         registry: Option<RegistryForm>,
         fc: String,
         mq_manager: &MqManager,
+        server_public_key: Option<String>,
     ) -> Result<i32, String> {
         // Build payload for the install service
         let mut payload = crate::forms::project::Payload::try_from(project)
@@ -38,6 +39,12 @@ impl InstallServiceConnector for InstallServiceClient {
         let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
 
         payload.server = Some(server.into());
+        // Inject newly-generated public key so Install Service can append it to authorized_keys
+        if let Some(ref mut srv) = payload.server {
+            if srv.public_key.is_none() {
+                srv.public_key = server_public_key;
+            }
+        }
         payload.cloud = Some(cloud_creds.into());
         payload.stack = form_stack.clone().into();
         payload.user_token = Some(user_id);

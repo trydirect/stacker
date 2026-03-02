@@ -241,6 +241,21 @@ enum SshKeyCommands {
         #[arg(long, value_name = "FILE")]
         private_key: std::path::PathBuf,
     },
+    /// Inject the Vault-stored public key into a server's authorized_keys via a working local key
+    Inject {
+        /// Server ID whose Vault public key should be injected
+        #[arg(long)]
+        server_id: i32,
+        /// Path to a local private key that already grants SSH access to the server
+        #[arg(long, value_name = "FILE")]
+        with_key: std::path::PathBuf,
+        /// SSH user on the remote server (default: root)
+        #[arg(long)]
+        user: Option<String>,
+        /// SSH port override (default: server's stored port or 22)
+        #[arg(long)]
+        port: Option<u16>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -592,6 +607,16 @@ fn get_command(
             } => Box::new(
                 stacker::console::commands::cli::ssh_key::SshKeyUploadCommand::new(
                     server_id, public_key, private_key,
+                ),
+            ),
+            SshKeyCommands::Inject {
+                server_id,
+                with_key,
+                user,
+                port,
+            } => Box::new(
+                stacker::console::commands::cli::ssh_key::SshKeyInjectCommand::new(
+                    server_id, with_key, user, port,
                 ),
             ),
         },

@@ -1,12 +1,8 @@
 name: website
 version: 1.0.0
 organization: null
-#project:
-#  identity: stacker-website
-#
 project:
   identity: optimize
-env_file: .env
 app:
   type: node
   path: .
@@ -45,35 +41,30 @@ proxy:
     upstream: app:3456
   config: null
 deploy:
-  target: cloud
+  target: server
   compose_file: null
-  cloud:
-    provider: hetzner
-    orchestrator: remote
-    region: nbg1
-    size: cpx22
-    install_image: null
-    remote_payload_file: null
-    ssh_key: null
-    key: null
-    server: null
-  server: null
+  cloud: null
+  server:
+    host: 162.55.166.57
+    user: root
+    key: 59
+    port: 22
   registry:
-    username: ${DOCKER_USERNAME}
+    username: trydirect
     password: ${DOCKER_PASSWORD}
     server: https://index.docker.io/v1/
-ai:
-  enabled: true
-  provider: ollama
-  model: qwen2.5-coder
-  api_key: null
-  endpoint: http://192.168.100.245:11434
-  timeout: 300
-  tasks:
-  - dockerfile
-  - compose
+# ai:
+#   enabled: true
+#   provider: ollama
+#   model: qwen2.5-coder
+#   api_key: null
+#   endpoint: http://192.168.100.245:11434
+#   timeout: 300
+#   tasks:
+#   - dockerfile
+#   - compose
 monitoring:
-  status_panel: false
+  status_panel: true
   healthcheck:
     endpoint: /healthz
     interval: 10s
@@ -82,4 +73,5 @@ hooks:
   pre_build: scripts/pre-build.sh
   post_deploy: scripts/post-deploy.sh
   on_failure: scripts/on-failure.sh
+env_file: .env
 env: {}

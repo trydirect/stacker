@@ -32,5 +32,6 @@ pub trait InstallServiceConnector: Send + Sync {
         registry: Option<RegistryForm>,
         fc: String,
         mq_manager: &MqManager,
+        server_public_key: Option<String>,
     ) -> Result<i32, String>;
 }

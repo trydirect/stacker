@@ -22,6 +22,7 @@ impl InstallServiceConnector for MockInstallServiceConnector {
         _registry: Option<RegistryForm>,
         _fc: String,
         _mq_manager: &MqManager,
+        _server_public_key: Option<String>,
     ) -> Result<i32, String> {
         Ok(project_id)
     }

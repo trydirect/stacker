@@ -14,6 +14,7 @@ use crate::cli::error::CliError;
 use crate::cli::service_catalog::ServiceCatalog;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
+use dialoguer::{Confirm, FuzzySelect};
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -21,13 +22,10 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 // service add
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// `stacker service add [<name>] [--file <stacker.yml>]`
+/// `stacker service add <name> [--file <stacker.yml>]`
 ///
 /// Resolves a service template (e.g. "postgres", "redis", "wordpress") and
 /// appends it to the `services` array in stacker.yml.
-///
-/// When `name` is `None` an interactive fuzzy-select picker is shown so the
-/// user can browse the catalog without memorising service names.
 pub struct ServiceAddCommand {
     pub name: Option<String>,
     pub file: Option<String>,
@@ -53,31 +51,28 @@ impl CallableTrait for ServiceAddCommand {
         // Load existing config
         let mut config = StackerConfig::from_file(path)?;
 
-        // Resolve name: explicit arg or interactive fuzzy picker
-        let resolved_name: String = match &self.name {
+        // Resolve name — either from arg or interactive fuzzy picker
+        let chosen_name = match &self.name {
             Some(n) => n.clone(),
             None => {
                 let catalog = ServiceCatalog::offline();
                 let entries = catalog.list_available();
-                let items: Vec<String> = entries
+                let display: Vec<String> = entries
                     .iter()
-                    .map(|e| format!("{:<22} [{:<10}]  {}", e.code, e.category, e.description))
+                    .map(|e| format!("{:<22} [{:<10}] {}", e.code, e.category, e.description))
                     .collect();
-
-                let selection = dialoguer::FuzzySelect::with_theme(
-                    &dialoguer::theme::ColorfulTheme::default(),
-                )
-                .with_prompt("Select a service to add")
-                .items(&items)
-                .interact()
-                .map_err(|e| CliError::ConfigValidation(format!("Selection cancelled: {e}")))?;
-
-                entries[selection].code.clone()
+                let idx = FuzzySelect::new()
+                    .with_prompt("Select a service to add")
+                    .items(&display)
+                    .default(0)
+                    .interact()
+                    .map_err(|e| CliError::ConfigValidation(format!("Picker error: {}", e)))?;
+                entries[idx].code.clone()
             }
         };
 
         // Resolve canonical name
-        let canonical = ServiceCatalog::resolve_alias(&resolved_name);
+        let canonical = ServiceCatalog::resolve_alias(&chosen_name);
 
         // Check for duplicates
         if config.services.iter().any(|s| s.name == canonical) {
@@ -256,8 +251,8 @@ impl CallableTrait for ServiceListCommand {
 
 /// `stacker service remove <name> [--file <stacker.yml>]`
 ///
-/// Removes a service from the `services` array in stacker.yml after
-/// prompting for confirmation. A `.bak` file is written before changes.
+/// Removes a service entry from the `services` array in stacker.yml after
+/// confirming with the user.
 pub struct ServiceRemoveCommand {
     pub name: String,
     pub file: Option<String>,
@@ -281,45 +276,38 @@ impl CallableTrait for ServiceRemoveCommand {
         }
 
         let mut config = StackerConfig::from_file(path)?;
-
-        // Resolve alias so "pg" finds "postgres"
         let canonical = ServiceCatalog::resolve_alias(&self.name);
 
-        let pos = config.services.iter().position(|s| s.name == canonical);
-        let Some(idx) = pos else {
-            eprintln!(
-                "⚠ Service '{}' not found in {config_path}.",
-                canonical
-            );
-            eprintln!("  Available: {}", config.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "));
+        if !config.services.iter().any(|s| s.name == canonical) {
+            eprintln!("⚠ Service '{}' not found in {}.", canonical, config_path);
             return Ok(());
-        };
+        }
 
-        // Confirm removal
-        let confirmed = dialoguer::Confirm::with_theme(
-            &dialoguer::theme::ColorfulTheme::default(),
-        )
-        .with_prompt(format!("Remove '{}' from {config_path}?", canonical))
-        .default(false)
-        .interact()
-        .map_err(|e| CliError::ConfigValidation(format!("Prompt error: {e}")))?;
+        let confirmed = Confirm::new()
+            .with_prompt(format!(
+                "Remove '{}' from {}?",
+                canonical, config_path
+            ))
+            .default(false)
+            .interact()
+            .map_err(|e| CliError::ConfigValidation(format!("Prompt error: {}", e)))?;
 
         if !confirmed {
             println!("Aborted.");
             return Ok(());
         }
 
-        config.services.remove(idx);
+        config.services.retain(|s| s.name != canonical);
 
         let yaml = serde_yaml::to_string(&config)
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {e}")))?;
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
 
-        let backup_path = format!("{config_path}.bak");
+        let backup_path = format!("{}.bak", config_path);
         std::fs::copy(config_path, &backup_path)?;
         std::fs::write(config_path, &yaml)?;
 
-        println!("✓ Removed '{}' from {config_path}", canonical);
-        eprintln!("  Backup saved to {backup_path}");
+        println!("✓ Removed '{}' from {}", canonical, config_path);
+        eprintln!("  Backup saved to {}", backup_path);
 
         Ok(())
     }

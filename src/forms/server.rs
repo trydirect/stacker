@@ -24,6 +24,12 @@ pub struct ServerForm {
     pub connection_mode: Option<String>,
     /// Path in Vault where SSH key is stored (e.g., "secret/users/{user_id}/servers/{server_id}/ssh")
     pub vault_key_path: Option<String>,
+    /// The actual public key content (ed25519 or rsa).
+    /// Populated at deploy time so the Install Service can inject it into
+    /// `authorized_keys` on the target server without a separate Vault call.
+    /// Not persisted to the database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 pub fn default_ssh_port() -> Option<i32> {
