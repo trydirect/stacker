@@ -79,7 +79,8 @@ download_and_install() {
     need curl
     need tar
 
-    tmpdir=$(mktemp -d)
+    # Use $HOME-based temp dir so Snap-sandboxed curl can write to it
+    tmpdir=$(mktemp -d "${HOME}/.stacker-install.XXXXXX")
     trap 'rm -rf "$tmpdir"' EXIT
 
     curl -fsSL "$url" -o "${tmpdir}/${archive_name}" \
