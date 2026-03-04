@@ -78,7 +78,6 @@ jobs:
           echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.ASSET_NAME }}
-          make_latest: "false"
+        run: gh release upload "$GITHUB_REF_NAME" "$ASSET_NAME" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
