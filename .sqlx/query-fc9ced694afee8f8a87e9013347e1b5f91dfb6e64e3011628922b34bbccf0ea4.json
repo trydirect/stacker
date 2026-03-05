@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            s.id,\n            s.user_id,\n            s.project_id,\n            s.cloud_id,\n            c.provider as cloud,\n            s.region,\n            s.zone,\n            s.server,\n            s.os,\n            s.disk_type,\n            s.created_at,\n            s.updated_at,\n            s.srv_ip,\n            s.ssh_port,\n            s.ssh_user,\n            s.vault_key_path,\n            s.connection_mode,\n            s.key_status,\n            s.name\n        FROM server s\n        LEFT JOIN cloud c ON s.cloud_id = c.id\n        WHERE s.user_id=$1\n        ORDER BY s.created_at DESC\n        ",
+  "query": "\n        SELECT\n            s.id,\n            s.user_id,\n            s.project_id,\n            s.cloud_id,\n            c.provider as \"cloud?: String\",\n            s.region,\n            s.zone,\n            s.server,\n            s.os,\n            s.disk_type,\n            s.created_at,\n            s.updated_at,\n            s.srv_ip,\n            s.ssh_port,\n            s.ssh_user,\n            s.vault_key_path,\n            s.connection_mode,\n            s.key_status,\n            s.name\n        FROM server s\n        LEFT JOIN cloud c ON s.cloud_id = c.id\n        WHERE s.user_id=$1\n        ORDER BY s.created_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "cloud",
+        "name": "cloud?: String",
         "type_info": "Varchar"
       },
       {
@@ -126,5 +126,5 @@
       true
     ]
   },
-  "hash": "a6cac393c36ca2ae08d877f5ed2ed699a7a29f68625f6ceab653980e8ff8d2ac"
+  "hash": "fc9ced694afee8f8a87e9013347e1b5f91dfb6e64e3011628922b34bbccf0ea4"
 }
