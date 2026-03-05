@@ -1268,7 +1268,7 @@ mod tests {
     }
 
     fn cloud_config_yaml() -> String {
-        "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  target: cloud\n  cloud:\n    provider: hetzner\n    region: eu-central\n    size: cx11\n".to_string()
+        "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  target: cloud\n  cloud:\n    provider: hetzner\n    region: eu-central\n    size: cpx11\n".to_string()
     }
 
     fn server_config_yaml() -> String {

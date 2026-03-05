@@ -1224,7 +1224,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         .map(|c| super::install_runner::provider_code_for_remote(&c.provider.to_string()).to_string())
         .unwrap_or_else(|| "htz".to_string());
     let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
-    let server_size = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cx11".to_string());
+    let server_size = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cpx11".to_string());
     let os = match provider.as_str() {
         "do" => "docker-20-04",
         _ => "ubuntu-22.04",
@@ -1322,7 +1322,7 @@ mod tests {
                 provider: crate::cli::config_parser::CloudProvider::Hetzner,
                 orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
                 region: Some("fsn1".to_string()),
-                size: Some("cx11".to_string()),
+                size: Some("cpx11".to_string()),
                 install_image: None,
                 remote_payload_file: None,
                 ssh_key: None,
@@ -1335,7 +1335,7 @@ mod tests {
         let form = build_deploy_form(&config);
         assert_eq!(form["cloud"]["provider"], "htz");
         assert_eq!(form["server"]["region"], "fsn1");
-        assert_eq!(form["server"]["server"], "cx11");
+        assert_eq!(form["server"]["server"], "cpx11");
         assert_eq!(form["stack"]["stack_code"], "myproject");
     }
 
