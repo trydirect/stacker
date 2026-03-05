@@ -56,7 +56,7 @@ pub async fn fetch_by_user_with_provider(
             s.user_id,
             s.project_id,
             s.cloud_id,
-            c.provider as "cloud?",
+            c.provider as "cloud?: String",
             s.region,
             s.zone,
             s.server,
