@@ -26,6 +26,23 @@ pub async fn add(
     form.user_id = Some(user.id.clone());
     let cloud: models::Cloud = form.deref().into();
 
+    // Validate that encryption succeeded when save_token is enabled.
+    // encrypt_field() returns None on failure, which would silently store NULL credentials.
+    if cloud.save_token == Some(true) {
+        let has_token = cloud.cloud_token.is_some();
+        let has_key_secret = cloud.cloud_key.is_some() && cloud.cloud_secret.is_some();
+        if !has_token && !has_key_secret {
+            tracing::error!(
+                "Cloud credential encryption failed for provider '{}'. \
+                 Check that SECURITY_KEY is set and is exactly 32 bytes.",
+                cloud.provider
+            );
+            return Err(JsonResponse::<models::Cloud>::build().bad_request(
+                "Failed to encrypt cloud credentials. Please contact support.",
+            ));
+        }
+    }
+
     db::cloud::insert(pg_pool.get_ref(), cloud)
         .await
         .map(|cloud| JsonResponse::build().set_item(cloud).ok("success"))
