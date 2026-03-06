@@ -21,7 +21,7 @@ jobs:
       SQLX_OFFLINE: true
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install OpenSSL build deps
         if: runner.os == 'Linux'
