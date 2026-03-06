@@ -1503,6 +1503,7 @@ mod tests {
             image: None,
             project_name_override: None,
             key_name_override: None,
+            key_id_override: None,
             server_name_override: None,
         }
     }
@@ -1604,6 +1605,7 @@ mod tests {
             image: Some("mycompany/install:v3".to_string()),
             project_name_override: None,
             key_name_override: None,
+            key_id_override: None,
             server_name_override: None,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
