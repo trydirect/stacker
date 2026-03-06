@@ -316,7 +316,7 @@ impl CallableTrait for ListCloudsCommand {
                 for c in &clouds {
                     let has_token = if c.cloud_token.is_some() { "✓" } else { "-" };
                     let has_key = if c.cloud_key.is_some() { "✓" } else { "-" };
-                    let has_secret = if c.cloud_secret.is_some() { "✓" } else { "-" };
+                    let secret_indicator = "*";
                     println!(
                         "{:<6} {:<24} {:<12} {:<10} {:<10} {:<10}",
                         c.id,
@@ -324,7 +324,7 @@ impl CallableTrait for ListCloudsCommand {
                         &c.provider,
                         has_token,
                         has_key,
-                        has_secret,
+                        secret_indicator,
                     );
                 }
 
