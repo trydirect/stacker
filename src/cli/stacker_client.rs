@@ -1259,7 +1259,12 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
 ///
 /// Format: `{project}-{4hex}` where the hex suffix is derived from the current
 /// timestamp so each deploy gets a distinct name, e.g. `website-a3f1`.
-/// The name is sanitised to contain only lowercase alphanumeric chars and hyphens.
+///
+/// The name is sanitised to satisfy the strictest provider rules (Hetzner):
+///   - only lowercase `a-z`, `0-9`, `-`
+///   - must start with a letter
+///   - must not end with `-`
+///   - max 63 characters total
 fn generate_server_name(project_name: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1274,7 +1279,14 @@ fn generate_server_name(project_name: &str) -> String {
         .collect::<Vec<_>>()
         .join("-");
 
-    let base = if sanitised.is_empty() { "server" } else { &sanitised };
+    // Ensure it starts with a letter (Hetzner requirement)
+    let base = if sanitised.is_empty() {
+        "srv".to_string()
+    } else if !sanitised.starts_with(|c: char| c.is_ascii_lowercase()) {
+        format!("srv-{}", sanitised)
+    } else {
+        sanitised
+    };
 
     // 4-char hex suffix from current timestamp (unique per ~65k deploys within any second)
     let ts = SystemTime::now()
@@ -1283,7 +1295,15 @@ fn generate_server_name(project_name: &str) -> String {
         .as_millis();
     let suffix = format!("{:04x}", (ts & 0xFFFF) as u16);
 
-    format!("{}-{}", base, suffix)
+    // Truncate base so total stays within 63 chars: base + '-' + 4-char suffix = base ≤ 58
+    let max_base = 63 - 1 - suffix.len(); // 58
+    let truncated = if base.len() > max_base {
+        base[..max_base].trim_end_matches('-').to_string()
+    } else {
+        base
+    };
+
+    format!("{}-{}", truncated, suffix)
 }
 
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
@@ -1574,12 +1594,29 @@ mod tests {
     #[test]
     fn test_generate_server_name_empty() {
         let name = generate_server_name("");
-        assert!(name.starts_with("server-"), "empty input should fallback to 'server', got: {}", name);
+        assert!(name.starts_with("srv-"), "empty input should fallback to 'srv', got: {}", name);
     }
 
     #[test]
     fn test_generate_server_name_special_chars() {
         let name = generate_server_name("app___v2..beta");
         assert!(name.starts_with("app-v2-beta-"), "consecutive separators collapsed, got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_numeric_start() {
+        // Hetzner requires name to start with a letter
+        let name = generate_server_name("123app");
+        assert!(name.starts_with("srv-123app-"), "numeric start should get 'srv-' prefix, got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_max_length() {
+        let long = "a".repeat(100);
+        let name = generate_server_name(&long);
+        assert!(name.len() <= 63, "name must be ≤63 chars (Hetzner), got {} chars: {}", name.len(), name);
+        assert!(name.starts_with("aaa"), "got: {}", name);
+        // Must not end with hyphen
+        assert!(!name.ends_with('-'), "must not end with hyphen, got: {}", name);
     }
 }
