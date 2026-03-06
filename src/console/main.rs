@@ -212,6 +212,16 @@ enum StackerConfigCommands {
         #[arg(long, default_value_t = true)]
         interactive: bool,
     },
+    /// Persist deployment lock into stacker.yml (writes deploy.server from last deploy)
+    Lock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Remove deploy.server section from stacker.yml (allows fresh cloud provision)
+    Unlock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
     /// Guided setup helpers
     Setup {
         #[command(subcommand)]
@@ -388,6 +398,12 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                 )),
                 StackerConfigCommands::Fix { file, interactive } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
+                )),
+                StackerConfigCommands::Lock { file } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigLockCommand::new(file),
+                )),
+                StackerConfigCommands::Unlock { file } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
                 )),
                 StackerConfigCommands::Setup { command } => match command {
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(

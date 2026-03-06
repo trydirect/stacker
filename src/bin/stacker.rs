@@ -103,6 +103,12 @@ enum StackerCommands {
         /// Disable automatic progress watching after deploy
         #[arg(long)]
         no_watch: bool,
+        /// Persist server details into stacker.yml after deploy (for redeploy)
+        #[arg(long)]
+        lock: bool,
+        /// Skip server pre-check; force fresh cloud provision even if deploy.server exists
+        #[arg(long)]
+        force_new: bool,
     },
     /// Show container logs
     Logs {
@@ -315,6 +321,16 @@ enum ConfigCommands {
         #[arg(long, default_value_t = true)]
         interactive: bool,
     },
+    /// Persist deployment lock into stacker.yml (writes deploy.server from last deploy)
+    Lock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Remove deploy.server section from stacker.yml (allows fresh cloud provision)
+    Unlock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
     /// Guided setup helpers
     Setup {
         #[command(subcommand)]
@@ -513,6 +529,8 @@ fn get_command(
             server,
             watch,
             no_watch,
+            lock,
+            force_new,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -522,7 +540,9 @@ fn get_command(
             )
             .with_remote_overrides(project, key, server)
             .with_key_id(key_id)
-            .with_watch(watch, no_watch),
+            .with_watch(watch, no_watch)
+            .with_lock(lock)
+            .with_force_new(force_new),
         ),
         StackerCommands::Logs {
             service,
@@ -550,6 +570,12 @@ fn get_command(
             ),
             ConfigCommands::Fix { file, interactive } => Box::new(
                 stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
+            ),
+            ConfigCommands::Lock { file } => Box::new(
+                stacker::console::commands::cli::config::ConfigLockCommand::new(file),
+            ),
+            ConfigCommands::Unlock { file } => Box::new(
+                stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
             ),
             ConfigCommands::Setup { command } => match command {
                 ConfigSetupCommands::Cloud { file } => Box::new(

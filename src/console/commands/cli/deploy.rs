@@ -7,6 +7,7 @@ use crate::cli::ai_client::{
 };
 use crate::cli::config_parser::{AiProviderType, DeployTarget, ServerConfig, StackerConfig};
 use crate::cli::credentials::CredentialsManager;
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::generator::dockerfile::DockerfileBuilder;
@@ -628,6 +629,10 @@ pub struct DeployCommand {
     /// Watch deployment progress until complete (--watch / --no-watch).
     /// `None` means "auto" (watch for cloud, health-check for local).
     pub watch: Option<bool>,
+    /// Persist server details into stacker.yml after deploy (--lock).
+    pub lock: bool,
+    /// Skip smart server pre-check and lockfile hints; force fresh cloud provision (--force-new).
+    pub force_new: bool,
 }
 
 impl DeployCommand {
@@ -647,6 +652,8 @@ impl DeployCommand {
             key_id: None,
             server_name: None,
             watch: None,
+            lock: false,
+            force_new: false,
         }
     }
 
@@ -681,6 +688,18 @@ impl DeployCommand {
         // else remains None → auto
         self
     }
+
+    /// Builder method to set lock behaviour (--lock flag).
+    pub fn with_lock(mut self, lock: bool) -> Self {
+        self.lock = lock;
+        self
+    }
+
+    /// Builder method to set force-new behaviour (--force-new flag).
+    pub fn with_force_new(mut self, force_new: bool) -> Self {
+        self.force_new = force_new;
+        self
+    }
 }
 
 /// Parse a deploy target string into `DeployTarget`.
@@ -712,6 +731,7 @@ pub fn run_deploy(
     target_override: Option<&str>,
     dry_run: bool,
     force_rebuild: bool,
+    force_new: bool,
     executor: &dyn CommandExecutor,
     remote_overrides: &RemoteDeployOverrides,
 ) -> Result<DeployResult, CliError> {
@@ -734,7 +754,8 @@ pub fn run_deploy(
     //     is defined with a host, try SSH connectivity first.
     //     If the server is reachable, automatically switch to Server target.
     //     If not, show diagnostics and abort so the user can fix or remove the section.
-    if deploy_target == DeployTarget::Cloud {
+    //     Skipped when --force-new is set (user explicitly wants a fresh cloud provision).
+    if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
             eprintln!("  Found deploy.server section (host={}). Checking SSH connectivity...", server_cfg.host);
 
@@ -786,6 +807,18 @@ pub fn run_deploy(
                             server_cfg.host
                         ),
                     });
+                }
+            }
+        } else if DeploymentLock::exists(project_dir) {
+            // No deploy.server in config, but a lockfile exists from a prior deploy.
+            // Inform the user without auto-switching — they must opt in.
+            if let Ok(Some(lock)) = DeploymentLock::load(project_dir) {
+                if let Some(ref ip) = lock.server_ip {
+                    if ip != "127.0.0.1" {
+                        eprintln!("  ℹ Found previous deployment to {} (from .stacker/deployment.lock)", ip);
+                        eprintln!("    To redeploy to the same server, run: stacker config lock");
+                        eprintln!("    To provision a new server instead:   stacker deploy --force-new");
+                    }
                 }
             }
         }
@@ -921,6 +954,7 @@ impl CallableTrait for DeployCommand {
             self.target.as_deref(),
             self.dry_run,
             self.force_rebuild,
+            self.force_new,
             &executor,
             &remote_overrides,
         );
@@ -969,8 +1003,164 @@ impl CallableTrait for DeployCommand {
             _ => {}
         }
 
+        // ── Deployment lock: persist deployment context ──
+        self.save_deployment_lock(&project_dir, &result)?;
+
         Ok(())
     }
+}
+
+impl DeployCommand {
+    /// Save deployment context to `.stacker/deployment.lock` after a successful deploy.
+    ///
+    /// For cloud deploys, tries to fetch the provisioned server's details from the
+    /// Stacker API (IP, SSH user/port, server name) so that subsequent deploys can
+    /// target the same server via the smart pre-check.
+    ///
+    /// When `--lock` is set, also writes the server details into `stacker.yml`.
+    fn save_deployment_lock(
+        &self,
+        project_dir: &Path,
+        result: &DeployResult,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Build the initial lock from the deploy result
+        let mut lock = match result.target {
+            DeployTarget::Local => DeploymentLock::for_local(),
+            DeployTarget::Server => {
+                // For server deploys, read server config from stacker.yml
+                let config_path = match &self.file {
+                    Some(f) => project_dir.join(f),
+                    None => project_dir.join(DEFAULT_CONFIG_FILE),
+                };
+                if let Ok(config) = StackerConfig::from_file(&config_path) {
+                    if let Some(ref server_cfg) = config.deploy.server {
+                        DeploymentLock::for_server(server_cfg)
+                    } else {
+                        DeploymentLock::from_result(result)
+                    }
+                } else {
+                    DeploymentLock::from_result(result)
+                }
+            }
+            DeployTarget::Cloud => {
+                let mut l = DeploymentLock::from_result(result)
+                    .with_project_name(self.project_name.clone());
+
+                // Try to fetch provisioned server details from the Stacker API
+                if let Some(project_id) = result.project_id {
+                    match fetch_server_for_project(project_id as i32) {
+                        Ok(Some(info)) => {
+                            l = l.with_server_info(
+                                info.srv_ip.clone(),
+                                info.ssh_user.clone(),
+                                info.ssh_port.map(|p| p as u16),
+                                info.name.clone(),
+                                info.cloud_id,
+                            );
+                            if let Some(ref ip) = info.srv_ip {
+                                eprintln!("  Server details: {} ({}@{}:{})",
+                                    info.name.as_deref().unwrap_or("unnamed"),
+                                    info.ssh_user.as_deref().unwrap_or("root"),
+                                    ip,
+                                    info.ssh_port.unwrap_or(22),
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            eprintln!("  ℹ Server details not yet available (may still be provisioning).");
+                        }
+                        Err(e) => {
+                            eprintln!("  ⚠ Could not fetch server details: {}", e);
+                        }
+                    }
+                }
+
+                l
+            }
+        };
+
+        // Always set project_name if available from CLI flag
+        if self.project_name.is_some() {
+            lock = lock.with_project_name(self.project_name.clone());
+        }
+
+        // Save lockfile
+        match lock.save(project_dir) {
+            Ok(path) => {
+                eprintln!("  Deployment context saved to {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("  ⚠ Failed to save deployment lock: {}", e);
+            }
+        }
+
+        // If --lock flag is set, also update stacker.yml with server details
+        if self.lock {
+            let config_path = match &self.file {
+                Some(f) => project_dir.join(f),
+                None => project_dir.join(DEFAULT_CONFIG_FILE),
+            };
+
+            if lock.server_ip.is_some()
+                && lock.server_ip.as_deref() != Some("127.0.0.1")
+            {
+                match StackerConfig::from_file(&config_path) {
+                    Ok(mut config) => {
+                        lock.apply_to_config(&mut config);
+                        match DeploymentLock::write_config(&config, &config_path) {
+                            Ok(()) => {
+                                eprintln!("  ✓ stacker.yml updated with server details (backup: stacker.yml.bak)");
+                                eprintln!("    Next deploy will target this server directly.");
+                            }
+                            Err(e) => {
+                                eprintln!("  ⚠ Failed to update stacker.yml: {}", e);
+                                eprintln!("    Run `stacker config lock` to retry.");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  ⚠ Failed to read stacker.yml for update: {}", e);
+                    }
+                }
+            } else {
+                eprintln!("  ℹ --lock: No remote server details to persist (local deploy or server IP not yet available).");
+                eprintln!("    Run `stacker config lock` after the server is provisioned.");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ── Fetch server details from Stacker API by project ID ──
+
+/// After a cloud deploy completes, look up the provisioned server's details
+/// (IP, SSH user, port, name) from the Stacker server API.
+fn fetch_server_for_project(
+    project_id: i32,
+) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
+    let cred_manager = CredentialsManager::with_default_store();
+    let creds = cred_manager.require_valid_token("server lookup")?;
+
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
+        stacker_client::DEFAULT_STACKER_URL,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let client = StackerClient::new(&base_url, &creds.access_token);
+        let servers = client.list_servers().await?;
+
+        // Find the server linked to this project
+        let server = servers
+            .into_iter()
+            .find(|s| s.project_id == project_id && s.srv_ip.is_some());
+
+        Ok(server)
+    })
 }
 
 // ── Local container health-check after `docker compose up` ───
@@ -1297,7 +1487,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Generated files should exist
@@ -1315,7 +1505,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Custom Dockerfile should not be overwritten
@@ -1336,7 +1526,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // .stacker/docker-compose.yml should NOT be generated
@@ -1353,7 +1543,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -1365,7 +1555,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // No Dockerfile should be generated (using image)
@@ -1379,7 +1569,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1400,7 +1590,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // This should fail at validation since no credentials exist
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
     }
 
@@ -1412,7 +1602,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1425,7 +1615,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1441,7 +1631,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -1454,15 +1644,15 @@ mod tests {
         let executor = MockExecutor::success();
 
         // First deploy creates files
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Second deploy without force_rebuild should succeed (reuses existing files)
-        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result2.is_ok());
 
         // With force_rebuild should also succeed (regenerates files)
-        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, &executor, &RemoteDeployOverrides::default());
+        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result3.is_ok());
     }
 
@@ -1495,7 +1685,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // Dry-run should succeed (hooks are just noted, not executed in dry-run)
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
