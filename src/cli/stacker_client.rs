@@ -997,12 +997,21 @@ fn parse_port_mapping(port_str: &str) -> (String, String) {
 }
 
 /// Parse a volume mapping string like "./dist:/usr/share/nginx/html" or "data:/var/lib/db"
-/// into (host_path, container_path) tuple.
-fn parse_volume_mapping(vol_str: &str) -> (String, String) {
-    if let Some((host, container)) = vol_str.split_once(':') {
-        (host.to_string(), container.to_string())
-    } else {
-        (vol_str.to_string(), vol_str.to_string())
+/// into (host_path, container_path, read_only) tuple.
+/// Handles optional `:ro` / `:rw` suffix (e.g. "/var/run/docker.sock:/var/run/docker.sock:ro").
+fn parse_volume_mapping(vol_str: &str) -> (String, String, bool) {
+    let parts: Vec<&str> = vol_str.split(':').collect();
+    match parts.len() {
+        // "source:target:mode" (e.g. "/host:/container:ro")
+        3 => (
+            parts[0].to_string(),
+            parts[1].to_string(),
+            parts[2] == "ro",
+        ),
+        // "source:target"
+        2 => (parts[0].to_string(), parts[1].to_string(), false),
+        // bare path
+        _ => (vol_str.to_string(), vol_str.to_string(), false),
     }
 }
 
@@ -1028,10 +1037,11 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
         .volumes
         .iter()
         .map(|v| {
-            let (host, container) = parse_volume_mapping(v);
+            let (host, container, read_only) = parse_volume_mapping(v);
             serde_json::json!({
                 "host_path": host,
                 "container_path": container,
+                "read_only": read_only,
             })
         })
         .collect();
@@ -1116,10 +1126,11 @@ fn app_source_to_app_json(
         .volumes
         .iter()
         .map(|v| {
-            let (host, container) = parse_volume_mapping(v);
+            let (host, container, read_only) = parse_volume_mapping(v);
             serde_json::json!({
                 "host_path": host,
                 "container_path": container,
+                "read_only": read_only,
             })
         })
         .collect();

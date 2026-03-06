@@ -27,11 +27,23 @@ impl TryInto<dctypes::AdvancedVolumes> for &Volume {
     type Error = String;
     fn try_into(self) -> Result<dctypes::AdvancedVolumes, Self::Error> {
         let source = self.host_path.clone();
-        let target = self.container_path.clone();
+        let raw_target = self.container_path.clone().unwrap_or_default();
+
+        // Strip `:ro` / `:rw` suffix from container_path and extract read_only flag.
+        // Data may arrive with the mode embedded (e.g. "/var/run/docker.sock:ro").
+        let (target, read_only) = if raw_target.ends_with(":ro") {
+            (raw_target.trim_end_matches(":ro").to_string(), true)
+        } else if raw_target.ends_with(":rw") {
+            (raw_target.trim_end_matches(":rw").to_string(), false)
+        } else {
+            (raw_target, false)
+        };
+
         tracing::debug!(
-            "Volume conversion result: source: {:?} target: {:?}",
+            "Volume conversion result: source: {:?} target: {:?} read_only: {}",
             source,
-            target
+            target,
+            read_only
         );
 
         let _type = if self.is_named_docker_volume() {
@@ -42,9 +54,9 @@ impl TryInto<dctypes::AdvancedVolumes> for &Volume {
 
         Ok(dctypes::AdvancedVolumes {
             source: source,
-            target: target.unwrap_or("".to_string()),
+            target: target,
             _type: _type.to_string(),
-            read_only: false,
+            read_only,
             bind: None,
             volume: None,
             tmpfs: None,
