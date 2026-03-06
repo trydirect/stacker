@@ -247,3 +247,92 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     }
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// list clouds
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker list clouds [--json]`
+///
+/// Lists all saved cloud credentials for the authenticated user.
+/// Shows ID, name, and provider. Tokens are masked for security.
+pub struct ListCloudsCommand {
+    pub json: bool,
+}
+
+impl ListCloudsCommand {
+    pub fn new(json: bool) -> Self {
+        Self { json }
+    }
+}
+
+impl CallableTrait for ListCloudsCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let json = self.json;
+
+        let cred_manager = CredentialsManager::with_default_store();
+        let creds = cred_manager.require_valid_token("list clouds")?;
+        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+
+        rt.block_on(async {
+            let client = StackerClient::new(&base_url, &creds.access_token);
+            let clouds = client.list_clouds().await?;
+
+            if clouds.is_empty() {
+                eprintln!("No saved cloud credentials found.");
+                eprintln!("Cloud credentials are saved automatically when you deploy with env vars,");
+                eprintln!("or via: stacker deploy --target cloud (with HCLOUD_TOKEN, etc. exported).");
+                return Ok(());
+            }
+
+            if json {
+                // Mask sensitive fields for JSON output
+                let safe: Vec<serde_json::Value> = clouds
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "name": c.name,
+                            "provider": c.provider,
+                            "has_token": c.cloud_token.is_some(),
+                            "has_key": c.cloud_key.is_some(),
+                            "has_secret": c.cloud_secret.is_some(),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&safe)?);
+            } else {
+                println!(
+                    "{:<6} {:<24} {:<12} {:<10} {:<10} {:<10}",
+                    "ID", "NAME", "PROVIDER", "TOKEN", "KEY", "SECRET"
+                );
+                println!("{}", "─".repeat(74));
+
+                for c in &clouds {
+                    let has_token = if c.cloud_token.is_some() { "✓" } else { "-" };
+                    let has_key = if c.cloud_key.is_some() { "✓" } else { "-" };
+                    let has_secret = if c.cloud_secret.is_some() { "✓" } else { "-" };
+                    println!(
+                        "{:<6} {:<24} {:<12} {:<10} {:<10} {:<10}",
+                        c.id,
+                        truncate(&c.name, 22),
+                        &c.provider,
+                        has_token,
+                        has_key,
+                        has_secret,
+                    );
+                }
+
+                eprintln!("\n{} cloud credential(s) total.", clouds.len());
+                eprintln!("Use with: stacker deploy --key <NAME> or --key-id <ID>");
+            }
+
+            Ok(())
+        })
+    }
+}

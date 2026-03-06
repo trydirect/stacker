@@ -93,6 +93,7 @@ pub struct DeployContext {
     /// Remote deploy overrides from CLI flags.
     pub project_name_override: Option<String>,
     pub key_name_override: Option<String>,
+    pub key_id_override: Option<i32>,
     pub server_name_override: Option<String>,
 }
 
@@ -491,64 +492,94 @@ impl DeployStrategy for CloudDeploy {
                     };
 
                     // Step 2: Resolve cloud credentials
-                    let cloud_id = if let Some(key_ref) = &key_name {
-                        // Look up saved cloud by provider name
-                        eprintln!("  Looking up saved cloud key '{}'...", key_ref);
-                        match client.find_cloud_by_provider(key_ref).await? {
+                    let cloud_id = if let Some(cid) = context.key_id_override {
+                        // --key-id flag: look up by ID (server checks ownership)
+                        eprintln!("  Looking up cloud credentials by id={}...", cid);
+                        match client.get_cloud(cid).await? {
                             Some(c) => {
                                 eprintln!(
-                                    "  Found cloud credentials (id={}, provider={})",
-                                    c.id, c.provider
+                                    "  Found cloud credentials (id={}, name='{}', provider={})",
+                                    c.id, c.name, c.provider
                                 );
                                 Some(c.id)
                             }
                             None => {
-                                // Try saving current env-var creds under this provider
-                                let provider_str = cloud_cfg.provider.to_string();
-                                let provider_code = provider_code_for_remote(
-                                    &provider_str,
+                                return Err(CliError::DeployFailed {
+                                    target: DeployTarget::Cloud,
+                                    reason: format!(
+                                        "Cloud credential id={} not found (or not owned by you). Use `stacker list clouds` to see available credentials.",
+                                        cid
+                                    ),
+                                });
+                            }
+                        }
+                    } else if let Some(key_ref) = &key_name {
+                        // --key flag: look up by name first, fall back to provider match
+                        eprintln!("  Looking up saved cloud key '{}'...", key_ref);
+                        match client.find_cloud_by_name(key_ref).await? {
+                            Some(c) => {
+                                eprintln!(
+                                    "  Found cloud credentials (id={}, name='{}', provider={})",
+                                    c.id, c.name, c.provider
                                 );
-                                let env_creds =
-                                    resolve_remote_cloud_credentials(provider_code);
-                                let cloud_token = env_creds
-                                    .get("cloud_token")
-                                    .and_then(|v| v.as_str());
-                                let cloud_key = env_creds
-                                    .get("cloud_key")
-                                    .and_then(|v| v.as_str());
-                                let cloud_secret = env_creds
-                                    .get("cloud_secret")
-                                    .and_then(|v| v.as_str());
+                                Some(c.id)
+                            }
+                            None => match client.find_cloud_by_provider(key_ref).await? {
+                                Some(c) => {
+                                    eprintln!(
+                                        "  Found cloud credentials by provider (id={}, name='{}', provider={})",
+                                        c.id, c.name, c.provider
+                                    );
+                                    Some(c.id)
+                                }
+                                None => {
+                                    // Try saving current env-var creds under this provider
+                                    let provider_str = cloud_cfg.provider.to_string();
+                                    let provider_code = provider_code_for_remote(
+                                        &provider_str,
+                                    );
+                                    let env_creds =
+                                        resolve_remote_cloud_credentials(provider_code);
+                                    let cloud_token = env_creds
+                                        .get("cloud_token")
+                                        .and_then(|v| v.as_str());
+                                    let cloud_key = env_creds
+                                        .get("cloud_key")
+                                        .and_then(|v| v.as_str());
+                                    let cloud_secret = env_creds
+                                        .get("cloud_secret")
+                                        .and_then(|v| v.as_str());
 
-                                if cloud_token.is_some()
-                                    || cloud_key.is_some()
-                                    || cloud_secret.is_some()
-                                {
-                                    eprintln!(
-                                        "  No saved cloud '{}', saving from env vars...",
-                                        key_ref
-                                    );
-                                    let saved = client
-                                        .save_cloud(
-                                            provider_code,
-                                            cloud_token,
-                                            cloud_key,
-                                            cloud_secret,
-                                        )
-                                        .await?;
-                                    eprintln!(
-                                        "  Saved cloud credentials (id={})",
-                                        saved.id
-                                    );
-                                    Some(saved.id)
-                                } else {
-                                    return Err(CliError::DeployFailed {
-                                        target: DeployTarget::Cloud,
-                                        reason: format!(
-                                            "Cloud key '{}' not found on server and no cloud credentials in env vars (STACKER_CLOUD_TOKEN, HCLOUD_TOKEN, etc.)",
+                                    if cloud_token.is_some()
+                                        || cloud_key.is_some()
+                                        || cloud_secret.is_some()
+                                    {
+                                        eprintln!(
+                                            "  No saved cloud '{}', saving from env vars...",
                                             key_ref
-                                        ),
-                                    });
+                                        );
+                                        let saved = client
+                                            .save_cloud(
+                                                provider_code,
+                                                cloud_token,
+                                                cloud_key,
+                                                cloud_secret,
+                                            )
+                                            .await?;
+                                        eprintln!(
+                                            "  Saved cloud credentials (id={})",
+                                            saved.id
+                                        );
+                                        Some(saved.id)
+                                    } else {
+                                        return Err(CliError::DeployFailed {
+                                            target: DeployTarget::Cloud,
+                                            reason: format!(
+                                                "Cloud key '{}' not found on server and no cloud credentials in env vars (STACKER_CLOUD_TOKEN, HCLOUD_TOKEN, etc.)",
+                                                key_ref
+                                            ),
+                                        });
+                                    }
                                 }
                             }
                         }

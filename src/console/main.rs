@@ -133,6 +133,9 @@ enum StackerCommands {
         /// Name of saved cloud credential to reuse
         #[arg(long, value_name = "KEY_NAME")]
         key: Option<String>,
+        /// ID of saved cloud credential to reuse
+        #[arg(long, value_name = "CLOUD_ID")]
+        key_id: Option<i32>,
         /// Name of saved server to reuse
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
@@ -345,6 +348,7 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                 force_rebuild,
                 project,
                 key,
+                key_id,
                 server,
             } => Ok(Box::new(
                 stacker::console::commands::cli::deploy::DeployCommand::new(
@@ -353,7 +357,8 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                     dry_run,
                     force_rebuild,
                 )
-                .with_remote_overrides(project, key, server),
+                .with_remote_overrides(project, key, server)
+                .with_key_id(key_id),
             )),
             StackerCommands::Logs {
                 service,

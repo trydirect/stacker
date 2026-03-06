@@ -621,6 +621,8 @@ pub struct DeployCommand {
     pub project_name: Option<String>,
     /// Override cloud key name (--key flag)
     pub key_name: Option<String>,
+    /// Override cloud key by ID (--key-id flag)
+    pub key_id: Option<i32>,
     /// Override server name (--server flag)
     pub server_name: Option<String>,
     /// Watch deployment progress until complete (--watch / --no-watch).
@@ -642,6 +644,7 @@ impl DeployCommand {
             force_rebuild,
             project_name: None,
             key_name: None,
+            key_id: None,
             server_name: None,
             watch: None,
         }
@@ -657,6 +660,12 @@ impl DeployCommand {
         self.project_name = project;
         self.key_name = key;
         self.server_name = server;
+        self
+    }
+
+    /// Builder method to set cloud key ID from CLI `--key-id` flag.
+    pub fn with_key_id(mut self, key_id: Option<i32>) -> Self {
+        self.key_id = key_id;
         self
     }
 
@@ -690,6 +699,7 @@ fn parse_deploy_target(s: &str) -> Result<DeployTarget, CliError> {
 pub struct RemoteDeployOverrides {
     pub project_name: Option<String>,
     pub key_name: Option<String>,
+    pub key_id: Option<i32>,
     pub server_name: Option<String>,
 }
 
@@ -880,6 +890,7 @@ pub fn run_deploy(
             .and_then(|cloud| cloud.install_image.clone()),
         project_name_override: remote_overrides.project_name.clone(),
         key_name_override: remote_overrides.key_name.clone(),
+        key_id_override: remote_overrides.key_id,
         server_name_override: remote_overrides.server_name.clone(),
     };
 
@@ -897,6 +908,7 @@ impl CallableTrait for DeployCommand {
         let remote_overrides = RemoteDeployOverrides {
             project_name: self.project_name.clone(),
             key_name: self.key_name.clone(),
+            key_id: self.key_id,
             server_name: self.server_name.clone(),
         };
 

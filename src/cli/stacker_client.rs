@@ -46,6 +46,8 @@ pub struct ProjectInfo {
 pub struct CloudInfo {
     pub id: i32,
     pub user_id: String,
+    #[serde(default)]
+    pub name: String,
     pub provider: String,
     pub cloud_token: Option<String>,
     pub cloud_key: Option<String>,
@@ -384,6 +386,16 @@ impl StackerClient {
         Ok(clouds.into_iter().find(|c| c.provider.to_lowercase() == lower))
     }
 
+    /// Find saved cloud credentials by name (e.g. "my-hetzner", "htz-4").
+    pub async fn find_cloud_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<CloudInfo>, CliError> {
+        let clouds = self.list_clouds().await?;
+        let lower = name.to_lowercase();
+        Ok(clouds.into_iter().find(|c| c.name.to_lowercase() == lower))
+    }
+
     /// Find saved cloud credentials by ID.
     pub async fn get_cloud(&self, cloud_id: i32) -> Result<Option<CloudInfo>, CliError> {
         let url = format!("{}/cloud/{}", self.base_url, cloud_id);
@@ -432,6 +444,18 @@ impl StackerClient {
         cloud_key: Option<&str>,
         cloud_secret: Option<&str>,
     ) -> Result<CloudInfo, CliError> {
+        self.save_cloud_with_name(provider, None, cloud_token, cloud_key, cloud_secret).await
+    }
+
+    /// Save cloud credentials with an optional name.
+    pub async fn save_cloud_with_name(
+        &self,
+        provider: &str,
+        name: Option<&str>,
+        cloud_token: Option<&str>,
+        cloud_key: Option<&str>,
+        cloud_secret: Option<&str>,
+    ) -> Result<CloudInfo, CliError> {
         let url = format!("{}/cloud", self.base_url);
 
         let mut payload = serde_json::json!({
@@ -440,6 +464,12 @@ impl StackerClient {
         });
 
         if let Some(obj) = payload.as_object_mut() {
+            if let Some(n) = name {
+                obj.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(n.to_string()),
+                );
+            }
             if let Some(t) = cloud_token {
                 obj.insert(
                     "cloud_token".to_string(),
