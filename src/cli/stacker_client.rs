@@ -1193,8 +1193,15 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
                 "type": "feature",
                 "restart": "always",
                 "custom": true,
-                "shared_ports": [],
+                "shared_ports": [
+                    {"host_port": "80", "container_port": "80"},
+                    {"host_port": "443", "container_port": "443"},
+                    {"host_port": "81", "container_port": "81"},
+                ],
                 "network": [],
+                "dockerhub_user": "jc21",
+                "dockerhub_name": "nginx-proxy-manager",
+                "dockerhub_tag": "latest",
             }));
         }
         _ => {}
@@ -1456,6 +1463,13 @@ mod tests {
         assert_eq!(features[0]["restart"], "always");
         assert!(features[0]["_id"].is_string(), "_id must be present");
         assert_eq!(features[0]["custom"], true);
+        // Image fields must be present so the install service can build a Docker image reference
+        assert_eq!(features[0]["dockerhub_user"], "jc21");
+        assert_eq!(features[0]["dockerhub_name"], "nginx-proxy-manager");
+        assert_eq!(features[0]["dockerhub_tag"], "latest");
+        // Ports should include the NPM management port (81)
+        let ports = features[0]["shared_ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 3);
     }
 
     #[test]
