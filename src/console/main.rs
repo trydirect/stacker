@@ -133,6 +133,9 @@ enum StackerCommands {
         /// Name of saved cloud credential to reuse
         #[arg(long, value_name = "KEY_NAME")]
         key: Option<String>,
+        /// ID of saved cloud credential to reuse
+        #[arg(long, value_name = "CLOUD_ID")]
+        key_id: Option<i32>,
         /// Name of saved server to reuse
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
@@ -208,6 +211,16 @@ enum StackerConfigCommands {
         file: Option<String>,
         #[arg(long, default_value_t = true)]
         interactive: bool,
+    },
+    /// Persist deployment lock into stacker.yml (writes deploy.server from last deploy)
+    Lock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Remove deploy.server section from stacker.yml (allows fresh cloud provision)
+    Unlock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
     },
     /// Guided setup helpers
     Setup {
@@ -345,6 +358,7 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                 force_rebuild,
                 project,
                 key,
+                key_id,
                 server,
             } => Ok(Box::new(
                 stacker::console::commands::cli::deploy::DeployCommand::new(
@@ -353,7 +367,8 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                     dry_run,
                     force_rebuild,
                 )
-                .with_remote_overrides(project, key, server),
+                .with_remote_overrides(project, key, server)
+                .with_key_id(key_id),
             )),
             StackerCommands::Logs {
                 service,
@@ -383,6 +398,12 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                 )),
                 StackerConfigCommands::Fix { file, interactive } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
+                )),
+                StackerConfigCommands::Lock { file } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigLockCommand::new(file),
+                )),
+                StackerConfigCommands::Unlock { file } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
                 )),
                 StackerConfigCommands::Setup { command } => match command {
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(

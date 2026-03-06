@@ -97,8 +97,12 @@ pub async fn try_hmac(req: &mut ServiceRequest) -> Result<bool, String> {
         None => {}
     }
 
+    // Use "client" as the Casbin subject so it matches the Casbin policies
+    // (e.g. `p, client, /api/v1/agent/register, POST`).
+    // Previously this was `client_id.to_string()` which never matched any
+    // group mapping and caused 403 for all HMAC-authenticated requests.
     let accesscontrol_vals = actix_casbin_auth::CasbinVals {
-        subject: client_id.to_string(),
+        subject: "client".to_string(),
         domain: None,
     };
     if req.extensions_mut().insert(accesscontrol_vals).is_some() {

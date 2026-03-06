@@ -355,7 +355,6 @@ impl SyncSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::models::ProjectApp;
 
     #[test]
