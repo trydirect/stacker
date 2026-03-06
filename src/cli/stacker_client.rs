@@ -1255,6 +1255,37 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
 
 /// Build the deploy form payload that matches the Stacker server's
 /// `forms::project::Deploy` structure.
+/// Generate a deterministic but unique server name from the project name.
+///
+/// Format: `{project}-{4hex}` where the hex suffix is derived from the current
+/// timestamp so each deploy gets a distinct name, e.g. `website-a3f1`.
+/// The name is sanitised to contain only lowercase alphanumeric chars and hyphens.
+fn generate_server_name(project_name: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Sanitise project name: lowercase, replace non-alnum with hyphen, collapse runs
+    let sanitised: String = project_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    let base = if sanitised.is_empty() { "server" } else { &sanitised };
+
+    // 4-char hex suffix from current timestamp (unique per ~65k deploys within any second)
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let suffix = format!("{:04x}", (ts & 0xFFFF) as u16);
+
+    format!("{}-{}", base, suffix)
+}
+
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
@@ -1267,6 +1298,11 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         _ => "ubuntu-22.04",
     };
 
+    // Auto-generate a server name from the project name so every
+    // provisioned server gets a recognisable label in `stacker list servers`.
+    let project_name = config.project.identity.clone().unwrap_or_else(|| config.name.clone());
+    let server_name = generate_server_name(&project_name);
+
     let mut form = serde_json::json!({
         "cloud": {
             "provider": provider,
@@ -1276,6 +1312,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             "region": region,
             "server": server_size,
             "os": os,
+            "name": server_name,
         },
         "stack": {
             "stack_code": config.project.identity.clone().unwrap_or_else(|| config.name.clone()),
@@ -1374,6 +1411,10 @@ mod tests {
         assert_eq!(form["server"]["region"], "fsn1");
         assert_eq!(form["server"]["server"], "cx11");
         assert_eq!(form["stack"]["stack_code"], "myproject");
+        // Auto-generated server name should start with the project name
+        let name = form["server"]["name"].as_str().unwrap();
+        assert!(name.starts_with("myproject-"), "server name should start with project name, got: {}", name);
+        assert_eq!(name.len(), "myproject-".len() + 4, "suffix should be 4 hex chars");
     }
 
     #[test]
@@ -1512,5 +1553,33 @@ mod tests {
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
         assert!(features.is_empty(), "feature array should be empty when no proxy configured");
+    }
+
+    #[test]
+    fn test_generate_server_name_basic() {
+        let name = generate_server_name("website");
+        assert!(name.starts_with("website-"), "got: {}", name);
+        // 4 hex chars suffix
+        let suffix = &name["website-".len()..];
+        assert_eq!(suffix.len(), 4);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "suffix should be hex, got: {}", suffix);
+    }
+
+    #[test]
+    fn test_generate_server_name_sanitises() {
+        let name = generate_server_name("My Cool App!");
+        assert!(name.starts_with("my-cool-app-"), "got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_empty() {
+        let name = generate_server_name("");
+        assert!(name.starts_with("server-"), "empty input should fallback to 'server', got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_special_chars() {
+        let name = generate_server_name("app___v2..beta");
+        assert!(name.starts_with("app-v2-beta-"), "consecutive separators collapsed, got: {}", name);
     }
 }

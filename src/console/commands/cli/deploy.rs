@@ -755,6 +755,8 @@ pub fn run_deploy(
     //     If the server is reachable, automatically switch to Server target.
     //     If not, show diagnostics and abort so the user can fix or remove the section.
     //     Skipped when --force-new is set (user explicitly wants a fresh cloud provision).
+    //     When a lockfile exists, auto-inject the server name so the API reuses the server.
+    let mut lock_server_name: Option<String> = None;
     if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
             eprintln!("  Found deploy.server section (host={}). Checking SSH connectivity...", server_cfg.host);
@@ -811,12 +813,16 @@ pub fn run_deploy(
             }
         } else if DeploymentLock::exists(project_dir) {
             // No deploy.server in config, but a lockfile exists from a prior deploy.
-            // Inform the user without auto-switching — they must opt in.
+            // Auto-inject the server name so the cloud deploy API reuses the same server.
             if let Ok(Some(lock)) = DeploymentLock::load(project_dir) {
-                if let Some(ref ip) = lock.server_ip {
+                if let Some(ref name) = lock.server_name {
+                    eprintln!("  ℹ Found previous deployment (server='{}') — reusing server", name);
+                    eprintln!("    To provision a new server instead: stacker deploy --force-new");
+                    lock_server_name = Some(name.clone());
+                } else if let Some(ref ip) = lock.server_ip {
                     if ip != "127.0.0.1" {
                         eprintln!("  ℹ Found previous deployment to {} (from .stacker/deployment.lock)", ip);
-                        eprintln!("    To redeploy to the same server, run: stacker config lock");
+                        eprintln!("    Server name unknown — cannot auto-reuse. Run: stacker config lock");
                         eprintln!("    To provision a new server instead:   stacker deploy --force-new");
                     }
                 }
@@ -924,7 +930,10 @@ pub fn run_deploy(
         project_name_override: remote_overrides.project_name.clone(),
         key_name_override: remote_overrides.key_name.clone(),
         key_id_override: remote_overrides.key_id,
-        server_name_override: remote_overrides.server_name.clone(),
+        server_name_override: remote_overrides
+            .server_name
+            .clone()
+            .or(lock_server_name),
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -1046,6 +1055,23 @@ impl DeployCommand {
                 let mut l = DeploymentLock::from_result(result)
                     .with_project_name(self.project_name.clone());
 
+                // If no --project flag, try to get the project name from config
+                if l.project_name.is_none() {
+                    let config_path = match &self.file {
+                        Some(f) => project_dir.join(f),
+                        None => project_dir.join(DEFAULT_CONFIG_FILE),
+                    };
+                    if let Ok(config) = StackerConfig::from_file(&config_path) {
+                        // Prefer project.identity as the registered name, fall back to config name
+                        let name = config
+                            .project
+                            .identity
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(config.name);
+                        l = l.with_project_name(Some(name));
+                    }
+                }
+
                 // Try to fetch provisioned server details from the Stacker API
                 if let Some(project_id) = result.project_id {
                     match fetch_server_for_project(project_id as i32) {
@@ -1136,9 +1162,15 @@ impl DeployCommand {
 
 /// After a cloud deploy completes, look up the provisioned server's details
 /// (IP, SSH user, port, name) from the Stacker server API.
+///
+/// Retries up to 3 times with a 10-second delay between attempts, because the
+/// server IP may not yet be assigned right after the deployment status becomes
+/// "completed".
 fn fetch_server_for_project(
     project_id: i32,
 ) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
     let cred_manager = CredentialsManager::with_default_store();
     let creds = cred_manager.require_valid_token("server lookup")?;
 
@@ -1152,14 +1184,56 @@ fn fetch_server_for_project(
 
     rt.block_on(async {
         let client = StackerClient::new(&base_url, &creds.access_token);
-        let servers = client.list_servers().await?;
 
-        // Find the server linked to this project
-        let server = servers
-            .into_iter()
-            .find(|s| s.project_id == project_id && s.srv_ip.is_some());
+        let max_retries = 3;
+        let retry_delay = Duration::from_secs(10);
 
-        Ok(server)
+        for attempt in 0..max_retries {
+            let servers = client.list_servers().await?;
+
+            // Find the server linked to this project
+            let server = servers
+                .into_iter()
+                .find(|s| s.project_id == project_id);
+
+            match server {
+                Some(ref s) if s.srv_ip.is_some() => {
+                    // Server found with IP — done
+                    return Ok(server);
+                }
+                Some(_) if attempt < max_retries - 1 => {
+                    // Server found but no IP yet — wait and retry
+                    eprintln!(
+                        "  Server found but IP not yet assigned (attempt {}/{}), retrying in {}s...",
+                        attempt + 1,
+                        max_retries,
+                        retry_delay.as_secs(),
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+                Some(s) => {
+                    // Final attempt — return server even without IP so we capture
+                    // name, cloud_id, etc.
+                    return Ok(Some(s));
+                }
+                None if attempt < max_retries - 1 => {
+                    // No server yet — wait and retry
+                    eprintln!(
+                        "  No server found for project {} (attempt {}/{}), retrying in {}s...",
+                        project_id,
+                        attempt + 1,
+                        max_retries,
+                        retry_delay.as_secs(),
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+                None => {
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(None)
     })
 }
 
