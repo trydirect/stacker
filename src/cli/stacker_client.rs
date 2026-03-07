@@ -1183,9 +1183,10 @@ impl AgentEnqueueRequest {
 pub struct AgentCommandInfo {
     pub command_id: String,
     pub deployment_hash: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub command_type: String,
     pub status: String,
+    #[serde(default)]
     pub priority: String,
     #[serde(default)]
     pub parameters: Option<serde_json::Value>,
@@ -1193,7 +1194,9 @@ pub struct AgentCommandInfo {
     pub result: Option<serde_json::Value>,
     #[serde(default)]
     pub error: Option<serde_json::Value>,
+    #[serde(default)]
     pub created_at: String,
+    #[serde(default)]
     pub updated_at: String,
 }
 

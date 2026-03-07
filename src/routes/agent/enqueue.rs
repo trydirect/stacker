@@ -99,10 +99,6 @@ pub async fn enqueue_handler(
     );
 
     Ok(JsonResponse::build()
-        .set_item(Some(serde_json::json!({
-            "command_id": saved.command_id,
-            "deployment_hash": saved.deployment_hash,
-            "status": saved.status
-        })))
+        .set_item(Some(saved))
         .created("Command enqueued"))
 }

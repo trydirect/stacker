@@ -14,8 +14,8 @@ pub async fn get_handler(
 ) -> Result<impl Responder> {
     let (deployment_hash, command_id) = path.into_inner();
 
-    // Fetch command
-    let command = db::command::fetch_by_id(pg_pool.get_ref(), &command_id)
+    // Fetch command by its string command_id (e.g. "cmd_<uuid>"), not the row UUID
+    let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &command_id)
         .await
         .map_err(|err| {
             tracing::error!("Failed to fetch command: {}", err);
