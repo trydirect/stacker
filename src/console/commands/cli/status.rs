@@ -204,7 +204,6 @@ fn print_deployment_status_rich(
             println!("\n── Next Steps ─────────────────────────────");
             println!("  • Check service health:   stacker status --watch");
             println!("  • View logs:              stacker logs");
-            println!("  • SSH into server:        stacker ssh");
             if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
                 println!("  • Manage proxy:           stacker proxy");
             }

@@ -272,8 +272,15 @@ enum StackerProxyCommands {
         #[arg(long)]
         ssl: Option<String>,
     },
-    /// Detect existing proxy containers
-    Detect,
+    /// Detect existing reverse-proxy containers
+    Detect {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Target a specific deployment by hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -441,8 +448,8 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                         domain, upstream, ssl,
                     ),
                 )),
-                StackerProxyCommands::Detect => Ok(Box::new(
-                    stacker::console::commands::cli::proxy::ProxyDetectCommand::new(),
+                StackerProxyCommands::Detect { json, deployment } => Ok(Box::new(
+                    stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
                 )),
             },
             StackerCommands::Update { channel } => Ok(Box::new(

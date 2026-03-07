@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 /// Default Stacker server base URL (distinct from the User Service auth URL).
 pub const DEFAULT_STACKER_URL: &str = "https://stacker.try.direct";
 
+/// Default Vault URL used by status panel roles.
+/// The Install Service Ansible role uses this to configure the agent's VAULT_ADDRESS
+/// environment variable on the remote server. Must be a publicly reachable address
+/// (not a Docker-internal IP) so deployed agents can connect to Vault.
+pub const DEFAULT_VAULT_URL: &str = "https://vault.try.direct";
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Response types (matching Stacker server JSON envelope)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1647,7 +1653,13 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
     // integrated_features and set connection_mode so the install service's Ansible
     // playbook picks it up (get_features_roles checks connection_mode == "status_panel").
+    // Also pass vault_url in stack.vars so the Ansible role configures the remote
+    // status panel agent with the public Vault address (not the local Docker IP).
     if config.monitoring.status_panel {
+        // Resolve public Vault URL: env override → default constant.
+        let vault_url = std::env::var("STACKER_VAULT_URL")
+            .unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
+
         if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
             let features = stack_obj
                 .entry("integrated_features")
@@ -1657,6 +1669,18 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 if !arr.contains(&sp) {
                     arr.push(sp);
                 }
+            }
+
+            // Inject vault_url into stack.vars so the Install Service Ansible
+            // statuspanel role configures the agent with the public Vault address.
+            let vars = stack_obj
+                .entry("vars")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = vars.as_array_mut() {
+                arr.push(serde_json::json!({
+                    "key": "vault_url",
+                    "value": vault_url
+                }));
             }
         }
         if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
@@ -1762,6 +1786,20 @@ mod tests {
         );
         // connection_mode should be set to "status_panel"
         assert_eq!(form["server"]["connection_mode"], "status_panel");
+
+        // vault_url should be passed in stack.vars for the Ansible statuspanel role
+        let vars = form["stack"]["vars"].as_array().unwrap();
+        let vault_var = vars.iter().find(|v| v["key"] == "vault_url");
+        assert!(
+            vault_var.is_some(),
+            "stack.vars should contain vault_url: {:?}",
+            vars
+        );
+        assert_eq!(
+            vault_var.unwrap()["value"],
+            DEFAULT_VAULT_URL,
+            "vault_url should be the public Vault address"
+        );
     }
 
     #[test]
