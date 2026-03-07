@@ -933,6 +933,262 @@ impl StackerClient {
 
         Ok(api.item)
     }
+
+    // ── Agent commands ───────────────────────────────
+
+    /// Enqueue a command for the Status Panel agent on a deployment.
+    ///
+    /// `POST /api/v1/agent/commands/enqueue`
+    pub async fn agent_enqueue(
+        &self,
+        request: &AgentEnqueueRequest,
+    ) -> Result<AgentCommandInfo, CliError> {
+        let url = format!("{}/api/v1/agent/commands/enqueue", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Enqueue failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<AgentCommandInfo> =
+            resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Invalid enqueue response: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::AgentCommandFailed {
+            command_id: String::new(),
+            error: "Empty enqueue response from server".to_string(),
+        })
+    }
+
+    /// Get the status/result of a previously enqueued agent command.
+    ///
+    /// `GET /api/v1/commands/{deployment_hash}/{command_id}`
+    pub async fn agent_command_status(
+        &self,
+        deployment_hash: &str,
+        command_id: &str,
+    ) -> Result<AgentCommandInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/commands/{}/{}",
+            self.base_url, deployment_hash, command_id
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Err(CliError::AgentCommandFailed {
+                command_id: command_id.to_string(),
+                error: "Command not found".to_string(),
+            });
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::AgentCommandFailed {
+                command_id: command_id.to_string(),
+                error: format!("Status check failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<AgentCommandInfo> =
+            resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+                command_id: command_id.to_string(),
+                error: format!("Invalid status response: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::AgentCommandFailed {
+            command_id: command_id.to_string(),
+            error: "Empty status response".to_string(),
+        })
+    }
+
+    /// Enqueue a command and poll until it completes or times out.
+    ///
+    /// This is the primary helper for CLI commands that need to wait for
+    /// the agent to process a command and return a result.
+    pub async fn agent_poll_result(
+        &self,
+        request: &AgentEnqueueRequest,
+        timeout_secs: u64,
+        poll_interval_secs: u64,
+    ) -> Result<AgentCommandInfo, CliError> {
+        let info = self.agent_enqueue(request).await?;
+        let command_id = info.command_id.clone();
+        let deployment_hash = request.deployment_hash.clone();
+
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let interval = std::time::Duration::from_secs(poll_interval_secs);
+
+        loop {
+            tokio::time::sleep(interval).await;
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(CliError::AgentCommandTimeout {
+                    command_id: command_id.clone(),
+                });
+            }
+
+            let status = self
+                .agent_command_status(&deployment_hash, &command_id)
+                .await?;
+
+            match status.status.as_str() {
+                "completed" | "failed" => return Ok(status),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Fetch a full deployment snapshot (agent info, commands, containers).
+    ///
+    /// `GET /api/v1/agent/deployments/{deployment_hash}`
+    pub async fn agent_snapshot(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<serde_json::Value, CliError> {
+        let url = format!(
+            "{}/api/v1/agent/deployments/{}",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Err(CliError::AgentNotFound {
+                deployment_hash: deployment_hash.to_string(),
+            });
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Snapshot failed ({}): {}", status, body),
+            });
+        }
+
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Invalid snapshot response: {}", e),
+            })
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Agent request/response types
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Request body for `POST /api/v1/agent/commands/enqueue`.
+///
+/// Mirrors the server's `EnqueueRequest` — kept in sync so CLI payloads
+/// are validated identically to direct API calls.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentEnqueueRequest {
+    pub deployment_hash: String,
+    pub command_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<i32>,
+}
+
+impl AgentEnqueueRequest {
+    /// Create a request with only the required fields.
+    pub fn new(deployment_hash: impl Into<String>, command_type: impl Into<String>) -> Self {
+        Self {
+            deployment_hash: deployment_hash.into(),
+            command_type: command_type.into(),
+            priority: None,
+            parameters: None,
+            timeout_seconds: None,
+        }
+    }
+
+    /// Builder: set typed parameters (serialized to JSON).
+    pub fn with_parameters<T: Serialize>(mut self, params: &T) -> Result<Self, serde_json::Error> {
+        self.parameters = Some(serde_json::to_value(params)?);
+        Ok(self)
+    }
+
+    /// Builder: set raw JSON parameters.
+    pub fn with_raw_parameters(mut self, params: serde_json::Value) -> Self {
+        self.parameters = Some(params);
+        self
+    }
+
+    /// Builder: set priority (low / normal / high / critical).
+    pub fn with_priority(mut self, priority: impl Into<String>) -> Self {
+        self.priority = Some(priority.into());
+        self
+    }
+
+    /// Builder: set timeout in seconds.
+    pub fn with_timeout(mut self, seconds: i32) -> Self {
+        self.timeout_seconds = Some(seconds);
+        self
+    }
+}
+
+/// Agent command info as returned by the commands API.
+///
+/// Contains both status and (optionally) the result payload set by
+/// the Status Panel agent after execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentCommandInfo {
+    pub command_id: String,
+    pub deployment_hash: String,
+    #[serde(rename = "type")]
+    pub command_type: String,
+    pub status: String,
+    pub priority: String,
+    #[serde(default)]
+    pub parameters: Option<serde_json::Value>,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -47,6 +47,12 @@ pub enum CliError {
     EnvFileNotFound { path: std::path::PathBuf },
     SecretKeyNotFound { key: String },
 
+    // Agent errors
+    AgentNotFound { deployment_hash: String },
+    AgentOffline { deployment_hash: String },
+    AgentCommandTimeout { command_id: String },
+    AgentCommandFailed { command_id: String, error: String },
+
     // IO errors
     Io(std::io::Error),
 }
@@ -134,6 +140,31 @@ impl fmt::Display for CliError {
             }
             Self::SecretKeyNotFound { key } => {
                 write!(f, "Secret key not found: {key}")
+            }
+            Self::AgentNotFound { deployment_hash } => {
+                write!(
+                    f,
+                    "No Status Panel agent registered for deployment '{deployment_hash}'.\n\
+                     Ensure the agent is installed and has registered with Stacker."
+                )
+            }
+            Self::AgentOffline { deployment_hash } => {
+                write!(
+                    f,
+                    "Status Panel agent for deployment '{deployment_hash}' appears offline.\n\
+                     Check that the server is running and the agent process is active."
+                )
+            }
+            Self::AgentCommandTimeout { command_id } => {
+                write!(
+                    f,
+                    "Agent command '{command_id}' timed out.\n\
+                     The agent may be busy or offline. \
+                     Check status with: stacker agent status"
+                )
+            }
+            Self::AgentCommandFailed { command_id, error } => {
+                write!(f, "Agent command '{command_id}' failed: {error}")
             }
             Self::Io(err) => {
                 write!(f, "I/O error: {err}")

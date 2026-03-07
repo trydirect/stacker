@@ -193,6 +193,11 @@ enum StackerCommands {
         #[command(subcommand)]
         command: CiCommands,
     },
+    /// Status Panel agent control (health, logs, restart, deploy)
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -416,6 +421,148 @@ enum CiCommands {
         /// Platform: github, gitlab
         #[arg(long)]
         platform: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentCommands {
+    /// Check container health on the remote deployment
+    Health {
+        /// App code to check (default: all containers)
+        #[arg(long)]
+        app: Option<String>,
+        /// Include system containers (status_panel, compose-agent)
+        #[arg(long)]
+        system: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash (auto-detected from lock/config)
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Fetch container logs from the remote deployment
+    Logs {
+        /// App code to fetch logs for
+        app: String,
+        /// Maximum number of log lines
+        #[arg(long, default_value_t = 400)]
+        limit: i32,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Restart a container on the remote deployment
+    Restart {
+        /// App code to restart
+        app: String,
+        /// Force restart (stop + start instead of graceful restart)
+        #[arg(long)]
+        force: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Deploy/update an app container on the remote deployment
+    #[command(name = "deploy-app")]
+    DeployApp {
+        /// App code to deploy
+        app: String,
+        /// Docker image to use (overrides compose config)
+        #[arg(long)]
+        image: Option<String>,
+        /// Force recreate the container
+        #[arg(long)]
+        force: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Remove an app container from the remote deployment
+    #[command(name = "remove-app")]
+    RemoveApp {
+        /// App code to remove
+        app: String,
+        /// Also remove volumes
+        #[arg(long)]
+        volumes: bool,
+        /// Also remove the image
+        #[arg(long)]
+        remove_image: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Configure reverse proxy for an app
+    #[command(name = "configure-proxy")]
+    ConfigureProxy {
+        /// App code
+        app: String,
+        /// Domain name
+        #[arg(long)]
+        domain: String,
+        /// Port to forward to
+        #[arg(long)]
+        port: u16,
+        /// Enable SSL (default: true)
+        #[arg(long, default_value_t = true)]
+        ssl: bool,
+        /// Action: create, update, delete
+        #[arg(long, default_value = "create")]
+        action: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Show agent and container status for the deployment
+    Status {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Show command history for the deployment
+    History {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Send a raw command to the agent (advanced)
+    Exec {
+        /// Command type (e.g. health, logs, restart, deploy_app, etc.)
+        command_type: String,
+        /// JSON parameters
+        #[arg(long)]
+        params: Option<String>,
+        /// Timeout in seconds
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
     },
 }
 
@@ -698,6 +845,38 @@ fn get_command(
             CiCommands::Validate { platform } => Box::new(
                 stacker::console::commands::cli::ci::CiValidateCommand::new(platform),
             ),
+        },
+        StackerCommands::Agent { command: agent_cmd } => {
+            use stacker::console::commands::cli::agent;
+            match agent_cmd {
+                AgentCommands::Health { app, system, json, deployment } => Box::new(
+                    agent::AgentHealthCommand::new(app, json, deployment, system),
+                ),
+                AgentCommands::Logs { app, limit, json, deployment } => Box::new(
+                    agent::AgentLogsCommand::new(app, Some(limit), json, deployment),
+                ),
+                AgentCommands::Restart { app, force, json, deployment } => Box::new(
+                    agent::AgentRestartCommand::new(app, force, json, deployment),
+                ),
+                AgentCommands::DeployApp { app, image, force, json, deployment } => Box::new(
+                    agent::AgentDeployAppCommand::new(app, image, force, json, deployment),
+                ),
+                AgentCommands::RemoveApp { app, volumes, remove_image, json, deployment } => Box::new(
+                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, json, deployment),
+                ),
+                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, json, deployment } => Box::new(
+                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, json, deployment),
+                ),
+                AgentCommands::Status { json, deployment } => Box::new(
+                    agent::AgentStatusCommand::new(json, deployment),
+                ),
+                AgentCommands::History { json, deployment } => Box::new(
+                    agent::AgentHistoryCommand::new(json, deployment),
+                ),
+                AgentCommands::Exec { command_type, params, timeout, json, deployment } => Box::new(
+                    agent::AgentExecCommand::new(command_type, params, timeout, json, deployment),
+                ),
+            }
         },
         // Completion is handled in main() before this function is called.
         StackerCommands::Completion { .. } => unreachable!(),

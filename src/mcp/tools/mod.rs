@@ -1,3 +1,4 @@
+pub mod agent_control;
 pub mod ansible_roles;
 pub mod cloud;
 pub mod compose;
@@ -13,6 +14,7 @@ pub mod support;
 pub mod templates;
 pub mod user_service;
 
+pub use agent_control::*;
 pub use ansible_roles::*;
 pub use cloud::*;
 pub use compose::*;

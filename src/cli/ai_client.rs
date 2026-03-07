@@ -375,6 +375,74 @@ pub fn proxy_detect_tool() -> ToolDef {
     }
 }
 
+// ── Agent tools ──────────────────────────────────────
+
+pub fn agent_health_tool() -> ToolDef {
+    ToolDef {
+        name: "agent_health".to_string(),
+        description: "Check container health on the remote deployment via the Status Panel agent. \
+                      Returns container states, resource usage, and health metrics.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "app": {
+                    "type": "string",
+                    "description": "App code to check (e.g. 'postgres', 'nginx'). Omit for all containers."
+                },
+                "deployment": {
+                    "type": "string",
+                    "description": "Deployment hash (auto-detected from local config if omitted)"
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+pub fn agent_status_tool() -> ToolDef {
+    ToolDef {
+        name: "agent_status".to_string(),
+        description: "Get the Status Panel agent status, including agent version, \
+                      last heartbeat, container states, and recent command history.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "deployment": {
+                    "type": "string",
+                    "description": "Deployment hash (auto-detected from local config if omitted)"
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+pub fn agent_logs_tool() -> ToolDef {
+    ToolDef {
+        name: "agent_logs".to_string(),
+        description: "Fetch container logs from the remote deployment via the Status Panel agent. \
+                      Logs are automatically redacted for safety.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "app": {
+                    "type": "string",
+                    "description": "App code to fetch logs for (e.g. 'postgres', 'nginx')"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of log lines (default: 100)"
+                },
+                "deployment": {
+                    "type": "string",
+                    "description": "Deployment hash (auto-detected if omitted)"
+                }
+            },
+            "required": ["app"]
+        }),
+    }
+}
+
 pub fn add_service_tool() -> ToolDef {
     ToolDef {
         name: "add_service".to_string(),
@@ -416,6 +484,10 @@ pub fn all_write_mode_tools() -> Vec<ToolDef> {
         stacker_status_tool(),
         stacker_logs_tool(),
         proxy_detect_tool(),
+        // Agent read-only
+        agent_health_tool(),
+        agent_status_tool(),
+        agent_logs_tool(),
         // Write / action
         write_file_tool(),
         add_service_tool(),

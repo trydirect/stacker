@@ -569,6 +569,47 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
             run_subprocess(&["proxy", "detect"])
         }
 
+        // ── agent CLI tools ────────────────────────────────────────────────
+        "agent_health" => {
+            let mut args: Vec<String> = vec!["agent".to_string(), "health".to_string(), "--json".to_string()];
+            if let Some(app) = call.arguments["app"].as_str() {
+                args.push("--app".to_string());
+                args.push(app.to_string());
+            }
+            if let Some(dep) = call.arguments["deployment"].as_str() {
+                args.push("--deployment".to_string());
+                args.push(dep.to_string());
+            }
+            eprintln!("  ⚙ running: stacker agent health");
+            run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        }
+        "agent_status" => {
+            let mut args: Vec<String> = vec!["agent".to_string(), "status".to_string(), "--json".to_string()];
+            if let Some(dep) = call.arguments["deployment"].as_str() {
+                args.push("--deployment".to_string());
+                args.push(dep.to_string());
+            }
+            eprintln!("  ⚙ running: stacker agent status");
+            run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        }
+        "agent_logs" => {
+            let app = match call.arguments["app"].as_str() {
+                Some(a) => a,
+                None => return "Error: missing 'app' argument".to_string(),
+            };
+            let mut args: Vec<String> = vec!["agent".to_string(), "logs".to_string(), app.to_string(), "--json".to_string()];
+            if let Some(limit) = call.arguments["limit"].as_u64() {
+                args.push("--limit".to_string());
+                args.push(limit.to_string());
+            }
+            if let Some(dep) = call.arguments["deployment"].as_str() {
+                args.push("--deployment".to_string());
+                args.push(dep.to_string());
+            }
+            eprintln!("  ⚙ running: stacker agent logs {}", app);
+            run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        }
+
         // ── action CLI tools ───────────────────────────────────────────────
         "stacker_deploy" => {
             let dry_run = call.arguments["dry_run"].as_bool().unwrap_or(true);

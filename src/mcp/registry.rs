@@ -21,6 +21,8 @@ use crate::mcp::tools::{
     CancelDeploymentTool,
     CloneProjectTool,
     ConfigureProxyTool,
+    // Agent Control tools
+    ConfigureProxyAgentTool,
     CreateProjectAppTool,
     CreateProjectTool,
     DeleteAppEnvVarTool,
@@ -28,13 +30,17 @@ use crate::mcp::tools::{
     DeleteProjectTool,
     DeleteProxyTool,
     // Ansible Roles tools
+    DeployAppTool,
     DeployRoleTool,
     // Stack Recommendations
     RecommendStackServicesTool,
+    RemoveAppTool,
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
     GetAppConfigTool,
+    // Agent Control tools
+    GetAgentStatusTool,
     // Phase 5: App Configuration tools
     GetAppEnvVarsTool,
     GetCloudTool,
@@ -294,6 +300,12 @@ impl ToolRegistry {
             "recommend_stack_services",
             Box::new(RecommendStackServicesTool),
         );
+
+        // Agent Control tools (deploy/remove apps, proxy config, agent status)
+        registry.register("deploy_app", Box::new(DeployAppTool));
+        registry.register("remove_app", Box::new(RemoveAppTool));
+        registry.register("configure_proxy_agent", Box::new(ConfigureProxyAgentTool));
+        registry.register("get_agent_status", Box::new(GetAgentStatusTool));
 
         registry
     }
