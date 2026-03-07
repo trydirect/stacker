@@ -636,6 +636,15 @@ impl DeployStrategy for CloudDeploy {
                                     "server_id".to_string(),
                                     serde_json::Value::Number(sid.into()),
                                 );
+                                // When reusing an existing server, preserve
+                                // the user-chosen / looked-up name rather
+                                // than the auto-generated one.
+                                if let Some(srv_name) = &server_name {
+                                    obj.insert(
+                                        "name".to_string(),
+                                        serde_json::Value::String(srv_name.clone()),
+                                    );
+                                }
                             }
                         }
                     }
