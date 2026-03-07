@@ -48,8 +48,9 @@ impl CallableTrait for ServiceAddCommand {
             }));
         }
 
-        // Load existing config
-        let mut config = StackerConfig::from_file(path)?;
+        // Load existing config without resolving ${VAR} placeholders so
+        // that sensitive values from .env are not written back to the file.
+        let mut config = StackerConfig::from_file_raw(path)?;
 
         // Resolve name — either from arg or interactive fuzzy picker
         let chosen_name = match &self.name {
@@ -275,7 +276,7 @@ impl CallableTrait for ServiceRemoveCommand {
             }));
         }
 
-        let mut config = StackerConfig::from_file(path)?;
+        let mut config = StackerConfig::from_file_raw(path)?;
         let canonical = ServiceCatalog::resolve_alias(&self.name);
 
         if !config.services.iter().any(|s| s.name == canonical) {

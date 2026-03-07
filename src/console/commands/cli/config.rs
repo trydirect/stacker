@@ -177,7 +177,7 @@ pub fn run_generate_remote_payload(
         });
     }
 
-    let mut config = StackerConfig::from_file(path)?;
+    let mut config = StackerConfig::from_file_raw(path)?;
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
     let output_path = match output {
@@ -351,7 +351,7 @@ pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, Cli
         });
     }
 
-    let mut config = StackerConfig::from_file(path)?;
+    let mut config = StackerConfig::from_file_raw(path)?;
     let mut applied = Vec::new();
 
     eprintln!("Cloud setup wizard:");
@@ -440,7 +440,7 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
         });
     }
 
-    let mut config = StackerConfig::from_file(path)?;
+    let mut config = StackerConfig::from_file_raw(path)?;
     let issues = config.validate_semantics();
     let mut applied = Vec::new();
 
@@ -849,7 +849,7 @@ impl CallableTrait for ConfigLockCommand {
             }));
         }
 
-        let mut config = StackerConfig::from_file(&config_path)?;
+        let mut config = StackerConfig::from_file_raw(&config_path)?;
         lock.apply_to_config(&mut config);
 
         DeploymentLock::write_config(&config, &config_path)?;
@@ -896,7 +896,7 @@ impl CallableTrait for ConfigUnlockCommand {
             }));
         }
 
-        let mut config = StackerConfig::from_file(&config_path)?;
+        let mut config = StackerConfig::from_file_raw(&config_path)?;
 
         if config.deploy.server.is_none() {
             eprintln!("No deploy.server section found in stacker.yml — nothing to unlock.");

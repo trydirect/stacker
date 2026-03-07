@@ -185,7 +185,7 @@ fn configure_ai_interactive(config_path: &str) -> Result<AiConfig, CliError> {
         });
     }
 
-    let mut config = StackerConfig::from_file(path)?;
+    let mut config = StackerConfig::from_file_raw(path)?;
     let current = config.ai.clone();
 
     eprintln!("AI interactive setup for {}", config_path);
@@ -655,7 +655,7 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
                 );
             }
 
-            match StackerConfig::from_file(&config_path) {
+            match StackerConfig::from_file_raw(&config_path) {
                 Ok(mut config) => {
                     // Duplicate check
                     if config.services.iter().any(|s| s.name == svc.name) {
