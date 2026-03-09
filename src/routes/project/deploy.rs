@@ -88,6 +88,38 @@ pub async fn item(
 
     form.cloud.user_id = Some(user.id.clone());
     form.cloud.project_id = Some(id);
+
+    // Validate cloud credentials before encrypting/saving.
+    // For cloud providers ("htz", "do", "lin", "aws", etc.) we need valid credentials.
+    if form.cloud.provider != "own" {
+        let token_empty = form
+            .cloud
+            .cloud_token
+            .as_ref()
+            .map_or(true, |t| t.is_empty());
+        let key_empty = form
+            .cloud
+            .cloud_key
+            .as_ref()
+            .map_or(true, |k| k.is_empty());
+        let secret_empty = form
+            .cloud
+            .cloud_secret
+            .as_ref()
+            .map_or(true, |s| s.is_empty());
+
+        if token_empty && (key_empty || secret_empty) {
+            tracing::error!(
+                "Deploy rejected: cloud provider '{}' requires credentials but none provided",
+                form.cloud.provider
+            );
+            return Err(JsonResponse::<models::Project>::build().bad_request(
+                "Cloud API credentials are required for cloud deployments. \
+                 Please provide your cloud provider API token.",
+            ));
+        }
+    }
+
     // Save cloud credentials if requested, capturing the returned cloud with its DB id
     let cloud_creds: models::Cloud = (&form.cloud).into();
 
@@ -372,6 +404,42 @@ pub async fn saved_item(
             return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
         }
     };
+
+    // Validate that saved cloud credentials can be decrypted before proceeding.
+    // When SECURITY_KEY changed or encryption is corrupted, decode() silently
+    // returns "" which causes a 401 deep inside the Install Service. Catch it early.
+    if cloud.provider != "own" {
+        let test_cloud = forms::cloud::CloudForm::decode_model(cloud.clone(), true);
+        let token_empty = test_cloud
+            .cloud_token
+            .as_ref()
+            .map_or(true, |t| t.is_empty());
+        let key_empty = test_cloud
+            .cloud_key
+            .as_ref()
+            .map_or(true, |k| k.is_empty());
+        let secret_empty = test_cloud
+            .cloud_secret
+            .as_ref()
+            .map_or(true, |s| s.is_empty());
+
+        // Most providers need cloud_token; AWS needs cloud_key + cloud_secret
+        if token_empty && (key_empty || secret_empty) {
+            tracing::error!(
+                "Cloud credentials for cloud_id={} (provider={}) could not be decrypted. \
+                 Token empty: {}, Key empty: {}, Secret empty: {}",
+                cloud_id,
+                cloud.provider,
+                token_empty,
+                key_empty,
+                secret_empty,
+            );
+            return Err(JsonResponse::<models::Project>::build().bad_request(
+                "Cloud API credentials could not be decrypted. \
+                 Please delete and re-add your cloud credentials in Settings → Cloud Providers.",
+            ));
+        }
+    }
 
     // Handle server: if server_id provided, update existing; otherwise create new
     let server = if let Some(server_id) = form.server.server_id {

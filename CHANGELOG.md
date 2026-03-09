@@ -41,6 +41,10 @@ All notable changes to this project will be documented in this file.
 - 3 new AI tool definitions: `agent_health`, `agent_status`, `agent_logs`
 - Wired into `execute_tool()` via subprocess dispatch (`stacker agent ... --json`)
 - Available in `stacker ai ask --write` and interactive chat modes
+## [Unreleased] — 2026-03-04
+
+### Fixed
+- **Agent registration 403**: added Casbin migration `20260304220000_fix_casbin_agent_register_anon` that idempotently grants `group_anonymous` the right to `POST /api/v1/agent/register`. Ansible-driven deployments (statuspanel, etc.) call this endpoint without an Authorization header; without this policy the Casbin middleware returns 403.
 
 ## [0.2.4] — 2026-02-27
 

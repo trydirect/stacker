@@ -36,6 +36,22 @@ pub async fn item(
     cloud.id = cloud_row.id;
     cloud.user_id = user.id.clone();
 
+    // Validate that encryption succeeded when save_token is enabled.
+    if cloud.save_token == Some(true) {
+        let has_token = cloud.cloud_token.is_some();
+        let has_key_secret = cloud.cloud_key.is_some() && cloud.cloud_secret.is_some();
+        if !has_token && !has_key_secret {
+            tracing::error!(
+                "Cloud credential encryption failed for provider '{}'. \
+                 Check that SECURITY_KEY is set and is exactly 32 bytes.",
+                cloud.provider
+            );
+            return Err(JsonResponse::<models::Cloud>::build().bad_request(
+                "Failed to encrypt cloud credentials. Please contact support.",
+            ));
+        }
+    }
+
     tracing::debug!("Updating cloud {:?}", cloud);
 
     db::cloud::update(pg_pool.get_ref(), cloud)

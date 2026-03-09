@@ -1,8 +1,9 @@
 name: website
 version: 1.0.0
 organization: null
-project:
-  identity: optimize
+#project:
+#  identity: optimize
+ # identity: myproject1
 app:
   type: node
   path: .
@@ -53,16 +54,16 @@ deploy:
     username: trydirect
     password: ${DOCKER_PASSWORD}
     server: https://index.docker.io/v1/
-# ai:
-#   enabled: true
-#   provider: ollama
-#   model: qwen2.5-coder
-#   api_key: null
-#   endpoint: http://192.168.100.245:11434
-#   timeout: 300
-#   tasks:
-#   - dockerfile
-#   - compose
+ai:
+  enabled: true
+  provider: ollama
+  model: qwen3-coder
+  api_key: null
+  endpoint: http://192.168.100.245:11434
+  timeout: 300
+  tasks:
+  - dockerfile
+  - compose
 monitoring:
   status_panel: true
   healthcheck:
