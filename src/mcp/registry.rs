@@ -23,6 +23,9 @@ use crate::mcp::tools::{
     ConfigureProxyTool,
     // Agent Control tools
     ConfigureProxyAgentTool,
+    // Firewall tools
+    ConfigureFirewallTool,
+    ConfigureFirewallFromRoleTool,
     CreateProjectAppTool,
     CreateProjectTool,
     DeleteAppEnvVarTool,
@@ -69,6 +72,7 @@ use crate::mcp::tools::{
     ListCloudServerSizesTool,
     ListContainersTool,
     ListInstallationsTool,
+    ListFirewallRulesTool,
     InitiateDeploymentTool,
     ListProjectAppsTool,
     ListProjectsTool,
@@ -306,6 +310,14 @@ impl ToolRegistry {
         registry.register("remove_app", Box::new(RemoveAppTool));
         registry.register("configure_proxy_agent", Box::new(ConfigureProxyAgentTool));
         registry.register("get_agent_status", Box::new(GetAgentStatusTool));
+
+        // Firewall (iptables) management tools
+        registry.register("configure_firewall", Box::new(ConfigureFirewallTool));
+        registry.register("list_firewall_rules", Box::new(ListFirewallRulesTool));
+        registry.register(
+            "configure_firewall_from_role",
+            Box::new(ConfigureFirewallFromRoleTool),
+        );
 
         registry
     }
