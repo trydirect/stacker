@@ -564,6 +564,15 @@ enum AgentCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Install the Status Panel agent on an existing deployed server
+    Install {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Arguments for `stacker ai`.
@@ -882,6 +891,9 @@ fn get_command(
                 ),
                 AgentCommands::Exec { command_type, params, timeout, json, deployment } => Box::new(
                     agent::AgentExecCommand::new(command_type, params, timeout, json, deployment),
+                ),
+                AgentCommands::Install { file, json } => Box::new(
+                    agent::AgentInstallCommand::new(file, json),
                 ),
             }
         },

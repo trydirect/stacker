@@ -722,6 +722,148 @@ impl CallableTrait for AgentHistoryCommand {
     }
 }
 
+// ── Install (deploy Status Panel to existing server) ─
+
+/// `stacker agent install [--file <path>] [--json]`
+///
+/// Deploys the Status Panel agent to an existing server that was previously
+/// deployed without it. Reads the project identity from stacker.yml, finds
+/// the corresponding project and server on the Stacker API, and triggers
+/// a deploy with only the statuspanel feature enabled.
+pub struct AgentInstallCommand {
+    pub file: Option<String>,
+    pub json: bool,
+}
+
+impl AgentInstallCommand {
+    pub fn new(file: Option<String>, json: bool) -> Self {
+        Self { file, json }
+    }
+}
+
+impl CallableTrait for AgentInstallCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cli::stacker_client::{self, DEFAULT_VAULT_URL};
+
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        let config_path = match &self.file {
+            Some(f) => project_dir.join(f),
+            None => project_dir.join("stacker.yml"),
+        };
+
+        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)?;
+
+        let project_name = config
+            .project
+            .identity
+            .clone()
+            .unwrap_or_else(|| config.name.clone());
+
+        let ctx = CliRuntime::new("agent install")?;
+        let pb = progress::spinner("Installing Status Panel agent");
+
+        let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
+            // 1. Find the project
+            progress::update_message(&pb, "Finding project...");
+            let project = ctx
+                .client
+                .find_project_by_name(&project_name)
+                .await?
+                .ok_or_else(|| CliError::ConfigValidation(format!(
+                    "Project '{}' not found on the Stacker server.\n\
+                     Deploy the project first with: stacker deploy --target cloud",
+                    project_name
+                )))?;
+
+            // 2. Find the server for this project
+            progress::update_message(&pb, "Finding server...");
+            let servers = ctx.client.list_servers().await?;
+            let server = servers
+                .into_iter()
+                .find(|s| s.project_id == project.id)
+                .ok_or_else(|| CliError::ConfigValidation(format!(
+                    "No server found for project '{}' (id={}).\n\
+                     Deploy the project first with: stacker deploy --target cloud",
+                    project_name, project.id
+                )))?;
+
+            let cloud_id = server.cloud_id.ok_or_else(|| CliError::ConfigValidation(
+                "Server has no associated cloud credentials.\n\
+                 Cannot install Status Panel without cloud credentials."
+                    .to_string(),
+            ))?;
+
+            // 3. Build a minimal deploy form with only the statuspanel feature
+            progress::update_message(&pb, "Preparing deploy payload...");
+            let vault_url = std::env::var("STACKER_VAULT_URL")
+                .unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
+
+            let deploy_form = serde_json::json!({
+                "cloud": {
+                    "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
+                    "save_token": true,
+                },
+                "server": {
+                    "server_id": server.id,
+                    "region": server.region,
+                    "server": server.server,
+                    "os": server.os,
+                    "name": server.name,
+                    "srv_ip": server.srv_ip,
+                    "ssh_user": server.ssh_user,
+                    "ssh_port": server.ssh_port,
+                    "vault_key_path": server.vault_key_path,
+                    "connection_mode": "status_panel",
+                },
+                "stack": {
+                    "stack_code": project_name,
+                    "vars": [
+                        { "key": "vault_url", "value": vault_url },
+                        { "key": "status_panel_port", "value": "5000" },
+                    ],
+                    "integrated_features": ["statuspanel"],
+                    "extended_features": [],
+                    "subscriptions": [],
+                },
+            });
+
+            // 4. Trigger the deploy
+            progress::update_message(&pb, "Deploying Status Panel...");
+            let resp = ctx.client.deploy(project.id, Some(cloud_id), deploy_form).await?;
+            Ok(resp)
+        });
+
+        match result {
+            Ok(resp) => {
+                progress::finish_success(&pb, "Status Panel agent installation triggered");
+
+                if self.json {
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap_or_default());
+                } else {
+                    println!("Status Panel deploy queued for project '{}'", project_name);
+                    if let Some(id) = resp.id {
+                        println!("Project ID: {}", id);
+                    }
+                    if let Some(meta) = &resp.meta {
+                        if let Some(dep_id) = meta.get("deployment_id") {
+                            println!("Deployment ID: {}", dep_id);
+                        }
+                    }
+                    println!();
+                    println!("The Status Panel agent will be installed on the server.");
+                    println!("Once ready, use `stacker agent status` to verify connectivity.");
+                }
+            }
+            Err(e) => {
+                progress::finish_error(&pb, &format!("Install failed: {}", e));
+                return Err(Box::new(e));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

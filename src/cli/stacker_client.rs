@@ -79,6 +79,7 @@ pub struct ServerInfo {
     pub ssh_port: Option<i32>,
     pub ssh_user: Option<String>,
     pub name: Option<String>,
+    pub vault_key_path: Option<String>,
     #[serde(default = "default_connection_mode")]
     pub connection_mode: String,
     #[serde(default = "default_key_status")]
