@@ -1513,6 +1513,24 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         _ => {}
     }
 
+    // When monitoring.status_panel is enabled, include the statuspanel feature
+    // with its public port so the install service's collect_props() picks it up
+    // and opens port 5000 in the cloud firewall.
+    if config.monitoring.status_panel {
+        features.push(serde_json::json!({
+            "_id": generate_app_id(),
+            "name": "Status Panel",
+            "code": "statuspanel",
+            "type": "feature",
+            "restart": "always",
+            "custom": true,
+            "shared_ports": [
+                {"host_port": "5000", "container_port": "5000"},
+            ],
+            "network": [],
+        }));
+    }
+
     serde_json::json!({
         "custom": {
             "custom_stack_code": stack_code,
@@ -1684,6 +1702,10 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                     "key": "vault_url",
                     "value": vault_url
                 }));
+                arr.push(serde_json::json!({
+                    "key": "status_panel_port",
+                    "value": "5000"
+                }));
             }
         }
         if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
@@ -1803,6 +1825,19 @@ mod tests {
             DEFAULT_VAULT_URL,
             "vault_url should be the public Vault address"
         );
+
+        // status_panel_port should be passed in stack.vars for the cloud firewall
+        let port_var = vars.iter().find(|v| v["key"] == "status_panel_port");
+        assert!(
+            port_var.is_some(),
+            "stack.vars should contain status_panel_port: {:?}",
+            vars
+        );
+        assert_eq!(
+            port_var.unwrap()["value"],
+            "5000",
+            "status_panel_port should be 5000"
+        );
     }
 
     #[test]
@@ -1869,6 +1904,38 @@ mod tests {
         // Ports should include the NPM management port (81)
         let ports = features[0]["shared_ports"].as_array().unwrap();
         assert_eq!(ports.len(), 3);
+    }
+
+    #[test]
+    fn test_build_project_body_with_status_panel() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .monitoring(crate::cli::config_parser::MonitoringConfig {
+                status_panel: true,
+                healthcheck: None,
+                metrics: None,
+            })
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let features = body["custom"]["feature"].as_array().unwrap();
+        let sp = features.iter().find(|f| f["code"] == "statuspanel");
+        assert!(
+            sp.is_some(),
+            "feature array should contain statuspanel entry: {:?}",
+            features
+        );
+        let sp = sp.unwrap();
+        assert_eq!(sp["type"], "feature");
+        assert_eq!(sp["name"], "Status Panel");
+        assert!(sp["_id"].is_string(), "_id must be present");
+        assert_eq!(sp["custom"], true);
+        // Port 5000 must be declared so the install service opens it in the cloud firewall
+        let ports = sp["shared_ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0]["host_port"], "5000");
+        assert_eq!(ports[0]["container_port"], "5000");
     }
 
     #[test]
