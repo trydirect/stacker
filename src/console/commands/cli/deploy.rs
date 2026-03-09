@@ -5,8 +5,12 @@ use std::time::Duration;
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
-use crate::cli::config_parser::{AiProviderType, DeployTarget, ServerConfig, StackerConfig};
+use crate::cli::config_parser::{
+    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
+    StackerConfig,
+};
 use crate::cli::credentials::CredentialsManager;
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::generator::dockerfile::DockerfileBuilder;
@@ -600,6 +604,97 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
     }
 }
 
+/// Map a provider code string (as stored in CloudInfo.provider) to a `CloudProvider` enum.
+///
+/// Accepts both short codes ("htz", "do", "aws", "lo", "vu") and full names
+/// ("hetzner", "digitalocean", "aws", "linode", "vultr").
+fn cloud_provider_from_code(code: &str) -> Option<CloudProvider> {
+    match code.to_lowercase().as_str() {
+        "htz" | "hetzner" => Some(CloudProvider::Hetzner),
+        "do" | "digitalocean" => Some(CloudProvider::Digitalocean),
+        "aws" => Some(CloudProvider::Aws),
+        "lo" | "linode" => Some(CloudProvider::Linode),
+        "vu" | "vultr" => Some(CloudProvider::Vultr),
+        _ => None,
+    }
+}
+
+/// Interactively prompt the user to select a saved cloud credential when
+/// no `deploy.cloud` section is present in stacker.yml.
+///
+/// - Fetches the list of saved clouds from the Stacker server.
+/// - Presents an interactive `Select` menu with each cloud plus a
+///   "Connect a new cloud provider" option at the end.
+/// - Returns:
+///   - `Ok(Some(cloud_info))` when the user picks an existing credential.
+///   - `Ok(None)` when the user picks "Connect a new cloud provider".
+///   - `Err(...)` on I/O or network errors.
+fn prompt_select_cloud(
+    access_token: &str,
+) -> Result<Option<stacker_client::CloudInfo>, CliError> {
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
+        stacker_client::DEFAULT_STACKER_URL,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+
+    let clouds = rt.block_on(async {
+        let client = StackerClient::new(&base_url, access_token);
+        client.list_clouds().await
+    })?;
+
+    const CONNECT_NEW: &str = "→  Connect a new cloud provider";
+
+    if clouds.is_empty() {
+        eprintln!();
+        eprintln!("  No saved cloud credentials found.");
+        eprintln!("  To add cloud credentials, export your provider token and redeploy:");
+        eprintln!("    HCLOUD_TOKEN=<token> stacker deploy --target cloud   # Hetzner");
+        eprintln!("    DO_API_TOKEN=<token> stacker deploy --target cloud   # DigitalOcean");
+        eprintln!("    AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> stacker deploy --target cloud  # AWS");
+        eprintln!();
+        return Err(CliError::CloudProviderMissing);
+    }
+
+    // Column widths for the interactive cloud selection menu.
+    const CLOUD_ID_WIDTH: usize = 6;
+    const CLOUD_NAME_WIDTH: usize = 24;
+
+    let mut items: Vec<String> = clouds
+        .iter()
+        .map(|c| format!("{:<width_id$} {:<width_name$} ({})", c.id, c.name, c.provider,
+            width_id = CLOUD_ID_WIDTH, width_name = CLOUD_NAME_WIDTH))
+        .collect();
+    items.push(CONNECT_NEW.to_string());
+
+    eprintln!();
+    eprintln!("  No cloud provider configured in stacker.yml.");
+    eprintln!("  Select a saved cloud credential to use for this deployment:");
+    eprintln!();
+
+    let selection = dialoguer::Select::new()
+        .with_prompt("Cloud credential")
+        .items(&items)
+        .default(0)
+        .interact()
+        .map_err(|e| CliError::ConfigValidation(format!("Selection error: {}", e)))?;
+
+    if selection == clouds.len() {
+        // User chose "Connect a new cloud provider"
+        return Ok(None);
+    }
+
+    Ok(Some(
+        clouds
+            .into_iter()
+            .nth(selection)
+            .expect("selection index should be within bounds of clouds vector"),
+    ))
+}
+
 /// `stacker deploy [--target local|cloud|server] [--file stacker.yml] [--dry-run] [--force-rebuild]`
 /// `stacker deploy --project=myapp --target cloud --key devops --server bastion`
 ///
@@ -621,11 +716,17 @@ pub struct DeployCommand {
     pub project_name: Option<String>,
     /// Override cloud key name (--key flag)
     pub key_name: Option<String>,
+    /// Override cloud key by ID (--key-id flag)
+    pub key_id: Option<i32>,
     /// Override server name (--server flag)
     pub server_name: Option<String>,
     /// Watch deployment progress until complete (--watch / --no-watch).
     /// `None` means "auto" (watch for cloud, health-check for local).
     pub watch: Option<bool>,
+    /// Persist server details into stacker.yml after deploy (--lock).
+    pub lock: bool,
+    /// Skip smart server pre-check and lockfile hints; force fresh cloud provision (--force-new).
+    pub force_new: bool,
 }
 
 impl DeployCommand {
@@ -642,8 +743,11 @@ impl DeployCommand {
             force_rebuild,
             project_name: None,
             key_name: None,
+            key_id: None,
             server_name: None,
             watch: None,
+            lock: false,
+            force_new: false,
         }
     }
 
@@ -660,6 +764,12 @@ impl DeployCommand {
         self
     }
 
+    /// Builder method to set cloud key ID from CLI `--key-id` flag.
+    pub fn with_key_id(mut self, key_id: Option<i32>) -> Self {
+        self.key_id = key_id;
+        self
+    }
+
     /// Builder method to set watch behaviour.
     /// `--watch` forces watch on; `--no-watch` forces it off.
     /// Neither flag → auto (cloud=watch, local=health-check).
@@ -670,6 +780,18 @@ impl DeployCommand {
             self.watch = Some(true);
         }
         // else remains None → auto
+        self
+    }
+
+    /// Builder method to set lock behaviour (--lock flag).
+    pub fn with_lock(mut self, lock: bool) -> Self {
+        self.lock = lock;
+        self
+    }
+
+    /// Builder method to set force-new behaviour (--force-new flag).
+    pub fn with_force_new(mut self, force_new: bool) -> Self {
+        self.force_new = force_new;
         self
     }
 }
@@ -690,6 +812,7 @@ fn parse_deploy_target(s: &str) -> Result<DeployTarget, CliError> {
 pub struct RemoteDeployOverrides {
     pub project_name: Option<String>,
     pub key_name: Option<String>,
+    pub key_id: Option<i32>,
     pub server_name: Option<String>,
 }
 
@@ -702,6 +825,7 @@ pub fn run_deploy(
     target_override: Option<&str>,
     dry_run: bool,
     force_rebuild: bool,
+    force_new: bool,
     executor: &dyn CommandExecutor,
     remote_overrides: &RemoteDeployOverrides,
 ) -> Result<DeployResult, CliError> {
@@ -711,7 +835,7 @@ pub fn run_deploy(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let config = StackerConfig::from_file(&config_path)?;
+    let mut config = StackerConfig::from_file(&config_path)?;
     ensure_env_file_if_needed(&config, project_dir)?;
 
     // 2. Resolve deploy target (flag > config)
@@ -724,7 +848,10 @@ pub fn run_deploy(
     //     is defined with a host, try SSH connectivity first.
     //     If the server is reachable, automatically switch to Server target.
     //     If not, show diagnostics and abort so the user can fix or remove the section.
-    if deploy_target == DeployTarget::Cloud {
+    //     Skipped when --force-new is set (user explicitly wants a fresh cloud provision).
+    //     When a lockfile exists, auto-inject the server name so the API reuses the server.
+    let mut lock_server_name: Option<String> = None;
+    if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
             eprintln!("  Found deploy.server section (host={}). Checking SSH connectivity...", server_cfg.host);
 
@@ -778,14 +905,101 @@ pub fn run_deploy(
                     });
                 }
             }
+        } else if DeploymentLock::exists(project_dir) {
+            // No deploy.server in config, but a lockfile exists from a prior deploy.
+            // Auto-inject the server name so the cloud deploy API reuses the same server.
+            if let Ok(Some(lock)) = DeploymentLock::load(project_dir) {
+                if let Some(ref name) = lock.server_name {
+                    eprintln!("  ℹ Found previous deployment (server='{}') — reusing server", name);
+                    eprintln!("    To provision a new server instead: stacker deploy --force-new");
+                    lock_server_name = Some(name.clone());
+                } else if let Some(ref ip) = lock.server_ip {
+                    if ip != "127.0.0.1" {
+                        eprintln!("  ℹ Found previous deployment to {} (from .stacker/deployment.lock)", ip);
+                        eprintln!("    Server name unknown — cannot auto-reuse. Run: stacker config lock");
+                        eprintln!("    To provision a new server instead:   stacker deploy --force-new");
+                    }
+                }
+            }
         }
     }
 
-    // 3. Cloud/server prerequisites
-    if deploy_target == DeployTarget::Cloud {
-        // Verify login
+    // 3. Cloud/server prerequisites — verify login and keep credentials for later use.
+    let cloud_creds = if deploy_target == DeployTarget::Cloud {
         let cred_manager = CredentialsManager::with_default_store();
-        cred_manager.require_valid_token("cloud deploy")?;
+        Some(cred_manager.require_valid_token("cloud deploy")?)
+    } else {
+        None
+    };
+
+    // 3b. If cloud target but no cloud section in stacker.yml, prompt to select a saved credential.
+    if deploy_target == DeployTarget::Cloud && config.deploy.cloud.is_none() {
+        let access_token = &cloud_creds
+            .as_ref()
+            .expect("cloud_creds should be set when deploy_target is Cloud (verified in step 3)")
+            .access_token;
+
+        match prompt_select_cloud(access_token)? {
+            Some(cloud_info) => {
+                // Map the provider code to a CloudProvider enum value.
+                let provider = cloud_provider_from_code(&cloud_info.provider)
+                    .ok_or_else(|| CliError::ConfigValidation(format!(
+                        "Unrecognised cloud provider '{}' for credential '{}'. \
+                         Supported providers: hetzner (htz), digitalocean (do), aws, linode (lo), vultr (vu).",
+                        cloud_info.provider, cloud_info.name
+                    )))?;
+
+                eprintln!(
+                    "  Selected cloud credential: {} (id={}, provider={})",
+                    cloud_info.name, cloud_info.id, cloud_info.provider
+                );
+
+                // Apply the selected cloud to the in-memory config.
+                config.deploy.target = DeployTarget::Cloud;
+                config.deploy.cloud = Some(CloudConfig {
+                    provider,
+                    orchestrator: CloudOrchestrator::Remote,
+                    region: None,
+                    size: None,
+                    install_image: None,
+                    remote_payload_file: None,
+                    ssh_key: None,
+                    key: Some(cloud_info.name.clone()),
+                    server: None,
+                });
+
+                // Persist the selection to stacker.yml so subsequent deploys
+                // do not prompt again.
+                if config_path.exists() {
+                    let yaml = serde_yaml::to_string(&config).map_err(|e| {
+                        CliError::ConfigValidation(format!(
+                            "Failed to serialize updated config: {}",
+                            e
+                        ))
+                    })?;
+                    std::fs::write(&config_path, yaml)?;
+                    eprintln!(
+                        "  ✓ Updated {} with deploy.cloud.key={}",
+                        config_path.display(),
+                        cloud_info.name
+                    );
+                }
+            }
+            None => {
+                // User chose "Connect a new cloud provider"
+                eprintln!();
+                eprintln!("  To connect a new cloud provider, export your API token and redeploy:");
+                eprintln!("    Hetzner:      HCLOUD_TOKEN=<token>  stacker deploy --target cloud");
+                eprintln!("    DigitalOcean: DO_API_TOKEN=<token>  stacker deploy --target cloud");
+                eprintln!("    Linode:       LINODE_TOKEN=<token>  stacker deploy --target cloud");
+                eprintln!("    Vultr:        VULTR_API_KEY=<key>   stacker deploy --target cloud");
+                eprintln!("    AWS:          AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret>  stacker deploy --target cloud");
+                eprintln!();
+                eprintln!("  Or configure manually with: stacker config setup cloud");
+                eprintln!();
+                return Err(CliError::CloudProviderMissing);
+            }
+        }
     }
 
     // 4. Validate via strategy
@@ -880,7 +1094,11 @@ pub fn run_deploy(
             .and_then(|cloud| cloud.install_image.clone()),
         project_name_override: remote_overrides.project_name.clone(),
         key_name_override: remote_overrides.key_name.clone(),
-        server_name_override: remote_overrides.server_name.clone(),
+        key_id_override: remote_overrides.key_id,
+        server_name_override: remote_overrides
+            .server_name
+            .clone()
+            .or(lock_server_name),
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -897,6 +1115,7 @@ impl CallableTrait for DeployCommand {
         let remote_overrides = RemoteDeployOverrides {
             project_name: self.project_name.clone(),
             key_name: self.key_name.clone(),
+            key_id: self.key_id,
             server_name: self.server_name.clone(),
         };
 
@@ -909,6 +1128,7 @@ impl CallableTrait for DeployCommand {
             self.target.as_deref(),
             self.dry_run,
             self.force_rebuild,
+            self.force_new,
             &executor,
             &remote_overrides,
         );
@@ -957,8 +1177,229 @@ impl CallableTrait for DeployCommand {
             _ => {}
         }
 
+        // ── Deployment lock: persist deployment context ──
+        self.save_deployment_lock(&project_dir, &result)?;
+
         Ok(())
     }
+}
+
+impl DeployCommand {
+    /// Save deployment context to `.stacker/deployment.lock` after a successful deploy.
+    ///
+    /// For cloud deploys, tries to fetch the provisioned server's details from the
+    /// Stacker API (IP, SSH user/port, server name) so that subsequent deploys can
+    /// target the same server via the smart pre-check.
+    ///
+    /// When `--lock` is set, also writes the server details into `stacker.yml`.
+    fn save_deployment_lock(
+        &self,
+        project_dir: &Path,
+        result: &DeployResult,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Build the initial lock from the deploy result
+        let mut lock = match result.target {
+            DeployTarget::Local => DeploymentLock::for_local(),
+            DeployTarget::Server => {
+                // For server deploys, read server config from stacker.yml
+                let config_path = match &self.file {
+                    Some(f) => project_dir.join(f),
+                    None => project_dir.join(DEFAULT_CONFIG_FILE),
+                };
+                if let Ok(config) = StackerConfig::from_file(&config_path) {
+                    if let Some(ref server_cfg) = config.deploy.server {
+                        DeploymentLock::for_server(server_cfg)
+                    } else {
+                        DeploymentLock::from_result(result)
+                    }
+                } else {
+                    DeploymentLock::from_result(result)
+                }
+            }
+            DeployTarget::Cloud => {
+                let mut l = DeploymentLock::from_result(result)
+                    .with_project_name(self.project_name.clone());
+
+                // If no --project flag, try to get the project name from config
+                if l.project_name.is_none() {
+                    let config_path = match &self.file {
+                        Some(f) => project_dir.join(f),
+                        None => project_dir.join(DEFAULT_CONFIG_FILE),
+                    };
+                    if let Ok(config) = StackerConfig::from_file(&config_path) {
+                        // Prefer project.identity as the registered name, fall back to config name
+                        let name = config
+                            .project
+                            .identity
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(config.name);
+                        l = l.with_project_name(Some(name));
+                    }
+                }
+
+                // Try to fetch provisioned server details from the Stacker API
+                if let Some(project_id) = result.project_id {
+                    match fetch_server_for_project(project_id as i32) {
+                        Ok(Some(info)) => {
+                            l = l.with_server_info(
+                                info.srv_ip.clone(),
+                                info.ssh_user.clone(),
+                                info.ssh_port.map(|p| p as u16),
+                                info.name.clone(),
+                                info.cloud_id,
+                            );
+                            if let Some(ref ip) = info.srv_ip {
+                                eprintln!("  Server details: {} ({}@{}:{})",
+                                    info.name.as_deref().unwrap_or("unnamed"),
+                                    info.ssh_user.as_deref().unwrap_or("root"),
+                                    ip,
+                                    info.ssh_port.unwrap_or(22),
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            eprintln!("  ℹ Server details not yet available (may still be provisioning).");
+                        }
+                        Err(e) => {
+                            eprintln!("  ⚠ Could not fetch server details: {}", e);
+                        }
+                    }
+                }
+
+                l
+            }
+        };
+
+        // Always set project_name if available from CLI flag
+        if self.project_name.is_some() {
+            lock = lock.with_project_name(self.project_name.clone());
+        }
+
+        // Save lockfile
+        match lock.save(project_dir) {
+            Ok(path) => {
+                eprintln!("  Deployment context saved to {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("  ⚠ Failed to save deployment lock: {}", e);
+            }
+        }
+
+        // If --lock flag is set, also update stacker.yml with server details
+        if self.lock {
+            let config_path = match &self.file {
+                Some(f) => project_dir.join(f),
+                None => project_dir.join(DEFAULT_CONFIG_FILE),
+            };
+
+            if lock.server_ip.is_some()
+                && lock.server_ip.as_deref() != Some("127.0.0.1")
+            {
+                match StackerConfig::from_file(&config_path) {
+                    Ok(mut config) => {
+                        lock.apply_to_config(&mut config);
+                        match DeploymentLock::write_config(&config, &config_path) {
+                            Ok(()) => {
+                                eprintln!("  ✓ stacker.yml updated with server details (backup: stacker.yml.bak)");
+                                eprintln!("    Next deploy will target this server directly.");
+                            }
+                            Err(e) => {
+                                eprintln!("  ⚠ Failed to update stacker.yml: {}", e);
+                                eprintln!("    Run `stacker config lock` to retry.");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  ⚠ Failed to read stacker.yml for update: {}", e);
+                    }
+                }
+            } else {
+                eprintln!("  ℹ --lock: No remote server details to persist (local deploy or server IP not yet available).");
+                eprintln!("    Run `stacker config lock` after the server is provisioned.");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ── Fetch server details from Stacker API by project ID ──
+
+/// After a cloud deploy completes, look up the provisioned server's details
+/// (IP, SSH user, port, name) from the Stacker server API.
+///
+/// Retries up to 3 times with a 10-second delay between attempts, because the
+/// server IP may not yet be assigned right after the deployment status becomes
+/// "completed".
+fn fetch_server_for_project(
+    project_id: i32,
+) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    let cred_manager = CredentialsManager::with_default_store();
+    let creds = cred_manager.require_valid_token("server lookup")?;
+
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
+        stacker_client::DEFAULT_STACKER_URL,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let client = StackerClient::new(&base_url, &creds.access_token);
+
+        let max_retries = 3;
+        let retry_delay = Duration::from_secs(10);
+
+        for attempt in 0..max_retries {
+            let servers = client.list_servers().await?;
+
+            // Find the server linked to this project
+            let server = servers
+                .into_iter()
+                .find(|s| s.project_id == project_id);
+
+            match server {
+                Some(ref s) if s.srv_ip.is_some() => {
+                    // Server found with IP — done
+                    return Ok(server);
+                }
+                Some(_) if attempt < max_retries - 1 => {
+                    // Server found but no IP yet — wait and retry
+                    eprintln!(
+                        "  Server found but IP not yet assigned (attempt {}/{}), retrying in {}s...",
+                        attempt + 1,
+                        max_retries,
+                        retry_delay.as_secs(),
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+                Some(s) => {
+                    // Final attempt — return server even without IP so we capture
+                    // name, cloud_id, etc.
+                    return Ok(Some(s));
+                }
+                None if attempt < max_retries - 1 => {
+                    // No server yet — wait and retry
+                    eprintln!(
+                        "  No server found for project {} (attempt {}/{}), retrying in {}s...",
+                        project_id,
+                        attempt + 1,
+                        max_retries,
+                        retry_delay.as_secs(),
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+                None => {
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(None)
+    })
 }
 
 // ── Local container health-check after `docker compose up` ───
@@ -1285,7 +1726,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Generated files should exist
@@ -1303,7 +1744,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Custom Dockerfile should not be overwritten
@@ -1324,7 +1765,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // .stacker/docker-compose.yml should NOT be generated
@@ -1341,7 +1782,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -1353,7 +1794,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // No Dockerfile should be generated (using image)
@@ -1367,7 +1808,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1388,7 +1829,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // This should fail at validation since no credentials exist
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
     }
 
@@ -1400,7 +1841,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1413,7 +1854,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1429,7 +1870,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -1442,15 +1883,15 @@ mod tests {
         let executor = MockExecutor::success();
 
         // First deploy creates files
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
 
         // Second deploy without force_rebuild should succeed (reuses existing files)
-        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result2.is_ok());
 
         // With force_rebuild should also succeed (regenerates files)
-        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, &executor, &RemoteDeployOverrides::default());
+        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, false, &executor, &RemoteDeployOverrides::default());
         assert!(result3.is_ok());
     }
 
@@ -1483,7 +1924,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // Dry-run should succeed (hooks are just noted, not executed in dry-run)
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
         assert!(result.is_ok());
     }
 
@@ -1691,6 +2132,27 @@ services:
         };
         assert_eq!(result.deployment_id, Some(42));
         assert_eq!(result.project_id, Some(7));
+    }
+
+    #[test]
+    fn test_cloud_provider_from_code() {
+        // Short codes
+        assert_eq!(cloud_provider_from_code("htz"), Some(CloudProvider::Hetzner));
+        assert_eq!(cloud_provider_from_code("do"), Some(CloudProvider::Digitalocean));
+        assert_eq!(cloud_provider_from_code("aws"), Some(CloudProvider::Aws));
+        assert_eq!(cloud_provider_from_code("lo"), Some(CloudProvider::Linode));
+        assert_eq!(cloud_provider_from_code("vu"), Some(CloudProvider::Vultr));
+        // Full names
+        assert_eq!(cloud_provider_from_code("hetzner"), Some(CloudProvider::Hetzner));
+        assert_eq!(cloud_provider_from_code("digitalocean"), Some(CloudProvider::Digitalocean));
+        assert_eq!(cloud_provider_from_code("linode"), Some(CloudProvider::Linode));
+        assert_eq!(cloud_provider_from_code("vultr"), Some(CloudProvider::Vultr));
+        // Case insensitive
+        assert_eq!(cloud_provider_from_code("HTZ"), Some(CloudProvider::Hetzner));
+        assert_eq!(cloud_provider_from_code("AWS"), Some(CloudProvider::Aws));
+        // Unknown
+        assert_eq!(cloud_provider_from_code("unknown"), None);
+        assert_eq!(cloud_provider_from_code(""), None);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use crate::cli::config_parser::{
     CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
 };
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
@@ -789,6 +790,134 @@ impl ConfigExampleCommand {
 impl CallableTrait for ConfigExampleCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", full_config_reference_example());
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// `stacker config lock` / `stacker config unlock`
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker config lock [--file stacker.yml]`
+///
+/// Reads `.stacker/deployment.lock` and writes the server details
+/// (host, user, port, ssh_key) into stacker.yml's `deploy.server` section.
+/// Next deploy will auto-detect the server and redeploy via SSH.
+pub struct ConfigLockCommand {
+    pub file: Option<String>,
+}
+
+impl ConfigLockCommand {
+    pub fn new(file: Option<String>) -> Self {
+        Self { file }
+    }
+}
+
+impl CallableTrait for ConfigLockCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir()?;
+        let config_path_str = resolve_config_path(&self.file);
+        let config_path = project_dir.join(&config_path_str);
+
+        // 1. Load lockfile
+        let lock = match DeploymentLock::load(&project_dir)? {
+            Some(l) => l,
+            None => {
+                eprintln!("No deployment lock found (.stacker/deployment.lock).");
+                eprintln!("Deploy first with `stacker deploy`, then run this command.");
+                return Ok(());
+            }
+        };
+
+        // 2. Check it has usable server details
+        match lock.server_ip.as_deref() {
+            Some("127.0.0.1") | None => {
+                eprintln!("Deployment lock exists but has no remote server details.");
+                if lock.target == "cloud" {
+                    eprintln!("The cloud deployment may still be provisioning.");
+                    eprintln!("Wait for it to complete, then run `stacker deploy --lock` to retry.");
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // 3. Load stacker.yml, apply lock, write back
+        if !config_path.exists() {
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: config_path,
+            }));
+        }
+
+        let mut config = StackerConfig::from_file(&config_path)?;
+        lock.apply_to_config(&mut config);
+
+        DeploymentLock::write_config(&config, &config_path)?;
+
+        let ip = lock.server_ip.as_deref().unwrap_or("?");
+        let user = lock.ssh_user.as_deref().unwrap_or("root");
+        let port = lock.ssh_port.unwrap_or(22);
+
+        eprintln!("✓ stacker.yml updated with server details:");
+        eprintln!("  deploy.server.host: {}", ip);
+        eprintln!("  deploy.server.user: {}", user);
+        eprintln!("  deploy.server.port: {}", port);
+        eprintln!("  Backup: {}.bak", config_path_str);
+        eprintln!();
+        eprintln!("Next `stacker deploy` will target this server directly.");
+
+        Ok(())
+    }
+}
+
+/// `stacker config unlock [--file stacker.yml]`
+///
+/// Removes the `deploy.server` section from stacker.yml, allowing a fresh
+/// cloud provision on the next deploy.
+pub struct ConfigUnlockCommand {
+    pub file: Option<String>,
+}
+
+impl ConfigUnlockCommand {
+    pub fn new(file: Option<String>) -> Self {
+        Self { file }
+    }
+}
+
+impl CallableTrait for ConfigUnlockCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir()?;
+        let config_path_str = resolve_config_path(&self.file);
+        let config_path = project_dir.join(&config_path_str);
+
+        if !config_path.exists() {
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: config_path,
+            }));
+        }
+
+        let mut config = StackerConfig::from_file(&config_path)?;
+
+        if config.deploy.server.is_none() {
+            eprintln!("No deploy.server section found in stacker.yml — nothing to unlock.");
+            return Ok(());
+        }
+
+        let old_host = config
+            .deploy
+            .server
+            .as_ref()
+            .map(|s| s.host.clone())
+            .unwrap_or_default();
+
+        config.deploy.server = None;
+
+        DeploymentLock::write_config(&config, &config_path)?;
+
+        eprintln!("✓ Removed deploy.server section (was: host={})", old_host);
+        eprintln!("  Backup: {}.bak", config_path_str);
+        eprintln!("  Next `stacker deploy --target cloud` will provision a new server.");
+
         Ok(())
     }
 }

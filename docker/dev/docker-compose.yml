@@ -76,7 +76,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    image: postgres:16.0
+    image: postgres:16.13
     restart: always
     ports:
       - 5432

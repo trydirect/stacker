@@ -47,6 +47,11 @@
         "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "name",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -62,6 +67,7 @@
       true,
       true,
       true,
+      false,
       false,
       false
     ]

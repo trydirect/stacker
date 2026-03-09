@@ -46,6 +46,8 @@ pub struct ProjectInfo {
 pub struct CloudInfo {
     pub id: i32,
     pub user_id: String,
+    #[serde(default)]
+    pub name: String,
     pub provider: String,
     pub cloud_token: Option<String>,
     pub cloud_key: Option<String>,
@@ -384,6 +386,16 @@ impl StackerClient {
         Ok(clouds.into_iter().find(|c| c.provider.to_lowercase() == lower))
     }
 
+    /// Find saved cloud credentials by name (e.g. "my-hetzner", "htz-4").
+    pub async fn find_cloud_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<CloudInfo>, CliError> {
+        let clouds = self.list_clouds().await?;
+        let lower = name.to_lowercase();
+        Ok(clouds.into_iter().find(|c| c.name.to_lowercase() == lower))
+    }
+
     /// Find saved cloud credentials by ID.
     pub async fn get_cloud(&self, cloud_id: i32) -> Result<Option<CloudInfo>, CliError> {
         let url = format!("{}/cloud/{}", self.base_url, cloud_id);
@@ -432,6 +444,18 @@ impl StackerClient {
         cloud_key: Option<&str>,
         cloud_secret: Option<&str>,
     ) -> Result<CloudInfo, CliError> {
+        self.save_cloud_with_name(provider, None, cloud_token, cloud_key, cloud_secret).await
+    }
+
+    /// Save cloud credentials with an optional name.
+    pub async fn save_cloud_with_name(
+        &self,
+        provider: &str,
+        name: Option<&str>,
+        cloud_token: Option<&str>,
+        cloud_key: Option<&str>,
+        cloud_secret: Option<&str>,
+    ) -> Result<CloudInfo, CliError> {
         let url = format!("{}/cloud", self.base_url);
 
         let mut payload = serde_json::json!({
@@ -440,6 +464,12 @@ impl StackerClient {
         });
 
         if let Some(obj) = payload.as_object_mut() {
+            if let Some(n) = name {
+                obj.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(n.to_string()),
+                );
+            }
             if let Some(t) = cloud_token {
                 obj.insert(
                     "cloud_token".to_string(),
@@ -967,12 +997,21 @@ fn parse_port_mapping(port_str: &str) -> (String, String) {
 }
 
 /// Parse a volume mapping string like "./dist:/usr/share/nginx/html" or "data:/var/lib/db"
-/// into (host_path, container_path) tuple.
-fn parse_volume_mapping(vol_str: &str) -> (String, String) {
-    if let Some((host, container)) = vol_str.split_once(':') {
-        (host.to_string(), container.to_string())
-    } else {
-        (vol_str.to_string(), vol_str.to_string())
+/// into (host_path, container_path, read_only) tuple.
+/// Handles optional `:ro` / `:rw` suffix (e.g. "/var/run/docker.sock:/var/run/docker.sock:ro").
+fn parse_volume_mapping(vol_str: &str) -> (String, String, bool) {
+    let parts: Vec<&str> = vol_str.split(':').collect();
+    match parts.len() {
+        // "source:target:mode" (e.g. "/host:/container:ro")
+        3 => (
+            parts[0].to_string(),
+            parts[1].to_string(),
+            parts[2] == "ro",
+        ),
+        // "source:target"
+        2 => (parts[0].to_string(), parts[1].to_string(), false),
+        // bare path
+        _ => (vol_str.to_string(), vol_str.to_string(), false),
     }
 }
 
@@ -998,10 +1037,11 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
         .volumes
         .iter()
         .map(|v| {
-            let (host, container) = parse_volume_mapping(v);
+            let (host, container, read_only) = parse_volume_mapping(v);
             serde_json::json!({
                 "host_path": host,
                 "container_path": container,
+                "read_only": read_only,
             })
         })
         .collect();
@@ -1086,10 +1126,11 @@ fn app_source_to_app_json(
         .volumes
         .iter()
         .map(|v| {
-            let (host, container) = parse_volume_mapping(v);
+            let (host, container, read_only) = parse_volume_mapping(v);
             serde_json::json!({
                 "host_path": host,
                 "container_path": container,
+                "read_only": read_only,
             })
         })
         .collect();
@@ -1193,8 +1234,15 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
                 "type": "feature",
                 "restart": "always",
                 "custom": true,
-                "shared_ports": [],
+                "shared_ports": [
+                    {"host_port": "80", "container_port": "80"},
+                    {"host_port": "443", "container_port": "443"},
+                    {"host_port": "81", "container_port": "81"},
+                ],
                 "network": [],
+                "dockerhub_user": "jc21",
+                "dockerhub_name": "nginx-proxy-manager",
+                "dockerhub_tag": "latest",
             }));
         }
         _ => {}
@@ -1218,6 +1266,57 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
 
 /// Build the deploy form payload that matches the Stacker server's
 /// `forms::project::Deploy` structure.
+/// Generate a deterministic but unique server name from the project name.
+///
+/// Format: `{project}-{4hex}` where the hex suffix is derived from the current
+/// timestamp so each deploy gets a distinct name, e.g. `website-a3f1`.
+///
+/// The name is sanitised to satisfy the strictest provider rules (Hetzner):
+///   - only lowercase `a-z`, `0-9`, `-`
+///   - must start with a letter
+///   - must not end with `-`
+///   - max 63 characters total
+fn generate_server_name(project_name: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Sanitise project name: lowercase, replace non-alnum with hyphen, collapse runs
+    let sanitised: String = project_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    // Ensure it starts with a letter (Hetzner requirement)
+    let base = if sanitised.is_empty() {
+        "srv".to_string()
+    } else if !sanitised.starts_with(|c: char| c.is_ascii_lowercase()) {
+        format!("srv-{}", sanitised)
+    } else {
+        sanitised
+    };
+
+    // 4-char hex suffix from current timestamp (unique per ~65k deploys within any second)
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let suffix = format!("{:04x}", (ts & 0xFFFF) as u16);
+
+    // Truncate base so total stays within 63 chars: base + '-' + 4-char suffix = base ≤ 58
+    let max_base = 63 - 1 - suffix.len(); // 58
+    let truncated = if base.len() > max_base {
+        base[..max_base].trim_end_matches('-').to_string()
+    } else {
+        base
+    };
+
+    format!("{}-{}", truncated, suffix)
+}
+
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
@@ -1230,6 +1329,11 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         _ => "ubuntu-22.04",
     };
 
+    // Auto-generate a server name from the project name so every
+    // provisioned server gets a recognisable label in `stacker list servers`.
+    let project_name = config.project.identity.clone().unwrap_or_else(|| config.name.clone());
+    let server_name = generate_server_name(&project_name);
+
     let mut form = serde_json::json!({
         "cloud": {
             "provider": provider,
@@ -1239,6 +1343,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             "region": region,
             "server": server_size,
             "os": os,
+            "name": server_name,
         },
         "stack": {
             "stack_code": config.project.identity.clone().unwrap_or_else(|| config.name.clone()),
@@ -1337,6 +1442,10 @@ mod tests {
         assert_eq!(form["server"]["region"], "fsn1");
         assert_eq!(form["server"]["server"], "cpx11");
         assert_eq!(form["stack"]["stack_code"], "myproject");
+        // Auto-generated server name should start with the project name
+        let name = form["server"]["name"].as_str().unwrap();
+        assert!(name.starts_with("myproject-"), "server name should start with project name, got: {}", name);
+        assert_eq!(name.len(), "myproject-".len() + 4, "suffix should be 4 hex chars");
     }
 
     #[test]
@@ -1456,6 +1565,13 @@ mod tests {
         assert_eq!(features[0]["restart"], "always");
         assert!(features[0]["_id"].is_string(), "_id must be present");
         assert_eq!(features[0]["custom"], true);
+        // Image fields must be present so the install service can build a Docker image reference
+        assert_eq!(features[0]["dockerhub_user"], "jc21");
+        assert_eq!(features[0]["dockerhub_name"], "nginx-proxy-manager");
+        assert_eq!(features[0]["dockerhub_tag"], "latest");
+        // Ports should include the NPM management port (81)
+        let ports = features[0]["shared_ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 3);
     }
 
     #[test]
@@ -1468,5 +1584,50 @@ mod tests {
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
         assert!(features.is_empty(), "feature array should be empty when no proxy configured");
+    }
+
+    #[test]
+    fn test_generate_server_name_basic() {
+        let name = generate_server_name("website");
+        assert!(name.starts_with("website-"), "got: {}", name);
+        // 4 hex chars suffix
+        let suffix = &name["website-".len()..];
+        assert_eq!(suffix.len(), 4);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "suffix should be hex, got: {}", suffix);
+    }
+
+    #[test]
+    fn test_generate_server_name_sanitises() {
+        let name = generate_server_name("My Cool App!");
+        assert!(name.starts_with("my-cool-app-"), "got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_empty() {
+        let name = generate_server_name("");
+        assert!(name.starts_with("srv-"), "empty input should fallback to 'srv', got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_special_chars() {
+        let name = generate_server_name("app___v2..beta");
+        assert!(name.starts_with("app-v2-beta-"), "consecutive separators collapsed, got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_numeric_start() {
+        // Hetzner requires name to start with a letter
+        let name = generate_server_name("123app");
+        assert!(name.starts_with("srv-123app-"), "numeric start should get 'srv-' prefix, got: {}", name);
+    }
+
+    #[test]
+    fn test_generate_server_name_max_length() {
+        let long = "a".repeat(100);
+        let name = generate_server_name(&long);
+        assert!(name.len() <= 63, "name must be ≤63 chars (Hetzner), got {} chars: {}", name.len(), name);
+        assert!(name.starts_with("aaa"), "got: {}", name);
+        // Must not end with hyphen
+        assert!(!name.ends_with('-'), "must not end with hyphen, got: {}", name);
     }
 }

@@ -91,6 +91,9 @@ enum StackerCommands {
         /// Name of saved cloud credential to reuse (overrides deploy.cloud.key in stacker.yml)
         #[arg(long, value_name = "KEY_NAME")]
         key: Option<String>,
+        /// ID of saved cloud credential to reuse (from `stacker list clouds`)
+        #[arg(long, value_name = "CLOUD_ID")]
+        key_id: Option<i32>,
         /// Name of saved server to reuse (overrides deploy.cloud.server in stacker.yml)
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
@@ -100,6 +103,12 @@ enum StackerCommands {
         /// Disable automatic progress watching after deploy
         #[arg(long)]
         no_watch: bool,
+        /// Persist server details into stacker.yml after deploy (for redeploy)
+        #[arg(long)]
+        lock: bool,
+        /// Skip server pre-check; force fresh cloud provision even if deploy.server exists
+        #[arg(long)]
+        force_new: bool,
     },
     /// Show container logs
     Logs {
@@ -207,6 +216,12 @@ enum ListCommands {
         #[arg(long)]
         json: bool,
     },
+    /// List saved cloud credentials
+    Clouds {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -305,6 +320,16 @@ enum ConfigCommands {
         /// Enable interactive prompts (default: true)
         #[arg(long, default_value_t = true)]
         interactive: bool,
+    },
+    /// Persist deployment lock into stacker.yml (writes deploy.server from last deploy)
+    Lock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+    /// Remove deploy.server section from stacker.yml (allows fresh cloud provision)
+    Unlock {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
     },
     /// Guided setup helpers
     Setup {
@@ -500,9 +525,12 @@ fn get_command(
             force_rebuild,
             project,
             key,
+            key_id,
             server,
             watch,
             no_watch,
+            lock,
+            force_new,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -511,7 +539,10 @@ fn get_command(
                 force_rebuild,
             )
             .with_remote_overrides(project, key, server)
-            .with_watch(watch, no_watch),
+            .with_key_id(key_id)
+            .with_watch(watch, no_watch)
+            .with_lock(lock)
+            .with_force_new(force_new),
         ),
         StackerCommands::Logs {
             service,
@@ -539,6 +570,12 @@ fn get_command(
             ),
             ConfigCommands::Fix { file, interactive } => Box::new(
                 stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
+            ),
+            ConfigCommands::Lock { file } => Box::new(
+                stacker::console::commands::cli::config::ConfigLockCommand::new(file),
+            ),
+            ConfigCommands::Unlock { file } => Box::new(
+                stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
             ),
             ConfigCommands::Setup { command } => match command {
                 ConfigSetupCommands::Cloud { file } => Box::new(
@@ -589,6 +626,9 @@ fn get_command(
             ),
             ListCommands::SshKeys { json } => Box::new(
                 stacker::console::commands::cli::list::ListSshKeysCommand::new(json),
+            ),
+            ListCommands::Clouds { json } => Box::new(
+                stacker::console::commands::cli::list::ListCloudsCommand::new(json),
             ),
         },
         StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {

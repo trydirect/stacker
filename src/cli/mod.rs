@@ -3,6 +3,7 @@ pub mod ai_scanner;
 pub mod ci_export;
 pub mod config_parser;
 pub mod credentials;
+pub mod deployment_lock;
 pub mod detector;
 pub mod error;
 pub mod generator;

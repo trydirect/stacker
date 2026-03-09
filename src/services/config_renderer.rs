@@ -344,20 +344,33 @@ impl ConfigRenderer {
                 let mut result = Vec::new();
                 for item in arr {
                     if let Value::Object(map) = item {
+                        // Support both "source"/"target" and "host_path"/"container_path" keys
                         let source = map
                             .get("source")
+                            .or_else(|| map.get("host_path"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let target = map
+                        let raw_target = map
                             .get("target")
+                            .or_else(|| map.get("container_path"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
+
+                        // Strip `:ro` / `:rw` suffix that may be embedded in the target path
+                        let (target, suffix_ro) = if raw_target.ends_with(":ro") {
+                            (raw_target.trim_end_matches(":ro").to_string(), true)
+                        } else if raw_target.ends_with(":rw") {
+                            (raw_target.trim_end_matches(":rw").to_string(), false)
+                        } else {
+                            (raw_target, false)
+                        };
+
                         let read_only = map
                             .get("read_only")
                             .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
+                            .unwrap_or(suffix_ro);
                         if !source.is_empty() && !target.is_empty() {
                             result.push(VolumeMount {
                                 source,
