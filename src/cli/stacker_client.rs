@@ -1528,6 +1528,9 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
                 {"host_port": "5000", "container_port": "5000"},
             ],
             "network": [],
+            "dockerhub_user": "trydirect",
+            "dockerhub_name": "status",
+            "dockerhub_tag": "latest",
         }));
     }
 
@@ -1936,6 +1939,10 @@ mod tests {
         assert_eq!(ports.len(), 1);
         assert_eq!(ports[0]["host_port"], "5000");
         assert_eq!(ports[0]["container_port"], "5000");
+        // Image fields must be present so the install service can build a Docker image reference
+        assert_eq!(sp["dockerhub_user"], "trydirect");
+        assert_eq!(sp["dockerhub_name"], "status");
+        assert_eq!(sp["dockerhub_tag"], "latest");
     }
 
     #[test]
