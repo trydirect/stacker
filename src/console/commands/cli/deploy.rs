@@ -5,7 +5,10 @@ use std::time::Duration;
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
-use crate::cli::config_parser::{AiProviderType, DeployTarget, ServerConfig, StackerConfig};
+use crate::cli::config_parser::{
+    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
+    StackerConfig,
+};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
@@ -601,6 +604,97 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
     }
 }
 
+/// Map a provider code string (as stored in CloudInfo.provider) to a `CloudProvider` enum.
+///
+/// Accepts both short codes ("htz", "do", "aws", "lo", "vu") and full names
+/// ("hetzner", "digitalocean", "aws", "linode", "vultr").
+fn cloud_provider_from_code(code: &str) -> Option<CloudProvider> {
+    match code.to_lowercase().as_str() {
+        "htz" | "hetzner" => Some(CloudProvider::Hetzner),
+        "do" | "digitalocean" => Some(CloudProvider::Digitalocean),
+        "aws" => Some(CloudProvider::Aws),
+        "lo" | "linode" => Some(CloudProvider::Linode),
+        "vu" | "vultr" => Some(CloudProvider::Vultr),
+        _ => None,
+    }
+}
+
+/// Interactively prompt the user to select a saved cloud credential when
+/// no `deploy.cloud` section is present in stacker.yml.
+///
+/// - Fetches the list of saved clouds from the Stacker server.
+/// - Presents an interactive `Select` menu with each cloud plus a
+///   "Connect a new cloud provider" option at the end.
+/// - Returns:
+///   - `Ok(Some(cloud_info))` when the user picks an existing credential.
+///   - `Ok(None)` when the user picks "Connect a new cloud provider".
+///   - `Err(...)` on I/O or network errors.
+fn prompt_select_cloud(
+    access_token: &str,
+) -> Result<Option<stacker_client::CloudInfo>, CliError> {
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
+        stacker_client::DEFAULT_STACKER_URL,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+
+    let clouds = rt.block_on(async {
+        let client = StackerClient::new(&base_url, access_token);
+        client.list_clouds().await
+    })?;
+
+    const CONNECT_NEW: &str = "→  Connect a new cloud provider";
+
+    if clouds.is_empty() {
+        eprintln!();
+        eprintln!("  No saved cloud credentials found.");
+        eprintln!("  To add cloud credentials, export your provider token and redeploy:");
+        eprintln!("    HCLOUD_TOKEN=<token> stacker deploy --target cloud   # Hetzner");
+        eprintln!("    DO_API_TOKEN=<token> stacker deploy --target cloud   # DigitalOcean");
+        eprintln!("    AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> stacker deploy --target cloud  # AWS");
+        eprintln!();
+        return Err(CliError::CloudProviderMissing);
+    }
+
+    // Column widths for the interactive cloud selection menu.
+    const CLOUD_ID_WIDTH: usize = 6;
+    const CLOUD_NAME_WIDTH: usize = 24;
+
+    let mut items: Vec<String> = clouds
+        .iter()
+        .map(|c| format!("{:<width_id$} {:<width_name$} ({})", c.id, c.name, c.provider,
+            width_id = CLOUD_ID_WIDTH, width_name = CLOUD_NAME_WIDTH))
+        .collect();
+    items.push(CONNECT_NEW.to_string());
+
+    eprintln!();
+    eprintln!("  No cloud provider configured in stacker.yml.");
+    eprintln!("  Select a saved cloud credential to use for this deployment:");
+    eprintln!();
+
+    let selection = dialoguer::Select::new()
+        .with_prompt("Cloud credential")
+        .items(&items)
+        .default(0)
+        .interact()
+        .map_err(|e| CliError::ConfigValidation(format!("Selection error: {}", e)))?;
+
+    if selection == clouds.len() {
+        // User chose "Connect a new cloud provider"
+        return Ok(None);
+    }
+
+    Ok(Some(
+        clouds
+            .into_iter()
+            .nth(selection)
+            .expect("selection index should be within bounds of clouds vector"),
+    ))
+}
+
 /// `stacker deploy [--target local|cloud|server] [--file stacker.yml] [--dry-run] [--force-rebuild]`
 /// `stacker deploy --project=myapp --target cloud --key devops --server bastion`
 ///
@@ -741,7 +835,7 @@ pub fn run_deploy(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let config = StackerConfig::from_file(&config_path)?;
+    let mut config = StackerConfig::from_file(&config_path)?;
     ensure_env_file_if_needed(&config, project_dir)?;
 
     // 2. Resolve deploy target (flag > config)
@@ -830,11 +924,82 @@ pub fn run_deploy(
         }
     }
 
-    // 3. Cloud/server prerequisites
-    if deploy_target == DeployTarget::Cloud {
-        // Verify login
+    // 3. Cloud/server prerequisites — verify login and keep credentials for later use.
+    let cloud_creds = if deploy_target == DeployTarget::Cloud {
         let cred_manager = CredentialsManager::with_default_store();
-        cred_manager.require_valid_token("cloud deploy")?;
+        Some(cred_manager.require_valid_token("cloud deploy")?)
+    } else {
+        None
+    };
+
+    // 3b. If cloud target but no cloud section in stacker.yml, prompt to select a saved credential.
+    if deploy_target == DeployTarget::Cloud && config.deploy.cloud.is_none() {
+        let access_token = &cloud_creds
+            .as_ref()
+            .expect("cloud_creds should be set when deploy_target is Cloud (verified in step 3)")
+            .access_token;
+
+        match prompt_select_cloud(access_token)? {
+            Some(cloud_info) => {
+                // Map the provider code to a CloudProvider enum value.
+                let provider = cloud_provider_from_code(&cloud_info.provider)
+                    .ok_or_else(|| CliError::ConfigValidation(format!(
+                        "Unrecognised cloud provider '{}' for credential '{}'. \
+                         Supported providers: hetzner (htz), digitalocean (do), aws, linode (lo), vultr (vu).",
+                        cloud_info.provider, cloud_info.name
+                    )))?;
+
+                eprintln!(
+                    "  Selected cloud credential: {} (id={}, provider={})",
+                    cloud_info.name, cloud_info.id, cloud_info.provider
+                );
+
+                // Apply the selected cloud to the in-memory config.
+                config.deploy.target = DeployTarget::Cloud;
+                config.deploy.cloud = Some(CloudConfig {
+                    provider,
+                    orchestrator: CloudOrchestrator::Remote,
+                    region: None,
+                    size: None,
+                    install_image: None,
+                    remote_payload_file: None,
+                    ssh_key: None,
+                    key: Some(cloud_info.name.clone()),
+                    server: None,
+                });
+
+                // Persist the selection to stacker.yml so subsequent deploys
+                // do not prompt again.
+                if config_path.exists() {
+                    let yaml = serde_yaml::to_string(&config).map_err(|e| {
+                        CliError::ConfigValidation(format!(
+                            "Failed to serialize updated config: {}",
+                            e
+                        ))
+                    })?;
+                    std::fs::write(&config_path, yaml)?;
+                    eprintln!(
+                        "  ✓ Updated {} with deploy.cloud.key={}",
+                        config_path.display(),
+                        cloud_info.name
+                    );
+                }
+            }
+            None => {
+                // User chose "Connect a new cloud provider"
+                eprintln!();
+                eprintln!("  To connect a new cloud provider, export your API token and redeploy:");
+                eprintln!("    Hetzner:      HCLOUD_TOKEN=<token>  stacker deploy --target cloud");
+                eprintln!("    DigitalOcean: DO_API_TOKEN=<token>  stacker deploy --target cloud");
+                eprintln!("    Linode:       LINODE_TOKEN=<token>  stacker deploy --target cloud");
+                eprintln!("    Vultr:        VULTR_API_KEY=<key>   stacker deploy --target cloud");
+                eprintln!("    AWS:          AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret>  stacker deploy --target cloud");
+                eprintln!();
+                eprintln!("  Or configure manually with: stacker config setup cloud");
+                eprintln!();
+                return Err(CliError::CloudProviderMissing);
+            }
+        }
     }
 
     // 4. Validate via strategy
@@ -1967,6 +2132,27 @@ services:
         };
         assert_eq!(result.deployment_id, Some(42));
         assert_eq!(result.project_id, Some(7));
+    }
+
+    #[test]
+    fn test_cloud_provider_from_code() {
+        // Short codes
+        assert_eq!(cloud_provider_from_code("htz"), Some(CloudProvider::Hetzner));
+        assert_eq!(cloud_provider_from_code("do"), Some(CloudProvider::Digitalocean));
+        assert_eq!(cloud_provider_from_code("aws"), Some(CloudProvider::Aws));
+        assert_eq!(cloud_provider_from_code("lo"), Some(CloudProvider::Linode));
+        assert_eq!(cloud_provider_from_code("vu"), Some(CloudProvider::Vultr));
+        // Full names
+        assert_eq!(cloud_provider_from_code("hetzner"), Some(CloudProvider::Hetzner));
+        assert_eq!(cloud_provider_from_code("digitalocean"), Some(CloudProvider::Digitalocean));
+        assert_eq!(cloud_provider_from_code("linode"), Some(CloudProvider::Linode));
+        assert_eq!(cloud_provider_from_code("vultr"), Some(CloudProvider::Vultr));
+        // Case insensitive
+        assert_eq!(cloud_provider_from_code("HTZ"), Some(CloudProvider::Hetzner));
+        assert_eq!(cloud_provider_from_code("AWS"), Some(CloudProvider::Aws));
+        // Unknown
+        assert_eq!(cloud_provider_from_code("unknown"), None);
+        assert_eq!(cloud_provider_from_code(""), None);
     }
 
     #[test]
