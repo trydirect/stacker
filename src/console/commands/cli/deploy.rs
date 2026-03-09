@@ -659,7 +659,7 @@ fn prompt_select_cloud(
         return Err(CliError::CloudProviderMissing);
     }
 
-    /// Column widths for the interactive cloud selection menu.
+    // Column widths for the interactive cloud selection menu.
     const CLOUD_ID_WIDTH: usize = 6;
     const CLOUD_NAME_WIDTH: usize = 24;
 
