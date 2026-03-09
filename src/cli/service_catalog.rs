@@ -173,6 +173,7 @@ impl ServiceCatalog {
             "f2b" | "fail2ban" => "fail2ban".to_string(),
             "nd" | "netdata" => "netdata".to_string(),
             "pr" | "postgrest" => "postgrest".to_string(),
+            "oc" | "openclaw" | "open-claw" => "openclaw".to_string(),
             _ => lower.replace('-', "_"),
         }
     }
@@ -513,6 +514,28 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 volumes: vec![
                     "/var/run/docker.sock:/var/run/docker.sock".into(),
                     "portainer_data:/data".into(),
+                ],
+                depends_on: vec![],
+            },
+            related: vec![],
+        },
+
+        // ── AI Assistants ─────────────────────────────
+        CatalogEntry {
+            code: "openclaw".into(),
+            name: "OpenClaw".into(),
+            category: "ai".into(),
+            description: "Personal AI assistant with multi-channel gateway".into(),
+            service: ServiceDefinition {
+                name: "openclaw".into(),
+                image: "ghcr.io/openclaw/openclaw:latest".into(),
+                ports: vec!["18789:18789".into()],
+                environment: HashMap::from([
+                    ("OPENCLAW_GATEWAY_BIND".into(), "lan".into()),
+                ]),
+                volumes: vec![
+                    "openclaw_config:/home/node/.openclaw".into(),
+                    "openclaw_workspace:/home/node/.openclaw/workspace".into(),
                 ],
                 depends_on: vec![],
             },
