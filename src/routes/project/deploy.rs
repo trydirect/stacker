@@ -194,6 +194,7 @@ pub async fn item(
     // - If the server has no active key yet: generate one, store in Vault, capture public key.
     // - If the key is already active: fetch the public key from Vault.
     let mut new_public_key: Option<String> = None;
+    let mut captured_private_key: Option<String> = None;
     let server = if server.key_status != "active" {
         match VaultClient::generate_ssh_keypair() {
             Ok((public_key, private_key)) => {
@@ -209,6 +210,7 @@ pub async fn item(
                             vault_path
                         );
                         new_public_key = Some(public_key);
+                        captured_private_key = Some(private_key);
                         db::server::update_ssh_key_status(
                             pg_pool.get_ref(),
                             server.id,
@@ -305,22 +307,28 @@ pub async fn item(
 
     // For "own" flow, fetch the SSH private key from Vault so the Install Service
     // can SSH into the server directly without relying on Redis-cached file paths.
-    let new_private_key = if has_existing_ip && server.vault_key_path.is_some() {
-        match vault_client
-            .get_ref()
-            .fetch_ssh_key(&user.id, server.id)
-            .await
-        {
-            Ok(pk) => {
-                tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
-                Some(pk)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch SSH private key from Vault for server {}: {}",
-                    server.id, e
-                );
-                None
+    let new_private_key = if server.vault_key_path.is_some() {
+        // For newly generated keys, use the in-memory value to avoid an extra Vault round-trip.
+        // For existing servers (re-deployment), fetch from Vault.
+        if let Some(pk) = captured_private_key {
+            Some(pk)
+        } else {
+            match vault_client
+                .get_ref()
+                .fetch_ssh_key(&user.id, server.id)
+                .await
+            {
+                Ok(pk) => {
+                    tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
+                    Some(pk)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch SSH private key from Vault for server {}: {}",
+                        server.id, e
+                    );
+                    None
+                }
             }
         }
     } else {
@@ -542,6 +550,7 @@ pub async fn saved_item(
     // - If the server has no active key yet: generate one, store in Vault, capture public key.
     // - If the key is already active: fetch the public key from Vault.
     let mut new_public_key: Option<String> = None;
+    let mut captured_private_key: Option<String> = None;
     let server = if server.key_status != "active" {
         match VaultClient::generate_ssh_keypair() {
             Ok((public_key, private_key)) => {
@@ -557,6 +566,7 @@ pub async fn saved_item(
                             vault_path
                         );
                         new_public_key = Some(public_key);
+                        captured_private_key = Some(private_key);
                         db::server::update_ssh_key_status(
                             pg_pool.get_ref(),
                             server.id,
@@ -655,22 +665,28 @@ pub async fn saved_item(
 
     // For "own" flow, fetch the SSH private key from Vault so the Install Service
     // can SSH into the server directly without relying on Redis-cached file paths.
-    let new_private_key = if has_existing_ip && server.vault_key_path.is_some() {
-        match vault_client
-            .get_ref()
-            .fetch_ssh_key(&user.id, server.id)
-            .await
-        {
-            Ok(pk) => {
-                tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
-                Some(pk)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch SSH private key from Vault for server {}: {}",
-                    server.id, e
-                );
-                None
+    let new_private_key = if server.vault_key_path.is_some() {
+        // For newly generated keys, use the in-memory value to avoid an extra Vault round-trip.
+        // For existing servers (re-deployment), fetch from Vault.
+        if let Some(pk) = captured_private_key {
+            Some(pk)
+        } else {
+            match vault_client
+                .get_ref()
+                .fetch_ssh_key(&user.id, server.id)
+                .await
+            {
+                Ok(pk) => {
+                    tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
+                    Some(pk)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch SSH private key from Vault for server {}: {}",
+                        server.id, e
+                    );
+                    None
+                }
             }
         }
     } else {
