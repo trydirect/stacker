@@ -225,7 +225,7 @@ fn ensure_env_file_if_needed(config: &StackerConfig, project_dir: &Path) -> Resu
 }
 
 /// SSH connection timeout for server pre-check (seconds).
-const SSH_CHECK_TIMEOUT_SECS: u64 = 15;
+const SSH_CHECK_TIMEOUT_SECS: u64 = 4;
 
 /// Resolve the path to an SSH key, expanding `~` to the user's home directory.
 fn resolve_ssh_key_path(key_path: &Path) -> PathBuf {
