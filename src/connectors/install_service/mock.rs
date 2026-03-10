@@ -23,6 +23,7 @@ impl InstallServiceConnector for MockInstallServiceConnector {
         _fc: String,
         _mq_manager: &MqManager,
         _server_public_key: Option<String>,
+        _server_private_key: Option<String>,
     ) -> Result<i32, String> {
         Ok(project_id)
     }

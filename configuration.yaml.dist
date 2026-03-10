@@ -32,6 +32,7 @@ vault:
   # Path under the mount (without deployment_hash), e.g. 'secret/debug/status_panel' or 'agent'
   # Final path: {address}/{api_prefix}/{agent_path_prefix}/{deployment_hash}/token
   agent_path_prefix: agent
+  ssh_key_path_prefix: data/users
 
 # External service connectors
 connectors:

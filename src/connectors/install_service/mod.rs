@@ -33,5 +33,6 @@ pub trait InstallServiceConnector: Send + Sync {
         fc: String,
         mq_manager: &MqManager,
         server_public_key: Option<String>,
+        server_private_key: Option<String>,
     ) -> Result<i32, String>;
 }

@@ -348,6 +348,7 @@ mod tests {
             server_ip: None,
             deployment_id: Some(1),
             project_id: Some(2),
+            server_name: None,
         });
 
         let enriched = lock.with_server_info(

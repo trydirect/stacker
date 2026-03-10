@@ -266,6 +266,24 @@ pub async fn item(
         server
     };
 
+    // For "own" flow (existing server with IP), SSH access is required.
+    // If we couldn't set up the SSH key, fail early instead of letting the
+    // Install Service crash when it cannot find the key.
+    let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
+    if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
+        tracing::error!(
+            "Cannot deploy to existing server {} (IP: {:?}): SSH key is not available. \
+             vault_key_path is None and key generation failed.",
+            server.id,
+            server.srv_ip,
+        );
+        return Err(JsonResponse::<models::Project>::build().bad_request(
+            "SSH key is not available for this server. \
+             Please generate an SSH key first with `stacker ssh-key generate` \
+             or re-add your server with SSH credentials.",
+        ));
+    }
+
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.metadata.clone();
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -285,6 +303,30 @@ pub async fn item(
 
     let deployment_id = saved_deployment.id;
 
+    // For "own" flow, fetch the SSH private key from Vault so the Install Service
+    // can SSH into the server directly without relying on Redis-cached file paths.
+    let new_private_key = if has_existing_ip && server.vault_key_path.is_some() {
+        match vault_client
+            .get_ref()
+            .fetch_ssh_key(&user.id, server.id)
+            .await
+        {
+            Ok(pk) => {
+                tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
+                Some(pk)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch SSH private key from Vault for server {}: {}",
+                    server.id, e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Delegate to install service connector
     install_service
         .deploy(
@@ -301,6 +343,7 @@ pub async fn item(
             fc,
             mq_manager.get_ref(),
             new_public_key,
+            new_private_key,
         )
         .await
         .map(|project_id| {
@@ -571,6 +614,24 @@ pub async fn saved_item(
         server
     };
 
+    // For "own" flow (existing server with IP), SSH access is required.
+    // If we couldn't set up the SSH key, fail early instead of letting the
+    // Install Service crash when it cannot find the key.
+    let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
+    if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
+        tracing::error!(
+            "Cannot deploy to existing server {} (IP: {:?}): SSH key is not available. \
+             vault_key_path is None and key generation failed.",
+            server.id,
+            server.srv_ip,
+        );
+        return Err(JsonResponse::<models::Project>::build().bad_request(
+            "SSH key is not available for this server. \
+             Please generate an SSH key first with `stacker ssh-key generate` \
+             or re-add your server with SSH credentials.",
+        ));
+    }
+
     // Store deployment attempts into deployment table in db
     let json_request = dc.project.metadata.clone();
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -592,6 +653,30 @@ pub async fn saved_item(
 
     tracing::debug!("Save deployment result: {:?}", result);
 
+    // For "own" flow, fetch the SSH private key from Vault so the Install Service
+    // can SSH into the server directly without relying on Redis-cached file paths.
+    let new_private_key = if has_existing_ip && server.vault_key_path.is_some() {
+        match vault_client
+            .get_ref()
+            .fetch_ssh_key(&user.id, server.id)
+            .await
+        {
+            Ok(pk) => {
+                tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
+                Some(pk)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch SSH private key from Vault for server {}: {}",
+                    server.id, e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Delegate to install service connector (determines own vs tfa routing)
     install_service
         .deploy(
@@ -608,6 +693,7 @@ pub async fn saved_item(
             fc,
             mq_manager.get_ref(),
             new_public_key,
+            new_private_key,
         )
         .await
         .map(|project_id| {

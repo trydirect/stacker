@@ -225,7 +225,7 @@ fn ensure_env_file_if_needed(config: &StackerConfig, project_dir: &Path) -> Resu
 }
 
 /// SSH connection timeout for server pre-check (seconds).
-const SSH_CHECK_TIMEOUT_SECS: u64 = 15;
+const SSH_CHECK_TIMEOUT_SECS: u64 = 4;
 
 /// Resolve the path to an SSH key, expanding `~` to the user's home directory.
 fn resolve_ssh_key_path(key_path: &Path) -> PathBuf {
@@ -1266,6 +1266,15 @@ impl DeployCommand {
                     }
                 }
 
+                // Fallback: if the API fetch didn't populate server_name,
+                // use the name from the deploy form so subsequent deploys
+                // can still find and reuse the server.
+                if l.server_name.is_none() {
+                    if let Some(ref name) = result.server_name {
+                        l.server_name = Some(name.clone());
+                    }
+                }
+
                 l
             }
         };
@@ -2129,6 +2138,7 @@ services:
             server_ip: None,
             deployment_id: Some(42),
             project_id: Some(7),
+            server_name: None,
         };
         assert_eq!(result.deployment_id, Some(42));
         assert_eq!(result.project_id, Some(7));
