@@ -16,6 +16,23 @@
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
+fn print_banner() {
+    let version = env!("CARGO_PKG_VERSION");
+    println!("============================================================");
+    println!("stacker-cli v{}", version);
+    println!("Stacker CLI - build, deploy, and manage application stacks");
+    println!("============================================================");
+    println!();
+    println!("Getting started:");
+    println!("  1) stacker-cli stacker login");
+    println!("  2) stacker-cli stacker init --with-cloud");
+    println!("  3) stacker-cli stacker deploy --target cloud");
+    println!("  4) stacker-cli stacker status --watch");
+    println!();
+    println!("Run `stacker-cli --help` to see all commands and options.");
+    println!();
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "stacker",
@@ -632,10 +649,35 @@ enum ProxyCommands {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            use clap::error::ErrorKind;
+            match err.kind() {
+                ErrorKind::DisplayHelp => {
+                    print_banner();
+                    let mut cmd = Cli::command();
+                    cmd.print_long_help()?;
+                    println!();
+                    return Ok(());
+                }
+                ErrorKind::DisplayVersion => {
+                    err.print()?;
+                    return Ok(());
+                }
+                _ => {
+                    err.print()?;
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
 
     let Some(subcommand) = cli.command else {
-        println!("stacker-cli {}", env!("CARGO_PKG_VERSION"));
+        print_banner();
+        let mut cmd = Cli::command();
+        cmd.print_long_help()?;
+        println!();
         return Ok(());
     };
 

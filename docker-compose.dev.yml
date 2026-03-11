@@ -39,6 +39,9 @@ services:
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
+      # Vault — must point to the real Vault service in the TryDirect network
+      - VAULT_ADDRESS=http://vault2.try.direct:8200
+      - VAULT_TOKEN=${STACKER_VAULT_TOKEN:-change-me}
     depends_on:
       stackerdb:
         condition: service_healthy
