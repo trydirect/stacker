@@ -693,9 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match err.kind() {
                 ErrorKind::DisplayHelp => {
                     print_banner();
-                    let mut cmd = Cli::command();
-                    cmd.print_long_help()?;
-                    println!();
+                    err.print()?;
                     return Ok(());
                 }
                 ErrorKind::DisplayVersion => {
