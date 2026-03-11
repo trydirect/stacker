@@ -10,4 +10,3 @@ configuration.yaml.orig
 docker/local/
 docs/*.sql
 config-to-validate.yaml
-local-only-settings
