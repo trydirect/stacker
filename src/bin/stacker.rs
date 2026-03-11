@@ -522,6 +522,31 @@ enum AgentCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Configure iptables firewall rules on the remote deployment
+    #[command(name = "configure-firewall")]
+    ConfigureFirewall {
+        /// Action: add, remove, list, flush
+        #[arg(long, default_value = "add")]
+        action: String,
+        /// App code for context/logging
+        #[arg(long)]
+        app: Option<String>,
+        /// Public ports (open to all), comma-separated: "80/tcp,443/tcp,53/udp"
+        #[arg(long, value_delimiter = ',')]
+        public_ports: Vec<String>,
+        /// Private ports (restricted), format: "port/proto:source", comma-separated: "5432/tcp:10.0.0.0/8"
+        #[arg(long, value_delimiter = ',')]
+        private_ports: Vec<String>,
+        /// Persist rules across reboots
+        #[arg(long, default_value_t = true)]
+        persist: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
     /// Configure reverse proxy for an app
     #[command(name = "configure-proxy")]
     ConfigureProxy {
@@ -921,6 +946,9 @@ fn get_command(
                 ),
                 AgentCommands::RemoveApp { app, volumes, remove_image, json, deployment } => Box::new(
                     agent::AgentRemoveAppCommand::new(app, volumes, remove_image, json, deployment),
+                ),
+                AgentCommands::ConfigureFirewall { action, app, public_ports, private_ports, persist, json, deployment } => Box::new(
+                    agent::AgentConfigureFirewallCommand::new(action, app, public_ports, private_ports, persist, json, deployment),
                 ),
                 AgentCommands::ConfigureProxy { app, domain, port, ssl, action, json, deployment } => Box::new(
                     agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, json, deployment),

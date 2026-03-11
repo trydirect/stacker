@@ -409,6 +409,116 @@ impl CallableTrait for AgentRemoveAppCommand {
     }
 }
 
+// ── Configure Firewall ───────────────────────────────
+
+/// `stacker agent configure-firewall [--action add] [--public-ports 80/tcp,443/tcp] [--private-ports 5432/tcp:10.0.0.0/8] [--json] [--deployment <hash>]`
+pub struct AgentConfigureFirewallCommand {
+    pub action: String,
+    pub app_code: Option<String>,
+    pub public_ports: Vec<String>,
+    pub private_ports: Vec<String>,
+    pub persist: bool,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl AgentConfigureFirewallCommand {
+    pub fn new(
+        action: String,
+        app_code: Option<String>,
+        public_ports: Vec<String>,
+        private_ports: Vec<String>,
+        persist: bool,
+        json: bool,
+        deployment: Option<String>,
+    ) -> Self {
+        Self { action, app_code, public_ports, private_ports, persist, json, deployment }
+    }
+
+    /// Parse "80/tcp" or "443" into a FirewallPortRule (source defaults to 0.0.0.0/0).
+    fn parse_public_port(s: &str) -> Result<crate::forms::status_panel::FirewallPortRule, String> {
+        let (port, protocol) = Self::parse_port_proto(s)?;
+        Ok(crate::forms::status_panel::FirewallPortRule {
+            port,
+            protocol,
+            source: "0.0.0.0/0".to_string(),
+            comment: None,
+        })
+    }
+
+    /// Parse "5432/tcp:10.0.0.0/8" or "5432:10.0.0.0/8" into a FirewallPortRule.
+    fn parse_private_port(s: &str) -> Result<crate::forms::status_panel::FirewallPortRule, String> {
+        // Split on first ':' that separates port/proto from source
+        // Format: port[/proto]:source
+        let parts: Vec<&str> = s.splitn(2, ':').collect();
+        if parts.len() != 2 || parts[1].is_empty() {
+            return Err(format!(
+                "Invalid private port '{}'. Expected format: port[/proto]:source (e.g. 5432/tcp:10.0.0.0/8)",
+                s
+            ));
+        }
+        let (port, protocol) = Self::parse_port_proto(parts[0])?;
+        Ok(crate::forms::status_panel::FirewallPortRule {
+            port,
+            protocol,
+            source: parts[1].to_string(),
+            comment: None,
+        })
+    }
+
+    fn parse_port_proto(s: &str) -> Result<(u16, String), String> {
+        if let Some((port_s, proto)) = s.split_once('/') {
+            let port: u16 = port_s.parse().map_err(|_| format!("Invalid port number: {}", port_s))?;
+            Ok((port, proto.to_string()))
+        } else {
+            let port: u16 = s.parse().map_err(|_| format!("Invalid port number: {}", s))?;
+            Ok((port, "tcp".to_string()))
+        }
+    }
+}
+
+impl CallableTrait for AgentConfigureFirewallCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("agent configure-firewall")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let public: Vec<crate::forms::status_panel::FirewallPortRule> = self
+            .public_ports
+            .iter()
+            .map(|s| Self::parse_public_port(s))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError::ConfigValidation(e))?;
+
+        let private: Vec<crate::forms::status_panel::FirewallPortRule> = self
+            .private_ports
+            .iter()
+            .map(|s| Self::parse_private_port(s))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError::ConfigValidation(e))?;
+
+        let params = crate::forms::status_panel::ConfigureFirewallCommandRequest {
+            app_code: self.app_code.clone(),
+            public_ports: public,
+            private_ports: private,
+            action: self.action.clone(),
+            persist: self.persist,
+        };
+
+        let request = AgentEnqueueRequest::new(&hash, "configure_firewall")
+            .with_parameters(&params)
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+
+        let info = run_agent_command(
+            &ctx,
+            &request,
+            &format!("Configuring firewall ({})", self.action),
+            DEFAULT_TIMEOUT_SECS,
+        )?;
+        print_command_result(&info, self.json);
+        Ok(())
+    }
+}
+
 // ── Configure Proxy ──────────────────────────────────
 
 /// `stacker agent configure-proxy <app> --domain <d> --port <p> [--json] [--deployment <hash>]`
