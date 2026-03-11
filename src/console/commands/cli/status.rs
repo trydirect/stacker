@@ -135,6 +135,9 @@ fn print_deployment_status_rich(
     // ── Server info ─────────────────────────────
     if let Some(srv) = ctx.server {
         println!("\n── Server ─────────────────────────────────");
+        if let Some(ref name) = srv.name {
+            println!("  Name:            {}", name);
+        }
         if let Some(ref ip) = srv.srv_ip {
             println!("  IP:              {}", ip);
             let ssh_user = srv.ssh_user.as_deref().unwrap_or("root");
