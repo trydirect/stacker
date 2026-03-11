@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] — 2026-03-11
+
+### Added — Firewall (iptables) Management
+
+- New MCP tools for configuring iptables firewall rules on remote servers:
+  - `configure_firewall` — Add, remove, list, or flush iptables rules with public/private port definitions
+  - `list_firewall_rules` — List current iptables rules on a deployment target server
+  - `configure_firewall_from_role` — Auto-configure firewall rules from Ansible role port definitions
+- Two execution methods:
+  - **Status Panel** (preferred): Commands executed via the Status Panel agent directly on the target server
+  - **SSH**: Fallback for servers without Status Panel agent (uses Ansible-based execution)
+- Port rule types:
+  - **Public ports**: Opened to all IPs (0.0.0.0/0) — use for HTTP, HTTPS, public APIs
+  - **Private ports**: Restricted to specific IPs/CIDRs — use for databases, internal services
+- Integration with Ansible roles: Automatically extracts `public_ports` and `private_ports` from role configuration
+- Rules can be persisted across reboots via the `persist` parameter
+
+### Added — Status Panel `configure_firewall` command type
+
+- New `configure_firewall` command type for Status Panel agents
+- Validates action (add, remove, list, flush), port numbers, and protocols (tcp/udp)
+- Supports optional comments for rule documentation
+
 ## [0.2.5] — 2026-03-07
 
 ### Added — Agent control from the CLI (`stacker agent`)

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(SQLX_OFFLINE=true ./target/debug/stacker-cli secrets:*)",
+      "Bash(SQLX_OFFLINE=true cargo build:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)"
+    ]
+  }
+}
