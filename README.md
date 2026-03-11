@@ -132,6 +132,7 @@ The end-user tool. No server required for local deploys.
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server) |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker list deployments` | List deployments on the Stacker server |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
 | `stacker config show` | Show resolved configuration |

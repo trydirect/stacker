@@ -225,6 +225,18 @@ enum ListCommands {
         #[arg(long)]
         json: bool,
     },
+    /// List deployments
+    Deployments {
+        /// Filter by project ID
+        #[arg(long)]
+        project: Option<i32>,
+        /// Limit number of results
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// List all servers
     Servers {
         /// Output in JSON format
@@ -850,6 +862,11 @@ fn get_command(
         StackerCommands::List { command: list_cmd } => match list_cmd {
             ListCommands::Projects { json } => Box::new(
                 stacker::console::commands::cli::list::ListProjectsCommand::new(json),
+            ),
+            ListCommands::Deployments { json, project, limit } => Box::new(
+                stacker::console::commands::cli::list::ListDeploymentsCommand::new(
+                    json, project, limit,
+                ),
             ),
             ListCommands::Servers { json } => Box::new(
                 stacker::console::commands::cli::list::ListServersCommand::new(json),

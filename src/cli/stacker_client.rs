@@ -221,6 +221,51 @@ impl StackerClient {
             .find(|p| p.name.to_lowercase() == lower))
     }
 
+    // ── Deployments ───────────────────────────────────
+
+    /// List deployments for the authenticated user.
+    pub async fn list_deployments(
+        &self,
+        project_id: Option<i32>,
+        limit: Option<i64>,
+    ) -> Result<Vec<DeploymentStatusInfo>, CliError> {
+        let url = format!("{}/api/v1/deployments", self.base_url);
+        let mut req = self.http.get(&url).bearer_auth(&self.token);
+
+        if let Some(pid) = project_id {
+            req = req.query(&[("project_id", pid)]);
+        }
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+
+        let resp = req.send().await.map_err(|e| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: format!("Stacker server unreachable: {}", e),
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "Stacker server GET /api/v1/deployments failed ({}): {}",
+                    status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentStatusInfo> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
     /// Create a project on the Stacker server.
     pub async fn create_project(
         &self,

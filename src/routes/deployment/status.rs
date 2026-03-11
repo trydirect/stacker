@@ -1,6 +1,6 @@
 use actix_web::{get, web, Responder, Result};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -18,6 +18,12 @@ pub struct DeploymentStatusResponse {
     pub status_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeploymentListQuery {
+    pub project_id: Option<i32>,
+    pub limit: Option<i64>,
 }
 
 impl From<models::Deployment> for DeploymentStatusResponse {
@@ -72,6 +78,35 @@ pub async fn status_handler(
         None => Err(JsonResponse::<DeploymentStatusResponse>::build()
             .not_found("Deployment not found")),
     }
+}
+
+/// `GET /api/v1/deployments`
+///
+/// List deployments for the authenticated user.
+#[tracing::instrument(name = "List deployments", skip(pg_pool, user))]
+#[get("")]
+pub async fn list_handler(
+    user: web::ReqData<Arc<models::User>>,
+    query: web::Query<DeploymentListQuery>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let limit = query.limit.unwrap_or(50).max(1).min(500);
+    let deployments = if let Some(project_id) = query.project_id {
+        db::deployment::fetch_by_user_and_project(pg_pool.get_ref(), &user.id, project_id, limit)
+            .await
+            .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?
+    } else {
+        db::deployment::fetch_by_user(pg_pool.get_ref(), &user.id, limit)
+            .await
+            .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?
+    };
+
+    let list: Vec<DeploymentStatusResponse> =
+        deployments.into_iter().map(DeploymentStatusResponse::from).collect();
+
+    Ok(JsonResponse::build()
+        .set_list(list)
+        .ok("Deployments fetched"))
 }
 
 /// `GET /api/v1/deployments/project/{project_id}`
