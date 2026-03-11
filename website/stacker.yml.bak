@@ -1,0 +1,80 @@
+name: website
+version: 1.0.0
+organization: null
+project:
+  identity: optimize
+app:
+  type: node
+  path: .
+  dockerfile: Dockerfile
+  image: null
+  build: null
+  ports: []
+  volumes: []
+  environment: {}
+services:
+- name: web
+  image: trydirect/stacker-website:latest
+  ports:
+  - 3456:3456
+  environment: {}
+  volumes:
+  - .:/app
+  depends_on: []
+- name: minio
+  image: minio/minio:latest
+  ports:
+  - 9000:9000
+  - 9001:9001
+  environment:
+    MINIO_ROOT_USER: admin
+    MINIO_ROOT_PASSWORD: changeme123
+  volumes:
+  - minio_data:/data
+  depends_on: []
+proxy:
+  type: nginx
+  auto_detect: true
+  domains:
+  - domain: stacker.my
+    ssl: auto
+    upstream: app:3456
+  config: null
+deploy:
+  target: server
+  #cloud:
+  #  provider: hetzner
+  #  orchestrator: remote
+  #  region: nbg1
+  #  size: cx23
+  #  install_image: null
+  #  remote_payload_file: null
+  #  ssh_key: null
+  #  key: null
+  server: null
+  registry:
+    username: trydirect
+    password: REDACTED
+    server: https://index.docker.io/v1/
+ai:
+  enabled: true
+  provider: ollama
+  model: qwen2.5-coder
+  api_key: null
+  endpoint: http://192.168.100.245:11434
+  timeout: 300
+  tasks:
+  - dockerfile
+  - compose
+monitoring:
+  status_panel: true
+  healthcheck:
+    endpoint: /healthz
+    interval: 10s
+  metrics: null
+hooks:
+  pre_build: scripts/pre-build.sh
+  post_deploy: scripts/post-deploy.sh
+  on_failure: scripts/on-failure.sh
+env_file: .env
+env: {}

@@ -1,6 +1,6 @@
 # stacker.yml Configuration Reference
 
-> **Stacker CLI v0.2.5** — The single-file deployment configuration for containerised applications.
+> **Stacker CLI v0.2.6** — The single-file deployment configuration for containerised applications.
 
 `stacker.yml` is the only file you need to add to your project. Stacker reads it to auto-generate Dockerfiles, docker-compose definitions, and deploy your application locally or to cloud infrastructure.
 
@@ -33,6 +33,7 @@
   - [SSH Key Management](#stacker-ssh-key--ssh-key-management)
   - [Service Template Catalog](#stacker-service--service-template-catalog)
   - [Agent Control](#stacker-agent--agent-control)
+  - [Firewall Management](#firewall-management--iptables)
 - [Recipes](#recipes)
 - [FAQ](#faq)
 
@@ -1172,6 +1173,85 @@ stacker ai ask --write "I need a postgres database with custom port 5433"
 # Interactive chat mode
 stacker ai --write
 > add elasticsearch and kibana for logging
+```
+
+### Firewall Management (iptables)
+
+Stacker provides MCP tools for configuring iptables firewall rules on target servers. Rules can be derived from Ansible role port definitions or specified manually.
+
+#### Execution Methods
+
+| Method | Description | When to use |
+|--------|-------------|-------------|
+| **Status Panel** | Commands executed via Status Panel agent | Preferred — runs directly on target |
+| **SSH** | Commands executed via SSH/Ansible | Fallback for servers without Status Panel |
+
+#### Port Types
+
+| Type | Source | Use case |
+|------|--------|----------|
+| **Public** | `0.0.0.0/0` (any IP) | HTTP, HTTPS, public APIs |
+| **Private** | Specific CIDR | Databases, internal services |
+
+#### MCP Tools
+
+**`configure_firewall`** — Configure iptables rules on a deployment:
+
+```json
+{
+  "deployment_hash": "abc123",
+  "public_ports": [
+    {"port": 80, "protocol": "tcp"},
+    {"port": 443, "protocol": "tcp"}
+  ],
+  "private_ports": [
+    {"port": 5432, "protocol": "tcp", "source": "10.0.0.0/8", "comment": "PostgreSQL"}
+  ],
+  "action": "add",
+  "persist": true,
+  "execution_method": "status_panel"
+}
+```
+
+**`list_firewall_rules`** — List current iptables rules:
+
+```json
+{
+  "deployment_hash": "abc123"
+}
+```
+
+**`configure_firewall_from_role`** — Auto-configure from Ansible role:
+
+```json
+{
+  "role_name": "postgres",
+  "deployment_hash": "abc123",
+  "action": "add",
+  "private_network": "10.0.0.0/8"
+}
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `add` | Add firewall rules |
+| `remove` | Remove firewall rules |
+| `list` | List current rules |
+| `flush` | Remove all rules |
+
+#### AI-assisted firewall management
+
+```bash
+# Configure firewall via AI
+stacker ai ask --write "open ports 80 and 443 publicly"
+stacker ai ask --write "allow postgres port 5432 from internal network only"
+
+# Interactive chat
+stacker ai --write
+> configure firewall to allow HTTP and HTTPS
+> add private port 3306 for MySQL from 10.0.0.0/8
 ```
 
 ---

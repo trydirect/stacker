@@ -316,6 +316,7 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
 
             let poll_interval = std::time::Duration::from_secs(5);
             let mut last_status = String::new();
+            let mut last_message: Option<String> = None;
 
             loop {
                 let status = client
@@ -324,9 +325,12 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
 
                 match status {
                     Some(info) => {
-                        if info.status != last_status {
+                        let status_changed = info.status != last_status;
+                        let message_changed = info.status_message != last_message;
+                        if status_changed || message_changed {
                             print_deployment_status_rich(&info, json, &ctx);
                             last_status = info.status.clone();
+                            last_message = info.status_message.clone();
                         }
 
                         if is_terminal(&info.status) {

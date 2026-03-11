@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.5-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.2.6-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -221,6 +221,7 @@ Stacker exposes **52+ Model Context Protocol tools** over WebSocket, enabling AI
 - Server resource monitoring
 - Docker Compose generation & preview
 - Agent control (deploy app, remove app, configure proxy, get status)
+- Firewall management (iptables rules via Status Panel or SSH)
 
 ### Key integrations
 
@@ -257,6 +258,7 @@ All agent requests are **HMAC-signed** (`X-Agent-Signature` header) using a toke
 | `deploy_app` | Deploy or update an app container |
 | `remove_app` | Remove an app container |
 | `configure_proxy` | Create/update/delete reverse-proxy entries |
+| `configure_firewall` | Configure iptables firewall rules (add/remove/list/flush) |
 | `stacker.exec` | Execute a command inside a running container (with security blocklist) |
 | `stacker.server_resources` | Collect server resource metrics (CPU, memory, disk, network) |
 | `apply_config` | Pull config from Vault and apply to a running container |

@@ -1616,11 +1616,14 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
         let client = StackerClient::new(&base_url, &creds.access_token);
         let start = std::time::Instant::now();
         let mut last_status = String::new();
+        let mut last_message: Option<String> = None;
 
         loop {
             match client.get_deployment_status_by_project(project_id).await {
                 Ok(Some(info)) => {
-                    if info.status != last_status {
+                    let status_changed = info.status != last_status;
+                    let message_changed = info.status_message != last_message;
+                    if status_changed || message_changed {
                         let icon = progress::status_icon(&info.status);
                         progress::update_message(
                             &spin,
@@ -1636,6 +1639,7 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                             ),
                         );
                         last_status = info.status.clone();
+                        last_message = info.status_message.clone();
                     }
 
                     if is_terminal(&info.status) {
