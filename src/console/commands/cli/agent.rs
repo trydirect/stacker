@@ -1200,6 +1200,6 @@ mod tests {
     fn print_snapshot_summary_handles_empty() {
         let snap = serde_json::json!({});
         // Should not panic
-        print_snapshot_summary(&snap);
+        print_snapshot_summary(&snap, None);
     }
 }
