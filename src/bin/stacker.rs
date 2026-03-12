@@ -188,6 +188,12 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
+    /// Force-complete a stuck (paused/error) deployment
+    Resolve {
+        /// Skip confirmation prompt (required)
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
     /// Check for updates and self-update
     Update {
         /// Release channel: stable, beta
@@ -947,6 +953,9 @@ fn get_command(
                 stacker::console::commands::cli::service::ServiceListCommand::new(online),
             ),
         },
+        StackerCommands::Resolve { confirm } => Box::new(
+            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm),
+        ),
         StackerCommands::Update { channel } => Box::new(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),
         ),
