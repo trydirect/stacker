@@ -1,14 +1,17 @@
+use std::io::{self, IsTerminal};
+
 use crate::console::commands::CallableTrait;
 use crate::cli::credentials::{
     CredentialsManager, HttpOAuthClient, LoginRequest, login,
 };
+use dialoguer::Password;
 
 /// `stacker login [--org <name>] [--domain <domain>] [--auth-url <url>]`
 ///
 /// Authenticates with the TryDirect platform via OAuth2 and stores
 /// credentials in `~/.config/stacker/credentials.json`.
 ///
-/// Prompts for email/password on stdin when running interactively.
+/// Prompts for email on stdin and masks password input when interactive.
 pub struct LoginCommand {
     pub org: Option<String>,
     pub domain: Option<String>,
@@ -31,6 +34,19 @@ impl LoginCommand {
         std::io::stdin().read_line(&mut input)?;
         Ok(input.trim().to_string())
     }
+
+    fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+        if io::stdin().is_terminal() {
+            let cleaned = prompt.trim_end_matches(':').trim();
+            let input = Password::new()
+                .with_prompt(cleaned)
+                .interact()
+                .map_err(|e| format!("Failed to read password: {}", e))?;
+            Ok(input.trim().to_string())
+        } else {
+            Self::read_line(prompt)
+        }
+    }
 }
 
 impl CallableTrait for LoginCommand {
@@ -40,7 +56,7 @@ impl CallableTrait for LoginCommand {
             return Err("Email cannot be empty".into());
         }
 
-        let password = Self::read_line("Password: ")?;
+        let password = Self::read_password("Password: ")?;
         if password.is_empty() {
             return Err("Password cannot be empty".into());
         }

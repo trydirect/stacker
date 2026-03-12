@@ -986,6 +986,51 @@ impl StackerClient {
         Ok(api.item)
     }
 
+    /// Force-complete a stuck deployment (paused or error → completed).
+    /// `POST /api/v1/deployments/{id}/force-complete`
+    pub async fn force_complete_deployment(
+        &self,
+        deployment_id: i32,
+    ) -> Result<DeploymentStatusInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/force-complete",
+            self.base_url, deployment_id
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "Force-complete failed ({}): {}",
+                    status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "No deployment returned in force-complete response".to_string(),
+        })
+    }
+
     // ── Agent commands ───────────────────────────────
 
     /// Enqueue a command for the Status Panel agent on a deployment.

@@ -216,9 +216,9 @@ impl CallableTrait for AgentHealthCommand {
 
 // ── Logs ─────────────────────────────────────────────
 
-/// `stacker agent logs <app> [--limit N] [--json] [--deployment <hash>]`
+/// `stacker agent logs [app] [--limit N] [--json] [--deployment <hash>]`
 pub struct AgentLogsCommand {
-    pub app_code: String,
+    pub app_code: Option<String>,
     pub limit: Option<i32>,
     pub json: bool,
     pub deployment: Option<String>,
@@ -226,7 +226,7 @@ pub struct AgentLogsCommand {
 
 impl AgentLogsCommand {
     pub fn new(
-        app_code: String,
+        app_code: Option<String>,
         limit: Option<i32>,
         json: bool,
         deployment: Option<String>,
@@ -239,22 +239,28 @@ impl CallableTrait for AgentLogsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("agent logs")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        let limit = self.limit.unwrap_or(400);
 
-        let params = crate::forms::status_panel::LogsCommandRequest {
-            app_code: self.app_code.clone(),
-            container: None,
-            cursor: None,
-            limit: self.limit.unwrap_or(400),
-            streams: vec!["stdout".to_string(), "stderr".to_string()],
-            redact: true,
+        let targets = match &self.app_code {
+            Some(app) => vec![app.clone()],
+            None => vec!["statuspanel".to_string(), "statuspanel_agent".to_string()],
         };
 
-        let request = AgentEnqueueRequest::new(&hash, "logs")
-            .with_parameters(&params)
-            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+        let mut results = Vec::new();
+        for app_code in targets {
+            let info = run_logs_command(&ctx, &hash, &app_code, limit)?;
+            if !self.json {
+                println!("\n== Logs: {} ==", app_code);
+                print_command_result(&info, false);
+            }
+            results.push(info);
+        }
 
-        let info = run_agent_command(&ctx, &request, "Fetching logs", DEFAULT_TIMEOUT_SECS)?;
-        print_command_result(&info, self.json);
+        if self.json {
+            let value = serde_json::to_value(&results)
+                .map_err(|e| CliError::ConfigValidation(format!("Failed to encode logs: {}", e)))?;
+            println!("{}", fmt::pretty_json(&value));
+        }
         Ok(())
     }
 }
@@ -607,10 +613,30 @@ impl CallableTrait for AgentStatusCommand {
             Ok(snap) => {
                 progress::finish_success(&pb, "Agent status fetched");
 
+                let item = snapshot_item(&snap);
+                let live_containers = match fetch_live_containers(&ctx, &hash) {
+                    Ok(list) => list,
+                    Err(err) => {
+                        eprintln!("Warning: failed to fetch live containers: {}", err);
+                        None
+                    }
+                };
+
                 if self.json {
-                    println!("{}", fmt::pretty_json(&snap));
+                    let mut output = item.clone();
+                    if let Some(list) = &live_containers {
+                        if let Some(obj) = output.as_object_mut() {
+                            obj.insert("containers_live".to_string(), serde_json::Value::Array(list.clone()));
+                        } else {
+                            output = serde_json::json!({
+                                "snapshot": output,
+                                "containers_live": list,
+                            });
+                        }
+                    }
+                    println!("{}", fmt::pretty_json(&output));
                 } else {
-                    print_snapshot_summary(&snap);
+                    print_snapshot_summary(item, live_containers.as_ref());
                 }
             }
             Err(e) => {
@@ -623,8 +649,62 @@ impl CallableTrait for AgentStatusCommand {
     }
 }
 
+fn snapshot_item<'a>(snap: &'a serde_json::Value) -> &'a serde_json::Value {
+    snap.get("item").unwrap_or(snap)
+}
+
+fn print_apps_summary(apps: &[serde_json::Value]) {
+    if apps.is_empty() {
+        println!("Apps:       none");
+        return;
+    }
+
+    println!("{:<18} {:<22} {:<30} {}", "APP", "NAME", "IMAGE", "ENABLED");
+    for app in apps {
+        let code = app.get("code").and_then(|v| v.as_str()).unwrap_or("-");
+        let name = app.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+        let image = app.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let enabled = app.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        println!(
+            "{:<18} {:<22} {:<30} {}",
+            fmt::truncate(code, 16),
+            fmt::truncate(name, 20),
+            fmt::truncate(image, 28),
+            if enabled { "yes" } else { "no" }
+        );
+    }
+}
+
+fn print_containers_summary(containers: &[serde_json::Value]) {
+    if containers.is_empty() {
+        println!("Containers: none");
+        return;
+    }
+
+    println!("{:<24} {:<12} {:<30}", "CONTAINER", "STATE", "IMAGE");
+    for c in containers {
+        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+        let state = c
+            .get("state")
+            .or_else(|| c.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        println!(
+            "{:<24} {} {:<10} {:<30}",
+            fmt::truncate(name, 22),
+            progress::status_icon(state),
+            state,
+            fmt::truncate(image, 28),
+        );
+    }
+}
+
 /// Pretty-print a snapshot summary for human consumption.
-fn print_snapshot_summary(snap: &serde_json::Value) {
+fn print_snapshot_summary(
+    snap: &serde_json::Value,
+    live_containers: Option<&Vec<serde_json::Value>>,
+) {
     println!("{}", fmt::separator(60));
 
     // Agent info
@@ -655,28 +735,19 @@ fn print_snapshot_summary(snap: &serde_json::Value) {
 
     println!("{}", fmt::separator(60));
 
+    if let Some(apps) = snap.get("apps").and_then(|v| v.as_array()) {
+        print_apps_summary(apps);
+    } else {
+        println!("Apps:       none");
+    }
+
+    println!("{}", fmt::separator(60));
+
     // Containers
-    if let Some(containers) = snap.get("containers").and_then(|v| v.as_array()) {
-        if containers.is_empty() {
-            println!("Containers: none");
-        } else {
-            println!(
-                "{:<20} {:<12} {:<30}",
-                "CONTAINER", "STATE", "IMAGE"
-            );
-            for c in containers {
-                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
-                let state = c.get("state").and_then(|v| v.as_str()).unwrap_or("-");
-                let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
-                println!(
-                    "{:<20} {} {:<10} {:<30}",
-                    fmt::truncate(name, 18),
-                    progress::status_icon(state),
-                    state,
-                    fmt::truncate(image, 28),
-                );
-            }
-        }
+    if let Some(containers) = live_containers {
+        print_containers_summary(containers);
+    } else if let Some(containers) = snap.get("containers").and_then(|v| v.as_array()) {
+        print_containers_summary(containers);
     }
 
     println!("{}", fmt::separator(60));
@@ -707,6 +778,119 @@ fn print_snapshot_summary(snap: &serde_json::Value) {
             }
         }
     }
+}
+
+pub struct AgentListAppsCommand {
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl AgentListAppsCommand {
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
+    }
+}
+
+impl CallableTrait for AgentListAppsCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("agent list apps")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let snapshot = ctx.block_on(ctx.client.agent_snapshot(&hash))?;
+        let item = snapshot_item(&snapshot);
+        let apps = item.get("apps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+        if self.json {
+            let value = serde_json::Value::Array(apps);
+            println!("{}", fmt::pretty_json(&value));
+            return Ok(());
+        }
+
+        print_apps_summary(&apps);
+        Ok(())
+    }
+}
+
+pub struct AgentListContainersCommand {
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl AgentListContainersCommand {
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
+    }
+}
+
+impl CallableTrait for AgentListContainersCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("agent list containers")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let containers = fetch_live_containers(&ctx, &hash)?
+            .unwrap_or_default();
+
+        if self.json {
+            let value = serde_json::Value::Array(containers);
+            println!("{}", fmt::pretty_json(&value));
+            return Ok(());
+        }
+
+        print_containers_summary(&containers);
+        Ok(())
+    }
+}
+
+fn run_logs_command(
+    ctx: &CliRuntime,
+    deployment_hash: &str,
+    app_code: &str,
+    limit: i32,
+) -> Result<AgentCommandInfo, CliError> {
+    let params = crate::forms::status_panel::LogsCommandRequest {
+        app_code: app_code.to_string(),
+        container: None,
+        cursor: None,
+        limit,
+        streams: vec!["stdout".to_string(), "stderr".to_string()],
+        redact: true,
+    };
+
+    let request = AgentEnqueueRequest::new(deployment_hash, "logs")
+        .with_parameters(&params)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+
+    run_agent_command(
+        ctx,
+        &request,
+        &format!("Fetching logs ({})", app_code),
+        DEFAULT_TIMEOUT_SECS,
+    )
+}
+
+fn fetch_live_containers(
+    ctx: &CliRuntime,
+    deployment_hash: &str,
+) -> Result<Option<Vec<serde_json::Value>>, CliError> {
+    let params = crate::forms::status_panel::ListContainersCommandRequest {
+        include_health: true,
+        include_logs: false,
+        log_lines: 10,
+    };
+
+    let request = AgentEnqueueRequest::new(deployment_hash, "list_containers")
+        .with_parameters(&params)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+
+    let info = run_agent_command(ctx, &request, "Fetching containers", DEFAULT_TIMEOUT_SECS)?;
+    if info.status != "completed" {
+        return Ok(None);
+    }
+
+    let containers = info
+        .result
+        .and_then(|result| result.get("containers").and_then(|v| v.as_array()).cloned());
+    Ok(containers)
 }
 
 // ── Exec (raw command) ───────────────────────────────

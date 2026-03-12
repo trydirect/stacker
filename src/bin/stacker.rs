@@ -472,8 +472,8 @@ enum AgentCommands {
     },
     /// Fetch container logs from the remote deployment
     Logs {
-        /// App code to fetch logs for
-        app: String,
+        /// App code to fetch logs for (default: statuspanel + statuspanel_agent)
+        app: Option<String>,
         /// Maximum number of log lines
         #[arg(long, default_value_t = 400)]
         limit: i32,
@@ -540,6 +540,9 @@ enum AgentCommands {
         /// Action: add, remove, list, flush
         #[arg(long, default_value = "add")]
         action: String,
+        /// List current firewall rules (shortcut for --action list)
+        #[arg(long)]
+        list: bool,
         /// App code for context/logging
         #[arg(long)]
         app: Option<String>,
@@ -582,6 +585,12 @@ enum AgentCommands {
         /// Deployment hash
         #[arg(long)]
         deployment: Option<String>,
+    },
+    /// List deployment resources from the agent
+    #[command(name = "list")]
+    List {
+        #[command(subcommand)]
+        command: AgentListCommands,
     },
     /// Show agent and container status for the deployment
     Status {
@@ -626,6 +635,28 @@ enum AgentCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentListCommands {
+    /// List apps deployed for the target deployment
+    Apps {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// List containers running on the target server
+    Containers {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
     },
 }
 
@@ -962,12 +993,29 @@ fn get_command(
                 AgentCommands::RemoveApp { app, volumes, remove_image, json, deployment } => Box::new(
                     agent::AgentRemoveAppCommand::new(app, volumes, remove_image, json, deployment),
                 ),
-                AgentCommands::ConfigureFirewall { action, app, public_ports, private_ports, persist, json, deployment } => Box::new(
-                    agent::AgentConfigureFirewallCommand::new(action, app, public_ports, private_ports, persist, json, deployment),
-                ),
+                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, json, deployment } => {
+                    let effective_action = if list { "list".to_string() } else { action };
+                    Box::new(agent::AgentConfigureFirewallCommand::new(
+                        effective_action,
+                        app,
+                        public_ports,
+                        private_ports,
+                        persist,
+                        json,
+                        deployment,
+                    ))
+                }
                 AgentCommands::ConfigureProxy { app, domain, port, ssl, action, json, deployment } => Box::new(
                     agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, json, deployment),
                 ),
+                AgentCommands::List { command: list_cmd } => match list_cmd {
+                    AgentListCommands::Apps { json, deployment } => Box::new(
+                        agent::AgentListAppsCommand::new(json, deployment),
+                    ),
+                    AgentListCommands::Containers { json, deployment } => Box::new(
+                        agent::AgentListContainersCommand::new(json, deployment),
+                    ),
+                },
                 AgentCommands::Status { json, deployment } => Box::new(
                     agent::AgentStatusCommand::new(json, deployment),
                 ),

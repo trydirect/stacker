@@ -184,6 +184,11 @@ enum StackerCommands {
         #[command(subcommand)]
         command: StackerProxyCommands,
     },
+    /// Force-complete a stuck (paused/error) deployment
+    Resolve {
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
     /// Self-update
     Update {
         #[arg(long)]
@@ -452,6 +457,9 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                     stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
                 )),
             },
+            StackerCommands::Resolve { confirm } => Ok(Box::new(
+                stacker::console::commands::cli::resolve::ResolveCommand::new(confirm),
+            )),
             StackerCommands::Update { channel } => Ok(Box::new(
                 stacker::console::commands::cli::update::UpdateCommand::new(channel),
             )),

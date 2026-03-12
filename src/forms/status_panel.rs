@@ -18,6 +18,14 @@ fn default_log_redact() -> bool {
     true
 }
 
+fn default_list_include_health() -> bool {
+    true
+}
+
+fn default_list_log_lines() -> usize {
+    10
+}
+
 fn default_delete_config() -> bool {
     true
 }
@@ -67,6 +75,16 @@ pub struct LogsCommandRequest {
     pub streams: Vec<String>,
     #[serde(default = "default_log_redact")]
     pub redact: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ListContainersCommandRequest {
+    #[serde(default = "default_list_include_health")]
+    pub include_health: bool,
+    #[serde(default)]
+    pub include_logs: bool,
+    #[serde(default = "default_list_log_lines")]
+    pub log_lines: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -390,6 +408,19 @@ pub fn validate_command_parameters(
                 .map(Some)
                 .map_err(|err| format!("Failed to encode logs parameters: {}", err))
         }
+        "list_containers" => {
+            let value = parameters.clone().unwrap_or_else(|| json!({}));
+            let params: ListContainersCommandRequest = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid list_containers parameters: {}", err))?;
+
+            if params.include_logs && (params.log_lines == 0 || params.log_lines > 100) {
+                return Err("list_containers.log_lines must be between 1 and 100".to_string());
+            }
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode list_containers parameters: {}", err))
+        }
         "restart" => {
             let value = parameters.clone().unwrap_or_else(|| json!({}));
             let params: RestartCommandRequest = serde_json::from_value(value)
@@ -609,6 +640,31 @@ mod tests {
         .expect_err("invalid stream should fail");
 
         assert!(err.contains("logs.streams"));
+    }
+
+    #[test]
+    fn list_containers_defaults_apply() {
+        let params = validate_command_parameters("list_containers", &Some(json!({})))
+            .expect("list_containers params should validate")
+            .expect("list_containers params must be present");
+
+        assert_eq!(params["include_health"], true);
+        assert_eq!(params["include_logs"], false);
+        assert_eq!(params["log_lines"], 10);
+    }
+
+    #[test]
+    fn list_containers_log_lines_validate() {
+        let err = validate_command_parameters(
+            "list_containers",
+            &Some(json!({
+                "include_logs": true,
+                "log_lines": 0
+            })),
+        )
+        .expect_err("invalid log_lines should fail");
+
+        assert!(err.contains("log_lines"));
     }
 
     #[test]
