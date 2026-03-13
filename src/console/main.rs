@@ -184,6 +184,11 @@ enum StackerCommands {
         #[command(subcommand)]
         command: StackerProxyCommands,
     },
+    /// Force-complete a stuck (paused/error) deployment
+    Resolve {
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
     /// Self-update
     Update {
         #[arg(long)]
@@ -272,8 +277,15 @@ enum StackerProxyCommands {
         #[arg(long)]
         ssl: Option<String>,
     },
-    /// Detect existing proxy containers
-    Detect,
+    /// Detect existing reverse-proxy containers
+    Detect {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Target a specific deployment by hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -441,10 +453,13 @@ fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::
                         domain, upstream, ssl,
                     ),
                 )),
-                StackerProxyCommands::Detect => Ok(Box::new(
-                    stacker::console::commands::cli::proxy::ProxyDetectCommand::new(),
+                StackerProxyCommands::Detect { json, deployment } => Ok(Box::new(
+                    stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
                 )),
             },
+            StackerCommands::Resolve { confirm } => Ok(Box::new(
+                stacker::console::commands::cli::resolve::ResolveCommand::new(confirm),
+            )),
             StackerCommands::Update { channel } => Ok(Box::new(
                 stacker::console::commands::cli::update::UpdateCommand::new(channel),
             )),

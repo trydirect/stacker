@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 /// Default Stacker server base URL (distinct from the User Service auth URL).
 pub const DEFAULT_STACKER_URL: &str = "https://stacker.try.direct";
 
+/// Default Vault URL used by status panel roles.
+/// The Install Service Ansible role uses this to configure the agent's VAULT_ADDRESS
+/// environment variable on the remote server. Must be a publicly reachable address
+/// (not a Docker-internal IP) so deployed agents can connect to Vault.
+pub const DEFAULT_VAULT_URL: &str = "https://vault.try.direct";
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Response types (matching Stacker server JSON envelope)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -73,6 +79,7 @@ pub struct ServerInfo {
     pub ssh_port: Option<i32>,
     pub ssh_user: Option<String>,
     pub name: Option<String>,
+    pub vault_key_path: Option<String>,
     #[serde(default = "default_connection_mode")]
     pub connection_mode: String,
     #[serde(default = "default_key_status")]
@@ -212,6 +219,51 @@ impl StackerClient {
         Ok(projects
             .into_iter()
             .find(|p| p.name.to_lowercase() == lower))
+    }
+
+    // ── Deployments ───────────────────────────────────
+
+    /// List deployments for the authenticated user.
+    pub async fn list_deployments(
+        &self,
+        project_id: Option<i32>,
+        limit: Option<i64>,
+    ) -> Result<Vec<DeploymentStatusInfo>, CliError> {
+        let url = format!("{}/api/v1/deployments", self.base_url);
+        let mut req = self.http.get(&url).bearer_auth(&self.token);
+
+        if let Some(pid) = project_id {
+            req = req.query(&[("project_id", pid)]);
+        }
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+
+        let resp = req.send().await.map_err(|e| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: format!("Stacker server unreachable: {}", e),
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "Stacker server GET /api/v1/deployments failed ({}): {}",
+                    status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentStatusInfo> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        Ok(api.list.unwrap_or_default())
     }
 
     /// Create a project on the Stacker server.
@@ -933,6 +985,310 @@ impl StackerClient {
 
         Ok(api.item)
     }
+
+    /// Force-complete a stuck deployment (paused or error → completed).
+    /// `POST /api/v1/deployments/{id}/force-complete`
+    pub async fn force_complete_deployment(
+        &self,
+        deployment_id: i32,
+    ) -> Result<DeploymentStatusInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/force-complete",
+            self.base_url, deployment_id
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "Force-complete failed ({}): {}",
+                    status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "No deployment returned in force-complete response".to_string(),
+        })
+    }
+
+    // ── Agent commands ───────────────────────────────
+
+    /// Enqueue a command for the Status Panel agent on a deployment.
+    ///
+    /// `POST /api/v1/agent/commands/enqueue`
+    pub async fn agent_enqueue(
+        &self,
+        request: &AgentEnqueueRequest,
+    ) -> Result<AgentCommandInfo, CliError> {
+        let url = format!("{}/api/v1/agent/commands/enqueue", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Enqueue failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<AgentCommandInfo> =
+            resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Invalid enqueue response: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::AgentCommandFailed {
+            command_id: String::new(),
+            error: "Empty enqueue response from server".to_string(),
+        })
+    }
+
+    /// Get the status/result of a previously enqueued agent command.
+    ///
+    /// `GET /api/v1/commands/{deployment_hash}/{command_id}`
+    pub async fn agent_command_status(
+        &self,
+        deployment_hash: &str,
+        command_id: &str,
+    ) -> Result<AgentCommandInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/commands/{}/{}",
+            self.base_url, deployment_hash, command_id
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Err(CliError::AgentCommandFailed {
+                command_id: command_id.to_string(),
+                error: "Command not found".to_string(),
+            });
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::AgentCommandFailed {
+                command_id: command_id.to_string(),
+                error: format!("Status check failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<AgentCommandInfo> =
+            resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+                command_id: command_id.to_string(),
+                error: format!("Invalid status response: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::AgentCommandFailed {
+            command_id: command_id.to_string(),
+            error: "Empty status response".to_string(),
+        })
+    }
+
+    /// Enqueue a command and poll until it completes or times out.
+    ///
+    /// This is the primary helper for CLI commands that need to wait for
+    /// the agent to process a command and return a result.
+    pub async fn agent_poll_result(
+        &self,
+        request: &AgentEnqueueRequest,
+        timeout_secs: u64,
+        poll_interval_secs: u64,
+    ) -> Result<AgentCommandInfo, CliError> {
+        let info = self.agent_enqueue(request).await?;
+        let command_id = info.command_id.clone();
+        let deployment_hash = request.deployment_hash.clone();
+
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let interval = std::time::Duration::from_secs(poll_interval_secs);
+
+        loop {
+            tokio::time::sleep(interval).await;
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(CliError::AgentCommandTimeout {
+                    command_id: command_id.clone(),
+                });
+            }
+
+            let status = self
+                .agent_command_status(&deployment_hash, &command_id)
+                .await?;
+
+            match status.status.as_str() {
+                "completed" | "failed" => return Ok(status),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Fetch a full deployment snapshot (agent info, commands, containers).
+    ///
+    /// `GET /api/v1/agent/deployments/{deployment_hash}`
+    pub async fn agent_snapshot(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<serde_json::Value, CliError> {
+        let url = format!(
+            "{}/api/v1/agent/deployments/{}",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Err(CliError::AgentNotFound {
+                deployment_hash: deployment_hash.to_string(),
+            });
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Snapshot failed ({}): {}", status, body),
+            });
+        }
+
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| CliError::AgentCommandFailed {
+                command_id: String::new(),
+                error: format!("Invalid snapshot response: {}", e),
+            })
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Agent request/response types
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Request body for `POST /api/v1/agent/commands/enqueue`.
+///
+/// Mirrors the server's `EnqueueRequest` — kept in sync so CLI payloads
+/// are validated identically to direct API calls.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentEnqueueRequest {
+    pub deployment_hash: String,
+    pub command_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<i32>,
+}
+
+impl AgentEnqueueRequest {
+    /// Create a request with only the required fields.
+    pub fn new(deployment_hash: impl Into<String>, command_type: impl Into<String>) -> Self {
+        Self {
+            deployment_hash: deployment_hash.into(),
+            command_type: command_type.into(),
+            priority: None,
+            parameters: None,
+            timeout_seconds: None,
+        }
+    }
+
+    /// Builder: set typed parameters (serialized to JSON).
+    pub fn with_parameters<T: Serialize>(mut self, params: &T) -> Result<Self, serde_json::Error> {
+        self.parameters = Some(serde_json::to_value(params)?);
+        Ok(self)
+    }
+
+    /// Builder: set raw JSON parameters.
+    pub fn with_raw_parameters(mut self, params: serde_json::Value) -> Self {
+        self.parameters = Some(params);
+        self
+    }
+
+    /// Builder: set priority (low / normal / high / critical).
+    pub fn with_priority(mut self, priority: impl Into<String>) -> Self {
+        self.priority = Some(priority.into());
+        self
+    }
+
+    /// Builder: set timeout in seconds.
+    pub fn with_timeout(mut self, seconds: i32) -> Self {
+        self.timeout_seconds = Some(seconds);
+        self
+    }
+}
+
+/// Agent command info as returned by the commands API.
+///
+/// Contains both status and (optionally) the result payload set by
+/// the Status Panel agent after execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentCommandInfo {
+    pub command_id: String,
+    pub deployment_hash: String,
+    #[serde(rename = "type", default)]
+    pub command_type: String,
+    pub status: String,
+    #[serde(default)]
+    pub priority: String,
+    #[serde(default)]
+    pub parameters: Option<serde_json::Value>,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1248,6 +1604,27 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         _ => {}
     }
 
+    // When monitoring.status_panel is enabled, include the statuspanel feature
+    // with its public port so the install service's collect_props() picks it up
+    // and opens port 5000 in the cloud firewall.
+    if config.monitoring.status_panel {
+        features.push(serde_json::json!({
+            "_id": generate_app_id(),
+            "name": "Status Panel",
+            "code": "statuspanel",
+            "type": "feature",
+            "restart": "always",
+            "custom": true,
+            "shared_ports": [
+                {"host_port": "5000", "container_port": "5000"},
+            ],
+            "network": [],
+            "dockerhub_user": "trydirect",
+            "dockerhub_name": "status",
+            "dockerhub_tag": "latest",
+        }));
+    }
+
     serde_json::json!({
         "custom": {
             "custom_stack_code": stack_code,
@@ -1391,7 +1768,13 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
     // integrated_features and set connection_mode so the install service's Ansible
     // playbook picks it up (get_features_roles checks connection_mode == "status_panel").
+    // Also pass vault_url in stack.vars so the Ansible role configures the remote
+    // status panel agent with the public Vault address (not the local Docker IP).
     if config.monitoring.status_panel {
+        // Resolve public Vault URL: env override → default constant.
+        let vault_url = std::env::var("STACKER_VAULT_URL")
+            .unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
+
         if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
             let features = stack_obj
                 .entry("integrated_features")
@@ -1401,6 +1784,22 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 if !arr.contains(&sp) {
                     arr.push(sp);
                 }
+            }
+
+            // Inject vault_url into stack.vars so the Install Service Ansible
+            // statuspanel role configures the agent with the public Vault address.
+            let vars = stack_obj
+                .entry("vars")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = vars.as_array_mut() {
+                arr.push(serde_json::json!({
+                    "key": "vault_url",
+                    "value": vault_url
+                }));
+                arr.push(serde_json::json!({
+                    "key": "status_panel_port",
+                    "value": "5000"
+                }));
             }
         }
         if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
@@ -1506,6 +1905,33 @@ mod tests {
         );
         // connection_mode should be set to "status_panel"
         assert_eq!(form["server"]["connection_mode"], "status_panel");
+
+        // vault_url should be passed in stack.vars for the Ansible statuspanel role
+        let vars = form["stack"]["vars"].as_array().unwrap();
+        let vault_var = vars.iter().find(|v| v["key"] == "vault_url");
+        assert!(
+            vault_var.is_some(),
+            "stack.vars should contain vault_url: {:?}",
+            vars
+        );
+        assert_eq!(
+            vault_var.unwrap()["value"],
+            DEFAULT_VAULT_URL,
+            "vault_url should be the public Vault address"
+        );
+
+        // status_panel_port should be passed in stack.vars for the cloud firewall
+        let port_var = vars.iter().find(|v| v["key"] == "status_panel_port");
+        assert!(
+            port_var.is_some(),
+            "stack.vars should contain status_panel_port: {:?}",
+            vars
+        );
+        assert_eq!(
+            port_var.unwrap()["value"],
+            "5000",
+            "status_panel_port should be 5000"
+        );
     }
 
     #[test]
@@ -1572,6 +1998,42 @@ mod tests {
         // Ports should include the NPM management port (81)
         let ports = features[0]["shared_ports"].as_array().unwrap();
         assert_eq!(ports.len(), 3);
+    }
+
+    #[test]
+    fn test_build_project_body_with_status_panel() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .monitoring(crate::cli::config_parser::MonitoringConfig {
+                status_panel: true,
+                healthcheck: None,
+                metrics: None,
+            })
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let features = body["custom"]["feature"].as_array().unwrap();
+        let sp = features.iter().find(|f| f["code"] == "statuspanel");
+        assert!(
+            sp.is_some(),
+            "feature array should contain statuspanel entry: {:?}",
+            features
+        );
+        let sp = sp.unwrap();
+        assert_eq!(sp["type"], "feature");
+        assert_eq!(sp["name"], "Status Panel");
+        assert!(sp["_id"].is_string(), "_id must be present");
+        assert_eq!(sp["custom"], true);
+        // Port 5000 must be declared so the install service opens it in the cloud firewall
+        let ports = sp["shared_ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0]["host_port"], "5000");
+        assert_eq!(ports[0]["container_port"], "5000");
+        // Image fields must be present so the install service can build a Docker image reference
+        assert_eq!(sp["dockerhub_user"], "trydirect");
+        assert_eq!(sp["dockerhub_name"], "status");
+        assert_eq!(sp["dockerhub_tag"], "latest");
     }
 
     #[test]

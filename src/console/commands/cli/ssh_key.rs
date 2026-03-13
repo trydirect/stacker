@@ -336,7 +336,7 @@ async fn inject_key_via_ssh(
 
     let addr = format!("{}:{}", host, port);
     let mut handle: Handle<AcceptAllKeys> =
-        tokio::time::timeout(Duration::from_secs(15), russh::client::connect(config, addr, AcceptAllKeys))
+        tokio::time::timeout(Duration::from_secs(4), russh::client::connect(config, addr, AcceptAllKeys))
             .await
             .map_err(|_| CliError::ConfigValidation(format!("Connection to {}:{} timed out", host, port)))?
             .map_err(|e| CliError::ConfigValidation(format!("Connection failed: {}", e)))?;

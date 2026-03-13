@@ -390,7 +390,7 @@ pub async fn validate_key(
         ssh_port,
         &ssh_user,
         &private_key,
-        Duration::from_secs(30),
+        Duration::from_secs(4),
     )
     .await;
 

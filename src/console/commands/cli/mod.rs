@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod ai;
 pub mod ci;
 pub mod config;
@@ -8,6 +9,7 @@ pub mod list;
 pub mod login;
 pub mod logs;
 pub mod proxy;
+pub mod resolve;
 pub mod secrets;
 pub mod service;
 pub mod ssh_key;

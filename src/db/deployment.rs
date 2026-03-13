@@ -164,3 +164,66 @@ pub async fn fetch_by_project_id(
         }
     })
 }
+
+pub async fn fetch_by_user(
+    pool: &PgPool,
+    user_id: &str,
+    limit: i64,
+) -> Result<Vec<models::Deployment>, String> {
+    tracing::debug!("Fetch deployments by user_id: {}", user_id);
+    sqlx::query_as!(
+        models::Deployment,
+        r#"
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+               last_seen_at, created_at, updated_at
+        FROM deployment
+        WHERE user_id = $1 AND deleted = false
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+        user_id,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch deployments by user_id: {:?}", err);
+        "Could not fetch deployments".to_string()
+    })
+}
+
+pub async fn fetch_by_user_and_project(
+    pool: &PgPool,
+    user_id: &str,
+    project_id: i32,
+    limit: i64,
+) -> Result<Vec<models::Deployment>, String> {
+    tracing::debug!(
+        "Fetch deployments by user_id: {} and project_id: {}",
+        user_id,
+        project_id
+    );
+    sqlx::query_as!(
+        models::Deployment,
+        r#"
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+               last_seen_at, created_at, updated_at
+        FROM deployment
+        WHERE user_id = $1 AND project_id = $2 AND deleted = false
+        ORDER BY created_at DESC
+        LIMIT $3
+        "#,
+        user_id,
+        project_id,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!(
+            "Failed to fetch deployments by user_id/project_id: {:?}",
+            err
+        );
+        "Could not fetch deployments".to_string()
+    })
+}

@@ -1,8 +1,10 @@
+pub mod agent_control;
 pub mod ansible_roles;
 pub mod cloud;
 pub mod compose;
 pub mod config;
 pub mod deployment;
+pub mod firewall;
 pub mod install_preview;
 pub mod marketplace_admin;
 pub mod monitoring;
@@ -13,11 +15,13 @@ pub mod support;
 pub mod templates;
 pub mod user_service;
 
+pub use agent_control::*;
 pub use ansible_roles::*;
 pub use cloud::*;
 pub use compose::*;
 pub use config::*;
 pub use deployment::*;
+pub use firewall::*;
 pub use install_preview::*;
 pub use marketplace_admin::*;
 pub use monitoring::*;

@@ -1,6 +1,6 @@
 # stacker.yml Configuration Reference
 
-> **Stacker CLI v0.2.4** — The single-file deployment configuration for containerised applications.
+> **Stacker CLI v0.2.6** — The single-file deployment configuration for containerised applications.
 
 `stacker.yml` is the only file you need to add to your project. Stacker reads it to auto-generate Dockerfiles, docker-compose definitions, and deploy your application locally or to cloud infrastructure.
 
@@ -32,6 +32,8 @@
 - [CLI Commands Reference](#cli-commands-reference)
   - [SSH Key Management](#stacker-ssh-key--ssh-key-management)
   - [Service Template Catalog](#stacker-service--service-template-catalog)
+  - [Agent Control](#stacker-agent--agent-control)
+  - [Firewall Management](#firewall-management--iptables)
 - [Recipes](#recipes)
 - [FAQ](#faq)
 
@@ -951,6 +953,15 @@ Configuration issues:
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
+| `stacker agent health` | Check Status Panel agent connectivity and health |
+| `stacker agent status` | Display agent snapshot — containers, versions, uptime |
+| `stacker agent logs <app>` | Retrieve container logs from the remote agent |
+| `stacker agent restart <app>` | Restart a container via the agent |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server |
+| `stacker agent remove-app` | Remove an app container (optional volume/image cleanup) |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
+| `stacker agent history` | Show recent agent command execution history |
+| `stacker agent exec` | Execute a raw agent command with JSON parameters |
 | `stacker update` | Check for CLI updates |
 
 ### `stacker init` flags
@@ -1094,6 +1105,62 @@ stacker service list --online              # also query marketplace API
 
 **Aliases:** `wp`→wordpress, `pg`/`postgresql`→postgres, `my`→mysql, `mongo`→mongodb, `es`→elasticsearch, `mq`→rabbitmq, `pma`→phpmyadmin, `mh`→mailhog, `npm`→nginx_proxy_manager
 
+### `stacker agent` — Agent Control
+
+Manage the Status Panel agent deployed on your target server. All commands communicate through the Stacker API using a **pull-based architecture** — the CLI enqueues commands, the agent polls for work, executes locally, and reports results.
+
+Every command supports:
+- `--json` — machine-readable JSON output
+- `--deployment <HASH>` — target a specific deployment (auto-resolved if omitted)
+
+**Deployment hash resolution order:** `--deployment` flag → `DeploymentLock` (from a previous deploy) → `stacker.yml` project identity → API lookup.
+
+```bash
+# Health & status
+stacker agent health                              # Check agent connectivity
+stacker agent health --app nginx                  # Health of a specific container
+stacker agent status                              # Agent snapshot: containers, versions, uptime
+stacker agent status --json                       # JSON output
+
+# Logs
+stacker agent logs my-app                         # Fetch container logs
+stacker agent logs my-app --lines 200             # Last 200 lines
+stacker agent logs my-app --json                  # JSON output
+
+# Container lifecycle
+stacker agent restart my-app                      # Restart a container
+stacker agent deploy-app --app my-app --image myorg/myapp --tag v2.1
+stacker agent remove-app --app my-app             # Remove container
+stacker agent remove-app --app my-app --remove-volumes --remove-images
+
+# Reverse proxy
+stacker agent configure-proxy --app my-app --domain app.example.com --ssl
+
+# History & raw commands
+stacker agent history                             # Recent command history
+stacker agent exec --command-type health          # Raw command
+stacker agent exec --command-type stacker.exec --params '{"container":"app","command":"ls -la"}'
+
+# Target a specific deployment
+stacker agent status --deployment abc123def
+```
+
+### AI-assisted agent control
+
+The AI assistant can manage the agent via built-in tools:
+
+```bash
+# AI agent control in write mode
+stacker ai ask --write "check if the agent is healthy"
+stacker ai ask --write "show me the logs for the nginx container"
+stacker ai ask --write "deploy app my-service with image myorg/myapp:latest"
+
+# Interactive chat
+stacker ai --write
+> what's the status of the agent?
+> restart the postgres container
+```
+
 ### AI-assisted service addition
 
 The AI assistant can also add services via the `add_service` tool:
@@ -1106,6 +1173,85 @@ stacker ai ask --write "I need a postgres database with custom port 5433"
 # Interactive chat mode
 stacker ai --write
 > add elasticsearch and kibana for logging
+```
+
+### Firewall Management (iptables)
+
+Stacker provides MCP tools for configuring iptables firewall rules on target servers. Rules can be derived from Ansible role port definitions or specified manually.
+
+#### Execution Methods
+
+| Method | Description | When to use |
+|--------|-------------|-------------|
+| **Status Panel** | Commands executed via Status Panel agent | Preferred — runs directly on target |
+| **SSH** | Commands executed via SSH/Ansible | Fallback for servers without Status Panel |
+
+#### Port Types
+
+| Type | Source | Use case |
+|------|--------|----------|
+| **Public** | `0.0.0.0/0` (any IP) | HTTP, HTTPS, public APIs |
+| **Private** | Specific CIDR | Databases, internal services |
+
+#### MCP Tools
+
+**`configure_firewall`** — Configure iptables rules on a deployment:
+
+```json
+{
+  "deployment_hash": "abc123",
+  "public_ports": [
+    {"port": 80, "protocol": "tcp"},
+    {"port": 443, "protocol": "tcp"}
+  ],
+  "private_ports": [
+    {"port": 5432, "protocol": "tcp", "source": "10.0.0.0/8", "comment": "PostgreSQL"}
+  ],
+  "action": "add",
+  "persist": true,
+  "execution_method": "status_panel"
+}
+```
+
+**`list_firewall_rules`** — List current iptables rules:
+
+```json
+{
+  "deployment_hash": "abc123"
+}
+```
+
+**`configure_firewall_from_role`** — Auto-configure from Ansible role:
+
+```json
+{
+  "role_name": "postgres",
+  "deployment_hash": "abc123",
+  "action": "add",
+  "private_network": "10.0.0.0/8"
+}
+```
+
+#### Actions
+
+| Action | Description |
+|--------|-------------|
+| `add` | Add firewall rules |
+| `remove` | Remove firewall rules |
+| `list` | List current rules |
+| `flush` | Remove all rules |
+
+#### AI-assisted firewall management
+
+```bash
+# Configure firewall via AI
+stacker ai ask --write "open ports 80 and 443 publicly"
+stacker ai ask --write "allow postgres port 5432 from internal network only"
+
+# Interactive chat
+stacker ai --write
+> configure firewall to allow HTTP and HTTPS
+> add private port 3306 for MySQL from 10.0.0.0/8
 ```
 
 ---

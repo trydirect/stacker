@@ -113,6 +113,8 @@ pub struct DeployResult {
     pub deployment_id: Option<i64>,
     /// Stacker server project ID (set for remote orchestrator deploys).
     pub project_id: Option<i64>,
+    /// Server name used/generated for this deploy (for lockfile persistence).
+    pub server_name: Option<String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -212,6 +214,7 @@ impl DeployStrategy for LocalDeploy {
             server_ip: None,
             deployment_id: None,
             project_id: None,
+            server_name: None,
         })
     }
 
@@ -432,6 +435,7 @@ impl DeployStrategy for CloudDeploy {
                         server_ip: None,
                         deployment_id: None,
                         project_id: None,
+                        server_name: None,
                     });
                 }
 
@@ -466,7 +470,7 @@ impl DeployStrategy for CloudDeploy {
                         reason: format!("Failed to initialize async runtime: {}", e),
                     })?;
 
-                let response = rt.block_on(async {
+                let (response, effective_server_name) = rt.block_on(async {
                     let client = StackerClient::new(&base_url, &creds.access_token);
 
                     // Step 1: Resolve or auto-create project
@@ -629,6 +633,17 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 4: Build deploy form
                     let mut deploy_form = stacker_client::build_deploy_form(config);
+
+                    // Capture the server name from the form (auto-generated or overridden)
+                    // so we can persist it in the deployment lock even if the API fetch
+                    // after deploy doesn't return server details yet.
+                    let effective_server_name = server_name.clone().or_else(|| {
+                        deploy_form
+                            .get("server")
+                            .and_then(|s| s.get("name"))
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    });
                     if let Some(sid) = server_id {
                         if let Some(server_obj) = deploy_form.get_mut("server") {
                             if let Some(obj) = server_obj.as_object_mut() {
@@ -672,7 +687,7 @@ impl DeployStrategy for CloudDeploy {
                     eprintln!("  Deploying project '{}' (id={})...", project_name, project.id);
                     let resp = client.deploy(project.id, cloud_id, deploy_form).await?;
 
-                    Ok(resp)
+                    Ok((resp, effective_server_name))
                 }).map_err(|e: CliError| e)?;
 
                 let deploy_id = response
@@ -709,6 +724,7 @@ impl DeployStrategy for CloudDeploy {
                     server_ip: None,
                     deployment_id: deploy_id,
                     project_id: project_id.map(|id| id as i64),
+                    server_name: effective_server_name,
                 });
             }
         }
@@ -739,6 +755,7 @@ impl DeployStrategy for CloudDeploy {
             server_ip: extract_server_ip(&output.stdout),
             deployment_id: None,
             project_id: None,
+            server_name: None,
         })
     }
 
@@ -1211,6 +1228,7 @@ impl DeployStrategy for ServerDeploy {
             server_ip: server_host,
             deployment_id: None,
             project_id: None,
+            server_name: None,
         })
     }
 

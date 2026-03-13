@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
+use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, ProxyType, StackerConfig};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
-use crate::cli::stacker_client::{self, DeploymentStatusInfo, StackerClient};
+use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
 use crate::console::commands::CallableTrait;
 
 /// Output directory for generated artifacts.
@@ -85,35 +85,138 @@ fn is_terminal(status: &str) -> bool {
     TERMINAL_STATUSES.iter().any(|s| *s == status)
 }
 
-/// Pretty-print a deployment status to stderr.
-fn print_deployment_status(info: &DeploymentStatusInfo, json: bool) {
+/// Context for rendering a rich deployment report.
+struct StatusContext<'a> {
+    server: Option<&'a ServerInfo>,
+    config: Option<&'a StackerConfig>,
+}
+
+/// Pretty-print a deployment status with optional server/config context.
+fn print_deployment_status_rich(
+    info: &DeploymentStatusInfo,
+    json: bool,
+    ctx: &StatusContext<'_>,
+) {
     if json {
         if let Ok(j) = serde_json::to_string_pretty(info) {
             println!("{}", j);
         }
-    } else {
-        let status_icon = match info.status.as_str() {
-            "completed" => "✓",
-            "failed" | "error" | "cancelled" => "✗",
-            "in_progress" => "⟳",
-            "pending" | "wait_start" => "◷",
-            "paused" | "wait_resume" => "⏸",
-            "confirmed" => "✓",
-            _ => "?",
-        };
-
-        println!(
-            "{} Deployment #{} — status: {}",
-            status_icon, info.id, info.status
-        );
-        if let Some(ref msg) = info.status_message {
-            println!("  Message:         {}", msg);
-        }
-        println!("  Project ID:      {}", info.project_id);
-        println!("  Deployment hash: {}", info.deployment_hash);
-        println!("  Created:         {}", info.created_at);
-        println!("  Updated:         {}", info.updated_at);
+        return;
     }
+
+    let status_icon = match info.status.as_str() {
+        "completed" => "✓",
+        "failed" | "error" | "cancelled" => "✗",
+        "in_progress" => "⟳",
+        "pending" | "wait_start" => "◷",
+        "paused" | "wait_resume" => "⏸",
+        "confirmed" => "✓",
+        _ => "?",
+    };
+
+    // ── Header ──────────────────────────────────
+    println!(
+        "\n{} Deployment #{} — status: {}",
+        status_icon, info.id, info.status
+    );
+    if let Some(ref msg) = info.status_message {
+        println!("  Message:         {}", msg);
+    }
+    println!("  Project ID:      {}", info.project_id);
+    println!("  Deployment hash: {}", info.deployment_hash);
+    println!("  Created:         {}", info.created_at);
+    println!("  Updated:         {}", info.updated_at);
+
+    // Only show the rich details for terminal (completed/failed) statuses
+    if !is_terminal(&info.status) {
+        return;
+    }
+
+    // ── Server info ─────────────────────────────
+    if let Some(srv) = ctx.server {
+        println!("\n── Server ─────────────────────────────────");
+        if let Some(ref name) = srv.name {
+            println!("  Name:            {}", name);
+        }
+        if let Some(ref ip) = srv.srv_ip {
+            println!("  IP:              {}", ip);
+            let ssh_user = srv.ssh_user.as_deref().unwrap_or("root");
+            let ssh_port = srv.ssh_port.unwrap_or(22);
+            if ssh_port == 22 {
+                println!("  SSH:             ssh {}@{}", ssh_user, ip);
+            } else {
+                println!("  SSH:             ssh -p {} {}@{}", ssh_port, ssh_user, ip);
+            }
+        }
+        if let Some(ref cloud) = srv.cloud {
+            println!("  Cloud:           {}", cloud);
+        }
+        if let Some(ref region) = srv.region {
+            println!("  Region:          {}", region);
+        }
+    }
+
+    // ── Deployed apps / domains ─────────────────
+    if let Some(config) = ctx.config {
+        let srv_ip = ctx.server.and_then(|s| s.srv_ip.as_deref());
+
+        // Services
+        if !config.services.is_empty() {
+            println!("\n── Services ───────────────────────────────");
+            for svc in &config.services {
+                let ports_str = if svc.ports.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (ports: {})", svc.ports.join(", "))
+                };
+                println!("  • {}{}", svc.name, ports_str);
+            }
+        }
+
+        // Proxy / domains
+        if config.proxy.proxy_type != ProxyType::None {
+            println!("\n── Proxy ──────────────────────────────────");
+            println!("  Type:            {}", config.proxy.proxy_type);
+
+            if !config.proxy.domains.is_empty() {
+                println!("\n── App URLs ───────────────────────────────");
+                for d in &config.proxy.domains {
+                    let scheme = match d.ssl {
+                        crate::cli::config_parser::SslMode::Off => "http",
+                        _ => "https",
+                    };
+                    println!("  • {}://{} → {}", scheme, d.domain, d.upstream);
+                }
+            }
+
+            // Nginx Proxy Manager admin panel
+            if matches!(
+                config.proxy.proxy_type,
+                ProxyType::Nginx | ProxyType::NginxProxyManager
+            ) {
+                if let Some(ip) = srv_ip {
+                    println!("\n── Nginx Proxy Manager ────────────────────");
+                    println!("  Admin panel:     http://{}:81", ip);
+                    println!("  Default login:   admin@example.com / changeme");
+                }
+            }
+        }
+
+        // ── Next steps ──────────────────────────────
+        if info.status == "completed" {
+            println!("\n── Next Steps ─────────────────────────────");
+            println!("  • Check service health:   stacker status --watch");
+            println!("  • View logs:              stacker logs");
+            if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
+                println!("  • Manage proxy:           stacker proxy");
+            }
+            println!("  • Redeploy:               stacker deploy --target cloud");
+            println!("\n── Documentation ──────────────────────────");
+            println!("  https://try.direct/docs");
+        }
+    }
+
+    println!();
 }
 
 /// Resolve the project name from stacker.yml (same logic as deploy).
@@ -173,6 +276,22 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
             ),
         })?;
 
+        // Fetch server info for this project (best-effort)
+        let server: Option<ServerInfo> = client
+            .list_servers()
+            .await
+            .ok()
+            .and_then(|servers| {
+                servers
+                    .into_iter()
+                    .find(|s| s.project_id == project.id)
+            });
+
+        let ctx = StatusContext {
+            server: server.as_ref(),
+            config: Some(&config),
+        };
+
         if !watch {
             // Single query
             let status = client
@@ -180,7 +299,7 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
                 .await?;
             match status {
                 Some(info) => {
-                    print_deployment_status(&info, json);
+                    print_deployment_status_rich(&info, json, &ctx);
                     Ok(())
                 }
                 None => {
@@ -197,6 +316,7 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
 
             let poll_interval = std::time::Duration::from_secs(5);
             let mut last_status = String::new();
+            let mut last_message: Option<String> = None;
 
             loop {
                 let status = client
@@ -205,9 +325,12 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
 
                 match status {
                     Some(info) => {
-                        if info.status != last_status {
-                            print_deployment_status(&info, json);
+                        let status_changed = info.status != last_status;
+                        let message_changed = info.status_message != last_message;
+                        if status_changed || message_changed {
+                            print_deployment_status_rich(&info, json, &ctx);
                             last_status = info.status.clone();
+                            last_message = info.status_message.clone();
                         }
 
                         if is_terminal(&info.status) {

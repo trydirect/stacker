@@ -315,3 +315,89 @@ project_app → ConfigRenderer → Vault KV v2 → Status Panel → Filesystem
 - [Status Panel APP_DEPLOYMENT.md](../../status/docs/APP_DEPLOYMENT.md) - Agent-side configuration handling
 - [VaultClient](../../status/src/security/vault_client.rs) - Status Panel Vault integration
 - [ConfigRenderer](../src/services/config_renderer.rs) - Stacker configuration rendering
+
+---
+
+## Firewall Configuration (iptables)
+
+Stacker supports configuring iptables firewall rules on target servers. Rules can be derived from Ansible role port definitions or specified manually.
+
+### Execution Methods
+
+| Method | Description | When to Use |
+|--------|-------------|-------------|
+| **Status Panel** | Commands executed directly on target server via Status Panel agent | Preferred - servers with Status Panel installed |
+| **SSH** | Commands executed via SSH/Ansible | Fallback - servers without Status Panel |
+
+### Port Types
+
+| Port Type | Description | Default Source |
+|-----------|-------------|----------------|
+| **Public Ports** | Accessible from any IP (internet-facing) | `0.0.0.0/0` |
+| **Private Ports** | Restricted to internal networks | `10.0.0.0/8` (configurable) |
+
+### MCP Tools
+
+#### `configure_firewall`
+Configure iptables rules on a deployment target server.
+
+```json
+{
+  "deployment_hash": "abc123",
+  "action": "add",
+  "public_ports": [
+    {"port": 80, "protocol": "tcp"},
+    {"port": 443, "protocol": "tcp"}
+  ],
+  "private_ports": [
+    {"port": 5432, "protocol": "tcp", "source": "10.0.0.0/8"}
+  ],
+  "persist": true,
+  "execution_method": "status_panel"
+}
+```
+
+#### `list_firewall_rules`
+List current iptables rules on a deployment.
+
+```json
+{
+  "deployment_hash": "abc123"
+}
+```
+
+#### `configure_firewall_from_role`
+Configure firewall rules based on an Ansible role's port definitions.
+
+```json
+{
+  "role_name": "nginx",
+  "deployment_hash": "abc123",
+  "action": "add",
+  "private_network": "10.0.0.0/8"
+}
+```
+
+### Status Panel Command
+
+The `configure_firewall` command type is sent to Status Panel agents:
+
+```json
+{
+  "deployment_hash": "abc123",
+  "command_type": "configure_firewall",
+  "parameters": {
+    "action": "add",
+    "public_ports": [{"port": 80, "protocol": "tcp", "source": "0.0.0.0/0"}],
+    "private_ports": [{"port": 5432, "protocol": "tcp", "source": "10.0.0.0/8"}],
+    "persist": true
+  }
+}
+```
+
+### Integration with Ansible Roles
+
+Ansible roles define `public_ports` and `private_ports` arrays. When deploying via SSH method or using `configure_firewall_from_role`, these port definitions are automatically converted to iptables rules:
+
+- **Public ports**: Allow incoming TCP/UDP from `0.0.0.0/0`
+- **Private ports**: Allow incoming TCP/UDP from specified internal network only

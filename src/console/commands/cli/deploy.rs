@@ -225,7 +225,7 @@ fn ensure_env_file_if_needed(config: &StackerConfig, project_dir: &Path) -> Resu
 }
 
 /// SSH connection timeout for server pre-check (seconds).
-const SSH_CHECK_TIMEOUT_SECS: u64 = 15;
+const SSH_CHECK_TIMEOUT_SECS: u64 = 4;
 
 /// Resolve the path to an SSH key, expanding `~` to the user's home directory.
 fn resolve_ssh_key_path(key_path: &Path) -> PathBuf {
@@ -1266,6 +1266,15 @@ impl DeployCommand {
                     }
                 }
 
+                // Fallback: if the API fetch didn't populate server_name,
+                // use the name from the deploy form so subsequent deploys
+                // can still find and reuse the server.
+                if l.server_name.is_none() {
+                    if let Some(ref name) = result.server_name {
+                        l.server_name = Some(name.clone());
+                    }
+                }
+
                 l
             }
         };
@@ -1328,8 +1337,9 @@ impl DeployCommand {
 /// After a cloud deploy completes, look up the provisioned server's details
 /// (IP, SSH user, port, name) from the Stacker server API.
 ///
-/// Retries up to 3 times with a 10-second delay between attempts, because the
-/// server IP may not yet be assigned right after the deployment status becomes
+/// First polls the deployment status until it reaches a terminal state (or a
+/// timeout is reached), then retries fetching the server IP — because the IP
+/// may be assigned a few seconds after the deployment status flips to
 /// "completed".
 fn fetch_server_for_project(
     project_id: i32,
@@ -1350,47 +1360,80 @@ fn fetch_server_for_project(
     rt.block_on(async {
         let client = StackerClient::new(&base_url, &creds.access_token);
 
-        let max_retries = 3;
-        let retry_delay = Duration::from_secs(10);
+        // Phase 1: wait for the deployment to reach a terminal state.
+        // The watch_cloud_deployment may have timed out, so the deployment
+        // could still be running.  We give it another 10 minutes here.
+        let deploy_poll = Duration::from_secs(10);
+        let deploy_timeout = Duration::from_secs(600);
+        let deploy_start = std::time::Instant::now();
 
-        for attempt in 0..max_retries {
+        loop {
+            match client.get_deployment_status_by_project(project_id).await {
+                Ok(Some(info)) if is_terminal(&info.status) => {
+                    if info.status != "completed" {
+                        eprintln!(
+                            "  Deployment #{} finished with status '{}' — server IP may not be available.",
+                            info.id, info.status
+                        );
+                    }
+                    break;
+                }
+                Ok(Some(info)) => {
+                    if deploy_start.elapsed() > deploy_timeout {
+                        eprintln!(
+                            "  Deployment #{} still '{}' after extended wait — saving what we have.",
+                            info.id, info.status
+                        );
+                        break;
+                    }
+                    eprintln!(
+                        "  Deployment still in progress ({}), waiting for IP...",
+                        info.status_message
+                            .as_deref()
+                            .unwrap_or(&info.status),
+                    );
+                    tokio::time::sleep(deploy_poll).await;
+                }
+                _ => break, // no deployment info available
+            }
+        }
+
+        // Phase 2: deployment is terminal (or timed out) — poll for the server IP.
+        let ip_retries = 6;
+        let ip_delay = Duration::from_secs(10);
+
+        for attempt in 0..ip_retries {
             let servers = client.list_servers().await?;
 
-            // Find the server linked to this project
             let server = servers
                 .into_iter()
                 .find(|s| s.project_id == project_id);
 
             match server {
                 Some(ref s) if s.srv_ip.is_some() => {
-                    // Server found with IP — done
                     return Ok(server);
                 }
-                Some(_) if attempt < max_retries - 1 => {
-                    // Server found but no IP yet — wait and retry
+                Some(_) if attempt < ip_retries - 1 => {
                     eprintln!(
                         "  Server found but IP not yet assigned (attempt {}/{}), retrying in {}s...",
                         attempt + 1,
-                        max_retries,
-                        retry_delay.as_secs(),
+                        ip_retries,
+                        ip_delay.as_secs(),
                     );
-                    tokio::time::sleep(retry_delay).await;
+                    tokio::time::sleep(ip_delay).await;
                 }
                 Some(s) => {
-                    // Final attempt — return server even without IP so we capture
-                    // name, cloud_id, etc.
                     return Ok(Some(s));
                 }
-                None if attempt < max_retries - 1 => {
-                    // No server yet — wait and retry
+                None if attempt < ip_retries - 1 => {
                     eprintln!(
                         "  No server found for project {} (attempt {}/{}), retrying in {}s...",
                         project_id,
                         attempt + 1,
-                        max_retries,
-                        retry_delay.as_secs(),
+                        ip_retries,
+                        ip_delay.as_secs(),
                     );
-                    tokio::time::sleep(retry_delay).await;
+                    tokio::time::sleep(ip_delay).await;
                 }
                 None => {
                     return Ok(None);
@@ -1573,11 +1616,14 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
         let client = StackerClient::new(&base_url, &creds.access_token);
         let start = std::time::Instant::now();
         let mut last_status = String::new();
+        let mut last_message: Option<String> = None;
 
         loop {
             match client.get_deployment_status_by_project(project_id).await {
                 Ok(Some(info)) => {
-                    if info.status != last_status {
+                    let status_changed = info.status != last_status;
+                    let message_changed = info.status_message != last_message;
+                    if status_changed || message_changed {
                         let icon = progress::status_icon(&info.status);
                         progress::update_message(
                             &spin,
@@ -1593,6 +1639,7 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                             ),
                         );
                         last_status = info.status.clone();
+                        last_message = info.status_message.clone();
                     }
 
                     if is_terminal(&info.status) {
@@ -2129,6 +2176,7 @@ services:
             server_ip: None,
             deployment_id: Some(42),
             project_id: Some(7),
+            server_name: None,
         };
         assert_eq!(result.deployment_id, Some(42));
         assert_eq!(result.project_id, Some(7));

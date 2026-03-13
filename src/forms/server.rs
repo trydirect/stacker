@@ -30,6 +30,12 @@ pub struct ServerForm {
     /// Not persisted to the database.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+    /// The actual SSH private key content (PEM).
+    /// Populated at deploy time for "own" flow re-deploys so the Install Service
+    /// can SSH into the server without relying on a cached file path in Redis.
+    /// Not persisted to the database.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh_private_key: Option<String>,
 }
 
 pub fn default_ssh_port() -> Option<i32> {
@@ -64,6 +70,7 @@ impl From<&ServerForm> for models::Server {
 impl Into<ServerForm> for models::Server {
     fn into(self) -> ServerForm {
         let mut form = ServerForm::default();
+        form.server_id = Some(self.id);
         form.cloud_id = self.cloud_id;
         form.disk_type = self.disk_type;
         form.region = self.region;

@@ -41,12 +41,29 @@ impl StoredCredentials {
     }
 }
 
+/// Default session lifetime: 8 hours (28 800 seconds).
+/// Can be overridden with the `STACKER_SESSION_TTL` environment variable
+/// (value in seconds).
+const DEFAULT_SESSION_TTL_SECS: u64 = 8 * 3600; // 8 hours
+
+fn session_ttl_secs() -> u64 {
+    std::env::var("STACKER_SESSION_TTL")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SESSION_TTL_SECS)
+}
+
 /// Convert an OAuth token response (with relative `expires_in`) into
 /// `StoredCredentials` with an absolute `expires_at`.
+///
+/// The session lifetime is the **maximum** of the server-supplied
+/// `expires_in` and the local default (8 h), so CLI sessions always
+/// stay alive for a comfortable working window.
 impl From<TokenResponse> for StoredCredentials {
     fn from(resp: TokenResponse) -> Self {
-        let expires_at = Utc::now()
-            + Duration::seconds(resp.expires_in.unwrap_or(3600) as i64);
+        let min_ttl = session_ttl_secs();
+        let ttl = resp.expires_in.unwrap_or(min_ttl).max(min_ttl);
+        let expires_at = Utc::now() + Duration::seconds(ttl as i64);
 
         Self {
             access_token: resp.access_token,
@@ -503,9 +520,27 @@ mod tests {
         assert_eq!(creds.access_token, "new-token");
         assert_eq!(creds.refresh_token.as_deref(), Some("new-refresh"));
         assert_eq!(creds.token_type, "Bearer");
-        // expires_at should be ~2 hours from now
+        // Server sent 7200 but minimum is 8 h → clamped to 8 h
+        let expected = DEFAULT_SESSION_TTL_SECS as i64;
         let diff = creds.expires_at - Utc::now();
-        assert!(diff.num_seconds() > 7100 && diff.num_seconds() <= 7200);
+        assert!(diff.num_seconds() > expected - 100 && diff.num_seconds() <= expected);
+    }
+
+    #[test]
+    fn test_token_response_respects_longer_server_ttl() {
+        // When the server returns a TTL longer than 8 h, honour it.
+        let ten_hours: u64 = 10 * 3600;
+        let resp = TokenResponse {
+            access_token: "tok".into(),
+            refresh_token: None,
+            token_type: None,
+            scope: None,
+            expires_in: Some(ten_hours),
+        };
+        let creds = StoredCredentials::from(resp);
+        let diff = creds.expires_at - Utc::now();
+        assert!(diff.num_seconds() > (ten_hours as i64) - 100
+            && diff.num_seconds() <= ten_hours as i64);
     }
 
     #[test]
@@ -519,9 +554,10 @@ mod tests {
         };
         let creds = StoredCredentials::from(resp);
         assert_eq!(creds.token_type, "Bearer");
-        // default expires_in is 3600
+        // default expires_in is 8 hours (28800)
+        let expected = DEFAULT_SESSION_TTL_SECS as i64;
         let diff = creds.expires_at - Utc::now();
-        assert!(diff.num_seconds() > 3500 && diff.num_seconds() <= 3600);
+        assert!(diff.num_seconds() > expected - 100 && diff.num_seconds() <= expected);
     }
 
     // ── CredentialsManager tests ────────────────────

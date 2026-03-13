@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.4-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.2.6-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -132,6 +132,7 @@ The end-user tool. No server required for local deploys.
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server) |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker list deployments` | List deployments on the Stacker server |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
 | `stacker config show` | Show resolved configuration |
@@ -145,6 +146,15 @@ The end-user tool. No server required for local deploys.
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
+| `stacker agent health` | Check Status Panel agent connectivity and health |
+| `stacker agent status` | Display agent snapshot — containers, versions, uptime |
+| `stacker agent logs <app>` | Retrieve container logs from the remote agent |
+| `stacker agent restart <app>` | Restart a container via the agent |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server |
+| `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
+| `stacker agent history` | Show recent command execution history |
+| `stacker agent exec` | Execute a raw agent command with JSON parameters |
 | `stacker login` | Authenticate with the TryDirect platform |
 | `stacker update` | Check for updates and self-update |
 
@@ -166,6 +176,7 @@ stacker deploy --dry-run          # preview generated files without executing
 - **AI troubleshooting** — on deploy failure, suggests fixes via AI or deterministic fallback hints
 - **Service catalog** — 20+ built-in service templates (Postgres, Redis, WordPress, etc.) — add with `stacker service add`
 - **AI service addition** — ask `stacker ai ask --write "add wordpress"` and the AI uses the template catalog
+- **Agent control** — `stacker agent` subcommand to manage remote Status Panel agents (health, logs, restart, deploy, proxy) with `--json` output
 - **SSH key management** — generate, view, and upload server SSH keys (Vault-backed)
 - **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
 - **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode
@@ -200,7 +211,7 @@ cargo run --bin server                           # http://127.0.0.1:8000
 
 ### MCP Server
 
-Stacker exposes **48+ Model Context Protocol tools** over WebSocket, enabling AI agents (Claude, GPT, etc.) to manage infrastructure programmatically:
+Stacker exposes **52+ Model Context Protocol tools** over WebSocket, enabling AI agents (Claude, GPT, etc.) to manage infrastructure programmatically:
 
 - Project & deployment management
 - Container operations (start, stop, restart, exec)
@@ -210,6 +221,8 @@ Stacker exposes **48+ Model Context Protocol tools** over WebSocket, enabling AI
 - App environment & port management
 - Server resource monitoring
 - Docker Compose generation & preview
+- Agent control (deploy app, remove app, configure proxy, get status)
+- Firewall management (iptables rules via Status Panel or SSH)
 
 ### Key integrations
 
@@ -246,6 +259,7 @@ All agent requests are **HMAC-signed** (`X-Agent-Signature` header) using a toke
 | `deploy_app` | Deploy or update an app container |
 | `remove_app` | Remove an app container |
 | `configure_proxy` | Create/update/delete reverse-proxy entries |
+| `configure_firewall` | Configure iptables firewall rules (add/remove/list/flush) |
 | `stacker.exec` | Execute a command inside a running container (with security blocklist) |
 | `stacker.server_resources` | Collect server resource metrics (CPU, memory, disk, network) |
 | `apply_config` | Pull config from Vault and apply to a running container |

@@ -1,8 +1,13 @@
-use crate::cli::config_parser::{DomainConfig, SslMode};
+use crate::cli::config_parser::{
+    CloudOrchestrator, DeployTarget, DomainConfig, SslMode, StackerConfig,
+};
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::proxy_manager::{
-    ContainerRuntime, DockerCliRuntime, ProxyDetection, detect_proxy, generate_nginx_server_block,
+    ContainerRuntime, DockerCliRuntime, ProxyDetection, detect_proxy,
+    detect_proxy_from_snapshot, generate_nginx_server_block,
 };
+use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
 
 /// Parse SSL mode string to `SslMode` enum.
@@ -61,29 +66,138 @@ impl CallableTrait for ProxyAddCommand {
     }
 }
 
-/// `stacker proxy detect`
+/// `stacker proxy detect [--json] [--deployment <hash>]`
 ///
 /// Scans running containers for an existing reverse-proxy (nginx, traefik, etc.)
 /// and reports what was found.
-pub struct ProxyDetectCommand;
+///
+/// - **Local deployments**: runs `docker ps` locally.
+/// - **Cloud/remote deployments**: queries the Status Panel agent snapshot.
+pub struct ProxyDetectCommand {
+    pub json: bool,
+    pub deployment: Option<String>,
+}
 
 impl ProxyDetectCommand {
-    pub fn new() -> Self {
-        Self
+    pub fn new(json: bool, deployment: Option<String>) -> Self {
+        Self { json, deployment }
+    }
+}
+
+/// Check whether the current project is configured for cloud/remote deployment.
+fn is_cloud_or_remote(project_dir: &std::path::Path) -> bool {
+    // 1. Check deployment lock
+    if let Ok(Some(lock)) = DeploymentLock::load(project_dir) {
+        if lock.target == "cloud" || lock.target == "server" {
+            return true;
+        }
+    }
+
+    // 2. Check stacker.yml
+    let config_path = project_dir.join("stacker.yml");
+    if let Ok(config_str) = std::fs::read_to_string(&config_path) {
+        if let Ok(config) = serde_yaml::from_str::<StackerConfig>(&config_str) {
+            if config.deploy.target == DeployTarget::Cloud {
+                return true;
+            }
+            if config.deploy.target == DeployTarget::Server {
+                return true;
+            }
+            if let Some(cloud_cfg) = &config.deploy.cloud {
+                if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Resolve deployment hash for proxy detection (minimal version).
+fn resolve_deployment_hash_for_proxy(
+    explicit: &Option<String>,
+    ctx: &CliRuntime,
+) -> Result<String, CliError> {
+    if let Some(hash) = explicit {
+        if !hash.is_empty() {
+            return Ok(hash.clone());
+        }
+    }
+
+    let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+
+    if let Some(lock) = DeploymentLock::load(&project_dir)? {
+        if let Some(dep_id) = lock.deployment_id {
+            let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
+            if let Some(info) = info {
+                return Ok(info.deployment_hash);
+            }
+        }
+    }
+
+    let config_path = project_dir.join("stacker.yml");
+    if config_path.exists() {
+        if let Ok(config) = StackerConfig::from_file(&config_path) {
+            if let Some(ref project_name) = config.project.identity {
+                let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
+                if let Some(proj) = project {
+                    let dep = ctx.block_on(ctx.client.get_deployment_status_by_project(proj.id))?;
+                    if let Some(dep) = dep {
+                        return Ok(dep.deployment_hash);
+                    }
+                }
+            }
+        }
+    }
+
+    Err(CliError::ConfigValidation(
+        "Cannot determine deployment hash for remote proxy detection.\n\
+         Use --deployment <HASH>, or run from a directory with a deployment lock or stacker.yml."
+            .to_string(),
+    ))
+}
+
+/// Pretty-print a proxy detection result.
+fn print_detection(detection: &ProxyDetection, json: bool) {
+    if json {
+        let val = serde_json::json!({
+            "proxy_type": format!("{:?}", detection.proxy_type),
+            "container_name": detection.container_name,
+            "ports": detection.ports,
+        });
+        println!("{}", serde_json::to_string_pretty(&val).unwrap_or_default());
+        return;
+    }
+
+    eprintln!("Detected proxy: {:?}", detection.proxy_type);
+    if let Some(name) = &detection.container_name {
+        eprintln!("  Container: {}", name);
+    }
+    if !detection.ports.is_empty() {
+        eprintln!("  Ports: {:?}", detection.ports);
     }
 }
 
 impl CallableTrait for ProxyDetectCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = DockerCliRuntime;
-        let detection = run_detect(&runtime)?;
+        let project_dir = std::env::current_dir()?;
 
-        eprintln!("Detected proxy: {:?}", detection.proxy_type);
-        if let Some(name) = &detection.container_name {
-            eprintln!("  Container: {}", name);
-        }
-        if !detection.ports.is_empty() {
-            eprintln!("  Ports: {:?}", detection.ports);
+        // If an explicit --deployment flag was given, or the project is
+        // deployed to cloud/server, use the agent snapshot for detection.
+        let use_remote = self.deployment.is_some() || is_cloud_or_remote(&project_dir);
+
+        if use_remote {
+            let ctx = CliRuntime::new("proxy detect")?;
+            let hash = resolve_deployment_hash_for_proxy(&self.deployment, &ctx)?;
+
+            let snapshot = ctx.block_on(ctx.client.agent_snapshot(&hash))?;
+            let detection = detect_proxy_from_snapshot(&snapshot);
+            print_detection(&detection, self.json);
+        } else {
+            let runtime = DockerCliRuntime;
+            let detection = run_detect(&runtime)?;
+            print_detection(&detection, self.json);
         }
 
         Ok(())

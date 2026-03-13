@@ -41,6 +41,7 @@ where
             let _ = method::try_agent(&mut req).await?
                 || method::try_jwt(&mut req).await?
                 || method::try_oauth(&mut req).await?
+                || method::try_query(&mut req).await?
                 || method::try_cookie(&mut req).await?
                 || method::try_hmac(&mut req).await?
                 || method::anonym(&mut req)?;

@@ -176,6 +176,74 @@ pub fn detect_proxy(runtime: &dyn ContainerRuntime) -> Result<ProxyDetection, Cl
     Ok(ProxyDetection::default())
 }
 
+/// Detect a reverse proxy from an agent snapshot JSON value.
+///
+/// The snapshot contains a `"containers"` array with objects like:
+/// `{ "name": "...", "image": "...", "state": "running", ... }`
+///
+/// Uses the same `PROXY_SIGNATURES` as local detection.
+pub fn detect_proxy_from_snapshot(snapshot: &serde_json::Value) -> ProxyDetection {
+    let containers = match snapshot.get("containers").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return ProxyDetection::default(),
+    };
+
+    for (signature, proxy_type) in PROXY_SIGNATURES {
+        for c in containers {
+            let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("");
+            let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+
+            if image.contains(signature) || name.contains(signature) {
+                // Try to extract ports from the snapshot container object.
+                // The agent may report ports as an array of numbers, an array of
+                // strings like "80/tcp", or a "ports" string. Be lenient.
+                let ports = extract_snapshot_ports(c);
+
+                return ProxyDetection {
+                    proxy_type: *proxy_type,
+                    container_name: Some(name.to_string()),
+                    ports,
+                };
+            }
+        }
+    }
+
+    ProxyDetection::default()
+}
+
+/// Best-effort port extraction from an agent snapshot container object.
+fn extract_snapshot_ports(container: &serde_json::Value) -> Vec<u16> {
+    let mut ports = Vec::new();
+
+    if let Some(arr) = container.get("ports").and_then(|v| v.as_array()) {
+        for p in arr {
+            if let Some(n) = p.as_u64() {
+                if n <= u16::MAX as u64 {
+                    ports.push(n as u16);
+                }
+            } else if let Some(s) = p.as_str() {
+                // e.g. "80/tcp" or "0.0.0.0:81->81/tcp"
+                if let Some(arrow_idx) = s.find("->") {
+                    let before = &s[..arrow_idx];
+                    if let Some(port_str) = before.rsplit(':').next() {
+                        if let Ok(port) = port_str.parse::<u16>() {
+                            if !ports.contains(&port) {
+                                ports.push(port);
+                            }
+                        }
+                    }
+                } else if let Ok(port) = s.split('/').next().unwrap_or("").parse::<u16>() {
+                    if !ports.contains(&port) {
+                        ports.push(port);
+                    }
+                }
+            }
+        }
+    }
+
+    ports
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // generate_nginx_server_block — produce nginx config snippet
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -519,5 +587,102 @@ mod tests {
         let info = parse_docker_ps_line(line);
         assert_eq!(info.name, "app");
         assert!(info.ports.is_empty());
+    }
+
+    // ── Snapshot-based proxy detection tests ────────
+
+    #[test]
+    fn test_detect_from_snapshot_npm() {
+        let snap = serde_json::json!({
+            "containers": [
+                {
+                    "name": "npm-app",
+                    "image": "jc21/nginx-proxy-manager:2.11",
+                    "state": "running",
+                    "ports": [80, 443, 81]
+                },
+                {
+                    "name": "my-app",
+                    "image": "myapp:latest",
+                    "state": "running"
+                }
+            ]
+        });
+        let detection = detect_proxy_from_snapshot(&snap);
+        assert_eq!(detection.proxy_type, ProxyType::NginxProxyManager);
+        assert_eq!(detection.container_name.as_deref(), Some("npm-app"));
+        assert!(detection.ports.contains(&81));
+    }
+
+    #[test]
+    fn test_detect_from_snapshot_traefik() {
+        let snap = serde_json::json!({
+            "containers": [
+                {
+                    "name": "traefik-proxy",
+                    "image": "traefik:v3.0",
+                    "state": "running",
+                    "ports": [80, 443, 8080]
+                }
+            ]
+        });
+        let detection = detect_proxy_from_snapshot(&snap);
+        assert_eq!(detection.proxy_type, ProxyType::Traefik);
+    }
+
+    #[test]
+    fn test_detect_from_snapshot_none() {
+        let snap = serde_json::json!({
+            "containers": [
+                {
+                    "name": "my-app",
+                    "image": "myapp:latest",
+                    "state": "running"
+                }
+            ]
+        });
+        let detection = detect_proxy_from_snapshot(&snap);
+        assert_eq!(detection.proxy_type, ProxyType::None);
+    }
+
+    #[test]
+    fn test_detect_from_snapshot_empty() {
+        let snap = serde_json::json!({});
+        let detection = detect_proxy_from_snapshot(&snap);
+        assert_eq!(detection.proxy_type, ProxyType::None);
+    }
+
+    #[test]
+    fn test_detect_from_snapshot_string_ports() {
+        let snap = serde_json::json!({
+            "containers": [
+                {
+                    "name": "npm",
+                    "image": "jc21/nginx-proxy-manager:latest",
+                    "state": "running",
+                    "ports": ["80/tcp", "443/tcp", "81/tcp"]
+                }
+            ]
+        });
+        let detection = detect_proxy_from_snapshot(&snap);
+        assert_eq!(detection.proxy_type, ProxyType::NginxProxyManager);
+        assert_eq!(detection.ports, vec![80, 443, 81]);
+    }
+
+    #[test]
+    fn test_detect_from_snapshot_name_match() {
+        // Container name contains the signature, even if image doesn't
+        let snap = serde_json::json!({
+            "containers": [
+                {
+                    "name": "nginx-proxy-manager-app-1",
+                    "image": "custom-npm:v1",
+                    "state": "running",
+                    "ports": [80, 81]
+                }
+            ]
+        });
+        let detection = detect_proxy_from_snapshot(&snap);
+        assert_eq!(detection.proxy_type, ProxyType::NginxProxyManager);
     }
 }

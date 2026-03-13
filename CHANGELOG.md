@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] — 2026-03-11
+
+### Added — Firewall (iptables) Management
+
+- New MCP tools for configuring iptables firewall rules on remote servers:
+  - `configure_firewall` — Add, remove, list, or flush iptables rules with public/private port definitions
+  - `list_firewall_rules` — List current iptables rules on a deployment target server
+  - `configure_firewall_from_role` — Auto-configure firewall rules from Ansible role port definitions
+- Two execution methods:
+  - **Status Panel** (preferred): Commands executed via the Status Panel agent directly on the target server
+  - **SSH**: Fallback for servers without Status Panel agent (uses Ansible-based execution)
+- Port rule types:
+  - **Public ports**: Opened to all IPs (0.0.0.0/0) — use for HTTP, HTTPS, public APIs
+  - **Private ports**: Restricted to specific IPs/CIDRs — use for databases, internal services
+- Integration with Ansible roles: Automatically extracts `public_ports` and `private_ports` from role configuration
+- Rules can be persisted across reboots via the `persist` parameter
+
+### Added — Status Panel `configure_firewall` command type
+
+- New `configure_firewall` command type for Status Panel agents
+- Validates action (add, remove, list, flush), port numbers, and protocols (tcp/udp)
+- Supports optional comments for rule documentation
+
+## [0.2.5] — 2026-03-07
+
+### Added — Agent control from the CLI (`stacker agent`)
+
+- New `stacker agent` subcommand with 9 commands for remote Status Panel agent management:
+  - `stacker agent health [--app NAME]` — check agent connectivity / container health
+  - `stacker agent logs <app> [--lines N]` — retrieve container logs from the target server
+  - `stacker agent restart <app>` — restart a container via the agent
+  - `stacker agent deploy-app --app NAME --image IMAGE [--tag TAG]` — deploy or update an app container
+  - `stacker agent remove-app --app NAME [--remove-volumes] [--remove-images]` — remove an app container with optional cleanup
+  - `stacker agent configure-proxy --app NAME --domain DOMAIN [--ssl]` — configure Nginx Proxy Manager
+  - `stacker agent status` — display agent snapshot (containers, versions, uptime)
+  - `stacker agent history` — show recent command execution history
+  - `stacker agent exec --command-type TYPE [--params JSON]` — execute a raw agent command
+- All commands support `--json` for machine-readable output and `--deployment <hash>` to target a specific deployment
+- Smart deployment hash resolution: explicit flag → DeploymentLock → stacker.yml project identity → API lookup
+- Spinner-based UX with configurable timeout while waiting for agent results
+
+### Added — Infrastructure helpers
+
+- `CliRuntime` (`src/cli/runtime.rs`) — eliminates ~15 lines of credentials + tokio runtime + client boilerplate per CLI command
+- `fmt` module (`src/cli/fmt.rs`) — shared terminal formatting helpers: `truncate()`, `separator()`, `pretty_json()`, `display_opt()`
+- `AgentEnqueueRequest` — builder pattern with `with_parameters()`, `with_priority()`, `with_timeout()`
+- `AgentCommandInfo` — response type for agent command status and results
+- StackerClient: added `agent_enqueue()`, `agent_command_status()`, `agent_poll_result()`, `agent_snapshot()` API methods
+- 4 new agent error variants: `AgentNotFound`, `AgentOffline`, `AgentCommandTimeout`, `AgentCommandFailed`
+
+### Added — MCP agent control tools
+
+- `deploy_app` — deploy or update an app container via the Status Panel agent
+- `remove_app` — remove an app container with optional volume/image cleanup
+- `configure_proxy_agent` — configure Nginx Proxy Manager reverse-proxy entries
+- `get_agent_status` — check agent registration, version, and last heartbeat
+
+### Added — AI agent tools
+
+- 3 new AI tool definitions: `agent_health`, `agent_status`, `agent_logs`
+- Wired into `execute_tool()` via subprocess dispatch (`stacker agent ... --json`)
+- Available in `stacker ai ask --write` and interactive chat modes
 ## [Unreleased] — 2026-03-04
 
 ### Fixed

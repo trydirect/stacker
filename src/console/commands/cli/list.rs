@@ -1,5 +1,6 @@
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
+use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
 
@@ -133,6 +134,79 @@ impl CallableTrait for ListServersCommand {
                 }
 
                 eprintln!("\n{} server(s) total.", servers.len());
+            }
+
+            Ok(())
+        })
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// list deployments
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker list deployments [--project <id>] [--limit <n>] [--json]`
+///
+/// Lists deployments for the authenticated user.
+pub struct ListDeploymentsCommand {
+    pub json: bool,
+    pub project_id: Option<i32>,
+    pub limit: Option<i64>,
+}
+
+impl ListDeploymentsCommand {
+    pub fn new(json: bool, project_id: Option<i32>, limit: Option<i64>) -> Self {
+        Self { json, project_id, limit }
+    }
+}
+
+impl CallableTrait for ListDeploymentsCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let json = self.json;
+
+        let cred_manager = CredentialsManager::with_default_store();
+        let creds = cred_manager.require_valid_token("list deployments")?;
+        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+
+        let project_id = self.project_id;
+        let limit = self.limit;
+
+        rt.block_on(async {
+            let client = StackerClient::new(&base_url, &creds.access_token);
+            let deployments = client.list_deployments(project_id, limit).await?;
+
+            if deployments.is_empty() {
+                eprintln!("No deployments found.");
+                return Ok(());
+            }
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&deployments)?);
+            } else {
+                println!(
+                    "{:<6} {:<10} {:<10} {:<40} {:<26}",
+                    "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
+                );
+                println!("{}", "─".repeat(100));
+
+                for d in &deployments {
+                    println!(
+                        "{:<6} {:<10} {} {:<8} {:<40} {:<26}",
+                        d.id,
+                        d.project_id,
+                        progress::status_icon(&d.status),
+                        truncate(&d.status, 7),
+                        truncate(&d.deployment_hash, 38),
+                        &d.created_at,
+                    );
+                }
+
+                eprintln!("\n{} deployment(s) total.", deployments.len());
             }
 
             Ok(())

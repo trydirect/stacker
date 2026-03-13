@@ -24,6 +24,7 @@ impl InstallServiceConnector for InstallServiceClient {
         fc: String,
         mq_manager: &MqManager,
         server_public_key: Option<String>,
+        server_private_key: Option<String>,
     ) -> Result<i32, String> {
         // Build payload for the install service
         let mut payload = crate::forms::project::Payload::try_from(project)
@@ -43,6 +44,11 @@ impl InstallServiceConnector for InstallServiceClient {
         if let Some(ref mut srv) = payload.server {
             if srv.public_key.is_none() {
                 srv.public_key = server_public_key;
+            }
+            // Include the SSH private key so the Install Service can SSH into
+            // existing servers without relying on Redis-cached file paths.
+            if srv.ssh_private_key.is_none() {
+                srv.ssh_private_key = server_private_key;
             }
         }
         payload.cloud = Some(cloud_creds.into());

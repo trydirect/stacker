@@ -16,6 +16,23 @@
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
+fn print_banner() {
+    let version = env!("CARGO_PKG_VERSION");
+    println!("============================================================");
+    println!("stacker-cli v{}", version);
+    println!("Stacker CLI - build, deploy, and manage application stacks");
+    println!("============================================================");
+    println!();
+    println!("Getting started:");
+    println!("  1) stacker-cli stacker login");
+    println!("  2) stacker-cli stacker init --with-cloud");
+    println!("  3) stacker-cli stacker deploy --target cloud");
+    println!("  4) stacker-cli stacker status --watch");
+    println!();
+    println!("Run `stacker-cli --help` to see all commands and options.");
+    println!();
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "stacker",
@@ -171,6 +188,12 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
+    /// Force-complete a stuck (paused/error) deployment
+    Resolve {
+        /// Skip confirmation prompt (required)
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
     /// Check for updates and self-update
     Update {
         /// Release channel: stable, beta
@@ -193,12 +216,29 @@ enum StackerCommands {
         #[command(subcommand)]
         command: CiCommands,
     },
+    /// Status Panel agent control (health, logs, restart, deploy)
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ListCommands {
     /// List all projects
     Projects {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List deployments
+    Deployments {
+        /// Filter by project ID
+        #[arg(long)]
+        project: Option<i32>,
+        /// Limit number of results
+        #[arg(long)]
+        limit: Option<i64>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -419,6 +459,213 @@ enum CiCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum AgentCommands {
+    /// Check container health on the remote deployment
+    Health {
+        /// App code to check (default: all containers)
+        #[arg(long)]
+        app: Option<String>,
+        /// Include system containers (status_panel, compose-agent)
+        #[arg(long)]
+        system: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash (auto-detected from lock/config)
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Fetch container logs from the remote deployment
+    Logs {
+        /// App code to fetch logs for (default: statuspanel + statuspanel_agent)
+        app: Option<String>,
+        /// Maximum number of log lines
+        #[arg(long, default_value_t = 400)]
+        limit: i32,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Restart a container on the remote deployment
+    Restart {
+        /// App code to restart
+        app: String,
+        /// Force restart (stop + start instead of graceful restart)
+        #[arg(long)]
+        force: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Deploy/update an app container on the remote deployment
+    #[command(name = "deploy-app")]
+    DeployApp {
+        /// App code to deploy
+        app: String,
+        /// Docker image to use (overrides compose config)
+        #[arg(long)]
+        image: Option<String>,
+        /// Force recreate the container
+        #[arg(long)]
+        force: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Remove an app container from the remote deployment
+    #[command(name = "remove-app")]
+    RemoveApp {
+        /// App code to remove
+        app: String,
+        /// Also remove volumes
+        #[arg(long)]
+        volumes: bool,
+        /// Also remove the image
+        #[arg(long)]
+        remove_image: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Configure iptables firewall rules on the remote deployment
+    #[command(name = "configure-firewall")]
+    ConfigureFirewall {
+        /// Action: add, remove, list, flush
+        #[arg(long, default_value = "add")]
+        action: String,
+        /// List current firewall rules (shortcut for --action list)
+        #[arg(long)]
+        list: bool,
+        /// App code for context/logging
+        #[arg(long)]
+        app: Option<String>,
+        /// Public ports (open to all), comma-separated: "80/tcp,443/tcp,53/udp"
+        #[arg(long, value_delimiter = ',')]
+        public_ports: Vec<String>,
+        /// Private ports (restricted), format: "port/proto:source", comma-separated: "5432/tcp:10.0.0.0/8"
+        #[arg(long, value_delimiter = ',')]
+        private_ports: Vec<String>,
+        /// Persist rules across reboots
+        #[arg(long, default_value_t = true)]
+        persist: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Configure reverse proxy for an app
+    #[command(name = "configure-proxy")]
+    ConfigureProxy {
+        /// App code
+        app: String,
+        /// Domain name
+        #[arg(long)]
+        domain: String,
+        /// Port to forward to
+        #[arg(long)]
+        port: u16,
+        /// Enable SSL (default: true)
+        #[arg(long, default_value_t = true)]
+        ssl: bool,
+        /// Action: create, update, delete
+        #[arg(long, default_value = "create")]
+        action: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// List deployment resources from the agent
+    #[command(name = "list")]
+    List {
+        #[command(subcommand)]
+        command: AgentListCommands,
+    },
+    /// Show agent and container status for the deployment
+    Status {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Show command history for the deployment
+    History {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Send a raw command to the agent (advanced)
+    Exec {
+        /// Command type (e.g. health, logs, restart, deploy_app, etc.)
+        command_type: String,
+        /// JSON parameters
+        #[arg(long)]
+        params: Option<String>,
+        /// Timeout in seconds
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Install the Status Panel agent on an existing deployed server
+    Install {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentListCommands {
+    /// List apps deployed for the target deployment
+    Apps {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// List containers running on the target server
+    Containers {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+}
+
 /// Arguments for `stacker ai`.
 /// Using a separate struct lets `subcommand_required = false` work so
 /// bare `stacker ai` launches the interactive chat mode.
@@ -465,14 +712,44 @@ enum ProxyCommands {
         ssl: Option<String>,
     },
     /// Detect existing reverse-proxy containers
-    Detect,
+    Detect {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Target a specific deployment by hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            use clap::error::ErrorKind;
+            match err.kind() {
+                ErrorKind::DisplayHelp => {
+                    print_banner();
+                    err.print()?;
+                    return Ok(());
+                }
+                ErrorKind::DisplayVersion => {
+                    err.print()?;
+                    return Ok(());
+                }
+                _ => {
+                    err.print()?;
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
 
     let Some(subcommand) = cli.command else {
-        println!("stacker-cli {}", env!("CARGO_PKG_VERSION"));
+        print_banner();
+        let mut cmd = Cli::command();
+        cmd.print_long_help()?;
+        println!();
         return Ok(());
     };
 
@@ -613,13 +890,18 @@ fn get_command(
                     domain, upstream, ssl,
                 ),
             ),
-            ProxyCommands::Detect => Box::new(
-                stacker::console::commands::cli::proxy::ProxyDetectCommand::new(),
+            ProxyCommands::Detect { json, deployment } => Box::new(
+                stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
             ),
         },
         StackerCommands::List { command: list_cmd } => match list_cmd {
             ListCommands::Projects { json } => Box::new(
                 stacker::console::commands::cli::list::ListProjectsCommand::new(json),
+            ),
+            ListCommands::Deployments { json, project, limit } => Box::new(
+                stacker::console::commands::cli::list::ListDeploymentsCommand::new(
+                    json, project, limit,
+                ),
             ),
             ListCommands::Servers { json } => Box::new(
                 stacker::console::commands::cli::list::ListServersCommand::new(json),
@@ -671,6 +953,9 @@ fn get_command(
                 stacker::console::commands::cli::service::ServiceListCommand::new(online),
             ),
         },
+        StackerCommands::Resolve { confirm } => Box::new(
+            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm),
+        ),
         StackerCommands::Update { channel } => Box::new(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),
         ),
@@ -698,6 +983,61 @@ fn get_command(
             CiCommands::Validate { platform } => Box::new(
                 stacker::console::commands::cli::ci::CiValidateCommand::new(platform),
             ),
+        },
+        StackerCommands::Agent { command: agent_cmd } => {
+            use stacker::console::commands::cli::agent;
+            match agent_cmd {
+                AgentCommands::Health { app, system, json, deployment } => Box::new(
+                    agent::AgentHealthCommand::new(app, json, deployment, system),
+                ),
+                AgentCommands::Logs { app, limit, json, deployment } => Box::new(
+                    agent::AgentLogsCommand::new(app, Some(limit), json, deployment),
+                ),
+                AgentCommands::Restart { app, force, json, deployment } => Box::new(
+                    agent::AgentRestartCommand::new(app, force, json, deployment),
+                ),
+                AgentCommands::DeployApp { app, image, force, json, deployment } => Box::new(
+                    agent::AgentDeployAppCommand::new(app, image, force, json, deployment),
+                ),
+                AgentCommands::RemoveApp { app, volumes, remove_image, json, deployment } => Box::new(
+                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, json, deployment),
+                ),
+                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, json, deployment } => {
+                    let effective_action = if list { "list".to_string() } else { action };
+                    Box::new(agent::AgentConfigureFirewallCommand::new(
+                        effective_action,
+                        app,
+                        public_ports,
+                        private_ports,
+                        persist,
+                        json,
+                        deployment,
+                    ))
+                }
+                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, json, deployment } => Box::new(
+                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, json, deployment),
+                ),
+                AgentCommands::List { command: list_cmd } => match list_cmd {
+                    AgentListCommands::Apps { json, deployment } => Box::new(
+                        agent::AgentListAppsCommand::new(json, deployment),
+                    ),
+                    AgentListCommands::Containers { json, deployment } => Box::new(
+                        agent::AgentListContainersCommand::new(json, deployment),
+                    ),
+                },
+                AgentCommands::Status { json, deployment } => Box::new(
+                    agent::AgentStatusCommand::new(json, deployment),
+                ),
+                AgentCommands::History { json, deployment } => Box::new(
+                    agent::AgentHistoryCommand::new(json, deployment),
+                ),
+                AgentCommands::Exec { command_type, params, timeout, json, deployment } => Box::new(
+                    agent::AgentExecCommand::new(command_type, params, timeout, json, deployment),
+                ),
+                AgentCommands::Install { file, json } => Box::new(
+                    agent::AgentInstallCommand::new(file, json),
+                ),
+            }
         },
         // Completion is handled in main() before this function is called.
         StackerCommands::Completion { .. } => unreachable!(),

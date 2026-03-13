@@ -583,6 +583,11 @@ pub struct StackerConfig {
 impl StackerConfig {
     /// Load config from a file path, resolving `${VAR}` environment variable
     /// references and validating the result.
+    ///
+    /// Use this when you need the **resolved** values (e.g. for deployment,
+    /// validation, or sending to the server).  If you plan to mutate the
+    /// config and write it back to disk, use [`from_file_raw`] instead so
+    /// that `${VAR}` placeholders are preserved.
     pub fn from_file(path: &Path) -> Result<Self, CliError> {
         if !path.exists() {
             return Err(CliError::ConfigNotFound {
@@ -595,6 +600,24 @@ impl StackerConfig {
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
         resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
         let config: StackerConfig = serde_yaml::from_value(parsed)?;
+        Ok(config)
+    }
+
+    /// Load config from a file path **without** resolving `${VAR}` placeholders.
+    ///
+    /// Use this when you need to modify the config and write it back to disk
+    /// (e.g. `stacker service add`, `stacker config fix`).  The `${VAR}`
+    /// references are kept as-is so they are not replaced with sensitive
+    /// values when the file is serialized back.
+    pub fn from_file_raw(path: &Path) -> Result<Self, CliError> {
+        if !path.exists() {
+            return Err(CliError::ConfigNotFound {
+                path: path.to_path_buf(),
+            });
+        }
+
+        let raw_content = std::fs::read_to_string(path)?;
+        let config: StackerConfig = serde_yaml::from_str(&raw_content)?;
         Ok(config)
     }
 
