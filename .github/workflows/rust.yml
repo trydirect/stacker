@@ -84,3 +84,38 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_name }}.tar.gz
           retention-days: 7
+  test:
+    name: Run CLI tests
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-registry-
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-index-
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ubuntu-target-tests-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-target-tests-
+      - name: Run CLI integration tests
+        run: cargo test --tests --verbose
