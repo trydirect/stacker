@@ -345,5 +345,11 @@ pub async fn mcp_websocket(
         settings.clone(),
     );
 
-    ws::start(ws, &req, stream)
+    // The MCP SDK requests subprotocol "mcp" via Sec-WebSocket-Protocol header.
+    // Chrome strictly enforces subprotocol negotiation and will reject the
+    // connection if the server does not echo the requested protocol back.
+    // Firefox is more lenient, which is why it works there but not in Chrome.
+    ws::WsResponseBuilder::new(ws, &req, stream)
+        .protocols(&["mcp"])
+        .start()
 }
