@@ -4,6 +4,53 @@
 
 ---
 
+## Marketplace Developer Flow: `stacker submit` → review → auto-publish
+
+### CLI Commands
+- [ ] **`stacker submit`** — Package and upload current stack to Stacker Server for marketplace review
+  - Validate stack has required metadata (name, description, category, version, docker-compose)
+  - Archive stack files (docker-compose, .env.example, configs, README)
+  - Upload to `POST /api/v1/marketplace/submissions`
+  - Print: "Submitted for review. Your stack will be published automatically once accepted. Check status with: stacker marketplace status"
+  - Return submission ID for tracking
+- [ ] **`stacker marketplace status`** — List all submissions by current developer
+  - Call `GET /api/v1/marketplace/submissions?developer_id={id}`
+  - Display table: STACK | VERSION | STATUS | SUBMITTED | REVIEWER NOTES
+  - Statuses: `pending_review`, `in_review`, `approved`, `rejected`, `published`
+- [ ] **`stacker marketplace status <stack-name>`** — Show detail for one submission
+  - Call `GET /api/v1/marketplace/submissions/{stack-name}`
+  - Show: status, submitted date, reviewer comments, rejection reason (if any)
+- [ ] **`stacker marketplace logs <stack-name>`** — Show review comments/history
+
+### Server API — Marketplace Submissions
+- [ ] `POST /api/v1/marketplace/submissions` — Accept stack submission from CLI
+  - Validate developer identity (OAuth/API key)
+  - Store stack archive + metadata in DB (status: `pending_review`)
+  - Publish AMQP message `marketplace.submission.new` → Notify Service
+- [ ] `GET /api/v1/marketplace/submissions` — List developer's submissions (filtered by auth)
+- [ ] `GET /api/v1/marketplace/submissions/{id}` — Submission detail + review history
+- [ ] `PUT /api/v1/marketplace/submissions/{id}/review` — Admin approves/rejects (from Admin Panel)
+  - On **approve**: set status `approved` → auto-publish → trigger webhook to User Service `/marketplace/sync` → publish AMQP `marketplace.submission.approved` → Notify Service
+  - On **reject**: set status `rejected` with reason → publish AMQP `marketplace.submission.rejected` → Notify Service
+- [ ] Auto-publish logic: on approval, create/update `stack_template` record with `is_marketplace=true`, set `published_at` timestamp
+
+### Buyer Flow — Remote Deploy from Laptop
+- [ ] **`stacker deploy <stack-name> --target server --host <IP>`** — Deploy marketplace stack to remote server
+  - Download stack archive from Stacker Server (validate purchase token for paid stacks)
+  - Use Ansible to push stack + install Status Panel + Stacker CLI on target server
+  - Status Panel registers with TryDirect API after install
+- [ ] `GET /api/v1/marketplace/stacks/{name}/download` — Serve stack archive (validate purchase token for paid stacks)
+
+### Buyer Flow — curl one-liner (direct on server)
+- [ ] `GET /api/v1/marketplace/install/{purchase_token}` — Generate install.sh script
+  - Script installs: Stacker CLI + Status Panel agent
+  - Script downloads stack archive using purchase token
+  - Status Panel calls `stacker deploy` locally (no Install Service involved)
+  - Status Panel self-registers: `POST /api/v1/agents/register { purchase_token, server_fingerprint, stack_id }`
+  - Stacker Server validates purchase token, creates `deployment_apps` entries, links agent to user's dashboard
+
+---
+
 ## ✅ Recent Fixes
 
 ### February 16, 2026 - CORS Headers Fix
