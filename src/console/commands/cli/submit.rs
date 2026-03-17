@@ -48,7 +48,9 @@ impl CallableTrait for SubmitCommand {
         // 1. Load credentials
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("submit")?;
-        let base_url = crate::cli::server_url::resolve_stacker_base_url(Some(&creds));
+        let base_url = crate::cli::install_runner::normalize_stacker_server_url(
+            crate::cli::stacker_client::DEFAULT_STACKER_URL,
+        );
 
         // 2. Read and parse stacker.yml
         let project_dir = std::env::current_dir()?;
