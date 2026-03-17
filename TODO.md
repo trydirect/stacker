@@ -6,48 +6,41 @@
 
 ## Marketplace Developer Flow: `stacker submit` → review → auto-publish
 
-### CLI Commands
-- [ ] **`stacker submit`** — Package and upload current stack to Stacker Server for marketplace review
-  - Validate stack has required metadata (name, description, category, version, docker-compose)
-  - Archive stack files (docker-compose, .env.example, configs, README)
-  - Upload to `POST /api/v1/marketplace/submissions`
-  - Print: "Submitted for review. Your stack will be published automatically once accepted. Check status with: stacker marketplace status"
-  - Return submission ID for tracking
-- [ ] **`stacker marketplace status`** — List all submissions by current developer
-  - Call `GET /api/v1/marketplace/submissions?developer_id={id}`
-  - Display table: STACK | VERSION | STATUS | SUBMITTED | REVIEWER NOTES
+### CLI Commands (v0.2.6)
+- [x] **`stacker submit`** — Package and upload current stack to Stacker Server for marketplace review
+  - Reads stacker.yml for metadata, derives slug from name
+  - Creates/updates template via `POST /api/templates`, submits via `POST /api/templates/{id}/submit`
+  - Prints success message with `stacker marketplace status` hint
+  - Supports: `--version`, `--description`, `--category`, `--plan-type`, `--price`
+- [x] **`stacker marketplace status`** — List all submissions by current developer
+  - Calls `GET /api/templates/mine`
+  - Display table: STACK | VERSION | STATUS | SUBMITTED
   - Statuses: `pending_review`, `in_review`, `approved`, `rejected`, `published`
-- [ ] **`stacker marketplace status <stack-name>`** — Show detail for one submission
-  - Call `GET /api/v1/marketplace/submissions/{stack-name}`
-  - Show: status, submitted date, reviewer comments, rejection reason (if any)
-- [ ] **`stacker marketplace logs <stack-name>`** — Show review comments/history
+- [x] **`stacker marketplace status <stack-name>`** — Show detail for one submission
+  - Filters by name or slug, shows status, submitted date, reviewer reason
+- [x] **`stacker marketplace logs <stack-name>`** — Show review history with decisions/reasons
+- [x] **StackerClient methods**: `marketplace_create_or_update()`, `marketplace_submit()`, `marketplace_list_mine()`, `marketplace_reviews()`
+- [x] **Response types**: `MarketplaceTemplateInfo`, `MarketplaceReviewInfo`
 
-### Server API — Marketplace Submissions
-- [ ] `POST /api/v1/marketplace/submissions` — Accept stack submission from CLI
-  - Validate developer identity (OAuth/API key)
-  - Store stack archive + metadata in DB (status: `pending_review`)
-  - Publish AMQP message `marketplace.submission.new` → Notify Service
-- [ ] `GET /api/v1/marketplace/submissions` — List developer's submissions (filtered by auth)
-- [ ] `GET /api/v1/marketplace/submissions/{id}` — Submission detail + review history
-- [ ] `PUT /api/v1/marketplace/submissions/{id}/review` — Admin approves/rejects (from Admin Panel)
-  - On **approve**: set status `approved` → auto-publish → trigger webhook to User Service `/marketplace/sync` → publish AMQP `marketplace.submission.approved` → Notify Service
-  - On **reject**: set status `rejected` with reason → publish AMQP `marketplace.submission.rejected` → Notify Service
-- [ ] Auto-publish logic: on approval, create/update `stack_template` record with `is_marketplace=true`, set `published_at` timestamp
+### Server API — Marketplace Submissions (pre-existing)
+- [x] `POST /api/templates` — Create/update template (creator.rs)
+- [x] `POST /api/templates/{id}/submit` — Submit for review (creator.rs)
+- [x] `GET /api/templates/mine` — List developer's submissions (creator.rs)
+- [x] `PUT /api/admin/templates/{id}/review` — Admin approves/rejects (admin.rs)
+- [x] Auto-publish logic: on approval, `stack_template` updated with `published_at`
 
 ### Buyer Flow — Remote Deploy from Laptop
-- [ ] **`stacker deploy <stack-name> --target server --host <IP>`** — Deploy marketplace stack to remote server
-  - Download stack archive from Stacker Server (validate purchase token for paid stacks)
-  - Use Ansible to push stack + install Status Panel + Stacker CLI on target server
-  - Status Panel registers with TryDirect API after install
-- [ ] `GET /api/v1/marketplace/stacks/{name}/download` — Serve stack archive (validate purchase token for paid stacks)
+- [ ] **`stacker deploy <stack-name> --target server --host <IP>`** — Deploy marketplace stack to remote server (needs marketplace stack resolution in deploy strategy)
+- [x] `GET /api/v1/marketplace/download/{purchase_token}` — Serve stack archive (placeholder, needs User Service token validation)
 
 ### Buyer Flow — curl one-liner (direct on server)
-- [ ] `GET /api/v1/marketplace/install/{purchase_token}` — Generate install.sh script
+- [x] `GET /api/v1/marketplace/install/{purchase_token}` — Generate install.sh script
   - Script installs: Stacker CLI + Status Panel agent
   - Script downloads stack archive using purchase token
   - Status Panel calls `stacker deploy` locally (no Install Service involved)
-  - Status Panel self-registers: `POST /api/v1/agents/register { purchase_token, server_fingerprint, stack_id }`
-  - Stacker Server validates purchase token, creates `deployment_apps` entries, links agent to user's dashboard
+- [x] `POST /api/v1/marketplace/agents/register` — Agent self-registration endpoint
+  - Generates agent_id, agent_token, deployment_hash
+  - TODO: validate purchase token with User Service, persist agent in DB, call `/marketplace/link-deployment`
 
 ---
 

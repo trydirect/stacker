@@ -2,7 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.6] — 2026-03-11
+## [0.2.6] — 2026-03-17
+
+### Added — Marketplace Developer & Buyer Flows
+
+- New `stacker submit` command — packages the current stack (reads `stacker.yml`) and submits it to the marketplace for review. Supports `--version`, `--description`, `--category`, `--plan-type`, `--price` flags.
+- New `stacker marketplace status [name]` — shows a table of all developer submissions with status badges (pending_review, in_review, approved, rejected) or detail for a single stack.
+- New `stacker marketplace logs <name>` — shows review history with decisions, reasons, and timestamps.
+- StackerClient: added `marketplace_create_or_update()`, `marketplace_submit()`, `marketplace_list_mine()`, `marketplace_reviews()` methods.
+- New response types: `MarketplaceTemplateInfo`, `MarketplaceReviewInfo`.
+- Auto-publish on approval — stacks are published automatically once accepted by the review team (no separate publish step needed).
+
+### Added — Buyer Install Endpoints (Server)
+
+- `GET /api/v1/marketplace/install/{purchase_token}` — generates a ready-to-run `install.sh` script that installs Stacker CLI + Status Panel, downloads the stack, registers the agent, and deploys.
+- `GET /api/v1/marketplace/download/{purchase_token}` — serves the stack archive for a validated purchase token.
+- `POST /api/v1/marketplace/agents/register` — agent self-registration endpoint called by Status Panel after install. Returns `agent_id`, `agent_token`, `deployment_hash`.
 
 ### Added — Firewall (iptables) Management
 
