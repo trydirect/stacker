@@ -32,7 +32,7 @@ pub struct AgentLoginResponse {
 /// Proxy login for Status Panel agents. Authenticates the user against
 /// the TryDirect OAuth server, then returns a session token and the
 /// user's deployments so the agent can pick one to link to.
-#[tracing::instrument(name = "Agent proxy login", skip(settings, api_pool, user_service, req))]
+#[tracing::instrument(name = "Agent proxy login", skip(settings, api_pool, user_service, _req))]
 #[post("/login")]
 pub async fn login_handler(
     payload: web::Json<AgentLoginRequest>,
