@@ -206,7 +206,9 @@ pub async fn run(
                             .service(routes::agent::enqueue_handler)
                             .service(routes::agent::wait_handler)
                             .service(routes::agent::report_handler)
-                            .service(routes::agent::snapshot_handler),
+                            .service(routes::agent::snapshot_handler)
+                            .service(routes::agent::login_handler)
+                            .service(routes::agent::link_handler),
                     )
                     .service(
                         web::scope("/v1/deployments")
