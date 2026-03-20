@@ -127,6 +127,27 @@ enum StackerCommands {
         #[arg(long)]
         force_new: bool,
     },
+    /// Submit current stack to the marketplace for review
+    Submit {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Stack version (default: from stacker.yml or "1.0.0")
+        #[arg(long)]
+        version: Option<String>,
+        /// Short description for marketplace listing
+        #[arg(long)]
+        description: Option<String>,
+        /// Category code (e.g. ai-agents, data-pipelines, saas-starter)
+        #[arg(long)]
+        category: Option<String>,
+        /// Pricing: free, one_time, subscription (default: free)
+        #[arg(long, value_name = "TYPE")]
+        plan_type: Option<String>,
+        /// Price amount (required if plan_type is not free)
+        #[arg(long)]
+        price: Option<f64>,
+    },
     /// Show container logs
     Logs {
         /// Show logs for a specific service only
@@ -220,6 +241,31 @@ enum StackerCommands {
     Agent {
         #[command(subcommand)]
         command: AgentCommands,
+    },
+    /// Marketplace operations (submit, check status)
+    Marketplace {
+        #[command(subcommand)]
+        command: MarketplaceCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MarketplaceCommands {
+    /// Check submission status for your marketplace templates
+    Status {
+        /// Stack name to check (omit for all)
+        name: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show review comments and history for a submission
+    Logs {
+        /// Stack name
+        name: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1038,6 +1084,30 @@ fn get_command(
                     agent::AgentInstallCommand::new(file, json),
                 ),
             }
+        },
+        StackerCommands::Submit {
+            file,
+            version,
+            description,
+            category,
+            plan_type,
+            price,
+        } => Box::new(
+            stacker::console::commands::cli::submit::SubmitCommand::new(
+                file, version, description, category, plan_type, price,
+            ),
+        ),
+        StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {
+            MarketplaceCommands::Status { name, json } => Box::new(
+                stacker::console::commands::cli::marketplace::MarketplaceStatusCommand::new(
+                    name, json,
+                ),
+            ),
+            MarketplaceCommands::Logs { name, json } => Box::new(
+                stacker::console::commands::cli::marketplace::MarketplaceLogsCommand::new(
+                    name, json,
+                ),
+            ),
         },
         // Completion is handled in main() before this function is called.
         StackerCommands::Completion { .. } => unreachable!(),

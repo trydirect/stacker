@@ -155,6 +155,9 @@ The end-user tool. No server required for local deploys.
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
+| `stacker submit` | Package current stack and submit to marketplace for review |
+| `stacker marketplace status` | Check submission status for your marketplace templates |
+| `stacker marketplace logs <name>` | Show review comments and history for a submission |
 | `stacker login` | Authenticate with the TryDirect platform |
 | `stacker update` | Check for updates and self-update |
 
@@ -165,6 +168,26 @@ stacker deploy --target local     # docker compose up (default)
 stacker deploy --target cloud     # Terraform + Ansible → cloud provider
 stacker deploy --target server    # deploy to existing server via SSH
 stacker deploy --dry-run          # preview generated files without executing
+```
+
+### Marketplace workflow (for stack developers)
+
+```bash
+stacker deploy --target local           # 1. test locally
+stacker deploy --target server          # 2. test on remote server
+stacker submit                          # 3. submit for marketplace review
+stacker marketplace status              # 4. check review status
+# Stack is auto-published once approved by the review team
+```
+
+### Marketplace install (for buyers)
+
+```bash
+# Option A: Deploy from your laptop to a remote server
+stacker deploy my-stack --target server --host 1.2.3.4
+
+# Option B: Run directly on the target server (one-liner)
+curl -sL https://marketplace.try.direct/<purchase-token>/install.sh | sh
 ```
 
 ### Key features
@@ -180,6 +203,8 @@ stacker deploy --dry-run          # preview generated files without executing
 - **SSH key management** — generate, view, and upload server SSH keys (Vault-backed)
 - **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
 - **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode
+- **Marketplace** — submit stacks for review, auto-publish on approval, check status from CLI
+- **Buyer install** — purchase tokens, one-liner install scripts, agent self-registration
 
 ---
 
@@ -208,6 +233,12 @@ cargo run --bin server                           # http://127.0.0.1:8000
 | `PUT /project/{id}/apps/{code}/ports` | Update port mappings |
 | `PUT /project/{id}/apps/{code}/domain` | Update domain / SSL settings |
 | `POST /api/v1/commands` | Enqueue a command for the Status Panel agent |
+| `POST /api/templates` | Create or update a marketplace template (creator) |
+| `POST /api/templates/{id}/submit` | Submit template for marketplace review |
+| `GET /api/templates/mine` | List current user's template submissions |
+| `GET /api/v1/marketplace/install/{token}` | Generate install.sh script for buyers |
+| `GET /api/v1/marketplace/download/{token}` | Download stack archive (purchase token validated) |
+| `POST /api/v1/marketplace/agents/register` | Agent self-registration after install |
 
 ### MCP Server
 

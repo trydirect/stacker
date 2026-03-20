@@ -4,6 +4,46 @@
 
 ---
 
+## Marketplace Developer Flow: `stacker submit` → review → auto-publish
+
+### CLI Commands (v0.2.6)
+- [x] **`stacker submit`** — Package and upload current stack to Stacker Server for marketplace review
+  - Reads stacker.yml for metadata, derives slug from name
+  - Creates/updates template via `POST /api/templates`, submits via `POST /api/templates/{id}/submit`
+  - Prints success message with `stacker marketplace status` hint
+  - Supports: `--version`, `--description`, `--category`, `--plan-type`, `--price`
+- [x] **`stacker marketplace status`** — List all submissions by current developer
+  - Calls `GET /api/templates/mine`
+  - Display table: STACK | VERSION | STATUS | SUBMITTED
+  - Statuses: `pending_review`, `in_review`, `approved`, `rejected`, `published`
+- [x] **`stacker marketplace status <stack-name>`** — Show detail for one submission
+  - Filters by name or slug, shows status, submitted date, reviewer reason
+- [x] **`stacker marketplace logs <stack-name>`** — Show review history with decisions/reasons
+- [x] **StackerClient methods**: `marketplace_create_or_update()`, `marketplace_submit()`, `marketplace_list_mine()`, `marketplace_reviews()`
+- [x] **Response types**: `MarketplaceTemplateInfo`, `MarketplaceReviewInfo`
+
+### Server API — Marketplace Submissions (pre-existing)
+- [x] `POST /api/templates` — Create/update template (creator.rs)
+- [x] `POST /api/templates/{id}/submit` — Submit for review (creator.rs)
+- [x] `GET /api/templates/mine` — List developer's submissions (creator.rs)
+- [x] `PUT /api/admin/templates/{id}/review` — Admin approves/rejects (admin.rs)
+- [x] Auto-publish logic: on approval, `stack_template` updated with `published_at`
+
+### Buyer Flow — Remote Deploy from Laptop
+- [ ] **`stacker deploy <stack-name> --target server --host <IP>`** — Deploy marketplace stack to remote server (needs marketplace stack resolution in deploy strategy)
+- [x] `GET /api/v1/marketplace/download/{purchase_token}` — Serve stack archive (placeholder, needs User Service token validation)
+
+### Buyer Flow — curl one-liner (direct on server)
+- [x] `GET /api/v1/marketplace/install/{purchase_token}` — Generate install.sh script
+  - Script installs: Stacker CLI + Status Panel agent
+  - Script downloads stack archive using purchase token
+  - Status Panel calls `stacker deploy` locally (no Install Service involved)
+- [x] `POST /api/v1/marketplace/agents/register` — Agent self-registration endpoint
+  - Generates agent_id, agent_token, deployment_hash
+  - TODO: validate purchase token with User Service, persist agent in DB, call `/marketplace/link-deployment`
+
+---
+
 ## ✅ Recent Fixes
 
 ### February 16, 2026 - CORS Headers Fix

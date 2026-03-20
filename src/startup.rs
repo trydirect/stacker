@@ -245,6 +245,15 @@ pub async fn run(
                     ),
             )
             .service(
+                web::scope("/api/v1/marketplace")
+                    .service(crate::routes::marketplace::public::install_script_handler)
+                    .service(crate::routes::marketplace::public::download_stack_handler)
+                    .service(
+                        web::scope("/agents")
+                            .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),
+                    ),
+            )
+            .service(
                 web::scope("/cloud")
                     .service(crate::routes::cloud::get::item)
                     .service(crate::routes::cloud::get::list)
