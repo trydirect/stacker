@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added — Agent Audit Ingest Endpoint and Query API
+
+- New database migration `20260321000000_agent_audit_log` creating the `agent_audit_log` table:
+  - Stores audit events forwarded by the Status Panel with `installation_hash`, `event_type`, JSONB `payload`, `status_panel_id`, `received_at`, and `created_at` columns
+  - Indexed on `installation_hash`, `event_type`, and `received_at DESC` for efficient querying
+- `src/models/agent_audit_log.rs` — `AgentAuditLog`, `AuditBatchItem`, and `AuditBatchRequest` structs
+- `src/db/agent_audit_log.rs` — `insert_batch` and `fetch_recent` DB functions (non-macro sqlx, `SQLX_OFFLINE`-compatible)
+- `POST /api/v1/agent/audit` — receives audit event batches from the Status Panel; authenticated via `X-Internal-Key` header (`INTERNAL_SERVICES_ACCESS_KEY` env var)
+- `GET /api/v1/agent/audit` — queries the audit log with optional `installation_hash`, `event_type`, and `limit` (capped at 100) params; authenticated via standard JWT/OAuth2 middleware
+- Unit tests: `test_audit_batch_request_deserializes`, `test_empty_events_batch`, `test_fetch_recent_defaults`
+
 ## [0.2.6] — 2026-03-11
 
 ### Added — Firewall (iptables) Management

@@ -208,7 +208,9 @@ pub async fn run(
                             .service(routes::agent::report_handler)
                             .service(routes::agent::snapshot_handler)
                             .service(routes::agent::login_handler)
-                            .service(routes::agent::link_handler),
+                            .service(routes::agent::link_handler)
+                            .service(routes::agent::agent_audit_ingest_handler)
+                            .service(routes::agent::agent_audit_query_handler),
                     )
                     .service(
                         web::scope("/v1/deployments")
@@ -224,6 +226,17 @@ pub async fn run(
                             .service(routes::command::list_handler)
                             .service(routes::command::get_handler)
                             .service(routes::command::cancel_handler),
+                    )
+                    .service(
+                        web::scope("/v1/pipes")
+                            .service(routes::pipe::create_template_handler)
+                            .service(routes::pipe::create_instance_handler)
+                            .service(routes::pipe::list_templates_handler)
+                            .service(routes::pipe::list_instances_handler)
+                            .service(routes::pipe::get_template_handler)
+                            .service(routes::pipe::get_instance_handler)
+                            .service(routes::pipe::delete_template_handler)
+                            .service(routes::pipe::delete_instance_handler),
                     )
                     .service(
                         web::scope("/admin")
