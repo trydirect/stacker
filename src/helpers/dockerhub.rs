@@ -15,7 +15,7 @@ pub struct DockerHubCreds<'a> {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-struct Image {
+pub struct Image {
     architecture: String,
     digest: Option<String>,
     features: Option<String>,
@@ -30,7 +30,7 @@ struct Image {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
-struct Tag {
+pub struct Tag {
     pub content_type: String,
     pub creator: i64,
     pub digest: Option<String>,
@@ -121,7 +121,7 @@ impl<'a> DockerHub<'a> {
             .map_err(|err| format!("{:?}", err))?
             .json::<DockerHubToken>()
             .await
-            .map(|dockerHubToken| dockerHubToken.token)
+            .map(|docker_hub_token| docker_hub_token.token)
             .map_err(|err| format!("🟥 {:?}", err))
     }
 

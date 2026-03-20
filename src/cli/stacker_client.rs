@@ -26,6 +26,7 @@ pub const DEFAULT_VAULT_URL: &str = "https://vault.try.direct";
 
 /// Stacker server wraps responses in `{ "item": ..., "list": [...], "msg": "...", "_status": "OK" }`
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ApiResponse<T> {
     #[serde(rename = "_status")]
     pub status: Option<String>,

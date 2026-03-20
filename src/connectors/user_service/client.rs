@@ -52,6 +52,7 @@ impl UserServiceClient {
     }
 
     /// Retry helper with exponential backoff
+    #[allow(dead_code)]
     pub(crate) async fn retry_request<F, T>(&self, mut f: F) -> Result<T, ConnectorError>
     where
         F: FnMut() -> futures::future::BoxFuture<'static, Result<T, ConnectorError>>,

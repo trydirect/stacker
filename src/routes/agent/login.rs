@@ -1,6 +1,6 @@
 use crate::configuration::Settings;
 use crate::connectors::user_service::UserServiceConnector;
-use crate::{db, helpers, helpers::AgentPgPool, models};
+use crate::{db, helpers};
 use actix_web::{post, web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -14,11 +14,11 @@ pub struct UserEditRating {
 impl UserEditRating {
     pub fn update(self, rating: &mut models::Rating) {
         if let Some(comment) = self.comment {
-            rating.comment.insert(comment);
+            rating.comment = Some(comment);
         }
 
         if let Some(rate) = self.rate {
-            rating.rate.insert(rate);
+            rating.rate = Some(rate);
         }
     }
 }

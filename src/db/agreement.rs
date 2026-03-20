@@ -27,6 +27,7 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Agreement>, 
     })
 }
 
+#[allow(dead_code)]
 pub async fn fetch_by_user(
     pool: &PgPool,
     user_id: &str,
@@ -82,6 +83,7 @@ pub async fn fetch_by_user_and_agreement(
         }
     })
 }
+#[allow(dead_code)]
 pub async fn fetch_one_by_name(
     pool: &PgPool,
     name: &str,
@@ -203,6 +205,7 @@ pub async fn update(
 }
 
 #[tracing::instrument(name = "Delete user's agreement.")]
+#[allow(dead_code)]
 pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     tracing::info!("Delete agreement {}", id);
     sqlx::query::<sqlx::Postgres>("DELETE FROM agreement WHERE id = $1;")
