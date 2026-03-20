@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::config_parser::{DeployTarget, ServerConfig, StackerConfig};
+use crate::cli::config_parser::{ServerConfig, StackerConfig};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::DeployResult;
 
@@ -252,6 +252,7 @@ impl DeploymentLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::config_parser::DeployTarget;
     use tempfile::TempDir;
 
     fn sample_lock() -> DeploymentLock {

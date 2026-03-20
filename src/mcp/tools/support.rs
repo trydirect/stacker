@@ -24,6 +24,7 @@ fn get_slack_config() -> Option<SlackConfig> {
     })
 }
 
+#[allow(dead_code)]
 struct SlackConfig {
     webhook_url: String,
     channel: String,

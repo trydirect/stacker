@@ -76,6 +76,7 @@ const MALICIOUS_PATTERNS: &[(&str, &str, &str)] = &[
 ];
 
 /// Known suspicious Docker images
+#[allow(dead_code)]
 const SUSPICIOUS_IMAGES: &[&str] = &[
     "alpine:latest",  // not suspicious per se, but discouraged for reproducibility
 ];

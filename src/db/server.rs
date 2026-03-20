@@ -265,6 +265,7 @@ pub async fn update_ssh_key_status(
 
 /// Update connection mode for a server
 #[tracing::instrument(name = "Update server connection mode.")]
+#[allow(dead_code)]
 pub async fn update_connection_mode(
     pool: &PgPool,
     server_id: i32,

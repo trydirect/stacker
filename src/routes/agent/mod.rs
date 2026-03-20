@@ -1,3 +1,4 @@
+mod audit;
 mod enqueue;
 mod link;
 mod login;
@@ -6,6 +7,7 @@ mod report;
 mod snapshot;
 mod wait;
 
+pub use audit::*;
 pub use enqueue::*;
 pub use link::*;
 pub use login::*;

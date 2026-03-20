@@ -31,9 +31,9 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
             let settings = web::Data::new(settings);
             let _db_pool = web::Data::new(db_pool);
 
-            let mut authorizationService =
+            let mut authorization_service =
                 middleware::authorization::try_new(settings.database.connection_string()).await?;
-            let casbin_enforcer = authorizationService.get_enforcer();
+            let casbin_enforcer = authorization_service.get_enforcer();
 
             let mut lock = casbin_enforcer.write().await;
             let policies = lock
@@ -52,7 +52,7 @@ impl crate::console::commands::CallableTrait for CasbinCommand {
             {
                 lock.enable_log(true);
             }
-            lock.enforce_mut(vec![
+            let _ = lock.enforce_mut(vec![
                 self.subject.clone(),
                 self.path.clone(),
                 self.action.clone(),

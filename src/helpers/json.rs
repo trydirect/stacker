@@ -104,6 +104,7 @@ where
         HttpResponse::Created().json(self.set_msg(msg).to_json_response())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn no_content(self) -> HttpResponse {
         HttpResponse::NoContent().finish()
     }

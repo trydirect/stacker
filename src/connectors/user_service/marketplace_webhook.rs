@@ -139,6 +139,7 @@ pub struct MarketplaceWebhookSender {
     config: WebhookSenderConfig,
     http_client: reqwest::Client,
     // Track webhook deliveries in-memory (simple approach)
+    #[allow(dead_code)]
     pending_webhooks: Arc<Mutex<Vec<String>>>,
 }
 

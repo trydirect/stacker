@@ -417,6 +417,7 @@ impl ToolHandler for ConfigureFirewallFromRoleTool {
         }
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct DbRole {
             name: String,
             #[serde(default)]
