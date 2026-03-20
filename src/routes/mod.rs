@@ -18,6 +18,8 @@ pub(crate) mod marketplace;
 
 pub use project::*;
 
+pub(crate) mod pipe;
+
 pub use agreement::*;
 pub use deployment::*;
 pub use marketplace::*;
