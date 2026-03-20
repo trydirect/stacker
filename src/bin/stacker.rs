@@ -216,6 +216,11 @@ enum StackerCommands {
         #[command(subcommand)]
         command: CiCommands,
     },
+    /// Connect containerized apps with data pipes
+    Pipe {
+        #[command(subcommand)]
+        command: PipeCommands,
+    },
     /// Status Panel agent control (health, logs, restart, deploy)
     Agent {
         #[command(subcommand)]
@@ -456,6 +461,49 @@ enum CiCommands {
         /// Platform: github, gitlab
         #[arg(long)]
         platform: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PipeCommands {
+    /// Discover connectable endpoints on a container
+    Scan {
+        /// App code to scan (e.g., "crm", "website")
+        app: String,
+        /// Protocols to probe (default: openapi,rest)
+        #[arg(long, value_delimiter = ',')]
+        protocols: Vec<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash (auto-detected from lock/config)
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Create a pipe between two apps (interactive)
+    Create {
+        /// Source app code
+        source: String,
+        /// Target app code
+        target: String,
+        /// Skip AI matching, manual selection only
+        #[arg(long)]
+        manual: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// List active pipes for a deployment
+    List {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
     },
 }
 
@@ -983,6 +1031,20 @@ fn get_command(
             CiCommands::Validate { platform } => Box::new(
                 stacker::console::commands::cli::ci::CiValidateCommand::new(platform),
             ),
+        },
+        StackerCommands::Pipe { command: pipe_cmd } => {
+            use stacker::console::commands::cli::pipe;
+            match pipe_cmd {
+                PipeCommands::Scan { app, protocols, json, deployment } => Box::new(
+                    pipe::PipeScanCommand::new(app, protocols, json, deployment),
+                ),
+                PipeCommands::Create { source, target, manual, json, deployment } => Box::new(
+                    pipe::PipeCreateCommand::new(source, target, manual, json, deployment),
+                ),
+                PipeCommands::List { json, deployment } => Box::new(
+                    pipe::PipeListCommand::new(json, deployment),
+                ),
+            }
         },
         StackerCommands::Agent { command: agent_cmd } => {
             use stacker::console::commands::cli::agent;

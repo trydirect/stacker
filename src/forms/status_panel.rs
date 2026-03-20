@@ -514,6 +514,30 @@ pub fn validate_command_parameters(
                 .map(Some)
                 .map_err(|err| format!("Failed to encode configure_firewall parameters: {}", err))
         }
+        "probe_endpoints" => {
+            let value = parameters.clone().unwrap_or_else(|| json!({}));
+            let params: ProbeEndpointsCommandRequest = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid probe_endpoints parameters: {}", err))?;
+            ensure_app_code("probe_endpoints", &params.app_code)?;
+
+            let valid_protocols = ["openapi", "html_forms", "graphql", "mcp", "rest"];
+            for p in &params.protocols {
+                if !valid_protocols.contains(&p.as_str()) {
+                    return Err(format!(
+                        "probe_endpoints: unsupported protocol '{}'. Valid: {:?}",
+                        p, valid_protocols
+                    ));
+                }
+            }
+
+            if params.probe_timeout == 0 || params.probe_timeout > 30 {
+                return Err("probe_endpoints: probe_timeout must be between 1 and 30".to_string());
+            }
+
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode probe_endpoints parameters: {}", err))
+        }
         _ => Ok(parameters.clone()),
     }
 }
@@ -605,8 +629,96 @@ pub fn validate_command_result(
                 .map(Some)
                 .map_err(|err| format!("Failed to encode configure_firewall result: {}", err))
         }
+        "probe_endpoints" => {
+            let value = result
+                .clone()
+                .ok_or_else(|| "probe_endpoints result payload is required".to_string())?;
+            let report: ProbeEndpointsCommandReport = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid probe_endpoints result: {}", err))?;
+
+            if report.command_type != "probe_endpoints" {
+                return Err("probe_endpoints result must include type='probe_endpoints'".to_string());
+            }
+            if report.deployment_hash != deployment_hash {
+                return Err("probe_endpoints result deployment_hash mismatch".to_string());
+            }
+
+            serde_json::to_value(report)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode probe_endpoints result: {}", err))
+        }
         _ => Ok(result.clone()),
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Pipe: probe_endpoints
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fn default_probe_protocols() -> Vec<String> {
+    vec!["openapi".to_string(), "rest".to_string()]
+}
+
+fn default_probe_timeout() -> u32 {
+    5
+}
+
+/// Request to probe a container for connectable API endpoints
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeEndpointsCommandRequest {
+    /// App code to probe
+    pub app_code: String,
+    /// Optional container/service name override
+    #[serde(default)]
+    pub container: Option<String>,
+    /// Protocols to probe: "openapi", "html_forms", "graphql", "mcp", "rest"
+    #[serde(default = "default_probe_protocols")]
+    pub protocols: Vec<String>,
+    /// Timeout per probe request in seconds
+    #[serde(default = "default_probe_timeout")]
+    pub probe_timeout: u32,
+}
+
+/// A discovered API endpoint
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeEndpoint {
+    pub protocol: String,
+    pub base_url: String,
+    pub spec_url: String,
+    pub operations: Vec<ProbeOperation>,
+}
+
+/// A single API operation (path + method + fields)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeOperation {
+    pub path: String,
+    pub method: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
+/// A discovered HTML form
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeForm {
+    pub id: String,
+    pub action: String,
+    pub method: String,
+    pub fields: Vec<String>,
+}
+
+/// Result of probing a container for endpoints
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeEndpointsCommandReport {
+    #[serde(rename = "type")]
+    pub command_type: String,
+    pub deployment_hash: String,
+    pub app_code: String,
+    pub protocols_detected: Vec<String>,
+    pub endpoints: Vec<ProbeEndpoint>,
+    pub forms: Vec<ProbeForm>,
+    pub probed_at: String,
 }
 
 #[cfg(test)]
@@ -789,5 +901,148 @@ mod tests {
 
         assert_eq!(result["action"], "add");
         assert_eq!(result["private_ports"].as_array().unwrap().len(), 1);
+    }
+
+    // ── probe_endpoints tests ────────────────────────────
+
+    #[test]
+    fn probe_endpoints_parameters_defaults() {
+        let params = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "crm"
+            })),
+        )
+        .expect("probe_endpoints params should validate")
+        .expect("probe_endpoints params must be present");
+
+        assert_eq!(params["app_code"], "crm");
+        assert_eq!(params["protocols"], json!(["openapi", "rest"]));
+        assert_eq!(params["probe_timeout"], 5);
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_require_app_code() {
+        let err = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "protocols": ["openapi"]
+            })),
+        )
+        .expect_err("missing app_code should fail");
+
+        assert!(err.contains("app_code"));
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_reject_invalid_protocol() {
+        let err = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "crm",
+                "protocols": ["openapi", "invalid_proto"]
+            })),
+        )
+        .expect_err("invalid protocol should fail");
+
+        assert!(err.contains("unsupported protocol"));
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_reject_zero_timeout() {
+        let err = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "crm",
+                "probe_timeout": 0
+            })),
+        )
+        .expect_err("zero timeout should fail");
+
+        assert!(err.contains("probe_timeout"));
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_reject_excessive_timeout() {
+        let err = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "crm",
+                "probe_timeout": 31
+            })),
+        )
+        .expect_err("excessive timeout should fail");
+
+        assert!(err.contains("probe_timeout"));
+    }
+
+    #[test]
+    fn probe_endpoints_result_validates_type() {
+        let err = validate_command_result(
+            "probe_endpoints",
+            "hash_a",
+            &Some(json!({
+                "type": "wrong_type",
+                "deployment_hash": "hash_a",
+                "app_code": "crm",
+                "protocols_detected": [],
+                "endpoints": [],
+                "forms": [],
+                "probed_at": "2026-03-20T12:00:00Z"
+            })),
+        )
+        .expect_err("wrong type should fail");
+
+        assert!(err.contains("type='probe_endpoints'"));
+    }
+
+    #[test]
+    fn probe_endpoints_result_validates_hash() {
+        let err = validate_command_result(
+            "probe_endpoints",
+            "hash_a",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "hash_b",
+                "app_code": "crm",
+                "protocols_detected": [],
+                "endpoints": [],
+                "forms": [],
+                "probed_at": "2026-03-20T12:00:00Z"
+            })),
+        )
+        .expect_err("mismatched hash should fail");
+
+        assert!(err.contains("deployment_hash mismatch"));
+    }
+
+    #[test]
+    fn probe_endpoints_result_valid() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "hash_a",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "hash_a",
+                "app_code": "crm",
+                "protocols_detected": ["openapi"],
+                "endpoints": [{
+                    "protocol": "openapi",
+                    "base_url": "http://crm:80",
+                    "spec_url": "/swagger.json",
+                    "operations": [{
+                        "path": "/api/v1/contacts",
+                        "method": "POST",
+                        "summary": "Create contact",
+                        "fields": ["last_name", "email1"]
+                    }]
+                }],
+                "forms": [],
+                "probed_at": "2026-03-20T12:00:00Z"
+            })),
+        )
+        .expect("valid result should pass");
+
+        assert!(result.is_some());
     }
 }
