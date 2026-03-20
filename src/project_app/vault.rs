@@ -71,7 +71,7 @@ pub(crate) async fn store_configs_to_vault_from_params(
 
             let destination_path = resolve_destination_path(
                 file,
-                format!("{}/{}/config/{}", config_base_path, app_code, file_name),
+                format!("{}/{}/{}", config_base_path, app_code, file_name),
             );
             let config = build_app_config(content, content_type, destination_path, file, "0644");
 

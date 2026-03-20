@@ -1,7 +1,7 @@
 use crate::db;
 use crate::forms::status_panel::HealthCommandReport;
 use crate::helpers::{AgentPgPool, JsonResponse};
-use crate::models::{self, Command, ProjectApp};
+use crate::models::{Command, ProjectApp};
 use actix_web::{get, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 
@@ -84,9 +84,9 @@ pub async fn snapshot_handler(
             .flatten();
 
     tracing::debug!("[SNAPSHOT HANDLER] Deployment : {:?}", deployment);
-    // Fetch apps for the project
+    // Fetch apps scoped to this specific deployment (falls back to project-level if no deployment-scoped apps)
     let apps = if let Some(deployment) = &deployment {
-        db::project_app::fetch_by_project(agent_pool.get_ref(), deployment.project_id)
+        db::project_app::fetch_by_deployment(agent_pool.get_ref(), deployment.project_id, deployment.id)
             .await
             .unwrap_or_default()
     } else {
@@ -146,12 +146,26 @@ pub async fn snapshot_handler(
         containers
     );
 
-    let agent_snapshot = agent.map(|a| AgentSnapshot {
-        version: a.version,
-        capabilities: a.capabilities,
-        system_info: a.system_info,
-        status: Some(a.status),
-        last_heartbeat: a.last_heartbeat,
+    // Derive effective status: if heartbeat is stale (>5 min), override to "offline"
+    let agent_snapshot = agent.map(|a| {
+        let effective_status = match a.last_heartbeat {
+            Some(hb) => {
+                let stale_threshold = chrono::Duration::seconds(300); // 5 minutes
+                if chrono::Utc::now() - hb > stale_threshold {
+                    "offline".to_string()
+                } else {
+                    a.status.clone()
+                }
+            }
+            None => "offline".to_string(), // Never had a heartbeat
+        };
+        AgentSnapshot {
+            version: a.version,
+            capabilities: a.capabilities,
+            system_info: a.system_info,
+            status: Some(effective_status),
+            last_heartbeat: a.last_heartbeat,
+        }
     });
     tracing::debug!("[SNAPSHOT HANDLER] Agent Snapshot : {:?}", agent_snapshot);
 

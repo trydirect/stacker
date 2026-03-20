@@ -1,0 +1,7 @@
+name: test-app
+version: "1.0"
+app:
+  type: static
+  source: "./public"
+deploy:
+  target: local

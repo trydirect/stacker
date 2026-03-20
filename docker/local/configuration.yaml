@@ -13,5 +13,12 @@ database:
 amqp:
   host: 127.0.0.1
   port: 5672
+
+# Vault configuration — override address/token via VAULT_ADDRESS / VAULT_TOKEN env vars
+vault:
+  address: http://vault2.try.direct:8200
+  token: change-me-in-env
+  api_prefix: v1
+  agent_path_prefix: agent
   username: guest
   password: guest

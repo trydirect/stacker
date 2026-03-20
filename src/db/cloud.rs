@@ -44,10 +44,21 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::C
 
 pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::Cloud, String> {
     let query_span = tracing::info_span!("Saving user's cloud data into the database");
+
+    // If no name provided, we'll generate a default after insert (need the ID)
+    let has_name = !cloud.name.is_empty();
+    let insert_name = if has_name {
+        cloud.name.clone()
+    } else {
+        // Temporary placeholder; will be updated below
+        format!("{}-0", cloud.provider)
+    };
+
     sqlx::query!(
         r#"
         INSERT INTO cloud (
         user_id,
+        name,
         provider,
         cloud_token,
         cloud_key,
@@ -56,10 +67,11 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         created_at,
         updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() at time zone 'utc', NOW() at time zone 'utc')
         RETURNING id;
         "#,
         cloud.user_id,
+        insert_name,
         cloud.provider,
         cloud.cloud_token,
         cloud.cloud_key,
@@ -77,6 +89,13 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         tracing::error!("Failed to execute query: {:?}", e);
         "Failed to insert".to_string()
     })
+    .and_then(|mut cloud| {
+        // Auto-generate name if not provided: "{provider}-{id}"
+        if !has_name {
+            cloud.name = format!("{}-{}", cloud.provider, cloud.id);
+        }
+        Ok(cloud)
+    })
 }
 
 pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::Cloud, String> {
@@ -87,17 +106,19 @@ pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
         UPDATE cloud
         SET
             user_id=$2,
-            provider=$3,
-            cloud_token=$4,
-            cloud_key=$5,
-            cloud_secret=$6,
-            save_token=$7,
+            name=$3,
+            provider=$4,
+            cloud_token=$5,
+            cloud_key=$6,
+            cloud_secret=$7,
+            save_token=$8,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
         "#,
         cloud.id,
         cloud.user_id,
+        cloud.name,
         cloud.provider,
         cloud.cloud_token,
         cloud.cloud_key,

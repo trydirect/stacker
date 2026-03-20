@@ -20,6 +20,9 @@ pub struct Payload {
     pub stack: forms::project::Stack,
     pub custom: forms::project::Custom,
     pub docker_compose: Option<Vec<u8>>,
+    /// Docker registry credentials for pulling private images on the target server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<forms::project::RegistryForm>,
 }
 
 impl TryFrom<&models::Project> for Payload {

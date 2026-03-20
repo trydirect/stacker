@@ -37,6 +37,44 @@ pub async fn item(
     server.project_id = server_row.project_id;
     server.user_id = user.id.clone();
 
+    // Preserve existing values when form fields are not provided (None)
+    // This prevents accidental data loss (e.g., IP getting wiped to NULL)
+    if server.srv_ip.is_none() {
+        server.srv_ip = server_row.srv_ip.clone();
+    }
+    if server.ssh_port.is_none() {
+        server.ssh_port = server_row.ssh_port;
+    }
+    if server.ssh_user.is_none() {
+        server.ssh_user = server_row.ssh_user.clone();
+    }
+    if server.name.is_none() {
+        server.name = server_row.name.clone();
+    }
+    if server.cloud_id.is_none() {
+        server.cloud_id = server_row.cloud_id;
+    }
+    if server.region.is_none() {
+        server.region = server_row.region.clone();
+    }
+    if server.zone.is_none() {
+        server.zone = server_row.zone.clone();
+    }
+    if server.server.is_none() {
+        server.server = server_row.server.clone();
+    }
+    if server.os.is_none() {
+        server.os = server_row.os.clone();
+    }
+    if server.disk_type.is_none() {
+        server.disk_type = server_row.disk_type.clone();
+    }
+    if server.vault_key_path.is_none() {
+        server.vault_key_path = server_row.vault_key_path.clone();
+    }
+    // Preserve key_status from existing record (not settable via form)
+    server.key_status = server_row.key_status.clone();
+
     tracing::debug!("Updating server {:?}", server);
 
     db::server::update(pg_pool.get_ref(), server)

@@ -16,10 +16,10 @@ pub(crate) struct JsonResponse<T> {
     pub(crate) meta: Option<serde_json::Value>,
 }
 
-#[derive(Serialize, Default)]
+#[derive(Serialize)]
 pub struct JsonResponseBuilder<T>
 where
-    T: serde::Serialize + Default,
+    T: serde::Serialize,
 {
     message: String,
     id: Option<i32>,
@@ -30,7 +30,7 @@ where
 
 impl<T> JsonResponseBuilder<T>
 where
-    T: serde::Serialize + Default,
+    T: serde::Serialize,
 {
     pub(crate) fn set_msg<I: Into<String>>(mut self, msg: I) -> Self {
         self.message = msg.into();
@@ -111,10 +111,16 @@ where
 
 impl<T> JsonResponse<T>
 where
-    T: serde::Serialize + Default,
+    T: serde::Serialize,
 {
     pub fn build() -> JsonResponseBuilder<T> {
-        JsonResponseBuilder::default()
+        JsonResponseBuilder {
+            message: String::new(),
+            id: None,
+            item: None,
+            list: None,
+            meta: None,
+        }
     }
 }
 

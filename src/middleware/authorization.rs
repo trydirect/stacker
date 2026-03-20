@@ -1,4 +1,3 @@
-use crate::configuration::parse_bool_env;
 use actix_casbin_auth::{
     casbin::{function_map::key_match2, CoreApi, DefaultModel},
     CasbinService,
@@ -35,7 +34,7 @@ pub async fn try_new(db_connection_address: String) -> Result<CasbinService, Err
         .matching_fn(Some(key_match2), None);
 
     if std::env::var("STACKER_CASBIN_RELOAD_ENABLED")
-        .map(|value| parse_bool_env(&value))
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(true)
     {
         let interval = std::env::var("STACKER_CASBIN_RELOAD_INTERVAL_SECS")

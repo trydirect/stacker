@@ -28,7 +28,7 @@ where
     type Future = LocalBoxFuture<'static, Result<ServiceResponse<B>, Error>>;
 
     fn poll_ready(&self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if let Ok(mut service) = self.service.try_borrow_mut() {
+        if let Ok(service) = self.service.try_borrow_mut() {
             service.poll_ready(ctx)
         } else {
             Poll::Pending
@@ -41,6 +41,7 @@ where
             let _ = method::try_agent(&mut req).await?
                 || method::try_jwt(&mut req).await?
                 || method::try_oauth(&mut req).await?
+                || method::try_query(&mut req).await?
                 || method::try_cookie(&mut req).await?
                 || method::try_hmac(&mut req).await?
                 || method::anonym(&mut req)?;

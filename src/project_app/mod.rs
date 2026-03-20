@@ -1,3 +1,4 @@
+pub(crate) mod hydration;
 pub(crate) mod mapping;
 pub(crate) mod upsert;
 pub(crate) mod vault;

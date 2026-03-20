@@ -1,5 +1,5 @@
 use super::InstallServiceConnector;
-use crate::forms::project::Stack;
+use crate::forms::project::{RegistryForm, Stack};
 use crate::helpers::MqManager;
 use crate::models;
 use async_trait::async_trait;
@@ -19,8 +19,11 @@ impl InstallServiceConnector for MockInstallServiceConnector {
         _cloud_creds: models::Cloud,
         _server: models::Server,
         _form_stack: &Stack,
+        _registry: Option<RegistryForm>,
         _fc: String,
         _mq_manager: &MqManager,
+        _server_public_key: Option<String>,
+        _server_private_key: Option<String>,
     ) -> Result<i32, String> {
         Ok(project_id)
     }

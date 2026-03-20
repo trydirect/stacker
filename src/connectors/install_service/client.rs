@@ -1,5 +1,5 @@
 use super::InstallServiceConnector;
-use crate::forms::project::Stack;
+use crate::forms::project::{RegistryForm, Stack};
 use crate::helpers::{compressor::compress, MqManager};
 use crate::models;
 use async_trait::async_trait;
@@ -20,8 +20,11 @@ impl InstallServiceConnector for InstallServiceClient {
         cloud_creds: models::Cloud,
         server: models::Server,
         form_stack: &Stack,
+        registry: Option<RegistryForm>,
         fc: String,
         mq_manager: &MqManager,
+        server_public_key: Option<String>,
+        server_private_key: Option<String>,
     ) -> Result<i32, String> {
         // Build payload for the install service
         let mut payload = crate::forms::project::Payload::try_from(project)
@@ -30,12 +33,30 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.id = Some(deployment_id);
         // Force-set deployment_hash in case deserialization overwrote it
         payload.deployment_hash = Some(deployment_hash.clone());
+
+        // Determine routing before server is moved into payload:
+        // If server has an existing IP, deploy to it directly (own flow).
+        // Otherwise, use the cloud provider to decide (own vs tfa).
+        let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
+
         payload.server = Some(server.into());
+        // Inject newly-generated public key so Install Service can append it to authorized_keys
+        if let Some(ref mut srv) = payload.server {
+            if srv.public_key.is_none() {
+                srv.public_key = server_public_key;
+            }
+            // Include the SSH private key so the Install Service can SSH into
+            // existing servers without relying on Redis-cached file paths.
+            if srv.ssh_private_key.is_none() {
+                srv.ssh_private_key = server_private_key;
+            }
+        }
         payload.cloud = Some(cloud_creds.into());
         payload.stack = form_stack.clone().into();
         payload.user_token = Some(user_id);
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));
+        payload.registry = registry;
 
         tracing::debug!(
             "Send project data (deployment_hash = {:?}): {:?}",
@@ -43,18 +64,25 @@ impl InstallServiceConnector for InstallServiceClient {
             payload
         );
 
-        let provider = payload
-            .cloud
-            .as_ref()
-            .map(|form| {
-                if form.provider.contains("own") {
-                    "own"
-                } else {
-                    "tfa"
-                }
-            })
-            .unwrap_or("tfa")
-            .to_string();
+        let provider = if has_existing_ip {
+            // Server already has an IP → deploy to existing server via SSH (own flow)
+            tracing::info!("Server has existing IP, routing to 'own' flow");
+            "own"
+        } else {
+            // No IP → provision new server via cloud provider (tfa or own)
+            payload
+                .cloud
+                .as_ref()
+                .map(|form| {
+                    if form.provider.contains("own") {
+                        "own"
+                    } else {
+                        "tfa"
+                    }
+                })
+                .unwrap_or("tfa")
+        }
+        .to_string();
 
         let routing_key = format!("install.start.{}.all.all", provider);
         tracing::debug!("Route: {:?}", routing_key);

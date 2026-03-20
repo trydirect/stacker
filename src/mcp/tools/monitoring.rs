@@ -464,7 +464,7 @@ impl ToolHandler for DiagnoseDeploymentTool {
         let deployment_hash = info.deployment_hash.clone();
         let mut status = info.status;
         let mut domain = info.domain;
-        let mut server_ip = info.server_ip;
+        let server_ip = info.server_ip;
         let mut apps_info: Option<Value> = info.apps.as_ref().map(|apps| {
             json!(apps
                 .iter()

@@ -98,7 +98,7 @@ impl ToolHandler for EscalateToSupportTool {
 
         // Store escalation record
         let escalation_id = uuid::Uuid::new_v4().to_string();
-        let escalation_record = json!({
+        let _escalation_record = json!({
             "id": escalation_id,
             "user_id": context.user.id,
             "reason": params.reason,

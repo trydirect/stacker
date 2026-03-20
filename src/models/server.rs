@@ -7,6 +7,8 @@ pub struct Server {
     pub id: i32,
     pub user_id: String,
     pub project_id: i32,
+    /// Reference to the cloud provider (DO, Hetzner, AWS, etc.)
+    pub cloud_id: Option<i32>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
     pub region: Option<String>,
@@ -52,6 +54,7 @@ impl Default for Server {
             id: 0,
             user_id: String::new(),
             project_id: 0,
+            cloud_id: None,
             region: None,
             zone: None,
             server: None,
@@ -76,4 +79,56 @@ fn default_connection_mode() -> String {
 
 fn default_key_status() -> String {
     "none".to_string()
+}
+
+/// Server with provider information for API responses
+/// Used when we need to show the cloud provider name alongside server data
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerWithProvider {
+    pub id: i32,
+    pub user_id: String,
+    pub project_id: i32,
+    pub cloud_id: Option<i32>,
+    /// Cloud provider name (e.g., "digital_ocean", "hetzner", "aws")
+    pub cloud: Option<String>,
+    pub region: Option<String>,
+    pub zone: Option<String>,
+    pub server: Option<String>,
+    pub os: Option<String>,
+    pub disk_type: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub srv_ip: Option<String>,
+    pub ssh_port: Option<i32>,
+    pub ssh_user: Option<String>,
+    pub vault_key_path: Option<String>,
+    pub connection_mode: String,
+    pub key_status: String,
+    pub name: Option<String>,
+}
+
+impl From<Server> for ServerWithProvider {
+    fn from(server: Server) -> Self {
+        Self {
+            id: server.id,
+            user_id: server.user_id,
+            project_id: server.project_id,
+            cloud_id: server.cloud_id,
+            cloud: None, // Will be populated by the query
+            region: server.region,
+            zone: server.zone,
+            server: server.server,
+            os: server.os,
+            disk_type: server.disk_type,
+            created_at: server.created_at,
+            updated_at: server.updated_at,
+            srv_ip: server.srv_ip,
+            ssh_port: server.ssh_port,
+            ssh_user: server.ssh_user,
+            vault_key_path: server.vault_key_path,
+            connection_mode: server.connection_mode,
+            key_status: server.key_status,
+            name: server.name,
+        }
+    }
 }

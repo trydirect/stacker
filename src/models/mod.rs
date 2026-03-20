@@ -1,5 +1,6 @@
 mod agent;
 mod agreement;
+mod chat;
 mod client;
 mod cloud;
 mod command;
@@ -16,6 +17,7 @@ pub mod user;
 
 pub use agent::*;
 pub use agreement::*;
+pub use chat::*;
 pub use client::*;
 pub use cloud::*;
 pub use command::*;

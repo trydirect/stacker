@@ -18,6 +18,12 @@ pub struct CreateTemplateRequest {
     pub version: Option<String>,
     pub stack_definition: Option<serde_json::Value>,
     pub definition_format: Option<String>,
+    /// Pricing: "free", "one_time", or "subscription"
+    pub plan_type: Option<String>,
+    /// Price amount (e.g. 9.99). Ignored when plan_type is "free"
+    pub price: Option<f64>,
+    /// ISO 4217 currency code, default "USD"
+    pub currency: Option<String>,
 }
 
 #[tracing::instrument(name = "Create draft template")]
@@ -33,6 +39,11 @@ pub async fn create_handler(
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
+
+    // Normalize pricing: plan_type "free" forces price to 0
+    let billing_cycle = req.plan_type.unwrap_or_else(|| "free".to_string());
+    let price = if billing_cycle == "free" { 0.0 } else { req.price.unwrap_or(0.0) };
+    let currency = req.currency.unwrap_or_else(|| "USD".to_string());
 
     // Check if template with this slug already exists for this user
     let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
@@ -51,6 +62,9 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             Some(tags.clone()),
             Some(tech_stack.clone()),
+            Some(price),
+            Some(billing_cycle.as_str()),
+            Some(currency.as_str()),
         )
         .await
         .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
@@ -83,6 +97,9 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             tags,
             tech_stack,
+            price,
+            &billing_cycle,
+            &currency,
         )
         .await
         .map_err(|err| {
@@ -121,6 +138,9 @@ pub struct UpdateTemplateRequest {
     pub category_code: Option<String>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
+    pub plan_type: Option<String>,
+    pub price: Option<f64>,
+    pub currency: Option<String>,
 }
 
 #[tracing::instrument(name = "Update template metadata")]
@@ -158,6 +178,9 @@ pub async fn update_handler(
         req.category_code.as_deref(),
         req.tags,
         req.tech_stack,
+        req.price,
+        req.plan_type.as_deref(),
+        req.currency.as_deref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
@@ -201,6 +224,62 @@ pub async fn submit_handler(
     } else {
         Err(JsonResponse::<serde_json::Value>::build().bad_request("Invalid status"))
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ResubmitRequest {
+    pub version: String,
+    pub stack_definition: serde_json::Value,
+    pub definition_format: Option<String>,
+    pub changelog: Option<String>,
+}
+
+#[tracing::instrument(name = "Resubmit template with new version")]
+#[post("/{id}/resubmit")]
+pub async fn resubmit_handler(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<ResubmitRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    // Ownership check
+    let owner_id: String = sqlx::query_scalar!(
+        r#"SELECT creator_user_id FROM stack_template WHERE id = $1"#,
+        id
+    )
+    .fetch_one(pg_pool.get_ref())
+    .await
+    .map_err(|_| JsonResponse::<serde_json::Value>::build().not_found("Not Found"))?;
+
+    if owner_id != user.id {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"));
+    }
+
+    let req = body.into_inner();
+
+    let version = db::marketplace::resubmit_with_new_version(
+        pg_pool.get_ref(),
+        &id,
+        &req.version,
+        req.stack_definition,
+        req.definition_format.as_deref(),
+        req.changelog.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
+
+    let result = serde_json::json!({
+        "template_id": id,
+        "version": version,
+        "status": "submitted"
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("Resubmitted for review"))
 }
 
 #[tracing::instrument(name = "List my templates")]

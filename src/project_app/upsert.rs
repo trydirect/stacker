@@ -27,6 +27,39 @@ pub(crate) async fn upsert_app_config_for_deploy(
         serde_json::to_string_pretty(parameters).unwrap_or_else(|_| parameters.to_string())
     );
 
+    // Resolve the actual deployment record ID from deployment_hash
+    // (deployment_id parameter is actually project_id in the current code)
+    let actual_deployment_id = match crate::db::deployment::fetch_by_deployment_hash(
+        pg_pool,
+        deployment_hash,
+    )
+    .await
+    {
+        Ok(Some(dep)) => {
+            tracing::info!(
+                "[UPSERT_APP_CONFIG] Resolved deployment.id={} from hash={}",
+                dep.id,
+                deployment_hash
+            );
+            Some(dep.id)
+        }
+        Ok(None) => {
+            tracing::warn!(
+                "[UPSERT_APP_CONFIG] No deployment found for hash={}, deployment_id will be NULL",
+                deployment_hash
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[UPSERT_APP_CONFIG] Failed to resolve deployment for hash={}: {}",
+                deployment_hash,
+                e
+            );
+            None
+        }
+    };
+
     // Fetch project from DB
     let project = match crate::db::project::fetch(pg_pool, deployment_id).await {
         Ok(Some(p)) => {
@@ -107,12 +140,19 @@ pub(crate) async fn upsert_app_config_for_deploy(
 
     // Log final project_app before upsert
     tracing::info!(
-        "[UPSERT_APP_CONFIG] Final project_app - code: {}, name: {}, image: {}, env: {:?}",
+        "[UPSERT_APP_CONFIG] Final project_app - code: {}, name: {}, image: {}, env: {:?}, deployment_id: {:?}",
         project_app.code,
         project_app.name,
         project_app.image,
-        project_app.environment
+        project_app.environment,
+        project_app.deployment_id
     );
+
+    // Set deployment_id on the app to scope it to this specific deployment
+    let mut project_app = project_app;
+    if project_app.deployment_id.is_none() {
+        project_app.deployment_id = actual_deployment_id;
+    }
 
     // Upsert app config and sync to Vault
     match app_service

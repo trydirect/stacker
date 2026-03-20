@@ -2,6 +2,217 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] — 2026-03-17
+
+### Added — Marketplace Developer & Buyer Flows
+
+- New `stacker submit` command — packages the current stack (reads `stacker.yml`) and submits it to the marketplace for review. Supports `--version`, `--description`, `--category`, `--plan-type`, `--price` flags.
+- New `stacker marketplace status [name]` — shows a table of all developer submissions with status badges (pending_review, in_review, approved, rejected) or detail for a single stack.
+- New `stacker marketplace logs <name>` — shows review history with decisions, reasons, and timestamps.
+- StackerClient: added `marketplace_create_or_update()`, `marketplace_submit()`, `marketplace_list_mine()`, `marketplace_reviews()` methods.
+- New response types: `MarketplaceTemplateInfo`, `MarketplaceReviewInfo`.
+- Auto-publish on approval — stacks are published automatically once accepted by the review team (no separate publish step needed).
+
+### Added — Buyer Install Endpoints (Server)
+
+- `GET /api/v1/marketplace/install/{purchase_token}` — generates a ready-to-run `install.sh` script that installs Stacker CLI + Status Panel, downloads the stack, registers the agent, and deploys.
+- `GET /api/v1/marketplace/download/{purchase_token}` — serves the stack archive for a validated purchase token.
+- `POST /api/v1/marketplace/agents/register` — agent self-registration endpoint called by Status Panel after install. Returns `agent_id`, `agent_token`, `deployment_hash`.
+
+### Added — Firewall (iptables) Management
+
+- New MCP tools for configuring iptables firewall rules on remote servers:
+  - `configure_firewall` — Add, remove, list, or flush iptables rules with public/private port definitions
+  - `list_firewall_rules` — List current iptables rules on a deployment target server
+  - `configure_firewall_from_role` — Auto-configure firewall rules from Ansible role port definitions
+- Two execution methods:
+  - **Status Panel** (preferred): Commands executed via the Status Panel agent directly on the target server
+  - **SSH**: Fallback for servers without Status Panel agent (uses Ansible-based execution)
+- Port rule types:
+  - **Public ports**: Opened to all IPs (0.0.0.0/0) — use for HTTP, HTTPS, public APIs
+  - **Private ports**: Restricted to specific IPs/CIDRs — use for databases, internal services
+- Integration with Ansible roles: Automatically extracts `public_ports` and `private_ports` from role configuration
+- Rules can be persisted across reboots via the `persist` parameter
+
+### Added — Status Panel `configure_firewall` command type
+
+- New `configure_firewall` command type for Status Panel agents
+- Validates action (add, remove, list, flush), port numbers, and protocols (tcp/udp)
+- Supports optional comments for rule documentation
+
+## [0.2.5] — 2026-03-07
+
+### Added — Agent control from the CLI (`stacker agent`)
+
+- New `stacker agent` subcommand with 9 commands for remote Status Panel agent management:
+  - `stacker agent health [--app NAME]` — check agent connectivity / container health
+  - `stacker agent logs <app> [--lines N]` — retrieve container logs from the target server
+  - `stacker agent restart <app>` — restart a container via the agent
+  - `stacker agent deploy-app --app NAME --image IMAGE [--tag TAG]` — deploy or update an app container
+  - `stacker agent remove-app --app NAME [--remove-volumes] [--remove-images]` — remove an app container with optional cleanup
+  - `stacker agent configure-proxy --app NAME --domain DOMAIN [--ssl]` — configure Nginx Proxy Manager
+  - `stacker agent status` — display agent snapshot (containers, versions, uptime)
+  - `stacker agent history` — show recent command execution history
+  - `stacker agent exec --command-type TYPE [--params JSON]` — execute a raw agent command
+- All commands support `--json` for machine-readable output and `--deployment <hash>` to target a specific deployment
+- Smart deployment hash resolution: explicit flag → DeploymentLock → stacker.yml project identity → API lookup
+- Spinner-based UX with configurable timeout while waiting for agent results
+
+### Added — Infrastructure helpers
+
+- `CliRuntime` (`src/cli/runtime.rs`) — eliminates ~15 lines of credentials + tokio runtime + client boilerplate per CLI command
+- `fmt` module (`src/cli/fmt.rs`) — shared terminal formatting helpers: `truncate()`, `separator()`, `pretty_json()`, `display_opt()`
+- `AgentEnqueueRequest` — builder pattern with `with_parameters()`, `with_priority()`, `with_timeout()`
+- `AgentCommandInfo` — response type for agent command status and results
+- StackerClient: added `agent_enqueue()`, `agent_command_status()`, `agent_poll_result()`, `agent_snapshot()` API methods
+- 4 new agent error variants: `AgentNotFound`, `AgentOffline`, `AgentCommandTimeout`, `AgentCommandFailed`
+
+### Added — MCP agent control tools
+
+- `deploy_app` — deploy or update an app container via the Status Panel agent
+- `remove_app` — remove an app container with optional volume/image cleanup
+- `configure_proxy_agent` — configure Nginx Proxy Manager reverse-proxy entries
+- `get_agent_status` — check agent registration, version, and last heartbeat
+
+### Added — AI agent tools
+
+- 3 new AI tool definitions: `agent_health`, `agent_status`, `agent_logs`
+- Wired into `execute_tool()` via subprocess dispatch (`stacker agent ... --json`)
+- Available in `stacker ai ask --write` and interactive chat modes
+## [Unreleased] — 2026-03-04
+
+### Fixed
+- **Agent registration 403**: added Casbin migration `20260304220000_fix_casbin_agent_register_anon` that idempotently grants `group_anonymous` the right to `POST /api/v1/agent/register`. Ansible-driven deployments (statuspanel, etc.) call this endpoint without an Authorization header; without this policy the Casbin middleware returns 403.
+
+## [0.2.4] — 2026-02-27
+
+### Added — SSH key management (`stacker ssh-key`)
+
+- New `stacker ssh-key generate --server-id N` command — generates a Vault-backed SSH key pair for a server; optional `--save-to PATH` to save the private key locally
+- New `stacker ssh-key show --server-id N` command — displays the public SSH key (`--json` for machine-readable output)
+- New `stacker ssh-key upload --server-id N --public-key FILE --private-key FILE` — uploads an existing SSH key pair to the server
+- StackerClient: added `generate_ssh_key()`, `get_ssh_public_key()`, `upload_ssh_key()` API methods
+
+### Added — Service template catalog (`stacker service`)
+
+- New `stacker service add <name>` command — resolves a service template and appends it to `stacker.yml`
+  - 20+ built-in templates: postgres, mysql, mongodb, redis, memcached, rabbitmq, traefik, nginx, nginx_proxy_manager, wordpress, elasticsearch, kibana, qdrant, telegraf, phpmyadmin, mailhog, minio, portainer
+  - Alias support: `wp`→wordpress, `pg`→postgres, `my`→mysql, `mongo`→mongodb, `es`→elasticsearch, `mq`→rabbitmq, `pma`→phpmyadmin, `mh`→mailhog
+  - Auto-adds dependencies (e.g. `wordpress` pulls in `mysql` if missing)
+  - Creates `.yml.bak` backup before modifying, checks for duplicate services
+  - Falls back to offline catalog if marketplace API is unreachable
+- New `stacker service list [--online]` — shows available service templates grouped by category
+
+### Added — AI `add_service` tool (write mode)
+
+- In `stacker ai ask --write` and `stacker ai` (chat), the AI can now call `add_service` to add services from the built-in catalog to `stacker.yml`
+- The AI system prompt is enriched with the full service catalog so it knows what templates are available
+- Supports custom overrides: `custom_ports` and `custom_env` parameters on the tool call
+- Example: `stacker ai ask --write "add postgres and redis to my stack"`
+
+### Added — Marketplace template API methods
+
+- StackerClient: added `list_marketplace_templates()` and `get_marketplace_template(slug)` for fetching templates from the Stacker server marketplace
+
+## [0.2.3] — 2026-02-23
+
+### Changed — `stacker init` now generates `.stacker/` directory
+
+- `stacker init` now creates `.stacker/Dockerfile` and `.stacker/docker-compose.yml` alongside `stacker.yml`, so the project is ready to deploy immediately without running `deploy --dry-run` first
+- Dockerfile generation is skipped when `app.image` or `app.dockerfile` is set in the config
+- Compose generation is skipped when `deploy.compose_file` is set
+
+### Changed — `stacker deploy` reuses existing `.stacker/` artifacts
+
+- `deploy` no longer errors when `.stacker/Dockerfile` or `.stacker/docker-compose.yml` already exist (e.g. from `stacker init`)
+- Existing artifacts are reused; pass `--force-rebuild` to regenerate them
+
+### Added — `--ai-provider`, `--ai-model`, `--ai-api-key` flags on `stacker-cli init`
+
+- The `stacker-cli` binary (`console/main.rs`) now supports all AI-related flags that the standalone `stacker` binary already had:
+  - `--ai-provider <PROVIDER>` — openai, anthropic, ollama, custom
+  - `--ai-model <MODEL>` — e.g. `qwen2.5-coder`, `deepseek-r1`, `gpt-4o`
+  - `--ai-api-key <KEY>` — API key for cloud AI providers
+
+### Added — AI troubleshooting suggestions on deploy failures
+
+- On `stacker deploy` failures (`DeployFailed`), CLI now attempts AI-assisted troubleshooting automatically
+- It sends the deploy error plus generated `.stacker/Dockerfile` and `.stacker/docker-compose.yml` snippets to the configured AI provider
+- If AI is unavailable or not configured, CLI prints deterministic fallback hints for common issues (for example `npm ci` failures, obsolete compose `version`, missing files, permissions, and network timeouts)
+
+### Fixed
+
+- `stacker-cli init --with-ai --ai-model qwen2.5-coder` no longer fails with an unrecognised flag error
+- `stacker deploy` after `stacker init` no longer fails with `DockerfileExists` error
+
+## 2026-02-23
+
+### Added - Configurable AI Request Timeout
+
+- New `timeout` field in `ai` config section of `stacker.yml` (default: 300 seconds)
+- `STACKER_AI_TIMEOUT` environment variable overrides the config value
+- Timeout applies to all AI providers (OpenAI, Anthropic, Ollama, Custom)
+- Useful for large models on slower hardware: `STACKER_AI_TIMEOUT=900 stacker init --with-ai`
+- Example stacker.yml:
+  ```yaml
+  ai:
+    enabled: true
+    provider: ollama
+    model: deepseek-r1
+    timeout: 600  # 10 minutes
+  ```
+- 9 new tests for timeout resolution
+
+### Added - Stacker CLI: AI-Powered Project Initialization
+
+#### AI Scanner Module (`src/cli/ai_scanner.rs`)
+- New `scan_project()` function performs deep project scanning, reading key config files (`package.json`, `requirements.txt`, `Cargo.toml`, `Dockerfile`, `docker-compose.yml`, `.env`, etc.) to build rich context for AI generation
+- `build_generation_prompt()` constructs detailed prompts including detected app type, file contents, existing infrastructure, and env var keys (values redacted for security)
+- `generate_config_with_ai()` sends project context to the configured AI provider and returns a tailored `stacker.yml`
+- `strip_code_fences()` strips markdown code fences from AI responses
+- System prompt encodes the full `stacker.yml` schema so the AI generates valid, deployable configs
+- 16 unit tests
+
+#### AI-Powered `stacker init --with-ai` (`src/console/commands/cli/init.rs`)
+- `stacker init --with-ai` now scans the project and calls the AI to generate a tailored `stacker.yml` with appropriate services, proxy, monitoring, and hooks
+- New CLI flags on `stacker init`:
+  - `--ai-provider <PROVIDER>` — AI provider: `openai`, `anthropic`, `ollama`, `custom` (default: `ollama`)
+  - `--ai-model <MODEL>` — Model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`, `llama3`)
+  - `--ai-api-key <KEY>` — API key (or use environment variables)
+- `resolve_ai_config()` resolves AI configuration with priority: CLI flag → environment variable → defaults
+- Environment variable support: `STACKER_AI_PROVIDER`, `STACKER_AI_MODEL`, `STACKER_AI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+- Graceful fallback: if AI generation fails (provider unreachable, invalid YAML), automatically falls back to template-based generation
+- AI-generated configs include a review header noting the provider and model used
+- If AI output fails validation, raw draft is saved to `stacker.yml.ai-draft` for manual review
+- 8 new unit tests (18 total in init.rs), 3 new integration tests (11 total in cli_init.rs)
+
+#### Usage Examples
+```bash
+# AI-powered init with local Ollama
+stacker init --with-ai
+
+# AI-powered init with OpenAI
+stacker init --with-ai --ai-provider openai --ai-api-key sk-...
+
+# AI-powered init with Anthropic (key from env)
+export ANTHROPIC_API_KEY=sk-ant-...
+stacker init --with-ai --ai-provider anthropic
+
+# Falls back to template if AI fails
+stacker init --with-ai  # no Ollama running → template fallback
+```
+
+### Test Results
+- **467 tests** (426 unit + 41 integration), 0 failures
+
+## 2026-02-18
+
+### Fixed
+- **Container Discovery 403**: Fixed Casbin authorization rules for `/project/:id/containers/discover` (GET) and `/project/:id/containers/import` (POST)
+  - Migration `20260204120000_casbin_container_discovery_rules` had wrong path prefix `/api/v1/project/...` instead of `/project/...`
+  - The middleware was rejecting the request with a 403 before CORS headers could be attached, causing the browser to report a misleading "CORS header missing" error
+  - New migration `20260218100000_fix_casbin_container_discovery_paths` removes the wrong rules and inserts the correct paths
+
 ## 2026-02-03
 
 ### Fixed

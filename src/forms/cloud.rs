@@ -13,6 +13,10 @@ pub struct CloudForm {
     pub user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<i32>,
+    /// Human-friendly name for this cloud credential (e.g. "my-hetzner").
+    /// Auto-generated as "{provider}-{id}" if not provided.
+    #[serde(default)]
+    pub name: Option<String>,
     #[validate(min_length = 2)]
     #[validate(max_length = 50)]
     pub provider: String,
@@ -130,6 +134,8 @@ impl Into<models::Cloud> for &CloudForm {
         let mut cloud = models::Cloud::default();
         cloud.provider = self.provider.clone();
         cloud.user_id = self.user_id.clone().unwrap();
+        // Name will be set after insert if not provided (default: "{provider}-{id}")
+        cloud.name = self.name.clone().unwrap_or_default();
 
         if Some(true) == self.save_token {
             let mut secret = Secret::new();
@@ -158,6 +164,7 @@ impl Into<CloudForm> for models::Cloud {
     fn into(self) -> CloudForm {
         let mut form = CloudForm::default();
         form.provider = self.provider.clone();
+        form.name = Some(self.name.clone());
 
         if Some(true) == self.save_token {
             let mut secret = Secret::new();

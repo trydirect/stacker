@@ -88,11 +88,13 @@ pub async fn run(
                     .allow_any_origin()
                     .allow_any_method()
                     .allowed_headers(vec![
-                        actix_web::http::header::AUTHORIZATION,
-                        actix_web::http::header::CONTENT_TYPE,
-                        actix_web::http::header::ACCEPT,
+                        http::header::AUTHORIZATION,
+                        http::header::CONTENT_TYPE,
+                        http::header::ACCEPT,
+                        http::header::ORIGIN,
+                        http::header::HeaderName::from_static("x-requested-with"),
                     ])
-                    .supports_credentials()
+                    .expose_any_header()
                     .max_age(3600),
             )
             .wrap(TracingLogger::default())
@@ -115,7 +117,11 @@ pub async fn run(
                     .service(routes::client::enable_handler)
                     .service(routes::client::disable_handler),
             )
-            .service(web::scope("/test").service(routes::test::deploy::handler))
+            .service(
+                web::scope("/test")
+                    .service(routes::test::deploy::handler)
+                    .service(routes::test::stack_view::test_stack_view),
+            )
             .service(
                 web::scope("/rating")
                     .service(routes::rating::anonymous_get_handler)
@@ -191,6 +197,7 @@ pub async fn run(
                             .service(crate::routes::marketplace::creator::create_handler)
                             .service(crate::routes::marketplace::creator::update_handler)
                             .service(crate::routes::marketplace::creator::submit_handler)
+                            .service(crate::routes::marketplace::creator::resubmit_handler)
                             .service(crate::routes::marketplace::creator::mine_handler),
                     )
                     .service(
@@ -199,11 +206,17 @@ pub async fn run(
                             .service(routes::agent::enqueue_handler)
                             .service(routes::agent::wait_handler)
                             .service(routes::agent::report_handler)
-                            .service(routes::agent::snapshot_handler),
+                            .service(routes::agent::snapshot_handler)
+                            .service(routes::agent::login_handler)
+                            .service(routes::agent::link_handler),
                     )
                     .service(
                         web::scope("/v1/deployments")
-                            .service(routes::deployment::capabilities_handler),
+                            .service(routes::deployment::capabilities_handler)
+                            .service(routes::deployment::list_handler)
+                            .service(routes::deployment::status_handler)
+                            .service(routes::deployment::status_by_project_handler)
+                            .service(routes::deployment::force_complete_handler),
                     )
                     .service(
                         web::scope("/v1/commands")
@@ -219,13 +232,25 @@ pub async fn run(
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,
                                     )
+                                    .service(crate::routes::marketplace::admin::detail_handler)
                                     .service(crate::routes::marketplace::admin::approve_handler)
-                                    .service(crate::routes::marketplace::admin::reject_handler),
+                                    .service(crate::routes::marketplace::admin::reject_handler)
+                                    .service(crate::routes::marketplace::admin::unapprove_handler)
+                                    .service(crate::routes::marketplace::admin::security_scan_handler),
                             )
                             .service(
                                 web::scope("/marketplace")
                                     .service(crate::routes::marketplace::admin::list_plans_handler),
                             ),
+                    ),
+            )
+            .service(
+                web::scope("/api/v1/marketplace")
+                    .service(crate::routes::marketplace::public::install_script_handler)
+                    .service(crate::routes::marketplace::public::download_stack_handler)
+                    .service(
+                        web::scope("/agents")
+                            .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),
                     ),
             )
             .service(
@@ -242,10 +267,12 @@ pub async fn run(
                     .service(crate::routes::server::get::list)
                     .service(crate::routes::server::get::list_by_project)
                     .service(crate::routes::server::update::item)
+                    .service(crate::routes::server::delete::delete_preview)
                     .service(crate::routes::server::delete::item)
                     .service(crate::routes::server::ssh_key::generate_key)
                     .service(crate::routes::server::ssh_key::upload_key)
                     .service(crate::routes::server::ssh_key::get_public_key)
+                    .service(crate::routes::server::ssh_key::validate_key)
                     .service(crate::routes::server::ssh_key::delete_key),
             )
             .service(
@@ -253,6 +280,12 @@ pub async fn run(
                     .service(crate::routes::agreement::user_add_handler)
                     .service(crate::routes::agreement::get_handler)
                     .service(crate::routes::agreement::accept_handler),
+            )
+            .service(
+                web::scope("/chat")
+                    .service(crate::routes::chat::get::item)
+                    .service(crate::routes::chat::upsert::item)
+                    .service(crate::routes::chat::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
             .app_data(json_config.clone())

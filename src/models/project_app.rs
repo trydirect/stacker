@@ -95,6 +95,9 @@ pub struct ProjectApp {
     /// When set, this app is a child service discovered from parent's compose file
     #[sqlx(default)]
     pub parent_app_code: Option<String>,
+    /// Deployment this app belongs to. NULL for legacy apps created before deployment scoping.
+    #[sqlx(default)]
+    pub deployment_id: Option<i32>,
 }
 
 impl ProjectApp {
@@ -131,6 +134,7 @@ impl ProjectApp {
             vault_sync_version: None,
             config_hash: None,
             parent_app_code: None,
+            deployment_id: None,
         }
     }
 
@@ -201,6 +205,7 @@ impl Default for ProjectApp {
             vault_sync_version: None,
             config_hash: None,
             parent_app_code: None,
+            deployment_id: None,
         }
     }
 }

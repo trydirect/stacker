@@ -50,12 +50,12 @@ impl Secret {
         let key: &Key<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(sec_key.as_bytes());
         let cipher = Aes256Gcm::new(key);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-        // eprintln!("Nonce bytes {nonce:?}");
-        // let nonce_b64: String = general_purpose::STANDARD.encode(nonce);
-        // eprintln!("Nonce b64 {nonce_b64:?}");
-        // Avoid logging the plaintext token to prevent leaking sensitive data.
-        // eprintln!("token {token:?}");
-        // Avoid logging the plaintext token to prevent leaking sensitive data.
+                                                           // eprintln!("Nonce bytes {nonce:?}");
+                                                           // let nonce_b64: String = general_purpose::STANDARD.encode(nonce);
+                                                           // eprintln!("Nonce b64 {nonce_b64:?}");
+                                                           // Avoid logging the plaintext token to prevent leaking sensitive data.
+                                                           // eprintln!("token {token:?}");
+                                                           // Avoid logging the plaintext token to prevent leaking sensitive data.
 
         let ciphertext = cipher
             .encrypt(&nonce, token.as_ref())
