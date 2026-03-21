@@ -23,7 +23,7 @@ jobs:
       SQLX_OFFLINE: true
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
 
@@ -201,7 +201,7 @@ jobs:
     needs: cicd-docker
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
       -

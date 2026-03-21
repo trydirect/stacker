@@ -30,7 +30,7 @@ jobs:
             artifact_name: stacker-macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Verify .sqlx cache exists
         run: |
           ls -lh .sqlx/ || echo ".sqlx directory not found"
