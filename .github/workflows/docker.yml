@@ -47,7 +47,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/registry
           key: docker-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -56,7 +56,7 @@ jobs:
             docker-
 
       - name: Cache cargo index
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/git
           key: docker-index-${{ hashFiles('**/Cargo.lock') }}
@@ -69,7 +69,7 @@ jobs:
           head -c16 /dev/urandom > src/secret.key
 
       - name: Cache cargo build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target
           key: docker-build-${{ hashFiles('**/Cargo.lock') }}
