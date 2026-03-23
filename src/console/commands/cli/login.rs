@@ -37,7 +37,7 @@ impl LoginCommand {
 
     fn read_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         if io::stdin().is_terminal() {
-            let cleaned = prompt.trim_end_matches(':').trim();
+            let cleaned = prompt.trim().trim_end_matches(':').trim();
             let input = Password::new()
                 .with_prompt(cleaned)
                 .interact()
