@@ -189,20 +189,20 @@ impl CallableTrait for ListDeploymentsCommand {
                 println!("{}", serde_json::to_string_pretty(&deployments)?);
             } else {
                 println!(
-                    "{:<6} {:<10} {:<10} {:<40} {:<26}",
+                    "{:<6} {:<10} {:<10} {:<47} {:<12}",
                     "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
                 );
-                println!("{}", "─".repeat(100));
+                println!("{}", "─".repeat(90));
 
                 for d in &deployments {
                     println!(
-                        "{:<6} {:<10} {} {:<8} {:<40} {:<26}",
+                        "{:<6} {:<10} {} {:<8} {:<47} {:<12}",
                         d.id,
                         d.project_id,
                         progress::status_icon(&d.status),
                         truncate(&d.status, 7),
-                        truncate(&d.deployment_hash, 38),
-                        &d.created_at,
+                        &d.deployment_hash,
+                        truncate(&d.created_at, 10),
                     );
                 }
 
