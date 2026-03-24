@@ -636,6 +636,52 @@ impl CallableTrait for AgentStatusCommand {
                     .and_then(|a| a.get("status"))
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown");
+
+                // If the agent is offline/unknown and no explicit hash was given,
+                // try the project-scoped fallback (mirrors web UI behaviour).
+                let (effective_snap, effective_hash) =
+                    if (agent_status == "unknown" || agent_status == "offline")
+                        && self.deployment.is_none()
+                    {
+                        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+                        let config_path = project_dir.join("stacker.yml");
+                        let mut fallback: Option<(serde_json::Value, String)> = None;
+                        if config_path.exists() {
+                            if let Ok(config) =
+                                crate::cli::config_parser::StackerConfig::from_file(&config_path)
+                            {
+                                if let Some(ref project_name) = config.project.identity {
+                                    if let Ok(Some(proj)) = ctx.block_on(
+                                        ctx.client.find_project_by_name(project_name),
+                                    ) {
+                                        if let Ok((proj_snap, proj_hash)) = ctx.block_on(
+                                            ctx.client.agent_snapshot_by_project(proj.id),
+                                        ) {
+                                            eprintln!(
+                                                "\x1b[2mℹ Agent offline on '{}' — using active project agent: {}\x1b[0m",
+                                                hash, proj_hash
+                                            );
+                                            fallback = Some((proj_snap, proj_hash));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        match fallback {
+                            Some((proj_snap, proj_hash)) => (proj_snap, proj_hash),
+                            None => (snap, hash),
+                        }
+                    } else {
+                        (snap, hash)
+                    };
+
+                let item = snapshot_item(&effective_snap);
+
+                let agent_status = item
+                    .get("agent")
+                    .and_then(|a| a.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
                 let version = item
                     .get("agent")
                     .and_then(|a| a.get("version"))
@@ -657,7 +703,7 @@ impl CallableTrait for AgentStatusCommand {
                         n_apps,
                     ),
                 );
-                let live_containers = match fetch_live_containers(&ctx, &hash) {
+                let live_containers = match fetch_live_containers(&ctx, &effective_hash) {
                     Ok(list) => list,
                     Err(err) => {
                         eprintln!("Warning: failed to fetch live containers: {}", err);
