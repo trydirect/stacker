@@ -633,6 +633,9 @@ enum AgentCommands {
         /// Also remove the image
         #[arg(long)]
         remove_image: bool,
+        /// Skip the active-connections pre-flight check
+        #[arg(long)]
+        force: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -661,6 +664,9 @@ enum AgentCommands {
         /// Persist rules across reboots
         #[arg(long, default_value_t = true)]
         persist: bool,
+        /// Skip the active-connections pre-flight check
+        #[arg(long)]
+        force: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -685,6 +691,9 @@ enum AgentCommands {
         /// Action: create, update, delete
         #[arg(long, default_value = "create")]
         action: String,
+        /// Skip the active-connections pre-flight check
+        #[arg(long)]
+        force: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1113,10 +1122,10 @@ fn get_command(
                 AgentCommands::DeployApp { app, image, force, json, deployment } => Box::new(
                     agent::AgentDeployAppCommand::new(app, image, force, json, deployment),
                 ),
-                AgentCommands::RemoveApp { app, volumes, remove_image, json, deployment } => Box::new(
-                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, json, deployment),
+                AgentCommands::RemoveApp { app, volumes, remove_image, force, json, deployment } => Box::new(
+                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, force, json, deployment),
                 ),
-                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, json, deployment } => {
+                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, force, json, deployment } => {
                     let effective_action = if list { "list".to_string() } else { action };
                     Box::new(agent::AgentConfigureFirewallCommand::new(
                         effective_action,
@@ -1124,12 +1133,13 @@ fn get_command(
                         public_ports,
                         private_ports,
                         persist,
+                        force,
                         json,
                         deployment,
                     ))
                 }
-                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, json, deployment } => Box::new(
-                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, json, deployment),
+                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, force, json, deployment } => Box::new(
+                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, force, json, deployment),
                 ),
                 AgentCommands::List { command: list_cmd } => match list_cmd {
                     AgentListCommands::Apps { json, deployment } => Box::new(

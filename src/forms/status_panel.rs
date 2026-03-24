@@ -538,6 +538,14 @@ pub fn validate_command_parameters(
                 .map(Some)
                 .map_err(|err| format!("Failed to encode probe_endpoints parameters: {}", err))
         }
+        "check_connections" => {
+            let value = parameters.clone().unwrap_or_else(|| json!({}));
+            let params: CheckConnectionsCommandRequest = serde_json::from_value(value)
+                .map_err(|err| format!("Invalid check_connections parameters: {}", err))?;
+            serde_json::to_value(params)
+                .map(Some)
+                .map_err(|err| format!("Failed to encode check_connections parameters: {}", err))
+        }
         _ => Ok(parameters.clone()),
     }
 }
@@ -706,6 +714,18 @@ pub struct ProbeForm {
     pub action: String,
     pub method: String,
     pub fields: Vec<String>,
+}
+
+/// Request parameters for the `check_connections` command.
+///
+/// All fields are optional — when `ports` is omitted the agent checks the
+/// common HTTP/HTTPS ports (80, 443, 8080, 3000, 8443).
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct CheckConnectionsCommandRequest {
+    /// Specific TCP ports to check for active connections.
+    /// Defaults to the common HTTP/HTTPS set when not provided.
+    #[serde(default)]
+    pub ports: Option<Vec<u16>>,
 }
 
 /// Result of probing a container for endpoints
