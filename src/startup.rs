@@ -207,6 +207,7 @@ pub async fn run(
                             .service(routes::agent::wait_handler)
                             .service(routes::agent::report_handler)
                             .service(routes::agent::snapshot_handler)
+                            .service(routes::agent::project_snapshot_handler)
                             .service(routes::agent::login_handler)
                             .service(routes::agent::link_handler)
                             .service(routes::agent::agent_audit_ingest_handler)

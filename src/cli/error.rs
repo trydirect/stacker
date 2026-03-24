@@ -50,7 +50,14 @@ pub enum CliError {
     // Agent errors
     AgentNotFound { deployment_hash: String },
     AgentOffline { deployment_hash: String },
-    AgentCommandTimeout { command_id: String },
+    AgentCommandTimeout {
+        command_id: String,
+        /// Human-readable label for the command (e.g. "Fetching containers")
+        command_type: String,
+        /// Last observed status from polling ("pending" = never picked up, "running" = started but didn't finish)
+        last_status: String,
+        deployment_hash: String,
+    },
     AgentCommandFailed { command_id: String, error: String },
 
     // IO errors
@@ -155,12 +162,38 @@ impl fmt::Display for CliError {
                      Check that the server is running and the agent process is active."
                 )
             }
-            Self::AgentCommandTimeout { command_id } => {
+            Self::AgentCommandTimeout {
+                command_id,
+                command_type,
+                last_status,
+                deployment_hash,
+            } => {
+                let (diagnosis, suggestions) = if last_status == "pending" {
+                    (
+                        "The agent never picked up this command — it may be offline or unreachable.",
+                        format!(
+                            "  Check if the agent is alive:\n\
+                                 stacker agent health --deployment={deployment_hash}\n\n\
+                             \x20 Check the agent's last known state:\n\
+                             \x20   stacker agent status --deployment={deployment_hash}"
+                        ),
+                    )
+                } else {
+                    (
+                        "The agent started the command but did not finish in time — it may be busy or slow.",
+                        format!(
+                            "  Retry the command (it may succeed now):\n\
+                             \x20   stacker agent status --deployment={deployment_hash}\n\n\
+                             \x20 Or wait and check the result:\n\
+                             \x20   stacker agent history --deployment={deployment_hash}"
+                        ),
+                    )
+                };
                 write!(
                     f,
-                    "Agent command '{command_id}' timed out.\n\
-                     The agent may be busy or offline. \
-                     Check status with: stacker agent status"
+                    "{command_type} timed out (last status: {last_status}, id: {command_id})\n\n\
+                     {diagnosis}\n\n\
+                     {suggestions}"
                 )
             }
             Self::AgentCommandFailed { command_id, error } => {
