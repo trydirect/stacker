@@ -214,6 +214,12 @@ enum StackerCommands {
         /// Skip confirmation prompt (required)
         #[arg(long, short = 'y')]
         confirm: bool,
+        /// Force-complete even if the deployment is in_progress
+        #[arg(long)]
+        force: bool,
+        /// Target a specific deployment by hash (e.g. deployment_ad479fdb-…); defaults to latest
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Check for updates and self-update
     Update {
@@ -1047,8 +1053,8 @@ fn get_command(
                 stacker::console::commands::cli::service::ServiceListCommand::new(online),
             ),
         },
-        StackerCommands::Resolve { confirm } => Box::new(
-            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm),
+        StackerCommands::Resolve { confirm, force, deployment } => Box::new(
+            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm, force, deployment),
         ),
         StackerCommands::Update { channel } => Box::new(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),

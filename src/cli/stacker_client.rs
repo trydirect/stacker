@@ -1020,14 +1020,68 @@ impl StackerClient {
 
     /// Force-complete a stuck deployment (paused or error → completed).
     /// `POST /api/v1/deployments/{id}/force-complete`
+    /// Fetch a deployment by its hash string.
+    /// `GET /api/v1/deployments/hash/{hash}`
+    pub async fn get_deployment_by_hash(
+        &self,
+        hash: &str,
+    ) -> Result<Option<DeploymentStatusInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/hash/{}",
+            self.base_url, hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "GET /api/v1/deployments/hash/{} failed ({}): {}",
+                    hash, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
     pub async fn force_complete_deployment(
         &self,
         deployment_id: i32,
+        force: bool,
     ) -> Result<DeploymentStatusInfo, CliError> {
-        let url = format!(
-            "{}/api/v1/deployments/{}/force-complete",
-            self.base_url, deployment_id
-        );
+        let url = if force {
+            format!(
+                "{}/api/v1/deployments/{}/force-complete?force=true",
+                self.base_url, deployment_id
+            )
+        } else {
+            format!(
+                "{}/api/v1/deployments/{}/force-complete",
+                self.base_url, deployment_id
+            )
+        };
         let resp = self
             .http
             .post(&url)

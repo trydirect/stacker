@@ -1,4 +1,5 @@
 use actix_web::{post, web, Responder, Result};
+use serde::Deserialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -6,17 +7,26 @@ use crate::{db, helpers::JsonResponse, models};
 
 use super::status::DeploymentStatusResponse;
 
-/// Allowed source statuses for force-complete.
+/// Statuses resolvable without `--force`.
 const FORCE_COMPLETE_ALLOWED: &[&str] = &["paused", "error"];
 
-/// `POST /api/v1/deployments/{id}/force-complete`
+#[derive(Debug, Deserialize, Default)]
+pub struct ForceCompleteQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// `POST /api/v1/deployments/{id}/force-complete[?force=true]`
 ///
-/// Transition a stuck deployment from `paused` or `error` to `completed`.
+/// Transition a stuck deployment to `completed`.
+/// Without `?force=true`: only `paused` or `error` are accepted.
+/// With `?force=true`: `in_progress` is also accepted.
 /// Only the owning user may invoke this.
 #[tracing::instrument(name = "Force-complete deployment", skip(pg_pool))]
 #[post("/{id}/force-complete")]
 pub async fn force_complete_handler(
     path: web::Path<i32>,
+    query: web::Query<ForceCompleteQuery>,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -46,7 +56,10 @@ pub async fn force_complete_handler(
         }
     };
 
-    if !FORCE_COMPLETE_ALLOWED.contains(&deployment.status.as_str()) {
+    let status_ok = query.force
+        || FORCE_COMPLETE_ALLOWED.contains(&deployment.status.as_str());
+
+    if !status_ok {
         return Err(JsonResponse::<DeploymentStatusResponse>::build().bad_request(format!(
             "Cannot force-complete deployment with status '{}'. Only paused or error deployments can be force-completed.",
             deployment.status
@@ -62,6 +75,9 @@ pub async fn force_complete_handler(
             "force_completed_from".into(),
             serde_json::Value::String(previous_status),
         );
+        if query.force {
+            obj.insert("force_override".into(), serde_json::Value::Bool(true));
+        }
     }
 
     let deployment = db::deployment::update(pg_pool.get_ref(), deployment)
