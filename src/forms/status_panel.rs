@@ -1065,4 +1065,48 @@ mod tests {
 
         assert!(result.is_some());
     }
+
+    // ── check_connections ────────────────────────────────────────────
+
+    #[test]
+    fn check_connections_accepts_no_parameters() {
+        let result = validate_command_parameters("check_connections", &None)
+            .expect("check_connections with no params should validate");
+        // Result may be Some({}) or None — both are acceptable
+        if let Some(v) = result {
+            assert!(v.is_object(), "result must be an object when present");
+        }
+    }
+
+    #[test]
+    fn check_connections_accepts_empty_object() {
+        let result = validate_command_parameters("check_connections", &Some(json!({})))
+            .expect("check_connections with empty object should validate");
+        if let Some(v) = result {
+            assert!(v.is_object());
+        }
+    }
+
+    #[test]
+    fn check_connections_accepts_port_list() {
+        let result = validate_command_parameters(
+            "check_connections",
+            &Some(json!({ "ports": [80, 443, 8080] })),
+        )
+        .expect("check_connections with port list should validate");
+        let v = result.expect("result must be present");
+        let ports = v["ports"].as_array().expect("ports must be an array");
+        assert_eq!(ports.len(), 3);
+        assert_eq!(ports[0], 80);
+    }
+
+    #[test]
+    fn check_connections_accepts_null_ports() {
+        let result = validate_command_parameters(
+            "check_connections",
+            &Some(json!({ "ports": null })),
+        )
+        .expect("check_connections with null ports should validate");
+        assert!(result.is_some());
+    }
 }
