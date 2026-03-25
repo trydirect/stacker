@@ -124,6 +124,11 @@ impl Secret {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    const TEST_KEY: &str = "01234567890123456789012345678901";
 
     #[test]
     fn test_secret_new() {
@@ -177,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_requires_security_key() {
-        // Remove SECURITY_KEY if it exists
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("SECURITY_KEY");
         let secret = Secret {
             user_id: "u1".to_string(),
@@ -191,6 +196,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_invalid_key_length() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("SECURITY_KEY", "short-key");
         let secret = Secret {
             user_id: "u1".to_string(),
@@ -205,8 +211,8 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        let key = "01234567890123456789012345678901"; // exactly 32 bytes
-        std::env::set_var("SECURITY_KEY", key);
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("SECURITY_KEY", TEST_KEY);
 
         let mut secret = Secret {
             user_id: "u1".to_string(),
@@ -227,7 +233,8 @@ mod tests {
 
     #[test]
     fn test_decrypt_too_short_data() {
-        std::env::set_var("SECURITY_KEY", "01234567890123456789012345678901");
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("SECURITY_KEY", TEST_KEY);
         let mut secret = Secret::new();
         let result = secret.decrypt(vec![1, 2, 3]); // less than 12 bytes
         assert!(result.is_err());
