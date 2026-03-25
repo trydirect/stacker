@@ -42,7 +42,9 @@ impl CallableTrait for SshKeyGenerateCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -109,7 +111,9 @@ impl CallableTrait for SshKeyShowCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -162,16 +166,18 @@ impl CallableTrait for SshKeyUploadCommand {
         let priv_path = self.private_key.clone();
 
         // Read key files
-        let public_key = std::fs::read_to_string(&pub_path)
-            .map_err(|e| CliError::Io(std::io::Error::new(
+        let public_key = std::fs::read_to_string(&pub_path).map_err(|e| {
+            CliError::Io(std::io::Error::new(
                 e.kind(),
                 format!("Failed to read public key {}: {}", pub_path.display(), e),
-            )))?;
-        let private_key = std::fs::read_to_string(&priv_path)
-            .map_err(|e| CliError::Io(std::io::Error::new(
+            ))
+        })?;
+        let private_key = std::fs::read_to_string(&priv_path).map_err(|e| {
+            CliError::Io(std::io::Error::new(
                 e.kind(),
                 format!("Failed to read private key {}: {}", priv_path.display(), e),
-            )))?;
+            ))
+        })?;
 
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("ssh-key upload")?;
@@ -180,7 +186,9 @@ impl CallableTrait for SshKeyUploadCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -224,13 +232,13 @@ pub struct SshKeyInjectCommand {
 }
 
 impl SshKeyInjectCommand {
-    pub fn new(
-        server_id: i32,
-        with_key: PathBuf,
-        user: Option<String>,
-        port: Option<u16>,
-    ) -> Self {
-        Self { server_id, with_key, user, port }
+    pub fn new(server_id: i32, with_key: PathBuf, user: Option<String>, port: Option<u16>) -> Self {
+        Self {
+            server_id,
+            with_key,
+            user,
+            port,
+        }
     }
 }
 
@@ -242,11 +250,12 @@ impl CallableTrait for SshKeyInjectCommand {
         let override_port = self.port;
 
         // Read the local working private key
-        let local_private_key = std::fs::read_to_string(&key_path)
-            .map_err(|e| CliError::Io(std::io::Error::new(
+        let local_private_key = std::fs::read_to_string(&key_path).map_err(|e| {
+            CliError::Io(std::io::Error::new(
                 e.kind(),
                 format!("Failed to read key file {}: {}", key_path.display(), e),
-            )))?;
+            ))
+        })?;
 
         let cred_manager = CredentialsManager::with_default_store();
         let creds = cred_manager.require_valid_token("ssh-key inject")?;
@@ -255,7 +264,9 @@ impl CallableTrait for SshKeyInjectCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -265,21 +276,23 @@ impl CallableTrait for SshKeyInjectCommand {
             let server_info = servers
                 .into_iter()
                 .find(|s| s.id == server_id)
-                .ok_or_else(|| CliError::ConfigValidation(
-                    format!("Server {} not found", server_id)
-                ))?;
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!("Server {} not found", server_id))
+                })?;
 
             let host = server_info
                 .srv_ip
                 .as_deref()
                 .filter(|ip| !ip.is_empty())
-                .ok_or_else(|| CliError::ConfigValidation(
-                    format!("Server {} has no IP address — deploy it first", server_id)
-                ))?
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "Server {} has no IP address — deploy it first",
+                        server_id
+                    ))
+                })?
                 .to_string();
 
-            let port = override_port
-                .unwrap_or_else(|| server_info.ssh_port.unwrap_or(22) as u16);
+            let port = override_port.unwrap_or_else(|| server_info.ssh_port.unwrap_or(22) as u16);
             let user = override_user
                 .or_else(|| server_info.ssh_user.clone())
                 .unwrap_or_else(|| "root".to_string());
@@ -290,11 +303,21 @@ impl CallableTrait for SshKeyInjectCommand {
 
             println!("Server:     {} (ID {})", host, server_id);
             println!("SSH user:   {}  port: {}", user, port);
-            println!("Vault key:  {}", &vault_public_key[..vault_public_key.len().min(60)]);
+            println!(
+                "Vault key:  {}",
+                &vault_public_key[..vault_public_key.len().min(60)]
+            );
             println!();
             println!("Connecting to inject key into authorized_keys…");
 
-            inject_key_via_ssh(&host, port, &user, local_private_key.trim(), &vault_public_key).await
+            inject_key_via_ssh(
+                &host,
+                port,
+                &user,
+                local_private_key.trim(),
+                &vault_public_key,
+            )
+            .await
         })
     }
 }
@@ -308,9 +331,9 @@ async fn inject_key_via_ssh(
     local_private_key: &str,
     vault_public_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use russh::client::{Config, Handle};
     use std::sync::Arc;
     use std::time::Duration;
-    use russh::client::{Config, Handle};
 
     struct AcceptAllKeys;
 
@@ -332,19 +355,25 @@ async fn inject_key_via_ssh(
     });
 
     let addr = format!("{}:{}", host, port);
-    let mut handle: Handle<AcceptAllKeys> =
-        tokio::time::timeout(Duration::from_secs(4), russh::client::connect(config, addr, AcceptAllKeys))
-            .await
-            .map_err(|_| CliError::ConfigValidation(format!("Connection to {}:{} timed out", host, port)))?
-            .map_err(|e| CliError::ConfigValidation(format!("Connection failed: {}", e)))?;
+    let mut handle: Handle<AcceptAllKeys> = tokio::time::timeout(
+        Duration::from_secs(4),
+        russh::client::connect(config, addr, AcceptAllKeys),
+    )
+    .await
+    .map_err(|_| CliError::ConfigValidation(format!("Connection to {}:{} timed out", host, port)))?
+    .map_err(|e| CliError::ConfigValidation(format!("Connection failed: {}", e)))?;
 
     let auth_res = handle
         .authenticate_publickey(
             username,
             russh::keys::key::PrivateKeyWithHashAlg::new(
                 Arc::new(key),
-                handle.best_supported_rsa_hash().await
-                    .map_err(|e| CliError::ConfigValidation(format!("RSA hash negotiation failed: {}", e)))?
+                handle
+                    .best_supported_rsa_hash()
+                    .await
+                    .map_err(|e| {
+                        CliError::ConfigValidation(format!("RSA hash negotiation failed: {}", e))
+                    })?
                     .flatten(),
             ),
         )
@@ -365,9 +394,13 @@ async fn inject_key_via_ssh(
         safe_key, safe_key
     );
 
-    let mut channel = handle.channel_open_session().await
+    let mut channel = handle
+        .channel_open_session()
+        .await
         .map_err(|e| CliError::ConfigValidation(format!("Failed to open SSH channel: {}", e)))?;
-    channel.exec(true, cmd).await
+    channel
+        .exec(true, cmd)
+        .await
         .map_err(|e| CliError::ConfigValidation(format!("Failed to exec command: {}", e)))?;
 
     // Drain channel output
@@ -376,9 +409,10 @@ async fn inject_key_via_ssh(
             Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => break,
             Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
                 if exit_status != 0 {
-                    return Err(Box::new(CliError::ConfigValidation(
-                        format!("Remote command exited with status {}", exit_status),
-                    )));
+                    return Err(Box::new(CliError::ConfigValidation(format!(
+                        "Remote command exited with status {}",
+                        exit_status
+                    ))));
                 }
                 break;
             }
@@ -387,9 +421,14 @@ async fn inject_key_via_ssh(
     }
 
     let _ = channel.eof().await;
-    let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "English").await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "English")
+        .await;
 
-    println!("✓ Vault public key injected into {}@{}:{} authorized_keys", username, host, port);
+    println!(
+        "✓ Vault public key injected into {}@{}:{} authorized_keys",
+        username, host, port
+    );
     println!();
     println!("You can now run:  stacker deploy");
 

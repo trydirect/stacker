@@ -60,11 +60,12 @@ impl ServiceCatalog {
         }
 
         // Hardcoded catalog lookup
-        self.lookup_hardcoded(&canonical)
-            .ok_or_else(|| CliError::ConfigValidation(format!(
+        self.lookup_hardcoded(&canonical).ok_or_else(|| {
+            CliError::ConfigValidation(format!(
                 "Unknown service '{}'. Run `stacker service list` to see available services.",
                 service_name
-            )))
+            ))
+        })
     }
 
     /// List all available services from the hardcoded catalog.
@@ -85,24 +86,33 @@ impl ServiceCatalog {
                     if let Some(services) = stack_def.get("services") {
                         if let Some(first_svc) = services.as_array().and_then(|arr| arr.first()) {
                             let service = ServiceDefinition {
-                                name: first_svc["name"].as_str()
-                                    .unwrap_or(slug).to_string(),
-                                image: first_svc["image"].as_str()
-                                    .unwrap_or("").to_string(),
-                                ports: first_svc["ports"].as_array()
-                                    .map(|arr| arr.iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect())
+                                name: first_svc["name"].as_str().unwrap_or(slug).to_string(),
+                                image: first_svc["image"].as_str().unwrap_or("").to_string(),
+                                ports: first_svc["ports"]
+                                    .as_array()
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect()
+                                    })
                                     .unwrap_or_default(),
-                                environment: first_svc["environment"].as_object()
-                                    .map(|obj| obj.iter()
-                                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                                        .collect())
+                                environment: first_svc["environment"]
+                                    .as_object()
+                                    .map(|obj| {
+                                        obj.iter()
+                                            .filter_map(|(k, v)| {
+                                                v.as_str().map(|s| (k.clone(), s.to_string()))
+                                            })
+                                            .collect()
+                                    })
                                     .unwrap_or_default(),
-                                volumes: first_svc["volumes"].as_array()
-                                    .map(|arr| arr.iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect())
+                                volumes: first_svc["volumes"]
+                                    .as_array()
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect()
+                                    })
                                     .unwrap_or_default(),
                                 depends_on: Vec::new(),
                             };
@@ -110,7 +120,9 @@ impl ServiceCatalog {
                             return Ok(Some(CatalogEntry {
                                 code: slug.to_string(),
                                 name: template.name,
-                                category: template.category_code.unwrap_or_else(|| "service".to_string()),
+                                category: template
+                                    .category_code
+                                    .unwrap_or_else(|| "service".to_string()),
                                 description: template.description.unwrap_or_default(),
                                 service,
                                 related: vec![],
@@ -243,7 +255,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Cache ────────────────────────────────────────
         CatalogEntry {
             code: "redis".into(),
@@ -275,7 +286,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Message Queues ───────────────────────────────
         CatalogEntry {
             code: "rabbitmq".into(),
@@ -295,7 +305,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Proxies ──────────────────────────────────────
         CatalogEntry {
             code: "traefik".into(),
@@ -348,7 +357,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Web Applications ─────────────────────────────
         CatalogEntry {
             code: "wordpress".into(),
@@ -370,7 +378,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec!["mysql".into(), "redis".into(), "traefik".into()],
         },
-
         // ── Search ───────────────────────────────────────
         CatalogEntry {
             code: "elasticsearch".into(),
@@ -400,15 +407,15 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 name: "kibana".into(),
                 image: "kibana:8.12.0".into(),
                 ports: vec!["5601:5601".into()],
-                environment: HashMap::from([
-                    ("ELASTICSEARCH_HOSTS".into(), "http://elasticsearch:9200".into()),
-                ]),
+                environment: HashMap::from([(
+                    "ELASTICSEARCH_HOSTS".into(),
+                    "http://elasticsearch:9200".into(),
+                )]),
                 volumes: vec![],
                 depends_on: vec!["elasticsearch".into()],
             },
             related: vec!["elasticsearch".into()],
         },
-
         // ── Vector Databases ─────────────────────────────
         CatalogEntry {
             code: "qdrant".into(),
@@ -425,7 +432,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Monitoring ───────────────────────────────────
         CatalogEntry {
             code: "telegraf".into(),
@@ -437,14 +443,11 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 image: "telegraf:1.30-alpine".into(),
                 ports: vec![],
                 environment: HashMap::new(),
-                volumes: vec![
-                    "/var/run/docker.sock:/var/run/docker.sock:ro".into(),
-                ],
+                volumes: vec!["/var/run/docker.sock:/var/run/docker.sock:ro".into()],
                 depends_on: vec![],
             },
             related: vec![],
         },
-
         // ── Dev Tools ────────────────────────────────────
         CatalogEntry {
             code: "phpmyadmin".into(),
@@ -479,7 +482,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Storage ──────────────────────────────────────
         CatalogEntry {
             code: "minio".into(),
@@ -499,7 +501,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── Container Management ─────────────────────────
         CatalogEntry {
             code: "portainer".into(),
@@ -519,7 +520,6 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             },
             related: vec![],
         },
-
         // ── AI Assistants ─────────────────────────────
         CatalogEntry {
             code: "openclaw".into(),
@@ -530,9 +530,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 name: "openclaw".into(),
                 image: "ghcr.io/openclaw/openclaw:latest".into(),
                 ports: vec!["18789:18789".into()],
-                environment: HashMap::from([
-                    ("OPENCLAW_GATEWAY_BIND".into(), "lan".into()),
-                ]),
+                environment: HashMap::from([("OPENCLAW_GATEWAY_BIND".into(), "lan".into())]),
                 volumes: vec![
                     "openclaw_config:/home/node/.openclaw".into(),
                     "openclaw_workspace:/home/node/.openclaw/workspace".into(),
@@ -588,13 +586,19 @@ mod tests {
 
     #[test]
     fn test_resolve_alias_hyphen_to_underscore() {
-        assert_eq!(ServiceCatalog::resolve_alias("nginx-proxy-manager"), "nginx_proxy_manager");
+        assert_eq!(
+            ServiceCatalog::resolve_alias("nginx-proxy-manager"),
+            "nginx_proxy_manager"
+        );
     }
 
     #[test]
     fn test_hardcoded_catalog_not_empty() {
         let catalog = build_hardcoded_catalog();
-        assert!(catalog.len() > 10, "Expected at least 10 services in catalog");
+        assert!(
+            catalog.len() > 10,
+            "Expected at least 10 services in catalog"
+        );
     }
 
     #[test]

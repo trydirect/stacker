@@ -236,27 +236,48 @@ mod tests {
     #[test]
     fn test_validate_too_long_name() {
         let long_name = "a".repeat(256);
-        assert_eq!(validate_project_name(&long_name), Err(ProjectNameError::TooLong(256)));
+        assert_eq!(
+            validate_project_name(&long_name),
+            Err(ProjectNameError::TooLong(256))
+        );
     }
 
     #[test]
     fn test_validate_reserved_names() {
         for name in &["root", "tmp", "etc", "var", "dev", ".", ".."] {
-            assert!(matches!(validate_project_name(name), Err(ProjectNameError::ReservedName(_))));
+            assert!(matches!(
+                validate_project_name(name),
+                Err(ProjectNameError::ReservedName(_))
+            ));
         }
     }
 
     #[test]
     fn test_validate_reserved_names_case_insensitive() {
-        assert!(matches!(validate_project_name("ROOT"), Err(ProjectNameError::ReservedName(_))));
-        assert!(matches!(validate_project_name("Tmp"), Err(ProjectNameError::ReservedName(_))));
+        assert!(matches!(
+            validate_project_name("ROOT"),
+            Err(ProjectNameError::ReservedName(_))
+        ));
+        assert!(matches!(
+            validate_project_name("Tmp"),
+            Err(ProjectNameError::ReservedName(_))
+        ));
     }
 
     #[test]
     fn test_validate_invalid_characters() {
-        assert!(matches!(validate_project_name("my project"), Err(ProjectNameError::InvalidCharacters(_))));
-        assert!(matches!(validate_project_name("name/path"), Err(ProjectNameError::InvalidCharacters(_))));
-        assert!(matches!(validate_project_name("-starts-with-dash"), Err(ProjectNameError::InvalidCharacters(_))));
+        assert!(matches!(
+            validate_project_name("my project"),
+            Err(ProjectNameError::InvalidCharacters(_))
+        ));
+        assert!(matches!(
+            validate_project_name("name/path"),
+            Err(ProjectNameError::InvalidCharacters(_))
+        ));
+        assert!(matches!(
+            validate_project_name("-starts-with-dash"),
+            Err(ProjectNameError::InvalidCharacters(_))
+        ));
     }
 
     #[test]
@@ -314,10 +335,20 @@ mod tests {
     // Test ProjectNameError Display
     #[test]
     fn test_error_display() {
-        assert_eq!(ProjectNameError::Empty.to_string(), "Project name cannot be empty");
-        assert_eq!(ProjectNameError::TooLong(300).to_string(), "Project name too long (300 chars, max 255)");
-        assert!(ProjectNameError::InvalidCharacters("bad name".to_string()).to_string().contains("bad name"));
-        assert!(ProjectNameError::ReservedName("root".to_string()).to_string().contains("root"));
+        assert_eq!(
+            ProjectNameError::Empty.to_string(),
+            "Project name cannot be empty"
+        );
+        assert_eq!(
+            ProjectNameError::TooLong(300).to_string(),
+            "Project name too long (300 chars, max 255)"
+        );
+        assert!(ProjectNameError::InvalidCharacters("bad name".to_string())
+            .to_string()
+            .contains("bad name"));
+        assert!(ProjectNameError::ReservedName("root".to_string())
+            .to_string()
+            .contains("root"));
     }
 
     // Test Project methods
@@ -337,7 +368,12 @@ mod tests {
 
     #[test]
     fn test_project_validate_name() {
-        let project = Project::new("u".to_string(), "valid-name".to_string(), Value::Null, Value::Null);
+        let project = Project::new(
+            "u".to_string(),
+            "valid-name".to_string(),
+            Value::Null,
+            Value::Null,
+        );
         assert!(project.validate_name().is_ok());
 
         let bad_project = Project::new("u".to_string(), "".to_string(), Value::Null, Value::Null);
@@ -346,21 +382,39 @@ mod tests {
 
     #[test]
     fn test_project_safe_dir_name() {
-        let project = Project::new("u".to_string(), "My Project".to_string(), Value::Null, Value::Null);
+        let project = Project::new(
+            "u".to_string(),
+            "My Project".to_string(),
+            Value::Null,
+            Value::Null,
+        );
         assert_eq!(project.safe_dir_name(), "my_project");
     }
 
     #[test]
     fn test_project_deploy_dir() {
-        let project = Project::new("u".to_string(), "myapp".to_string(), Value::Null, Value::Null);
+        let project = Project::new(
+            "u".to_string(),
+            "myapp".to_string(),
+            Value::Null,
+            Value::Null,
+        );
         assert_eq!(project.deploy_dir(Some("/deploy")), "/deploy/myapp");
         assert_eq!(project.deploy_dir(Some("/deploy/")), "/deploy/myapp");
     }
 
     #[test]
     fn test_project_deploy_dir_with_hash() {
-        let project = Project::new("u".to_string(), "myapp".to_string(), Value::Null, Value::Null);
-        assert_eq!(project.deploy_dir_with_hash(Some("/deploy"), "abc123"), "/deploy/abc123");
+        let project = Project::new(
+            "u".to_string(),
+            "myapp".to_string(),
+            Value::Null,
+            Value::Null,
+        );
+        assert_eq!(
+            project.deploy_dir_with_hash(Some("/deploy"), "abc123"),
+            "/deploy/abc123"
+        );
     }
 
     #[test]

@@ -79,7 +79,10 @@ fn resolve_env_path(explicit: Option<&str>) -> PathBuf {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("env_file:") {
-                let val = trimmed["env_file:".len()..].trim().trim_matches('"').trim_matches('\'');
+                let val = trimmed["env_file:".len()..]
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'');
                 if !val.is_empty() {
                     return PathBuf::from(val);
                 }
@@ -168,9 +171,7 @@ impl CallableTrait for SecretsGetCommand {
         let env_path = resolve_env_path(self.file.as_deref());
 
         if !env_path.exists() {
-            return Err(Box::new(CliError::EnvFileNotFound {
-                path: env_path,
-            }));
+            return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
         }
 
         let lines = read_env_lines(&env_path)?;
@@ -268,9 +269,7 @@ impl CallableTrait for SecretsDeleteCommand {
         let env_path = resolve_env_path(self.file.as_deref());
 
         if !env_path.exists() {
-            return Err(Box::new(CliError::EnvFileNotFound {
-                path: env_path,
-            }));
+            return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
         }
 
         let lines = read_env_lines(&env_path)?;

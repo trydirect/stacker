@@ -216,7 +216,12 @@ mod tests {
 
     #[test]
     fn test_new_defaults() {
-        let app = ProjectApp::new(1, "nginx".to_string(), "Nginx".to_string(), "nginx:latest".to_string());
+        let app = ProjectApp::new(
+            1,
+            "nginx".to_string(),
+            "Nginx".to_string(),
+            "nginx:latest".to_string(),
+        );
         assert_eq!(app.project_id, 1);
         assert_eq!(app.code, "nginx");
         assert_eq!(app.name, "Nginx");
@@ -231,19 +236,28 @@ mod tests {
 
     #[test]
     fn test_is_enabled_true() {
-        let app = ProjectApp { enabled: Some(true), ..Default::default() };
+        let app = ProjectApp {
+            enabled: Some(true),
+            ..Default::default()
+        };
         assert!(app.is_enabled());
     }
 
     #[test]
     fn test_is_enabled_false() {
-        let app = ProjectApp { enabled: Some(false), ..Default::default() };
+        let app = ProjectApp {
+            enabled: Some(false),
+            ..Default::default()
+        };
         assert!(!app.is_enabled());
     }
 
     #[test]
     fn test_is_enabled_none_defaults_true() {
-        let app = ProjectApp { enabled: None, ..Default::default() };
+        let app = ProjectApp {
+            enabled: None,
+            ..Default::default()
+        };
         assert!(app.is_enabled());
     }
 
@@ -260,7 +274,10 @@ mod tests {
 
     #[test]
     fn test_env_map_empty() {
-        let app = ProjectApp { environment: None, ..Default::default() };
+        let app = ProjectApp {
+            environment: None,
+            ..Default::default()
+        };
         let map = app.env_map();
         assert!(map.is_empty());
     }
@@ -317,14 +334,20 @@ mod tests {
 
     #[test]
     fn test_increment_version() {
-        let mut app = ProjectApp { config_version: Some(1), ..Default::default() };
+        let mut app = ProjectApp {
+            config_version: Some(1),
+            ..Default::default()
+        };
         app.increment_version();
         assert_eq!(app.config_version, Some(2));
     }
 
     #[test]
     fn test_increment_version_from_none() {
-        let mut app = ProjectApp { config_version: None, ..Default::default() };
+        let mut app = ProjectApp {
+            config_version: None,
+            ..Default::default()
+        };
         app.increment_version();
         assert_eq!(app.config_version, Some(1));
     }

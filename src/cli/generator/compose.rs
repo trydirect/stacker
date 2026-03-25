@@ -3,9 +3,7 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
 
-use crate::cli::config_parser::{
-    AppType, ProxyType, ServiceDefinition, StackerConfig,
-};
+use crate::cli::config_parser::{AppType, ProxyType, ServiceDefinition, StackerConfig};
 use crate::cli::error::CliError;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -350,9 +348,7 @@ impl fmt::Display for ComposeDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::{
-        AppSource, ConfigBuilder, DeployConfig, ProxyConfig, SslMode,
-    };
+    use crate::cli::config_parser::{AppSource, ConfigBuilder, DeployConfig, ProxyConfig, SslMode};
     use std::collections::HashMap;
 
     fn minimal_config(app_type: AppType) -> StackerConfig {
@@ -481,10 +477,7 @@ mod tests {
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let traefik = compose.services.iter().find(|s| s.name == "traefik");
         assert!(traefik.is_some());
-        assert_eq!(
-            traefik.unwrap().image.as_deref(),
-            Some("traefik:v2.10")
-        );
+        assert_eq!(traefik.unwrap().image.as_deref(), Some("traefik:v2.10"));
     }
 
     #[test]
@@ -548,8 +541,14 @@ mod tests {
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
         let app = &compose.services[0];
-        assert_eq!(app.environment.get("NODE_ENV").map(|s| s.as_str()), Some("production"));
-        assert_eq!(app.environment.get("LOG_LEVEL").map(|s| s.as_str()), Some("debug"));
+        assert_eq!(
+            app.environment.get("NODE_ENV").map(|s| s.as_str()),
+            Some("production")
+        );
+        assert_eq!(
+            app.environment.get("LOG_LEVEL").map(|s| s.as_str()),
+            Some("debug")
+        );
     }
 
     #[test]
@@ -601,7 +600,10 @@ mod tests {
         assert_eq!(compose_svc.image.as_deref(), Some("mysql:8"));
         assert!(compose_svc.ports.contains(&"3306:3306".to_string()));
         assert_eq!(
-            compose_svc.environment.get("MYSQL_ROOT_PASSWORD").map(|s| s.as_str()),
+            compose_svc
+                .environment
+                .get("MYSQL_ROOT_PASSWORD")
+                .map(|s| s.as_str()),
             Some("pass")
         );
     }
@@ -635,10 +637,7 @@ mod tests {
             .unwrap();
 
         let compose = ComposeDefinition::try_from(&config).unwrap();
-        let npm = compose
-            .services
-            .iter()
-            .find(|s| s.name == "proxy-manager");
+        let npm = compose.services.iter().find(|s| s.name == "proxy-manager");
         assert!(npm.is_some());
         let npm = npm.unwrap();
         assert!(npm.ports.contains(&"81:81".to_string())); // NPM admin port

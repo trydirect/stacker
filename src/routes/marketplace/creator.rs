@@ -42,7 +42,11 @@ pub async fn create_handler(
 
     // Normalize pricing: plan_type "free" forces price to 0
     let billing_cycle = req.plan_type.unwrap_or_else(|| "free".to_string());
-    let price = if billing_cycle == "free" { 0.0 } else { req.price.unwrap_or(0.0) };
+    let price = if billing_cycle == "free" {
+        0.0
+    } else {
+        req.price.unwrap_or(0.0)
+    };
     let currency = req.currency.unwrap_or_else(|| "USD".to_string());
 
     // Check if template with this slug already exists for this user

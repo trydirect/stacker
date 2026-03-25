@@ -52,7 +52,8 @@ fn resolve_deployment_hash(
     if config_path.exists() {
         if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
             if let Some(ref project_name) = config.project.identity {
-                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name)) {
+                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name))
+                {
                     match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
                         Ok((_, hash)) => {
                             eprintln!(
@@ -109,8 +110,7 @@ fn run_agent_command(
         let command_id = info.command_id.clone();
         let deployment_hash = request.deployment_hash.clone();
 
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
         let mut last_status = "pending".to_string();
 
@@ -132,10 +132,7 @@ fn run_agent_command(
                 .await?;
 
             last_status = status.status.clone();
-            progress::update_message(
-                &pb,
-                &format!("{} [{}]", spinner_msg, status.status),
-            );
+            progress::update_message(&pb, &format!("{} [{}]", spinner_msg, status.status));
 
             match status.status.as_str() {
                 "completed" | "failed" => return Ok(status),
@@ -175,7 +172,11 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
 
     println!("Command:  {}", info.command_id);
     println!("Type:     {}", info.command_type);
-    println!("Status:   {} {}", progress::status_icon(&info.status), info.status);
+    println!(
+        "Status:   {} {}",
+        progress::status_icon(&info.status),
+        info.status
+    );
 
     if let Some(ref result) = info.result {
         println!("\n{}", fmt::pretty_json(result));
@@ -194,11 +195,7 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
 ///
 /// Returns `Ok(())` when it's safe to proceed, or a `CliError` when the user
 /// aborts or the prompt cannot be answered.
-fn check_active_connections(
-    ctx: &CliRuntime,
-    hash: &str,
-    force: bool,
-) -> Result<(), CliError> {
+fn check_active_connections(ctx: &CliRuntime, hash: &str, force: bool) -> Result<(), CliError> {
     let params = crate::forms::status_panel::CheckConnectionsCommandRequest { ports: None };
     let request = AgentEnqueueRequest::new(hash, "check_connections")
         .with_parameters(&params)
@@ -208,9 +205,7 @@ fn check_active_connections(
         Ok(info) => info,
         Err(_) => {
             // Non-fatal: if the check times out or fails we warn but proceed.
-            eprintln!(
-                "\x1b[33m⚠ Connection check skipped (agent did not respond in time)\x1b[0m"
-            );
+            eprintln!("\x1b[33m⚠ Connection check skipped (agent did not respond in time)\x1b[0m");
             return Ok(());
         }
     };
@@ -234,11 +229,17 @@ fn check_active_connections(
     }
 
     // Print a per-port table.
-    eprintln!("\n\x1b[33m⚠  {} active HTTP connection(s) detected:\x1b[0m", active);
+    eprintln!(
+        "\n\x1b[33m⚠  {} active HTTP connection(s) detected:\x1b[0m",
+        active
+    );
     if let Some(ports) = result.get("ports").and_then(|v| v.as_array()) {
         for entry in ports {
             let port = entry.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
-            let conns = entry.get("connections").and_then(|v| v.as_u64()).unwrap_or(0);
+            let conns = entry
+                .get("connections")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if conns > 0 {
                 eprintln!("   port {:5} — {} connection(s)", port, conns);
             }
@@ -288,7 +289,12 @@ impl AgentHealthCommand {
         deployment: Option<String>,
         include_system: bool,
     ) -> Self {
-        Self { app_code, json, deployment, include_system }
+        Self {
+            app_code,
+            json,
+            deployment,
+            include_system,
+        }
     }
 }
 
@@ -331,7 +337,12 @@ impl AgentLogsCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, limit, json, deployment }
+        Self {
+            app_code,
+            limit,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -376,13 +387,13 @@ pub struct AgentRestartCommand {
 }
 
 impl AgentRestartCommand {
-    pub fn new(
-        app_code: String,
-        force: bool,
-        json: bool,
-        deployment: Option<String>,
-    ) -> Self {
-        Self { app_code, force, json, deployment }
+    pub fn new(app_code: String, force: bool, json: bool, deployment: Option<String>) -> Self {
+        Self {
+            app_code,
+            force,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -433,7 +444,13 @@ impl AgentDeployAppCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, image, force_recreate, json, deployment }
+        Self {
+            app_code,
+            image,
+            force_recreate,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -458,12 +475,7 @@ impl CallableTrait for AgentDeployAppCommand {
             .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?
             .with_timeout(300);
 
-        let info = run_agent_command(
-            &ctx,
-            &request,
-            &format!("Deploying {}", self.app_code),
-            300,
-        )?;
+        let info = run_agent_command(&ctx, &request, &format!("Deploying {}", self.app_code), 300)?;
         print_command_result(&info, self.json);
         Ok(())
     }
@@ -490,7 +502,14 @@ impl AgentRemoveAppCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, remove_volumes, remove_image, force, json, deployment }
+        Self {
+            app_code,
+            remove_volumes,
+            remove_image,
+            force,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -548,7 +567,16 @@ impl AgentConfigureFirewallCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { action, app_code, public_ports, private_ports, persist, force, json, deployment }
+        Self {
+            action,
+            app_code,
+            public_ports,
+            private_ports,
+            persist,
+            force,
+            json,
+            deployment,
+        }
     }
 
     /// Parse "80/tcp" or "443" into a FirewallPortRule (source defaults to 0.0.0.0/0).
@@ -584,10 +612,14 @@ impl AgentConfigureFirewallCommand {
 
     fn parse_port_proto(s: &str) -> Result<(u16, String), String> {
         if let Some((port_s, proto)) = s.split_once('/') {
-            let port: u16 = port_s.parse().map_err(|_| format!("Invalid port number: {}", port_s))?;
+            let port: u16 = port_s
+                .parse()
+                .map_err(|_| format!("Invalid port number: {}", port_s))?;
             Ok((port, proto.to_string()))
         } else {
-            let port: u16 = s.parse().map_err(|_| format!("Invalid port number: {}", s))?;
+            let port: u16 = s
+                .parse()
+                .map_err(|_| format!("Invalid port number: {}", s))?;
             Ok((port, "tcp".to_string()))
         }
     }
@@ -662,7 +694,16 @@ impl AgentConfigureProxyCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, domain, port, ssl, action, force, json, deployment }
+        Self {
+            app_code,
+            domain,
+            port,
+            ssl,
+            action,
+            force,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -767,7 +808,10 @@ impl CallableTrait for AgentStatusCommand {
                     let mut output = item.clone();
                     if let Some(list) = &live_containers {
                         if let Some(obj) = output.as_object_mut() {
-                            obj.insert("containers_live".to_string(), serde_json::Value::Array(list.clone()));
+                            obj.insert(
+                                "containers_live".to_string(),
+                                serde_json::Value::Array(list.clone()),
+                            );
                         } else {
                             output = serde_json::json!({
                                 "snapshot": output,
@@ -854,10 +898,7 @@ fn print_snapshot_summary(
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let version = agent
-            .get("version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let version = agent.get("version").and_then(|v| v.as_str()).unwrap_or("-");
         let heartbeat = agent
             .get("last_heartbeat")
             .and_then(|v| v.as_str())
@@ -939,7 +980,11 @@ impl CallableTrait for AgentListAppsCommand {
 
         let snapshot = ctx.block_on(ctx.client.agent_snapshot(&hash))?;
         let item = snapshot_item(&snapshot);
-        let apps = item.get("apps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let apps = item
+            .get("apps")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         if self.json {
             let value = serde_json::Value::Array(apps);
@@ -968,8 +1013,7 @@ impl CallableTrait for AgentListContainersCommand {
         let ctx = CliRuntime::new("agent list containers")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
-        let containers = fetch_live_containers(&ctx, &hash)?
-            .unwrap_or_default();
+        let containers = fetch_live_containers(&ctx, &hash)?.unwrap_or_default();
 
         if self.json {
             let value = serde_json::Value::Array(containers);
@@ -1055,7 +1099,13 @@ impl AgentExecCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { command_type, params, timeout, json, deployment }
+        Self {
+            command_type,
+            params,
+            timeout,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -1204,11 +1254,13 @@ impl CallableTrait for AgentInstallCommand {
                 .client
                 .find_project_by_name(&project_name)
                 .await?
-                .ok_or_else(|| CliError::ConfigValidation(format!(
-                    "Project '{}' not found on the Stacker server.\n\
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "Project '{}' not found on the Stacker server.\n\
                      Deploy the project first with: stacker deploy --target cloud",
-                    project_name
-                )))?;
+                        project_name
+                    ))
+                })?;
 
             // 2. Find the server for this project
             progress::update_message(&pb, "Finding server...");
@@ -1216,17 +1268,21 @@ impl CallableTrait for AgentInstallCommand {
             let server = servers
                 .into_iter()
                 .find(|s| s.project_id == project.id)
-                .ok_or_else(|| CliError::ConfigValidation(format!(
-                    "No server found for project '{}' (id={}).\n\
+                .ok_or_else(|| {
+                    CliError::ConfigValidation(format!(
+                        "No server found for project '{}' (id={}).\n\
                      Deploy the project first with: stacker deploy --target cloud",
-                    project_name, project.id
-                )))?;
+                        project_name, project.id
+                    ))
+                })?;
 
-            let cloud_id = server.cloud_id.ok_or_else(|| CliError::ConfigValidation(
-                "Server has no associated cloud credentials.\n\
+            let cloud_id = server.cloud_id.ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "Server has no associated cloud credentials.\n\
                  Cannot install Status Panel without cloud credentials."
-                    .to_string(),
-            ))?;
+                        .to_string(),
+                )
+            })?;
 
             // 3. Build a minimal deploy form with only the statuspanel feature
             progress::update_message(&pb, "Preparing deploy payload...");
@@ -1264,7 +1320,10 @@ impl CallableTrait for AgentInstallCommand {
 
             // 4. Trigger the deploy
             progress::update_message(&pb, "Deploying Status Panel...");
-            let resp = ctx.client.deploy(project.id, Some(cloud_id), deploy_form).await?;
+            let resp = ctx
+                .client
+                .deploy(project.id, Some(cloud_id), deploy_form)
+                .await?;
             Ok(resp)
         });
 
@@ -1273,7 +1332,10 @@ impl CallableTrait for AgentInstallCommand {
                 progress::finish_success(&pb, "Status Panel agent installation triggered");
 
                 if self.json {
-                    println!("{}", serde_json::to_string_pretty(&resp).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&resp).unwrap_or_default()
+                    );
                 } else {
                     println!("Status Panel deploy queued for project '{}'", project_name);
                     if let Some(id) = resp.id {

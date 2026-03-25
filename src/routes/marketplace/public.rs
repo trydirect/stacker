@@ -123,10 +123,7 @@ pub async fn download_stack_handler(
         .content_type("application/gzip")
         .insert_header((
             "Content-Disposition",
-            format!(
-                "attachment; filename=\"stack-{}.tar.gz\"",
-                purchase_token
-            ),
+            format!("attachment; filename=\"stack-{}.tar.gz\"", purchase_token),
         ))
         .body("stack archive placeholder"))
 }

@@ -2,9 +2,7 @@ use std::path::Path;
 
 use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
-use crate::cli::install_runner::{
-    CommandExecutor, ShellExecutor,
-};
+use crate::cli::install_runner::{CommandExecutor, ShellExecutor};
 use crate::console::commands::CallableTrait;
 
 /// Output directory for generated artifacts.
@@ -106,7 +104,9 @@ mod tests {
 
     impl MockExecutor {
         fn new() -> Self {
-            Self { calls: Mutex::new(Vec::new()) }
+            Self {
+                calls: Mutex::new(Vec::new()),
+            }
         }
 
         fn recorded_calls(&self) -> Vec<(String, Vec<String>)> {
@@ -120,7 +120,11 @@ mod tests {
                 program.to_string(),
                 args.iter().map(|s| s.to_string()).collect(),
             ));
-            Ok(CommandOutput { exit_code: 0, stdout: String::new(), stderr: String::new() })
+            Ok(CommandOutput {
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
         }
     }
 

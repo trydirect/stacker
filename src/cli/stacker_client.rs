@@ -234,12 +234,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<ProjectInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<ProjectInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.list.unwrap_or_default())
     }
@@ -288,12 +287,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<DeploymentStatusInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.list.unwrap_or_default())
     }
@@ -360,19 +358,15 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Stacker server POST /project failed ({}): {}",
-                    status, body
-                ),
+                reason: format!("Stacker server POST /project failed ({}): {}", status, body),
             });
         }
 
-        let api: ApiResponse<ProjectInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<ProjectInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -412,12 +406,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<ProjectInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<ProjectInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -450,12 +443,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<CloudInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<CloudInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.list.unwrap_or_default())
     }
@@ -467,14 +459,13 @@ impl StackerClient {
     ) -> Result<Option<CloudInfo>, CliError> {
         let clouds = self.list_clouds().await?;
         let lower = provider.to_lowercase();
-        Ok(clouds.into_iter().find(|c| c.provider.to_lowercase() == lower))
+        Ok(clouds
+            .into_iter()
+            .find(|c| c.provider.to_lowercase() == lower))
     }
 
     /// Find saved cloud credentials by name (e.g. "my-hetzner", "htz-4").
-    pub async fn find_cloud_by_name(
-        &self,
-        name: &str,
-    ) -> Result<Option<CloudInfo>, CliError> {
+    pub async fn find_cloud_by_name(&self, name: &str) -> Result<Option<CloudInfo>, CliError> {
         let clouds = self.list_clouds().await?;
         let lower = name.to_lowercase();
         Ok(clouds.into_iter().find(|c| c.name.to_lowercase() == lower))
@@ -510,12 +501,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<CloudInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<CloudInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.item)
     }
@@ -528,7 +518,8 @@ impl StackerClient {
         cloud_key: Option<&str>,
         cloud_secret: Option<&str>,
     ) -> Result<CloudInfo, CliError> {
-        self.save_cloud_with_name(provider, None, cloud_token, cloud_key, cloud_secret).await
+        self.save_cloud_with_name(provider, None, cloud_token, cloud_key, cloud_secret)
+            .await
     }
 
     /// Save cloud credentials with an optional name.
@@ -549,10 +540,7 @@ impl StackerClient {
 
         if let Some(obj) = payload.as_object_mut() {
             if let Some(n) = name {
-                obj.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(n.to_string()),
-                );
+                obj.insert("name".to_string(), serde_json::Value::String(n.to_string()));
             }
             if let Some(t) = cloud_token {
                 obj.insert(
@@ -591,19 +579,15 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Stacker server POST /cloud failed ({}): {}",
-                    status, body
-                ),
+                reason: format!("Stacker server POST /cloud failed ({}): {}", status, body),
             });
         }
 
-        let api: ApiResponse<CloudInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<CloudInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -636,12 +620,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<ServerInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<ServerInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.list.unwrap_or_default())
     }
@@ -686,12 +669,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<GenerateKeyResponse> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<GenerateKeyResponse> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -725,12 +707,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<PublicKeyResponse> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<PublicKeyResponse> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -775,12 +756,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<ServerInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<ServerInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -828,12 +808,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<MarketplaceTemplate> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<MarketplaceTemplate> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.list.unwrap_or_default())
     }
@@ -864,19 +843,15 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Marketplace template fetch failed ({}): {}",
-                    status, body
-                ),
+                reason: format!("Marketplace template fetch failed ({}): {}", status, body),
             });
         }
 
-        let api: ApiResponse<MarketplaceTemplate> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<MarketplaceTemplate> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.item)
     }
@@ -912,19 +887,16 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Stacker server deploy failed ({}): {}",
-                    status, body
-                ),
+                reason: format!("Stacker server deploy failed ({}): {}", status, body),
             });
         }
 
-        resp.json::<DeployResponse>().await.map_err(|e| {
-            CliError::DeployFailed {
+        resp.json::<DeployResponse>()
+            .await
+            .map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid deploy response from Stacker server: {}", e),
-            }
-        })
+            })
     }
 
     // ── Deployment status ────────────────────────────
@@ -1026,10 +998,7 @@ impl StackerClient {
         &self,
         hash: &str,
     ) -> Result<Option<DeploymentStatusInfo>, CliError> {
-        let url = format!(
-            "{}/api/v1/deployments/hash/{}",
-            self.base_url, hash
-        );
+        let url = format!("{}/api/v1/deployments/hash/{}", self.base_url, hash);
         let resp = self
             .http
             .get(&url)
@@ -1098,10 +1067,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Force-complete failed ({}): {}",
-                    status, body
-                ),
+                reason: format!("Force-complete failed ({}): {}", status, body),
             });
         }
 
@@ -1149,10 +1115,12 @@ impl StackerClient {
         }
 
         let api: ApiResponse<AgentCommandInfo> =
-            resp.json().await.map_err(|e| CliError::AgentCommandFailed {
-                command_id: String::new(),
-                error: format!("Invalid enqueue response: {}", e),
-            })?;
+            resp.json()
+                .await
+                .map_err(|e| CliError::AgentCommandFailed {
+                    command_id: String::new(),
+                    error: format!("Invalid enqueue response: {}", e),
+                })?;
 
         api.item.ok_or_else(|| CliError::AgentCommandFailed {
             command_id: String::new(),
@@ -1200,10 +1168,12 @@ impl StackerClient {
         }
 
         let api: ApiResponse<AgentCommandInfo> =
-            resp.json().await.map_err(|e| CliError::AgentCommandFailed {
-                command_id: command_id.to_string(),
-                error: format!("Invalid status response: {}", e),
-            })?;
+            resp.json()
+                .await
+                .map_err(|e| CliError::AgentCommandFailed {
+                    command_id: command_id.to_string(),
+                    error: format!("Invalid status response: {}", e),
+                })?;
 
         api.item.ok_or_else(|| CliError::AgentCommandFailed {
             command_id: command_id.to_string(),
@@ -1225,8 +1195,7 @@ impl StackerClient {
         let command_id = info.command_id.clone();
         let deployment_hash = request.deployment_hash.clone();
 
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let interval = std::time::Duration::from_secs(poll_interval_secs);
 
         let mut last_status = "pending".to_string();
@@ -1324,14 +1293,20 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("GET /api/v1/agent/project/{} failed ({}): {}", project_id, status, body),
+                reason: format!(
+                    "GET /api/v1/agent/project/{} failed ({}): {}",
+                    project_id, status, body
+                ),
             });
         }
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| CliError::AgentCommandFailed {
-            command_id: String::new(),
-            error: format!("Invalid project snapshot response: {}", e),
-        })?;
+        let json: serde_json::Value =
+            resp.json()
+                .await
+                .map_err(|e| CliError::AgentCommandFailed {
+                    command_id: String::new(),
+                    error: format!("Invalid project snapshot response: {}", e),
+                })?;
 
         // Extract deployment_hash from the nested agent object
         let hash = json
@@ -1341,11 +1316,13 @@ impl StackerClient {
             .and_then(|a| a.get("deployment_hash"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| CliError::ConfigValidation(
-                "No active agent found for this project. \
+            .ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "No active agent found for this project. \
                  The agent may be offline or not yet deployed."
-                    .to_string(),
-            ))?;
+                        .to_string(),
+                )
+            })?;
 
         Ok((json, hash))
     }
@@ -1375,12 +1352,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<MarketplaceTemplateInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<MarketplaceTemplateInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(api.list.unwrap_or_default())
     }
@@ -1414,12 +1390,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<serde_json::Value> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<serde_json::Value> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
-            }
-        })?;
+            })?;
 
         let item = api.item.unwrap_or(serde_json::json!({}));
         let reviews: Vec<MarketplaceReviewInfo> = serde_json::from_value(
@@ -1459,12 +1434,11 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<MarketplaceTemplateInfo> = resp.json().await.map_err(|e| {
-            CliError::DeployFailed {
+        let api: ApiResponse<MarketplaceTemplateInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("create template response: {}", e),
-            }
-        })?;
+            })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
@@ -1649,11 +1623,7 @@ fn parse_volume_mapping(vol_str: &str) -> (String, String, bool) {
     let parts: Vec<&str> = vol_str.split(':').collect();
     match parts.len() {
         // "source:target:mode" (e.g. "/host:/container:ro")
-        3 => (
-            parts[0].to_string(),
-            parts[1].to_string(),
-            parts[2] == "ro",
-        ),
+        3 => (parts[0].to_string(), parts[1].to_string(), parts[2] == "ro"),
         // "source:target"
         2 => (parts[0].to_string(), parts[1].to_string(), false),
         // bare path
@@ -1950,7 +1920,13 @@ fn generate_server_name(project_name: &str) -> String {
     let sanitised: String = project_name
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
@@ -1987,10 +1963,16 @@ fn generate_server_name(project_name: &str) -> String {
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
-        .map(|c| super::install_runner::provider_code_for_remote(&c.provider.to_string()).to_string())
+        .map(|c| {
+            super::install_runner::provider_code_for_remote(&c.provider.to_string()).to_string()
+        })
         .unwrap_or_else(|| "htz".to_string());
-    let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
-    let server_size = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cpx11".to_string());
+    let region = cloud
+        .and_then(|c| c.region.clone())
+        .unwrap_or_else(|| "nbg1".to_string());
+    let server_size = cloud
+        .and_then(|c| c.size.clone())
+        .unwrap_or_else(|| "cpx11".to_string());
     let os = match provider.as_str() {
         "do" => "docker-20-04",
         _ => "ubuntu-22.04",
@@ -1998,7 +1980,11 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
 
     // Auto-generate a server name from the project name so every
     // provisioned server gets a recognisable label in `stacker list servers`.
-    let project_name = config.project.identity.clone().unwrap_or_else(|| config.name.clone());
+    let project_name = config
+        .project
+        .identity
+        .clone()
+        .unwrap_or_else(|| config.name.clone());
     let server_name = generate_server_name(&project_name);
 
     let mut form = serde_json::json!({
@@ -2043,7 +2029,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
                 let features = stack_obj
                     .entry("extended_features")
-                    .or_insert_with(|| serde_json::json!([])); 
+                    .or_insert_with(|| serde_json::json!([]));
                 if let Some(arr) = features.as_array_mut() {
                     let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
                     if !arr.contains(&npm) {
@@ -2062,8 +2048,8 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // status panel agent with the public Vault address (not the local Docker IP).
     if config.monitoring.status_panel {
         // Resolve public Vault URL: env override → default constant.
-        let vault_url = std::env::var("STACKER_VAULT_URL")
-            .unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
+        let vault_url =
+            std::env::var("STACKER_VAULT_URL").unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
 
         if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
             let features = stack_obj
@@ -2133,8 +2119,16 @@ mod tests {
         assert_eq!(form["stack"]["stack_code"], "myproject");
         // Auto-generated server name should start with the project name
         let name = form["server"]["name"].as_str().unwrap();
-        assert!(name.starts_with("myproject-"), "server name should start with project name, got: {}", name);
-        assert_eq!(name.len(), "myproject-".len() + 4, "suffix should be 4 hex chars");
+        assert!(
+            name.starts_with("myproject-"),
+            "server name should start with project name, got: {}",
+            name
+        );
+        assert_eq!(
+            name.len(),
+            "myproject-".len() + 4,
+            "suffix should be 4 hex chars"
+        );
     }
 
     #[test]
@@ -2335,7 +2329,10 @@ mod tests {
 
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
-        assert!(features.is_empty(), "feature array should be empty when no proxy configured");
+        assert!(
+            features.is_empty(),
+            "feature array should be empty when no proxy configured"
+        );
     }
 
     #[test]
@@ -2345,7 +2342,11 @@ mod tests {
         // 4 hex chars suffix
         let suffix = &name["website-".len()..];
         assert_eq!(suffix.len(), 4);
-        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "suffix should be hex, got: {}", suffix);
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix should be hex, got: {}",
+            suffix
+        );
     }
 
     #[test]
@@ -2357,29 +2358,50 @@ mod tests {
     #[test]
     fn test_generate_server_name_empty() {
         let name = generate_server_name("");
-        assert!(name.starts_with("srv-"), "empty input should fallback to 'srv', got: {}", name);
+        assert!(
+            name.starts_with("srv-"),
+            "empty input should fallback to 'srv', got: {}",
+            name
+        );
     }
 
     #[test]
     fn test_generate_server_name_special_chars() {
         let name = generate_server_name("app___v2..beta");
-        assert!(name.starts_with("app-v2-beta-"), "consecutive separators collapsed, got: {}", name);
+        assert!(
+            name.starts_with("app-v2-beta-"),
+            "consecutive separators collapsed, got: {}",
+            name
+        );
     }
 
     #[test]
     fn test_generate_server_name_numeric_start() {
         // Hetzner requires name to start with a letter
         let name = generate_server_name("123app");
-        assert!(name.starts_with("srv-123app-"), "numeric start should get 'srv-' prefix, got: {}", name);
+        assert!(
+            name.starts_with("srv-123app-"),
+            "numeric start should get 'srv-' prefix, got: {}",
+            name
+        );
     }
 
     #[test]
     fn test_generate_server_name_max_length() {
         let long = "a".repeat(100);
         let name = generate_server_name(&long);
-        assert!(name.len() <= 63, "name must be ≤63 chars (Hetzner), got {} chars: {}", name.len(), name);
+        assert!(
+            name.len() <= 63,
+            "name must be ≤63 chars (Hetzner), got {} chars: {}",
+            name.len(),
+            name
+        );
         assert!(name.starts_with("aaa"), "got: {}", name);
         // Must not end with hyphen
-        assert!(!name.ends_with('-'), "must not end with hyphen, got: {}", name);
+        assert!(
+            !name.ends_with('-'),
+            "must not end with hyphen, got: {}",
+            name
+        );
     }
 }

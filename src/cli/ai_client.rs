@@ -169,13 +169,28 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".to_string(), content: content.into(), tool_calls: None, tool_call_id: None }
+        Self {
+            role: "system".to_string(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".to_string(), content: content.into(), tool_calls: None, tool_call_id: None }
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn tool_result(id: Option<String>, content: impl Into<String>) -> Self {
-        Self { role: "tool".to_string(), content: content.into(), tool_calls: None, tool_call_id: id }
+        Self {
+            role: "tool".to_string(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: id,
+        }
     }
 }
 
@@ -209,7 +224,8 @@ pub enum AiResponse {
 pub fn write_file_tool() -> ToolDef {
     ToolDef {
         name: "write_file".to_string(),
-        description: "Write content to a file on disk. Creates parent directories as needed.".to_string(),
+        description: "Write content to a file on disk. Creates parent directories as needed."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -239,7 +255,8 @@ pub fn list_directory_tool() -> ToolDef {
     ToolDef {
         name: "list_directory".to_string(),
         description: "List files and folders in a directory within the project. \
-                      Use '.' for the project root.".to_string(),
+                      Use '.' for the project root."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -256,7 +273,8 @@ pub fn list_directory_tool() -> ToolDef {
 pub fn config_validate_tool() -> ToolDef {
     ToolDef {
         name: "config_validate".to_string(),
-        description: "Validate the stacker.yml configuration file and report any errors.".to_string(),
+        description: "Validate the stacker.yml configuration file and report any errors."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {},
@@ -268,7 +286,8 @@ pub fn config_validate_tool() -> ToolDef {
 pub fn config_show_tool() -> ToolDef {
     ToolDef {
         name: "config_show".to_string(),
-        description: "Show the fully-resolved stacker.yml configuration (with env vars expanded).".to_string(),
+        description: "Show the fully-resolved stacker.yml configuration (with env vars expanded)."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {},
@@ -292,7 +311,9 @@ pub fn stacker_status_tool() -> ToolDef {
 pub fn stacker_logs_tool() -> ToolDef {
     ToolDef {
         name: "stacker_logs".to_string(),
-        description: "Retrieve container logs. Optionally filter by service name and limit line count.".to_string(),
+        description:
+            "Retrieve container logs. Optionally filter by service name and limit line count."
+                .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -314,7 +335,8 @@ pub fn stacker_deploy_tool() -> ToolDef {
     ToolDef {
         name: "stacker_deploy".to_string(),
         description: "Build and deploy the stack. Use dry_run=true to preview what would happen \
-                      without making changes.".to_string(),
+                      without making changes."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -340,7 +362,8 @@ pub fn stacker_deploy_tool() -> ToolDef {
 pub fn proxy_add_tool() -> ToolDef {
     ToolDef {
         name: "proxy_add".to_string(),
-        description: "Add a reverse-proxy entry mapping a domain to an upstream service.".to_string(),
+        description: "Add a reverse-proxy entry mapping a domain to an upstream service."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -366,7 +389,8 @@ pub fn proxy_add_tool() -> ToolDef {
 pub fn proxy_detect_tool() -> ToolDef {
     ToolDef {
         name: "proxy_detect".to_string(),
-        description: "Detect running reverse-proxy containers (nginx, Traefik, etc.) on the host.".to_string(),
+        description: "Detect running reverse-proxy containers (nginx, Traefik, etc.) on the host."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {},
@@ -381,7 +405,8 @@ pub fn agent_health_tool() -> ToolDef {
     ToolDef {
         name: "agent_health".to_string(),
         description: "Check container health on the remote deployment via the Status Panel agent. \
-                      Returns container states, resource usage, and health metrics.".to_string(),
+                      Returns container states, resource usage, and health metrics."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -403,7 +428,8 @@ pub fn agent_status_tool() -> ToolDef {
     ToolDef {
         name: "agent_status".to_string(),
         description: "Get the Status Panel agent status, including agent version, \
-                      last heartbeat, container states, and recent command history.".to_string(),
+                      last heartbeat, container states, and recent command history."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -421,7 +447,8 @@ pub fn agent_logs_tool() -> ToolDef {
     ToolDef {
         name: "agent_logs".to_string(),
         description: "Fetch container logs from the remote deployment via the Status Panel agent. \
-                      Logs are automatically redacted for safety.".to_string(),
+                      Logs are automatically redacted for safety."
+            .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -658,11 +685,10 @@ impl AiProvider for OpenAiProvider {
             });
         }
 
-        let json: serde_json::Value =
-            response.json().map_err(|e| CliError::AiProviderError {
-                provider: "openai".to_string(),
-                message: format!("Failed to parse response: {}", e),
-            })?;
+        let json: serde_json::Value = response.json().map_err(|e| CliError::AiProviderError {
+            provider: "openai".to_string(),
+            message: format!("Failed to parse response: {}", e),
+        })?;
 
         let msg = &json["choices"][0]["message"];
         let content = msg["content"].as_str().unwrap_or("").to_string();
@@ -677,9 +703,13 @@ impl AiProvider for OpenAiProvider {
                         let name = func["name"].as_str()?.to_string();
                         // OpenAI encodes arguments as a JSON string
                         let arguments: serde_json::Value =
-                            serde_json::from_str(func["arguments"].as_str().unwrap_or("{}")
-                            ).unwrap_or(serde_json::json!({}));
-                        Some(ToolCall { id, name, arguments })
+                            serde_json::from_str(func["arguments"].as_str().unwrap_or("{}"))
+                                .unwrap_or(serde_json::json!({}));
+                        Some(ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        })
                     })
                     .collect();
                 return Ok(AiResponse::ToolCalls(content, calls));
@@ -897,7 +927,11 @@ impl OllamaProvider {
 
         let timeout_secs = resolve_timeout(config.timeout);
 
-        Self { endpoint, model, timeout_secs }
+        Self {
+            endpoint,
+            model,
+            timeout_secs,
+        }
     }
 }
 
@@ -986,11 +1020,10 @@ impl AiProvider for OllamaProvider {
             });
         }
 
-        let json: serde_json::Value =
-            response.json().map_err(|e| CliError::AiProviderError {
-                provider: "ollama".to_string(),
-                message: format!("Failed to parse response: {}", e),
-            })?;
+        let json: serde_json::Value = response.json().map_err(|e| CliError::AiProviderError {
+            provider: "ollama".to_string(),
+            message: format!("Failed to parse response: {}", e),
+        })?;
 
         let msg = &json["message"];
         let content = msg["content"].as_str().unwrap_or("").to_string();
@@ -1013,7 +1046,11 @@ impl AiProvider for OllamaProvider {
                         } else {
                             serde_json::json!({})
                         };
-                        Some(ToolCall { id: None, name, arguments })
+                        Some(ToolCall {
+                            id: None,
+                            name,
+                            arguments,
+                        })
                     })
                     .collect();
                 return Ok(AiResponse::ToolCalls(content, calls));
@@ -1141,12 +1178,11 @@ pub fn ollama_complete_streaming(
             continue;
         }
 
-        let json: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
-            CliError::AiProviderError {
+        let json: serde_json::Value =
+            serde_json::from_str(trimmed).map_err(|e| CliError::AiProviderError {
                 provider: "ollama".to_string(),
                 message: format!("Invalid streaming chunk: {}", e),
-            }
-        })?;
+            })?;
 
         if let Some(chunk) = json["message"]["content"].as_str() {
             eprint!("{}", chunk);
@@ -1280,10 +1316,7 @@ pub fn build_compose_prompt(ctx: &PromptContext) -> (String, String) {
 
 /// Build a prompt for troubleshooting deployment issues.
 pub fn build_troubleshoot_prompt(ctx: &PromptContext) -> (String, String) {
-    let error = ctx
-        .error_log
-        .as_deref()
-        .unwrap_or("No error log provided");
+    let error = ctx.error_log.as_deref().unwrap_or("No error log provided");
 
     let prompt = format!(
         "Diagnose and fix the following deployment issue.\n\
@@ -1393,7 +1426,9 @@ mod tests {
     #[test]
     fn test_mock_ai_complete() {
         let provider = MockAiProvider::with_response("Use FROM node:lts-alpine");
-        let result = provider.complete("optimize dockerfile", "system context").unwrap();
+        let result = provider
+            .complete("optimize dockerfile", "system context")
+            .unwrap();
         assert!(result.contains("node:lts-alpine"));
     }
 
@@ -1514,7 +1549,9 @@ mod tests {
             project_type: Some(AppType::Python),
             files: vec![],
             error_log: None,
-            current_config: Some("version: '3'\nservices:\n  web:\n    image: python:3.11".to_string()),
+            current_config: Some(
+                "version: '3'\nservices:\n  web:\n    image: python:3.11".to_string(),
+            ),
         };
 
         let (_, prompt) = build_compose_prompt(&ctx);

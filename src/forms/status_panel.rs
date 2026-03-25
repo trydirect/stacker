@@ -488,14 +488,16 @@ pub fn validate_command_parameters(
             }
 
             // Validate port rules
-            for rule in params.public_ports.iter().chain(params.private_ports.iter()) {
+            for rule in params
+                .public_ports
+                .iter()
+                .chain(params.private_ports.iter())
+            {
                 if rule.port == 0 {
                     return Err("configure_firewall: port must be > 0".to_string());
                 }
                 if !["tcp", "udp"].contains(&rule.protocol.as_str()) {
-                    return Err(
-                        "configure_firewall: protocol must be one of: tcp, udp".to_string(),
-                    );
+                    return Err("configure_firewall: protocol must be one of: tcp, udp".to_string());
                 }
             }
 
@@ -627,7 +629,9 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Invalid configure_firewall result: {}", err))?;
 
             if report.command_type != "configure_firewall" {
-                return Err("configure_firewall result must include type='configure_firewall'".to_string());
+                return Err(
+                    "configure_firewall result must include type='configure_firewall'".to_string(),
+                );
             }
             if report.deployment_hash != deployment_hash {
                 return Err("configure_firewall result deployment_hash mismatch".to_string());
@@ -645,7 +649,9 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Invalid probe_endpoints result: {}", err))?;
 
             if report.command_type != "probe_endpoints" {
-                return Err("probe_endpoints result must include type='probe_endpoints'".to_string());
+                return Err(
+                    "probe_endpoints result must include type='probe_endpoints'".to_string()
+                );
             }
             if report.deployment_hash != deployment_hash {
                 return Err("probe_endpoints result deployment_hash mismatch".to_string());
@@ -1102,11 +1108,9 @@ mod tests {
 
     #[test]
     fn check_connections_accepts_null_ports() {
-        let result = validate_command_parameters(
-            "check_connections",
-            &Some(json!({ "ports": null })),
-        )
-        .expect("check_connections with null ports should validate");
+        let result =
+            validate_command_parameters("check_connections", &Some(json!({ "ports": null })))
+                .expect("check_connections with null ports should validate");
         assert!(result.is_some());
     }
 }

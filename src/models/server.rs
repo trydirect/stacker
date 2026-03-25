@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn test_server_validation_short_region() {
         let server = Server {
-            region: Some("a".to_string()),  // too short, min 2
+            region: Some("a".to_string()), // too short, min 2
             ..Default::default()
         };
         assert!(server.validate().is_err());
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn test_server_validation_ssh_port_too_low() {
         let server = Server {
-            ssh_port: Some(10),  // minimum 20
+            ssh_port: Some(10), // minimum 20
             ..Default::default()
         };
         assert!(server.validate().is_err());
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_server_validation_ssh_port_too_high() {
         let server = Server {
-            ssh_port: Some(70000),  // maximum 65535
+            ssh_port: Some(70000), // maximum 65535
             ..Default::default()
         };
         assert!(server.validate().is_err());

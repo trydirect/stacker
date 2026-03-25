@@ -4,8 +4,8 @@ use crate::cli::config_parser::{
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::proxy_manager::{
-    ContainerRuntime, DockerCliRuntime, ProxyDetection, detect_proxy,
-    detect_proxy_from_snapshot, generate_nginx_server_block,
+    detect_proxy, detect_proxy_from_snapshot, generate_nginx_server_block, ContainerRuntime,
+    DockerCliRuntime, ProxyDetection,
 };
 use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
@@ -20,7 +20,11 @@ pub fn parse_ssl_mode(s: Option<&str>) -> SslMode {
 }
 
 /// Build a `DomainConfig` from CLI arguments.
-pub fn build_domain_config(domain: &str, upstream: Option<&str>, ssl: Option<&str>) -> DomainConfig {
+pub fn build_domain_config(
+    domain: &str,
+    upstream: Option<&str>,
+    ssl: Option<&str>,
+) -> DomainConfig {
     DomainConfig {
         domain: domain.to_string(),
         ssl: parse_ssl_mode(ssl),
@@ -54,11 +58,8 @@ impl ProxyAddCommand {
 
 impl CallableTrait for ProxyAddCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let config = build_domain_config(
-            &self.domain,
-            self.upstream.as_deref(),
-            self.ssl.as_deref(),
-        );
+        let config =
+            build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
         let block = generate_nginx_server_block(&config);
         println!("{}", block);
         eprintln!("✓ Proxy entry generated for {}", self.domain);

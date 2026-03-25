@@ -32,7 +32,9 @@ impl CallableTrait for ListProjectsCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -99,7 +101,9 @@ impl CallableTrait for ListServersCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -156,7 +160,11 @@ pub struct ListDeploymentsCommand {
 
 impl ListDeploymentsCommand {
     pub fn new(json: bool, project_id: Option<i32>, limit: Option<i64>) -> Self {
-        Self { json, project_id, limit }
+        Self {
+            json,
+            project_id,
+            limit,
+        }
     }
 }
 
@@ -171,7 +179,9 @@ impl CallableTrait for ListDeploymentsCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         let project_id = self.project_id;
         let limit = self.limit;
@@ -243,7 +253,9 @@ impl CallableTrait for ListSshKeysCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -281,7 +293,10 @@ impl CallableTrait for ListSshKeysCommand {
                 let mut active_count = 0;
                 for s in &servers {
                     let status_icon = match s.key_status.as_str() {
-                        "active" => { active_count += 1; "✓ active" },
+                        "active" => {
+                            active_count += 1;
+                            "✓ active"
+                        }
                         "pending" => "◷ pending",
                         "failed" => "✗ failed",
                         _ => "  none",
@@ -291,7 +306,9 @@ impl CallableTrait for ListSshKeysCommand {
                         s.id,
                         truncate(&s.name.clone().unwrap_or_else(|| "-".to_string()), 18),
                         s.srv_ip.clone().unwrap_or_else(|| "-".to_string()),
-                        s.ssh_port.map(|p| p.to_string()).unwrap_or_else(|| "22".to_string()),
+                        s.ssh_port
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "22".to_string()),
                         s.ssh_user.clone().unwrap_or_else(|| "root".to_string()),
                         status_icon,
                         &s.connection_mode,
@@ -351,7 +368,9 @@ impl CallableTrait for ListCloudsCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
 
         rt.block_on(async {
             let client = StackerClient::new(&base_url, &creds.access_token);
@@ -359,8 +378,12 @@ impl CallableTrait for ListCloudsCommand {
 
             if clouds.is_empty() {
                 eprintln!("No saved cloud credentials found.");
-                eprintln!("Cloud credentials are saved automatically when you deploy with env vars,");
-                eprintln!("or via: stacker deploy --target cloud (with HCLOUD_TOKEN, etc. exported).");
+                eprintln!(
+                    "Cloud credentials are saved automatically when you deploy with env vars,"
+                );
+                eprintln!(
+                    "or via: stacker deploy --target cloud (with HCLOUD_TOKEN, etc. exported)."
+                );
                 return Ok(());
             }
 

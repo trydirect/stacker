@@ -162,7 +162,9 @@ mod tests {
         };
         let result: Result<dctypes::Port, String> = (&port).try_into();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Could not parse container port"));
+        assert!(result
+            .unwrap_err()
+            .contains("Could not parse container port"));
     }
 
     #[test]

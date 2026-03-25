@@ -125,10 +125,7 @@ impl CallableTrait for LogsCommand {
 
         // No local compose — try remote agent logs
         if is_remote_deployment(&project_dir) {
-            return run_remote_logs(
-                self.service.as_deref(),
-                self.tail,
-            );
+            return run_remote_logs(self.service.as_deref(), self.tail);
         }
 
         // Neither local nor remote
@@ -269,7 +266,10 @@ fn run_remote_logs(
     };
 
     if app_codes.is_empty() {
-        eprintln!("No containers found for deployment {}.", &hash[..8.min(hash.len())]);
+        eprintln!(
+            "No containers found for deployment {}.",
+            &hash[..8.min(hash.len())]
+        );
         eprintln!(
             "Tip: use 'stacker agent status --deployment {}' to check the deployment.",
             &hash[..8.min(hash.len())]
@@ -315,8 +315,7 @@ fn run_remote_agent_command(
         let command_id = info.command_id.clone();
         let deployment_hash = request.deployment_hash.clone();
 
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(REMOTE_POLL_INTERVAL_SECS);
 
         let mut last_status = "pending".to_string();
@@ -339,10 +338,7 @@ fn run_remote_agent_command(
                 .await?;
 
             last_status = status.status.clone();
-            progress::update_message(
-                &pb,
-                &format!("{} [{}]", spinner_msg, status.status),
-            );
+            progress::update_message(&pb, &format!("{} [{}]", spinner_msg, status.status));
 
             match status.status.as_str() {
                 "completed" | "failed" => return Ok(status),
@@ -380,7 +376,11 @@ fn print_logs_result(app_code: &str, info: &AgentCommandInfo, multi: bool) {
 
     if info.status == "failed" {
         if let Some(ref error) = info.error {
-            eprintln!("Error fetching logs for {}: {}", app_code, fmt::pretty_json(error));
+            eprintln!(
+                "Error fetching logs for {}: {}",
+                app_code,
+                fmt::pretty_json(error)
+            );
         }
         return;
     }
@@ -453,7 +453,11 @@ mod tests {
         struct MockExec;
         impl CommandExecutor for MockExec {
             fn execute(&self, _p: &str, _a: &[&str]) -> Result<CommandOutput, CliError> {
-                Ok(CommandOutput { exit_code: 0, stdout: String::new(), stderr: String::new() })
+                Ok(CommandOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
             }
         }
 

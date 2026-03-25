@@ -283,41 +283,66 @@ mod tests {
 
     #[test]
     fn test_command_with_priority() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .with_priority(CommandPriority::Critical);
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .with_priority(CommandPriority::Critical);
         assert_eq!(cmd.priority, "critical");
     }
 
     #[test]
     fn test_command_with_parameters() {
         let params = serde_json::json!({"key": "value"});
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .with_parameters(params.clone());
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .with_parameters(params.clone());
         assert_eq!(cmd.parameters, Some(params));
     }
 
     #[test]
     fn test_command_with_timeout() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .with_timeout(600);
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .with_timeout(600);
         assert_eq!(cmd.timeout_seconds, Some(600));
     }
 
     #[test]
     fn test_command_with_metadata() {
         let meta = serde_json::json!({"retry_count": 3});
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .with_metadata(meta.clone());
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .with_metadata(meta.clone());
         assert_eq!(cmd.metadata, Some(meta));
     }
 
     #[test]
     fn test_command_builder_chaining() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .with_priority(CommandPriority::High)
-            .with_timeout(120)
-            .with_parameters(serde_json::json!({"action": "restart"}))
-            .with_metadata(serde_json::json!({"source": "api"}));
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .with_priority(CommandPriority::High)
+        .with_timeout(120)
+        .with_parameters(serde_json::json!({"action": "restart"}))
+        .with_metadata(serde_json::json!({"source": "api"}));
 
         assert_eq!(cmd.priority, "high");
         assert_eq!(cmd.timeout_seconds, Some(120));
@@ -328,42 +353,72 @@ mod tests {
     // Command status transitions
     #[test]
     fn test_command_mark_sent() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .mark_sent();
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .mark_sent();
         assert_eq!(cmd.status, "sent");
     }
 
     #[test]
     fn test_command_mark_executing() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .mark_executing();
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .mark_executing();
         assert_eq!(cmd.status, "executing");
     }
 
     #[test]
     fn test_command_mark_completed() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .mark_completed();
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .mark_completed();
         assert_eq!(cmd.status, "completed");
     }
 
     #[test]
     fn test_command_mark_failed() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .mark_failed();
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .mark_failed();
         assert_eq!(cmd.status, "failed");
     }
 
     #[test]
     fn test_command_mark_cancelled() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string())
-            .mark_cancelled();
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        )
+        .mark_cancelled();
         assert_eq!(cmd.status, "cancelled");
     }
 
     #[test]
     fn test_command_status_transition_chain() {
-        let cmd = Command::new("c".to_string(), "h".to_string(), "t".to_string(), "u".to_string());
+        let cmd = Command::new(
+            "c".to_string(),
+            "h".to_string(),
+            "t".to_string(),
+            "u".to_string(),
+        );
         assert_eq!(cmd.status, "queued");
         let cmd = cmd.mark_sent();
         assert_eq!(cmd.status, "sent");

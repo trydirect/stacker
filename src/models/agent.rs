@@ -183,8 +183,8 @@ mod tests {
 
     #[test]
     fn test_audit_log_with_ip() {
-        let log = AuditLog::new(None, None, "test".to_string(), None)
-            .with_ip("192.168.1.1".to_string());
+        let log =
+            AuditLog::new(None, None, "test".to_string(), None).with_ip("192.168.1.1".to_string());
         assert_eq!(log.ip_address, Some("192.168.1.1".to_string()));
     }
 

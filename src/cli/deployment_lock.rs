@@ -208,13 +208,7 @@ impl DeploymentLock {
                 .server
                 .as_ref()
                 .and_then(|s| s.ssh_key.clone())
-                .or_else(|| {
-                    config
-                        .deploy
-                        .cloud
-                        .as_ref()
-                        .and_then(|c| c.ssh_key.clone())
-                });
+                .or_else(|| config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone()));
 
             config.deploy.server = Some(ServerConfig {
                 host: ip.clone(),

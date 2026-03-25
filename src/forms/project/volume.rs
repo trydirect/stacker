@@ -88,7 +88,10 @@ impl Volume {
             };
         }
 
-        tracing::debug!("Bind mount volume '{}' — adding driver_opts with base dir", host_path);
+        tracing::debug!(
+            "Bind mount volume '{}' — adding driver_opts with base dir",
+            host_path
+        );
 
         let default_base =
             std::env::var("DEFAULT_DEPLOY_DIR").unwrap_or_else(|_| "/home/trydirect".to_string());
@@ -106,9 +109,7 @@ impl Volume {
         );
 
         // Normalize to avoid duplicate slashes in bind-mount device paths.
-        let normalized_host = host_path
-            .trim_start_matches("./")
-            .trim_start_matches('/');
+        let normalized_host = host_path.trim_start_matches("./").trim_start_matches('/');
         let path = format!("{}/{}", base.trim_end_matches('/'), normalized_host);
         driver_opts.insert(
             String::from("device"),
@@ -152,14 +153,16 @@ mod tests {
         };
 
         let compose = volume.to_compose_volume(Some("/srv/trydirect"));
-        let device = compose
-            .driver_opts
-            .get("device")
-            .and_then(|v| v.as_ref());
+        let device = compose.driver_opts.get("device").and_then(|v| v.as_ref());
 
         assert_eq!(compose.driver.as_deref(), Some("local"));
         assert_eq!(compose.name.as_deref(), Some("projects/app"));
-        assert_eq!(device, Some(&SingleValue::String("/srv/trydirect/projects/app".to_string())));
+        assert_eq!(
+            device,
+            Some(&SingleValue::String(
+                "/srv/trydirect/projects/app".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -170,14 +173,14 @@ mod tests {
         };
 
         let compose = volume.to_compose_volume(Some("/srv/trydirect"));
-        let device = compose
-            .driver_opts
-            .get("device")
-            .and_then(|v| v.as_ref());
+        let device = compose.driver_opts.get("device").and_then(|v| v.as_ref());
 
         assert!(!volume.is_named_docker_volume());
         assert_eq!(compose.driver.as_deref(), Some("local"));
-        assert_eq!(device, Some(&SingleValue::String("/srv/trydirect/data".to_string())));
+        assert_eq!(
+            device,
+            Some(&SingleValue::String("/srv/trydirect/data".to_string()))
+        );
     }
 
     #[test]
@@ -188,14 +191,14 @@ mod tests {
         };
 
         let compose = volume.to_compose_volume(Some("/srv/trydirect"));
-        let device = compose
-            .driver_opts
-            .get("device")
-            .and_then(|v| v.as_ref());
+        let device = compose.driver_opts.get("device").and_then(|v| v.as_ref());
 
         assert!(!volume.is_named_docker_volume());
         assert_eq!(compose.driver.as_deref(), Some("local"));
-        assert_eq!(device, Some(&SingleValue::String("/srv/trydirect/data".to_string())));
+        assert_eq!(
+            device,
+            Some(&SingleValue::String("/srv/trydirect/data".to_string()))
+        );
     }
 
     #[test]
