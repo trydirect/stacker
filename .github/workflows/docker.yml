@@ -23,7 +23,7 @@ jobs:
       SQLX_OFFLINE: true
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
 
@@ -47,7 +47,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
           key: docker-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -56,7 +56,7 @@ jobs:
             docker-
 
       - name: Cache cargo index
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.cargo/git
           key: docker-index-${{ hashFiles('**/Cargo.lock') }}
@@ -69,7 +69,7 @@ jobs:
           head -c16 /dev/urandom > src/secret.key
 
       - name: Cache cargo build
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: target
           key: docker-build-${{ hashFiles('**/Cargo.lock') }}
@@ -124,7 +124,7 @@ jobs:
 
       - name: Archive production artifacts
         if: ${{ hashFiles('web/package.json') != '' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: dist-without-markdown
           path: |
@@ -141,13 +141,14 @@ jobs:
           cp target/release/server app/stacker/server
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
+          cp access_control.conf.dist app/access_control.conf.dist
           cd app
           touch .env
           tar -czvf ../app.tar.gz .
           cd ..
 
       - name: Upload app archive for Docker job
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: artifact-linux-docker
           path: app.tar.gz
@@ -157,16 +158,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: cicd-docker
     steps:
-      - name: Download app archive
-        uses: actions/download-artifact@v7
+      - name: Checkout sources
+        uses: actions/checkout@v4
         with:
-          name: artifact-linux-docker
-
-      - name: Extract app archive
-        run: tar -zxvf app.tar.gz
-
-      - name: Display structure of downloaded files
-        run: ls -R
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       -
         name: Set up QEMU
@@ -192,7 +187,8 @@ jobs:
         name: Build and push
         uses: docker/build-push-action@v6
         with:
-          push: true
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_tags.outputs.tags }}
 
   stackerdb-docker:
@@ -201,7 +197,7 @@ jobs:
     needs: cicd-docker
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
       -
@@ -231,3 +227,4 @@ jobs:
           file: ./stackerdb/Dockerfile
           push: true
           tags: ${{ steps.stackerdb_tags.outputs.tags }}
+

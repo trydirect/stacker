@@ -54,3 +54,60 @@ impl Into<dctypes::NetworkSettings> for Network {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_network_default_is_external() {
+        let net = Network::default();
+        assert_eq!(net.id, "default_network");
+        assert_eq!(net.name, "default_network");
+        assert_eq!(net.external, Some(true));
+    }
+
+    #[test]
+    fn test_default_network_to_settings() {
+        let net = Network::default();
+        let settings: dctypes::NetworkSettings = net.into();
+        assert_eq!(settings.name, Some("default_network".to_string()));
+        // default_network is always external
+        assert!(matches!(
+            settings.external,
+            Some(dctypes::ComposeNetwork::Bool(true))
+        ));
+    }
+
+    #[test]
+    fn test_custom_network_not_external() {
+        let net = Network {
+            id: "custom_net".to_string(),
+            name: "my-network".to_string(),
+            external: Some(false),
+            driver: Some("bridge".to_string()),
+            attachable: Some(true),
+            enable_ipv6: Some(false),
+            internal: Some(false),
+            driver_opts: None,
+            ipam: None,
+            labels: None,
+        };
+        let settings: dctypes::NetworkSettings = net.into();
+        assert_eq!(settings.name, Some("my-network".to_string()));
+        assert!(matches!(
+            settings.external,
+            Some(dctypes::ComposeNetwork::Bool(false))
+        ));
+        assert_eq!(settings.driver, Some("bridge".to_string()));
+        assert!(settings.attachable);
+    }
+
+    #[test]
+    fn test_network_serialization() {
+        let net = Network::default();
+        let json = serde_json::to_string(&net).unwrap();
+        let deserialized: Network = serde_json::from_str(&json).unwrap();
+        assert_eq!(net, deserialized);
+    }
+}

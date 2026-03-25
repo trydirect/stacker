@@ -278,6 +278,27 @@ enum MarketplaceCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Submit current stack to the marketplace for review
+    Submit {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Stack version (default: from stacker.yml or "1.0.0")
+        #[arg(long)]
+        version: Option<String>,
+        /// Short description for marketplace listing
+        #[arg(long)]
+        description: Option<String>,
+        /// Category code (e.g. ai-agents, data-pipelines, saas-starter)
+        #[arg(long)]
+        category: Option<String>,
+        /// Pricing: free, one_time, subscription (default: free)
+        #[arg(long, value_name = "TYPE")]
+        plan_type: Option<String>,
+        /// Price amount (required if plan_type is not free)
+        #[arg(long)]
+        price: Option<f64>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1186,6 +1207,16 @@ fn get_command(
                     name, json,
                 ),
             ),
+            MarketplaceCommands::Submit {
+                file,
+                version,
+                description,
+                category,
+                plan_type,
+                price,
+            } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
+                file, version, description, category, plan_type, price,
+            )),
         },
         // Completion is handled in main() before this function is called.
         StackerCommands::Completion { .. } => unreachable!(),

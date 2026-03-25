@@ -10,6 +10,6 @@ pub use admin::{
 };
 pub use creator::{
     CreateTemplateRequest, ResubmitRequest, UpdateTemplateRequest, create_handler, mine_handler,
-    resubmit_handler, submit_handler, update_handler,
+    my_reviews_handler, resubmit_handler, submit_handler, update_handler,
 };
 pub use public::TemplateListQuery;

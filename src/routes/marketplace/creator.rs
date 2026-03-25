@@ -285,13 +285,40 @@ pub async fn resubmit_handler(
 #[tracing::instrument(name = "List my templates")]
 #[get("/mine")]
 pub async fn mine_handler(
-    user: web::ReqData<Arc<models::User>>,
+    user: Option<web::ReqData<Arc<models::User>>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
     db::marketplace::list_mine(pg_pool.get_ref(), &user.id)
         .await
         .map_err(|err| {
             JsonResponse::<Vec<models::StackTemplate>>::build().internal_server_error(err)
         })
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
+}
+
+#[tracing::instrument(name = "List reviews for my template")]
+#[get("/{id}/reviews")]
+pub async fn my_reviews_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+
+    if template.creator_user_id != user.id {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+    }
+
+    db::marketplace::list_reviews_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
+        .map(|reviews| JsonResponse::build().set_list(reviews).ok("OK"))
 }

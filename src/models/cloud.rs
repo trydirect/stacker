@@ -77,3 +77,99 @@ impl Default for Cloud {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_string_some() {
+        assert_eq!(mask_string(Some(&"abcdefgh".to_string())), "abcd****");
+    }
+
+    #[test]
+    fn test_mask_string_short() {
+        assert_eq!(mask_string(Some(&"ab".to_string())), "ab****");
+    }
+
+    #[test]
+    fn test_mask_string_none() {
+        assert_eq!(mask_string(None), "");
+    }
+
+    #[test]
+    fn test_mask_string_empty() {
+        assert_eq!(mask_string(Some(&"".to_string())), "****");
+    }
+
+    #[test]
+    fn test_cloud_display_masks_credentials() {
+        let cloud = Cloud::new(
+            "user1".to_string(),
+            "my-cloud".to_string(),
+            "aws".to_string(),
+            Some("token12345".to_string()),
+            Some("key12345".to_string()),
+            Some("secret12345".to_string()),
+            Some(true),
+        );
+        let display = format!("{}", cloud);
+        assert!(display.contains("aws"));
+        assert!(display.contains("toke****"));
+        assert!(display.contains("key1****"));
+        assert!(display.contains("secr****"));
+        assert!(!display.contains("token12345"));
+        assert!(!display.contains("key12345"));
+        assert!(!display.contains("secret12345"));
+    }
+
+    #[test]
+    fn test_cloud_display_none_credentials() {
+        let cloud = Cloud::default();
+        let display = format!("{}", cloud);
+        assert!(display.contains("cloud_key : "));
+    }
+
+    #[test]
+    fn test_cloud_new() {
+        let cloud = Cloud::new(
+            "user1".to_string(),
+            "test".to_string(),
+            "hetzner".to_string(),
+            None,
+            Some("key".to_string()),
+            None,
+            Some(false),
+        );
+        assert_eq!(cloud.id, 0);
+        assert_eq!(cloud.user_id, "user1");
+        assert_eq!(cloud.provider, "hetzner");
+        assert!(cloud.cloud_token.is_none());
+        assert_eq!(cloud.cloud_key, Some("key".to_string()));
+        assert!(cloud.cloud_secret.is_none());
+    }
+
+    #[test]
+    fn test_cloud_default() {
+        let cloud = Cloud::default();
+        assert_eq!(cloud.id, 0);
+        assert_eq!(cloud.provider, "");
+        assert_eq!(cloud.save_token, Some(false));
+    }
+
+    #[test]
+    fn test_cloud_serialization() {
+        let cloud = Cloud::new(
+            "u1".to_string(),
+            "c".to_string(),
+            "do".to_string(),
+            Some("tok".to_string()),
+            None,
+            None,
+            None,
+        );
+        let json = serde_json::to_string(&cloud).unwrap();
+        let deserialized: Cloud = serde_json::from_str(&json).unwrap();
+        assert_eq!(cloud, deserialized);
+    }
+}

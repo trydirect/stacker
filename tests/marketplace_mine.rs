@@ -116,9 +116,10 @@ async fn mine_returns_forbidden_without_authorization_header() {
         .await
         .expect("Failed to send request");
 
+    let status = response.status();
     assert_eq!(
         StatusCode::FORBIDDEN,
-        response.status(),
+        status,
         "Missing auth should yield 403 Forbidden — Stacker never returns 404 for this route"
     );
 }

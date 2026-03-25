@@ -21,3 +21,51 @@ impl std::fmt::Debug for Client {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_debug_masks_secret() {
+        let client = Client {
+            id: 1,
+            user_id: "user1".to_string(),
+            secret: Some("mysecretvalue".to_string()),
+        };
+        let debug = format!("{:?}", client);
+        assert!(debug.contains("myse****"));
+        assert!(!debug.contains("mysecretvalue"));
+        assert!(debug.contains("user1"));
+    }
+
+    #[test]
+    fn test_client_debug_no_secret() {
+        let client = Client {
+            id: 2,
+            user_id: "user2".to_string(),
+            secret: None,
+        };
+        let debug = format!("{:?}", client);
+        assert!(debug.contains("user2"));
+    }
+
+    #[test]
+    fn test_client_debug_short_secret() {
+        let client = Client {
+            id: 3,
+            user_id: "u".to_string(),
+            secret: Some("ab".to_string()),
+        };
+        let debug = format!("{:?}", client);
+        assert!(debug.contains("ab****"));
+    }
+
+    #[test]
+    fn test_client_default() {
+        let client = Client::default();
+        assert_eq!(client.id, 0);
+        assert_eq!(client.user_id, "");
+        assert!(client.secret.is_none());
+    }
+}

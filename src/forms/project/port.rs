@@ -84,3 +84,106 @@ impl TryInto<dctypes::Port> for &Port {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_non_empty_none() {
+        assert!(validate_non_empty(&None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_non_empty_empty_string() {
+        assert!(validate_non_empty(&Some("".to_string())).is_ok());
+    }
+
+    #[test]
+    fn test_validate_non_empty_valid_port() {
+        assert!(validate_non_empty(&Some("8080".to_string())).is_ok());
+        assert!(validate_non_empty(&Some("80".to_string())).is_ok());
+        assert!(validate_non_empty(&Some("443".to_string())).is_ok());
+    }
+
+    #[test]
+    fn test_validate_non_empty_invalid_port() {
+        assert!(validate_non_empty(&Some("abc".to_string())).is_err());
+        assert!(validate_non_empty(&Some("1".to_string())).is_err()); // too short (min 2 digits)
+        assert!(validate_non_empty(&Some("1234567".to_string())).is_err()); // too long (max 6 digits)
+    }
+
+    #[test]
+    fn test_port_try_into_valid() {
+        let port = Port {
+            host_port: Some("8080".to_string()),
+            container_port: "80".to_string(),
+            protocol: Some("tcp".to_string()),
+        };
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+        assert!(result.is_ok());
+        let dc_port = result.unwrap();
+        assert_eq!(dc_port.target, 80);
+    }
+
+    #[test]
+    fn test_port_try_into_no_host_port() {
+        let port = Port {
+            host_port: None,
+            container_port: "3000".to_string(),
+            protocol: None,
+        };
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+        assert!(result.is_ok());
+        let dc_port = result.unwrap();
+        assert_eq!(dc_port.target, 3000);
+        assert!(dc_port.published.is_none());
+    }
+
+    #[test]
+    fn test_port_try_into_empty_host_port() {
+        let port = Port {
+            host_port: Some("".to_string()),
+            container_port: "5432".to_string(),
+            protocol: None,
+        };
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+        assert!(result.is_ok());
+        let dc_port = result.unwrap();
+        assert!(dc_port.published.is_none());
+    }
+
+    #[test]
+    fn test_port_try_into_invalid_container_port() {
+        let port = Port {
+            host_port: None,
+            container_port: "not_a_number".to_string(),
+            protocol: None,
+        };
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Could not parse container port"));
+    }
+
+    #[test]
+    fn test_port_default() {
+        let port = Port::default();
+        assert!(port.host_port.is_none());
+        assert_eq!(port.container_port, "");
+        assert!(port.protocol.is_none());
+    }
+
+    #[test]
+    fn test_port_serialization() {
+        let port = Port {
+            host_port: Some("8080".to_string()),
+            container_port: "80".to_string(),
+            protocol: Some("tcp".to_string()),
+        };
+        let json = serde_json::to_string(&port).unwrap();
+        let deserialized: Port = serde_json::from_str(&json).unwrap();
+        assert_eq!(port, deserialized);
+    }
+}
