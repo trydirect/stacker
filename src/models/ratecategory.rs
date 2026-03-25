@@ -25,3 +25,40 @@ impl Default for RateCategory {
         RateCategory::Application
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_category_into_string() {
+        let s: String = RateCategory::Application.into();
+        assert_eq!(s, "Application");
+    }
+
+    #[test]
+    fn test_rate_category_all_variants() {
+        let variants = vec![
+            (RateCategory::Application, "Application"),
+            (RateCategory::Cloud, "Cloud"),
+            (RateCategory::Project, "Project"),
+            (RateCategory::DeploymentSpeed, "DeploymentSpeed"),
+            (RateCategory::Documentation, "Documentation"),
+            (RateCategory::Design, "Design"),
+            (RateCategory::TechSupport, "TechSupport"),
+            (RateCategory::Price, "Price"),
+            (RateCategory::MemoryUsage, "MemoryUsage"),
+        ];
+        for (cat, expected) in variants {
+            let s: String = cat.into();
+            assert_eq!(s, expected);
+        }
+    }
+
+    #[test]
+    fn test_rate_category_default() {
+        let cat = RateCategory::default();
+        let s: String = cat.into();
+        assert_eq!(s, "Application");
+    }
+}

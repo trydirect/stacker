@@ -120,3 +120,118 @@ impl Secret {
         String::from_utf8(plaintext).map_err(|e| format!("UTF-8 conversion failed: {:?}", e))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_secret_new() {
+        let secret = Secret::new();
+        assert_eq!(secret.user_id, "");
+        assert_eq!(secret.provider, "");
+        assert_eq!(secret.field, "");
+    }
+
+    #[test]
+    fn test_b64_encode() {
+        let data = vec![72, 101, 108, 108, 111]; // "Hello"
+        let encoded = Secret::b64_encode(&data);
+        assert_eq!(encoded, "SGVsbG8=");
+    }
+
+    #[test]
+    fn test_b64_decode_valid() {
+        let result = Secret::b64_decode(&"SGVsbG8=".to_string());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![72, 101, 108, 108, 111]);
+    }
+
+    #[test]
+    fn test_b64_decode_invalid() {
+        let result = Secret::b64_decode(&"not!valid!base64!!!".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_b64_roundtrip() {
+        let original = vec![1, 2, 3, 4, 5, 255, 0, 128];
+        let encoded = Secret::b64_encode(&original);
+        let decoded = Secret::b64_decode(&encoded).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_b64_encode_empty() {
+        let data: Vec<u8> = vec![];
+        let encoded = Secret::b64_encode(&data);
+        assert_eq!(encoded, "");
+    }
+
+    #[test]
+    fn test_b64_decode_empty() {
+        let result = Secret::b64_decode(&"".to_string());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_encrypt_requires_security_key() {
+        // Remove SECURITY_KEY if it exists
+        std::env::remove_var("SECURITY_KEY");
+        let secret = Secret {
+            user_id: "u1".to_string(),
+            provider: "aws".to_string(),
+            field: "cloud_token".to_string(),
+        };
+        let result = secret.encrypt("my-token".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("SECURITY_KEY"));
+    }
+
+    #[test]
+    fn test_encrypt_invalid_key_length() {
+        std::env::set_var("SECURITY_KEY", "short-key");
+        let secret = Secret {
+            user_id: "u1".to_string(),
+            provider: "aws".to_string(),
+            field: "cloud_token".to_string(),
+        };
+        let result = secret.encrypt("my-token".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("32 bytes"));
+        std::env::remove_var("SECURITY_KEY");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let key = "01234567890123456789012345678901"; // exactly 32 bytes
+        std::env::set_var("SECURITY_KEY", key);
+
+        let mut secret = Secret {
+            user_id: "u1".to_string(),
+            provider: "aws".to_string(),
+            field: "cloud_token".to_string(),
+        };
+
+        let original = "my-super-secret-token-123";
+        let encrypted = secret.encrypt(original.to_string()).unwrap();
+        assert!(!encrypted.is_empty());
+        assert!(encrypted.len() > 12); // nonce (12) + ciphertext
+
+        let decrypted = secret.decrypt(encrypted).unwrap();
+        assert_eq!(decrypted, original);
+
+        std::env::remove_var("SECURITY_KEY");
+    }
+
+    #[test]
+    fn test_decrypt_too_short_data() {
+        std::env::set_var("SECURITY_KEY", "01234567890123456789012345678901");
+        let mut secret = Secret::new();
+        let result = secret.decrypt(vec![1, 2, 3]); // less than 12 bytes
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too short"));
+        std::env::remove_var("SECURITY_KEY");
+    }
+}
