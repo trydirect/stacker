@@ -141,6 +141,7 @@ jobs:
           cp target/release/server app/stacker/server
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
+          cp access_control.conf.dist app/access_control.conf.dist
           cd app
           touch .env
           tar -czvf ../app.tar.gz .
