@@ -271,10 +271,10 @@ impl ListenCommand {
     async fn connect_with_retry(connection_string: &str) -> Result<MqManager, String> {
         let max_retries = 10;
         let mut retry_delay = Duration::from_secs(1);
-
+        
         for attempt in 1..=max_retries {
             println!("RabbitMQ connection attempt {}/{}", attempt, max_retries);
-
+            
             match MqManager::try_new(connection_string.to_string()) {
                 Ok(manager) => {
                     println!("Connected to RabbitMQ");
@@ -289,7 +289,7 @@ impl ListenCommand {
                 }
             }
         }
-
+        
         Err(format!("Failed to connect after {} attempts", max_retries))
     }
 }

@@ -31,9 +31,7 @@ fn test_update_invalid_channel_fails() {
         .args(["update", "--channel", "nightly"])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("Unknown channel").or(predicate::str::contains("nightly")),
-        );
+        .stderr(predicate::str::contains("Unknown channel").or(predicate::str::contains("nightly")));
 }
 
 #[test]

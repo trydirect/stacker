@@ -99,7 +99,8 @@ fn run_agent_command(
         let command_id = info.command_id.clone();
         let deployment_hash = request.deployment_hash.clone();
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
         let mut last_status = "pending".to_string();
 
@@ -121,7 +122,10 @@ fn run_agent_command(
                 .await?;
 
             last_status = status.status.clone();
-            progress::update_message(&pb, &format!("{} [{}]", spinner_msg, status.status));
+            progress::update_message(
+                &pb,
+                &format!("{} [{}]", spinner_msg, status.status),
+            );
 
             match status.status.as_str() {
                 "completed" | "failed" => return Ok(status),
@@ -155,11 +159,7 @@ fn print_command_result(info: &AgentCommandInfo, json_output: bool) {
 
     println!("Command:  {}", info.command_id);
     println!("Type:     {}", info.command_type);
-    println!(
-        "Status:   {} {}",
-        progress::status_icon(&info.status),
-        info.status
-    );
+    println!("Status:   {} {}", progress::status_icon(&info.status), info.status);
 
     if let Some(ref result) = info.result {
         println!("\n{}", fmt::pretty_json(result));

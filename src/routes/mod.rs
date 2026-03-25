@@ -22,12 +22,12 @@ pub(crate) mod pipe;
 
 pub use agreement::*;
 pub use deployment::{
-    capabilities_handler, force_complete_handler, list_handler, status_by_project_handler,
-    status_handler, DeploymentListQuery, DeploymentStatusResponse,
+    DeploymentListQuery, DeploymentStatusResponse, capabilities_handler, force_complete_handler,
+    list_handler, status_by_project_handler, status_handler,
 };
 pub use marketplace::{
-    approve_handler, create_handler, list_plans_handler, list_submitted_handler, mine_handler,
-    reject_handler, resubmit_handler, security_scan_handler, submit_handler, unapprove_handler,
-    update_handler, AdminDecisionRequest, CreateTemplateRequest, ResubmitRequest,
-    TemplateListQuery, UnapproveRequest, UpdateTemplateRequest,
+    AdminDecisionRequest, CreateTemplateRequest, ResubmitRequest, TemplateListQuery,
+    UpdateTemplateRequest, UnapproveRequest, approve_handler, create_handler, list_plans_handler,
+    list_submitted_handler, mine_handler, reject_handler, resubmit_handler,
+    security_scan_handler, submit_handler, unapprove_handler, update_handler,
 };

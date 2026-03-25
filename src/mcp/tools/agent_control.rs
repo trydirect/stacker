@@ -37,11 +37,7 @@ async fn wait_for_command_result(
 
         if let Some(cmd) = fetched {
             let status = cmd.status.to_lowercase();
-            if status == "completed"
-                || status == "failed"
-                || cmd.result.is_some()
-                || cmd.error.is_some()
-            {
+            if status == "completed" || status == "failed" || cmd.result.is_some() || cmd.error.is_some() {
                 return Ok(Some(cmd));
             }
         }
@@ -89,9 +85,7 @@ async fn enqueue_and_wait(
     .await
     .map_err(|e| format!("Failed to queue command: {}", e))?;
 
-    if let Some(cmd) =
-        wait_for_command_result(&context.pg_pool, &command.command_id, timeout_secs).await?
-    {
+    if let Some(cmd) = wait_for_command_result(&context.pg_pool, &command.command_id, timeout_secs).await? {
         let status = cmd.status.to_lowercase();
         Ok(json!({
             "status": status,
@@ -318,12 +312,8 @@ impl ToolHandler for ConfigureProxyAgentTool {
             action: String,
         }
 
-        fn default_true() -> bool {
-            true
-        }
-        fn default_create() -> String {
-            "create".to_string()
-        }
+        fn default_true() -> bool { true }
+        fn default_create() -> String { "create".to_string() }
 
         let params: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;

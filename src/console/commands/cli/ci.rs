@@ -96,10 +96,7 @@ impl CallableTrait for CiExportCommand {
                 println!("  1. Add STACKER_TOKEN to your GitHub repository secrets");
                 println!("     (Settings → Secrets and variables → Actions)");
                 println!("  2. Commit and push the workflow file:");
-                println!(
-                    "     git add {} && git commit -m 'ci: add stacker deploy workflow'",
-                    output_path.display()
-                );
+                println!("     git add {} && git commit -m 'ci: add stacker deploy workflow'", output_path.display());
             }
             "gitlab" | "gitlab-ci" => {
                 println!();
@@ -107,10 +104,7 @@ impl CallableTrait for CiExportCommand {
                 println!("  1. Add STACKER_TOKEN to your GitLab CI/CD variables");
                 println!("     (Settings → CI/CD → Variables)");
                 println!("  2. Commit and push the pipeline file:");
-                println!(
-                    "     git add {} && git commit -m 'ci: add stacker deploy pipeline'",
-                    output_path.display()
-                );
+                println!("     git add {} && git commit -m 'ci: add stacker deploy pipeline'", output_path.display());
             }
             _ => {}
         }
@@ -154,7 +148,10 @@ impl CallableTrait for CiValidateCommand {
         };
 
         if !pipeline_path.exists() {
-            eprintln!("✗ Pipeline file not found: {}", pipeline_path.display());
+            eprintln!(
+                "✗ Pipeline file not found: {}",
+                pipeline_path.display()
+            );
             eprintln!("  Run: stacker ci export --platform {}", self.platform);
             return Err(Box::new(CliError::ConfigValidation(format!(
                 "Pipeline file not found: {}",
@@ -174,10 +171,7 @@ impl CallableTrait for CiValidateCommand {
                 pipeline_path.display(),
                 config.name
             );
-            eprintln!(
-                "  Re-generate with: stacker ci export --platform {}",
-                self.platform
-            );
+            eprintln!("  Re-generate with: stacker ci export --platform {}", self.platform);
             Err(Box::new(CliError::ConfigValidation(
                 "Pipeline may be out of sync with stacker.yml".to_string(),
             )))

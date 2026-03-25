@@ -1,5 +1,5 @@
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::io::{self, Write};
 
 use crate::cli::config_parser::{
     CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
@@ -13,7 +13,9 @@ const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// Resolve config path from optional override.
 fn resolve_config_path(file: &Option<String>) -> String {
-    file.as_deref().unwrap_or(DEFAULT_CONFIG_FILE).to_string()
+    file.as_deref()
+        .unwrap_or(DEFAULT_CONFIG_FILE)
+        .to_string()
 }
 
 fn prompt_line(prompt: &str) -> Result<String, CliError> {
@@ -37,7 +39,8 @@ fn parse_cloud_provider(s: &str) -> Result<CloudProvider, CliError> {
     let json = format!("\"{}\"", s.trim().to_lowercase());
     serde_json::from_str::<CloudProvider>(&json).map_err(|_| {
         CliError::ConfigValidation(
-            "Invalid cloud provider. Use: hetzner, digitalocean, aws, linode, vultr".to_string(),
+            "Invalid cloud provider. Use: hetzner, digitalocean, aws, linode, vultr"
+                .to_string(),
         )
     })
 }
@@ -104,9 +107,7 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
     })
 }
 
-fn resolve_remote_cloud_credentials(
-    provider_code: &str,
-) -> serde_json::Map<String, serde_json::Value> {
+fn resolve_remote_cloud_credentials(provider_code: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut creds = serde_json::Map::new();
 
     match provider_code {
@@ -156,10 +157,7 @@ fn resolve_remote_cloud_credentials(
             if let Some(secret) =
                 first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
             {
-                creds.insert(
-                    "cloud_secret".to_string(),
-                    serde_json::Value::String(secret),
-                );
+                creds.insert("cloud_secret".to_string(), serde_json::Value::String(secret));
             }
         }
         _ => {}
@@ -298,7 +296,8 @@ pub fn run_generate_remote_payload(
             "Generated remote payload (advanced/debug): {}",
             output_path.display()
         ),
-        "Set deploy.target=cloud and deploy.cloud.orchestrator=remote (advanced mode)".to_string(),
+        "Set deploy.target=cloud and deploy.cloud.orchestrator=remote (advanced mode)"
+            .to_string(),
         "Tip: regular users can skip this and run `stacker deploy --target cloud` directly"
             .to_string(),
         format!("Backup written to {}", backup_path),
@@ -393,8 +392,10 @@ pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, Cli
         .and_then(|c| c.ssh_key.clone())
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "~/.ssh/id_rsa".to_string());
-    let ssh_key_input =
-        prompt_with_default("SSH key path (leave empty to skip)", &ssh_key_default)?;
+    let ssh_key_input = prompt_with_default(
+        "SSH key path (leave empty to skip)",
+        &ssh_key_default,
+    )?;
 
     let region_opt = if region.trim().is_empty() {
         None
@@ -481,7 +482,11 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     .unwrap_or_else(|| "cpx11".to_string());
                 let size = prompt_with_default("Cloud size", &size_default)?;
 
-                let ssh_key = config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone());
+                let ssh_key = config
+                    .deploy
+                    .cloud
+                    .as_ref()
+                    .and_then(|c| c.ssh_key.clone());
 
                 let orchestrator = config
                     .deploy
@@ -616,8 +621,9 @@ pub fn run_show(config_path: &str) -> Result<String, CliError> {
     }
 
     let config = StackerConfig::from_file(path)?;
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    let yaml = serde_yaml::to_string(&config).map_err(|e| {
+        CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
+    })?;
     Ok(yaml)
 }
 
@@ -829,9 +835,7 @@ impl CallableTrait for ConfigLockCommand {
                 eprintln!("Deployment lock exists but has no remote server details.");
                 if lock.target == "cloud" {
                     eprintln!("The cloud deployment may still be provisioning.");
-                    eprintln!(
-                        "Wait for it to complete, then run `stacker deploy --lock` to retry."
-                    );
+                    eprintln!("Wait for it to complete, then run `stacker deploy --lock` to retry.");
                 }
                 return Ok(());
             }
@@ -840,7 +844,9 @@ impl CallableTrait for ConfigLockCommand {
 
         // 3. Load stacker.yml, apply lock, write back
         if !config_path.exists() {
-            return Err(Box::new(CliError::ConfigNotFound { path: config_path }));
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: config_path,
+            }));
         }
 
         let mut config = StackerConfig::from_file_raw(&config_path)?;
@@ -885,7 +891,9 @@ impl CallableTrait for ConfigUnlockCommand {
         let config_path = project_dir.join(&config_path_str);
 
         if !config_path.exists() {
-            return Err(Box::new(CliError::ConfigNotFound { path: config_path }));
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: config_path,
+            }));
         }
 
         let mut config = StackerConfig::from_file_raw(&config_path)?;
@@ -975,10 +983,7 @@ mod tests {
 
     #[test]
     fn test_parse_cloud_provider_valid() {
-        assert_eq!(
-            parse_cloud_provider("hetzner").unwrap(),
-            CloudProvider::Hetzner
-        );
+        assert_eq!(parse_cloud_provider("hetzner").unwrap(), CloudProvider::Hetzner);
         assert_eq!(parse_cloud_provider("AWS").unwrap(), CloudProvider::Aws);
     }
 
@@ -1017,8 +1022,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let config_path = write_config(dir.path(), minimal_config_yaml());
 
-        let applied =
-            run_generate_remote_payload(&config_path, Some("stacker.remote.deploy.json")).unwrap();
+        let applied = run_generate_remote_payload(&config_path, Some("stacker.remote.deploy.json")).unwrap();
         assert!(!applied.is_empty());
 
         let payload_path = dir.path().join("stacker.remote.deploy.json");

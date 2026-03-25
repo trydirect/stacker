@@ -342,7 +342,8 @@ impl ToolHandler for ListCloudRegionsTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "list_cloud_regions".to_string(),
-            description: "List available regions from App Service for a cloud provider".to_string(),
+            description: "List available regions from App Service for a cloud provider"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

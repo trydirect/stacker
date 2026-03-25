@@ -130,14 +130,9 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     let address = format!("http://127.0.0.1:{}", port);
 
     let agent_pool = AgentPgPool::new(connection_pool.clone());
-    let server = stacker::startup::run(
-        app_listener,
-        connection_pool.clone(),
-        agent_pool,
-        configuration,
-    )
-    .await
-    .expect("Failed to bind address.");
+    let server = stacker::startup::run(app_listener, connection_pool.clone(), agent_pool, configuration)
+        .await
+        .expect("Failed to bind address.");
     let _ = tokio::spawn(server);
 
     Some(TestAppWithVault {

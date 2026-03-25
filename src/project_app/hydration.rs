@@ -152,9 +152,8 @@ mod hydrate {
                         env_config = Some(config);
                     }
 
-                    if let Some(config_bundle) =
-                        fetch_optional_config(&vault, &hash, &format!("{}_configs", app.code))
-                            .await?
+                    if let Some(config_bundle) = fetch_optional_config(&vault, &hash, &format!("{}_configs", app.code))
+                        .await?
                     {
                         hydrated.config_files = parse_config_bundle(&config_bundle.content);
                     }

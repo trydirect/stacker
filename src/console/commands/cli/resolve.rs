@@ -19,11 +19,7 @@ pub struct ResolveCommand {
 
 impl ResolveCommand {
     pub fn new(confirm: bool, force: bool, deployment: Option<String>) -> Self {
-        Self {
-            confirm,
-            force,
-            deployment,
-        }
+        Self { confirm, force, deployment }
     }
 }
 
@@ -47,8 +43,9 @@ impl CallableTrait for ResolveCommand {
         }
 
         let config_str = std::fs::read_to_string(&config_path)?;
-        let config: StackerConfig = serde_yaml::from_str(&config_str)
-            .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
+        let config: StackerConfig = serde_yaml::from_str(&config_str).map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e))
+        })?;
 
         let project_name = config
             .project

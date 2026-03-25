@@ -60,9 +60,7 @@ pub async fn status_by_hash_handler(
 
     let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &hash)
         .await
-        .map_err(|err| {
-            JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-        })?;
+        .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?;
 
     match deployment {
         Some(d) => {
@@ -75,9 +73,8 @@ pub async fn status_by_hash_handler(
                 .set_item(resp)
                 .ok("Deployment status fetched"))
         }
-        None => {
-            Err(JsonResponse::<DeploymentStatusResponse>::build().not_found("Deployment not found"))
-        }
+        None => Err(JsonResponse::<DeploymentStatusResponse>::build()
+            .not_found("Deployment not found")),
     }
 }
 
@@ -96,9 +93,7 @@ pub async fn status_handler(
 
     let deployment = db::deployment::fetch(pg_pool.get_ref(), deployment_id)
         .await
-        .map_err(|err| {
-            JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-        })?;
+        .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?;
 
     match deployment {
         Some(d) => {
@@ -112,9 +107,8 @@ pub async fn status_handler(
                 .set_item(resp)
                 .ok("Deployment status fetched"))
         }
-        None => {
-            Err(JsonResponse::<DeploymentStatusResponse>::build().not_found("Deployment not found"))
-        }
+        None => Err(JsonResponse::<DeploymentStatusResponse>::build()
+            .not_found("Deployment not found")),
     }
 }
 
@@ -132,21 +126,15 @@ pub async fn list_handler(
     let deployments = if let Some(project_id) = query.project_id {
         db::deployment::fetch_by_user_and_project(pg_pool.get_ref(), &user.id, project_id, limit)
             .await
-            .map_err(|err| {
-                JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-            })?
+            .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?
     } else {
         db::deployment::fetch_by_user(pg_pool.get_ref(), &user.id, limit)
             .await
-            .map_err(|err| {
-                JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-            })?
+            .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?
     };
 
-    let list: Vec<DeploymentStatusResponse> = deployments
-        .into_iter()
-        .map(DeploymentStatusResponse::from)
-        .collect();
+    let list: Vec<DeploymentStatusResponse> =
+        deployments.into_iter().map(DeploymentStatusResponse::from).collect();
 
     Ok(JsonResponse::build()
         .set_list(list)
@@ -168,9 +156,7 @@ pub async fn status_by_project_handler(
 
     let deployment = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
         .await
-        .map_err(|err| {
-            JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-        })?;
+        .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?;
 
     match deployment {
         Some(d) => {

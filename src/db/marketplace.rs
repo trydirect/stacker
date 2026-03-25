@@ -709,8 +709,7 @@ pub async fn admin_unapprove(
     reviewer_user_id: &str,
     reason: Option<&str>,
 ) -> Result<bool, String> {
-    let _query_span =
-        tracing::info_span!("marketplace_admin_unapprove", template_id = %template_id);
+    let _query_span = tracing::info_span!("marketplace_admin_unapprove", template_id = %template_id);
 
     let mut tx = pool.begin().await.map_err(|e| {
         tracing::error!("tx begin error: {:?}", e);

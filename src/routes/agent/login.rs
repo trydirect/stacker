@@ -32,10 +32,7 @@ pub struct AgentLoginResponse {
 /// Proxy login for Status Panel agents. Authenticates the user against
 /// the TryDirect OAuth server, then returns a session token and the
 /// user's deployments so the agent can pick one to link to.
-#[tracing::instrument(
-    name = "Agent proxy login",
-    skip(settings, api_pool, user_service, _req)
-)]
+#[tracing::instrument(name = "Agent proxy login", skip(settings, api_pool, user_service, _req))]
 #[post("/login")]
 pub async fn login_handler(
     payload: web::Json<AgentLoginRequest>,
@@ -109,12 +106,13 @@ pub async fn login_handler(
         })?;
 
     // 3. Fetch user's deployments from Stacker DB
-    let deployments = db::deployment::fetch_by_user(api_pool.get_ref(), &profile.email, 50)
-        .await
-        .map_err(|e| {
-            helpers::JsonResponse::<AgentLoginResponse>::build()
-                .internal_server_error(format!("Failed to fetch deployments: {}", e))
-        })?;
+    let deployments =
+        db::deployment::fetch_by_user(api_pool.get_ref(), &profile.email, 50)
+            .await
+            .map_err(|e| {
+                helpers::JsonResponse::<AgentLoginResponse>::build()
+                    .internal_server_error(format!("Failed to fetch deployments: {}", e))
+            })?;
 
     let deployment_infos: Vec<DeploymentInfo> = deployments
         .into_iter()

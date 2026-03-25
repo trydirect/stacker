@@ -10,31 +10,19 @@ fn stacker_cmd() -> Command {
 #[test]
 fn test_proxy_add_generates_nginx_block() {
     stacker_cmd()
-        .args([
-            "proxy",
-            "add",
-            "example.com",
-            "--upstream",
-            "http://app:3000",
-        ])
+        .args(["proxy", "add", "example.com", "--upstream", "http://app:3000"])
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("server_name").or(predicate::str::contains("example.com")),
-        );
+        .stdout(predicate::str::contains("server_name").or(predicate::str::contains("example.com")));
 }
 
 #[test]
 fn test_proxy_add_with_ssl() {
     stacker_cmd()
         .args([
-            "proxy",
-            "add",
-            "secure.example.com",
-            "--upstream",
-            "http://app:3000",
-            "--ssl",
-            "auto",
+            "proxy", "add", "secure.example.com",
+            "--upstream", "http://app:3000",
+            "--ssl", "auto",
         ])
         .assert()
         .success();

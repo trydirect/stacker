@@ -86,7 +86,10 @@ pub fn health_spinner(total_services: usize) -> ProgressBar {
 
 /// Update health check progress.
 pub fn update_health(pb: &ProgressBar, running: usize, total: usize) {
-    pb.set_message(format!("Container health: {}/{} running", running, total));
+    pb.set_message(format!(
+        "Container health: {}/{} running",
+        running, total
+    ));
 }
 
 #[cfg(test)]

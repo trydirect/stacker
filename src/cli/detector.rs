@@ -124,7 +124,10 @@ const ENV_FILE_NAMES: &[&str] = &[".env"];
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Detect the project type and infrastructure files in a directory.
-pub fn detect_project(project_path: &Path, fs: &dyn FileSystem) -> ProjectDetection {
+pub fn detect_project(
+    project_path: &Path,
+    fs: &dyn FileSystem,
+) -> ProjectDetection {
     let files = match fs.list_dir(project_path) {
         Ok(f) => f,
         Err(_) => return ProjectDetection::default(),

@@ -72,7 +72,13 @@ pub fn run_status(
 // ── Cloud deployment status ─────────────────────────
 
 /// Terminal statuses — once reached, `--watch` stops polling.
-const TERMINAL_STATUSES: &[&str] = &["completed", "failed", "cancelled", "error", "paused"];
+const TERMINAL_STATUSES: &[&str] = &[
+    "completed",
+    "failed",
+    "cancelled",
+    "error",
+    "paused",
+];
 
 /// Check if a status is terminal (deployment finished or failed).
 fn is_terminal(status: &str) -> bool {
@@ -86,7 +92,11 @@ struct StatusContext<'a> {
 }
 
 /// Pretty-print a deployment status with optional server/config context.
-fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &StatusContext<'_>) {
+fn print_deployment_status_rich(
+    info: &DeploymentStatusInfo,
+    json: bool,
+    ctx: &StatusContext<'_>,
+) {
     if json {
         if let Ok(j) = serde_json::to_string_pretty(info) {
             println!("{}", j);
@@ -231,8 +241,9 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
     }
 
     let config_str = std::fs::read_to_string(&config_path)?;
-    let config: StackerConfig = serde_yaml::from_str(&config_str)
-        .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
+    let config: StackerConfig = serde_yaml::from_str(&config_str).map_err(|e| {
+        CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e))
+    })?;
 
     let project_name = resolve_project_name(&config);
 
@@ -245,9 +256,11 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| CliError::DeployFailed {
-            target: DeployTarget::Cloud,
-            reason: format!("Failed to initialize async runtime: {}", e),
+        .map_err(|e| {
+            CliError::DeployFailed {
+                target: DeployTarget::Cloud,
+                reason: format!("Failed to initialize async runtime: {}", e),
+            }
         })?;
 
     rt.block_on(async {
@@ -418,11 +431,7 @@ mod tests {
         struct MockExec;
         impl CommandExecutor for MockExec {
             fn execute(&self, _p: &str, _a: &[&str]) -> Result<CommandOutput, CliError> {
-                Ok(CommandOutput {
-                    exit_code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                })
+                Ok(CommandOutput { exit_code: 0, stdout: String::new(), stderr: String::new() })
             }
         }
 

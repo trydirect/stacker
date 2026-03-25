@@ -251,9 +251,7 @@ pub async fn run(
                                     .service(crate::routes::marketplace::admin::approve_handler)
                                     .service(crate::routes::marketplace::admin::reject_handler)
                                     .service(crate::routes::marketplace::admin::unapprove_handler)
-                                    .service(
-                                        crate::routes::marketplace::admin::security_scan_handler,
-                                    ),
+                                    .service(crate::routes::marketplace::admin::security_scan_handler),
                             )
                             .service(
                                 web::scope("/marketplace")
@@ -265,9 +263,10 @@ pub async fn run(
                 web::scope("/api/v1/marketplace")
                     .service(crate::routes::marketplace::public::install_script_handler)
                     .service(crate::routes::marketplace::public::download_stack_handler)
-                    .service(web::scope("/agents").service(
-                        crate::routes::marketplace::agent::register_marketplace_agent_handler,
-                    )),
+                    .service(
+                        web::scope("/agents")
+                            .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),
+                    ),
             )
             .service(
                 web::scope("/cloud")

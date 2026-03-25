@@ -266,9 +266,8 @@ where
 
     match value {
         serde_yaml::Value::Null => Ok(Vec::new()),
-        serde_yaml::Value::Sequence(_) => {
-            serde_yaml::from_value(value).map_err(serde::de::Error::custom)
-        }
+        serde_yaml::Value::Sequence(_) => serde_yaml::from_value(value)
+            .map_err(serde::de::Error::custom),
         serde_yaml::Value::Mapping(map) => {
             let mut services = Vec::new();
 
@@ -640,8 +639,7 @@ impl StackerConfig {
             issues.push(ValidationIssue {
                 severity: Severity::Error,
                 code: "E001".to_string(),
-                message: "Cloud provider configuration is required for cloud deployment"
-                    .to_string(),
+                message: "Cloud provider configuration is required for cloud deployment".to_string(),
                 field: Some("deploy.cloud.provider".to_string()),
             });
         }
@@ -783,7 +781,11 @@ fn load_env_file_vars_from_yaml(path: &Path, raw_content: &str) -> HashMap<Strin
 
 /// Extract the host port from a port mapping string like "8080:80" → "8080".
 fn extract_host_port(port_str: &str) -> String {
-    port_str.split(':').next().unwrap_or(port_str).to_string()
+    port_str
+        .split(':')
+        .next()
+        .unwrap_or(port_str)
+        .to_string()
 }
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
@@ -835,15 +837,15 @@ fn resolve_env_vars_with_fallback(
         .collect();
 
     for (full_match, var_name) in captures {
-        let value =
-            match std::env::var(&var_name) {
-                Ok(v) => v,
-                Err(_) => fallback_vars.get(&var_name).cloned().ok_or_else(|| {
-                    CliError::EnvVarNotFound {
-                        var_name: var_name.clone(),
-                    }
+        let value = match std::env::var(&var_name) {
+            Ok(v) => v,
+            Err(_) => fallback_vars
+                .get(&var_name)
+                .cloned()
+                .ok_or_else(|| CliError::EnvVarNotFound {
+                    var_name: var_name.clone(),
                 })?,
-            };
+        };
         result = result.replace(&full_match, &value);
     }
 
@@ -1192,12 +1194,12 @@ app:
         assert_eq!(config.app.app_type, AppType::Static);
     }
 
-    #[test]
-    fn test_from_file_resolves_env_from_env_file() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join(".env"), "DOCKER_IMAGE=node:14-alpine\n").unwrap();
+        #[test]
+        fn test_from_file_resolves_env_from_env_file() {
+                let dir = TempDir::new().unwrap();
+                fs::write(dir.path().join(".env"), "DOCKER_IMAGE=node:14-alpine\n").unwrap();
 
-        let yaml = r#"
+                let yaml = r#"
 name: env-file-test
 env_file: .env
 app:
@@ -1207,12 +1209,12 @@ app:
 deploy:
     target: local
 "#;
-        let config_path = dir.path().join("stacker.yml");
-        fs::write(&config_path, yaml).unwrap();
+                let config_path = dir.path().join("stacker.yml");
+                fs::write(&config_path, yaml).unwrap();
 
-        let config = StackerConfig::from_file(&config_path).unwrap();
-        assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
-    }
+                let config = StackerConfig::from_file(&config_path).unwrap();
+                assert_eq!(config.app.image.as_deref(), Some("node:14-alpine"));
+        }
 
     #[test]
     fn test_parse_invalid_app_type_returns_error() {
@@ -1259,9 +1261,9 @@ services:
         assert_eq!(config.services[2].ports.len(), 2);
     }
 
-    #[test]
-    fn test_parse_services_map() {
-        let yaml = r#"
+        #[test]
+        fn test_parse_services_map() {
+                let yaml = r#"
 name: svc-map-test
 services:
     web:
@@ -1273,21 +1275,15 @@ services:
         image: redis:7-alpine
 "#;
 
-        let config = StackerConfig::from_str(yaml).unwrap();
-        assert_eq!(config.services.len(), 2);
-        assert!(config
-            .services
-            .iter()
-            .any(|s| s.name == "web" && s.image == "nginx:alpine"));
-        assert!(config
-            .services
-            .iter()
-            .any(|s| s.name == "redis" && s.image == "redis:7-alpine"));
-    }
+                let config = StackerConfig::from_str(yaml).unwrap();
+                assert_eq!(config.services.len(), 2);
+                assert!(config.services.iter().any(|s| s.name == "web" && s.image == "nginx:alpine"));
+                assert!(config.services.iter().any(|s| s.name == "redis" && s.image == "redis:7-alpine"));
+        }
 
-    #[test]
-    fn test_parse_services_map_infers_name_from_key() {
-        let yaml = r#"
+        #[test]
+        fn test_parse_services_map_infers_name_from_key() {
+                let yaml = r#"
 name: svc-map-key-test
 services:
     web:
@@ -1295,11 +1291,11 @@ services:
         ports: ["8080:80"]
 "#;
 
-        let config = StackerConfig::from_str(yaml).unwrap();
-        assert_eq!(config.services.len(), 1);
-        assert_eq!(config.services[0].name, "web");
-        assert_eq!(config.services[0].image, "nginx:alpine");
-    }
+                let config = StackerConfig::from_str(yaml).unwrap();
+                assert_eq!(config.services.len(), 1);
+                assert_eq!(config.services[0].name, "web");
+                assert_eq!(config.services[0].image, "nginx:alpine");
+        }
 
     #[test]
     fn test_parse_proxy_domains() {
@@ -1394,14 +1390,9 @@ ai:
             .iter()
             .filter(|i| i.severity == Severity::Error)
             .collect();
+        assert!(!errors.is_empty(), "Expected validation error for missing cloud provider");
         assert!(
-            !errors.is_empty(),
-            "Expected validation error for missing cloud provider"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.field.as_deref() == Some("deploy.cloud.provider")),
+            errors.iter().any(|e| e.field.as_deref() == Some("deploy.cloud.provider")),
             "Expected field reference to deploy.cloud.provider"
         );
     }
@@ -1419,10 +1410,7 @@ ai:
             .iter()
             .filter(|i| i.severity == Severity::Error)
             .collect();
-        assert!(
-            !errors.is_empty(),
-            "Expected validation error for missing server host"
-        );
+        assert!(!errors.is_empty(), "Expected validation error for missing server host");
         assert!(
             errors.iter().any(|e| e.message.contains("host")),
             "Expected 'host' mentioned in error"
@@ -1450,7 +1438,10 @@ services:
             .iter()
             .filter(|i| i.severity == Severity::Warning)
             .collect();
-        assert!(!warnings.is_empty(), "Expected warning about port conflict");
+        assert!(
+            !warnings.is_empty(),
+            "Expected warning about port conflict"
+        );
         assert!(
             warnings.iter().any(|w| w.message.contains("8080")),
             "Expected port 8080 in warning"
@@ -1520,10 +1511,7 @@ services:
             .iter()
             .filter(|i| i.severity == Severity::Info)
             .collect();
-        assert!(
-            errors.is_empty(),
-            "Expected no blocking errors, got: {errors:?}"
-        );
+        assert!(errors.is_empty(), "Expected no blocking errors, got: {errors:?}");
         assert!(
             infos
                 .iter()
@@ -1629,7 +1617,10 @@ services:
         assert_eq!(original.name, parsed.name);
         assert_eq!(original.app.app_type, parsed.app.app_type);
         assert_eq!(original.app.path, parsed.app.path);
-        assert_eq!(original.env.get("PORT"), parsed.env.get("PORT"));
+        assert_eq!(
+            original.env.get("PORT"),
+            parsed.env.get("PORT")
+        );
     }
 
     #[test]

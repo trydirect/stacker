@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
+use crate::cli::config_parser::{StackerConfig, ServiceDefinition};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::service_catalog::ServiceCatalog;
@@ -93,9 +93,7 @@ impl CallableTrait for ServiceAddCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
 
         let entry = rt.block_on(catalog.resolve(&canonical))?;
 
@@ -121,9 +119,8 @@ impl CallableTrait for ServiceAddCommand {
         config.services.push(entry.service.clone());
 
         // Serialize back to YAML
-        let yaml = serde_yaml::to_string(&config).map_err(|e| {
-            CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
-        })?;
+        let yaml = serde_yaml::to_string(&config)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
 
         // Backup and write
         let backup_path = format!("{}.bak", config_path);
@@ -139,21 +136,11 @@ impl CallableTrait for ServiceAddCommand {
             println!("  Volumes: {}", entry.service.volumes.join(", "));
         }
         if !entry.service.environment.is_empty() {
-            println!(
-                "  Env vars: {}",
-                entry
-                    .service
-                    .environment
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            println!("  Env vars: {}", entry.service.environment.keys()
+                .cloned().collect::<Vec<_>>().join(", "));
         }
         if !entry.related.is_empty() {
-            let missing_related: Vec<&str> = entry
-                .related
-                .iter()
+            let missing_related: Vec<&str> = entry.related.iter()
                 .filter(|r| !config.services.iter().any(|s| &s.name == *r))
                 .map(|r| r.as_str())
                 .collect();
@@ -196,8 +183,7 @@ impl CallableTrait for ServiceListCommand {
         let entries = catalog.list_available();
 
         // Group by category
-        let mut by_category: std::collections::BTreeMap<String, Vec<_>> =
-            std::collections::BTreeMap::new();
+        let mut by_category: std::collections::BTreeMap<String, Vec<_>> = std::collections::BTreeMap::new();
         for entry in &entries {
             by_category
                 .entry(entry.category.clone())
@@ -230,12 +216,7 @@ impl CallableTrait for ServiceListCommand {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .map_err(|e| {
-                            CliError::ConfigValidation(format!(
-                                "Failed to create async runtime: {}",
-                                e
-                            ))
-                        })?;
+                        .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
 
                     match rt.block_on(client.list_marketplace_templates(None, None)) {
                         Ok(templates) if templates.is_empty() => {
@@ -304,7 +285,10 @@ impl CallableTrait for ServiceRemoveCommand {
         }
 
         let confirmed = Confirm::new()
-            .with_prompt(format!("Remove '{}' from {}?", canonical, config_path))
+            .with_prompt(format!(
+                "Remove '{}' from {}?",
+                canonical, config_path
+            ))
             .default(false)
             .interact()
             .map_err(|e| CliError::ConfigValidation(format!("Prompt error: {}", e)))?;
@@ -316,9 +300,8 @@ impl CallableTrait for ServiceRemoveCommand {
 
         config.services.retain(|s| s.name != canonical);
 
-        let yaml = serde_yaml::to_string(&config).map_err(|e| {
-            CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
-        })?;
+        let yaml = serde_yaml::to_string(&config)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
 
         let backup_path = format!("{}.bak", config_path);
         std::fs::copy(config_path, &backup_path)?;

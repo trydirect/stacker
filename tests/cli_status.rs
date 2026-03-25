@@ -17,10 +17,7 @@ fn test_status_no_deployment_returns_error() {
         .arg("status")
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("No deployment")
-                .or(predicate::str::contains("docker-compose")),
-        );
+        .stderr(predicate::str::contains("No deployment").or(predicate::str::contains("docker-compose")));
 }
 
 #[test]

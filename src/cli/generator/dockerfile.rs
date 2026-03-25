@@ -248,7 +248,11 @@ impl DockerfileBuilder {
     }
 
     /// Write Dockerfile to a path. Returns error if file already exists.
-    pub fn write_to(&self, path: &std::path::Path, overwrite: bool) -> Result<(), CliError> {
+    pub fn write_to(
+        &self,
+        path: &std::path::Path,
+        overwrite: bool,
+    ) -> Result<(), CliError> {
         if !overwrite && path.exists() {
             return Err(CliError::DockerfileExists {
                 path: path.to_path_buf(),
@@ -425,7 +429,10 @@ mod tests {
 
     #[test]
     fn test_multiple_expose_ports() {
-        let content = DockerfileBuilder::new().expose(80).expose(443).build();
+        let content = DockerfileBuilder::new()
+            .expose(80)
+            .expose(443)
+            .build();
         assert!(content.contains("EXPOSE 80"));
         assert!(content.contains("EXPOSE 443"));
     }

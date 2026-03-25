@@ -19,10 +19,7 @@ pub async fn insert_batch(
     let span = tracing::info_span!("Inserting audit events into database");
 
     for event in events {
-        let created_at = Utc
-            .timestamp_opt(event.created_at, 0)
-            .single()
-            .unwrap_or_else(Utc::now);
+        let created_at = Utc.timestamp_opt(event.created_at, 0).single().unwrap_or_else(Utc::now);
 
         sqlx::query_as::<_, AgentAuditLog>(
             r#"

@@ -389,11 +389,7 @@ impl ToolHandler for CreateProjectAppTool {
             let catalog_app = match client.fetch_app_catalog(token, code).await {
                 Ok(app) => app,
                 Err(e) => {
-                    tracing::warn!(
-                        "Could not fetch app catalog for code={}: {}, proceeding with defaults",
-                        code,
-                        e
-                    );
+                    tracing::warn!("Could not fetch app catalog for code={}: {}, proceeding with defaults", code, e);
                     None
                 }
             };

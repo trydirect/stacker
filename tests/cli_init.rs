@@ -65,14 +65,7 @@ fn test_init_with_ai_flag() {
     // a real running Ollama which would take minutes to generate).
     stacker_cmd()
         .current_dir(dir.path())
-        .args([
-            "init",
-            "--with-ai",
-            "--ai-provider",
-            "custom",
-            "--ai-api-key",
-            "fake",
-        ])
+        .args(["init", "--with-ai", "--ai-provider", "custom", "--ai-api-key", "fake"])
         .assert()
         .success();
 
@@ -164,14 +157,7 @@ fn test_init_with_ai_and_provider_flags() {
     // then falls back to template-based generation.
     stacker_cmd()
         .current_dir(dir.path())
-        .args([
-            "init",
-            "--with-ai",
-            "--ai-provider",
-            "custom",
-            "--ai-api-key",
-            "fake",
-        ])
+        .args(["init", "--with-ai", "--ai-provider", "custom", "--ai-api-key", "fake"])
         .assert()
         .success()
         .stderr(predicate::str::contains("AI").or(predicate::str::contains("Created")));

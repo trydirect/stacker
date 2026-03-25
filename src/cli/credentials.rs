@@ -122,7 +122,9 @@ impl FileCredentialStore {
     pub fn default_path() -> PathBuf {
         let base = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .or_else(|_| {
+                std::env::var("HOME").map(|h| PathBuf::from(h).join(".config"))
+            })
             .unwrap_or_else(|_| PathBuf::from("."));
 
         base.join("stacker").join("credentials.json")
@@ -218,7 +220,10 @@ impl<S: CredentialStore> CredentialsManager<S> {
     /// Load credentials and ensure they are present and not expired.
     /// Returns `CliError::LoginRequired` when absent,
     /// `CliError::TokenExpired` when expired.
-    pub fn require_valid_token(&self, feature: &str) -> Result<StoredCredentials, CliError> {
+    pub fn require_valid_token(
+        &self,
+        feature: &str,
+    ) -> Result<StoredCredentials, CliError> {
         let creds = self.store.load()?.ok_or_else(|| CliError::LoginRequired {
             feature: feature.to_string(),
         })?;
@@ -256,9 +261,7 @@ const TOKEN_ENDPOINT: &str = "/auth/login";
 
 fn is_direct_login_endpoint(auth_url: &str) -> bool {
     let url = auth_url.trim_end_matches('/').to_lowercase();
-    url.ends_with("/auth/login")
-        || url.ends_with("/server/user/auth/login")
-        || url.ends_with("/login")
+    url.ends_with("/auth/login") || url.ends_with("/server/user/auth/login") || url.ends_with("/login")
 }
 
 /// Parameters for a login request.
@@ -274,12 +277,8 @@ pub struct LoginRequest {
 /// Abstraction over the HTTP call to the OAuth token endpoint.
 /// Production uses `HttpOAuthClient`; tests can inject a mock.
 pub trait OAuthClient: Send + Sync {
-    fn request_token(
-        &self,
-        auth_url: &str,
-        email: &str,
-        password: &str,
-    ) -> Result<TokenResponse, CliError>;
+    fn request_token(&self, auth_url: &str, email: &str, password: &str)
+        -> Result<TokenResponse, CliError>;
 }
 
 /// Production OAuth client using `reqwest::blocking`.
@@ -310,7 +309,10 @@ impl OAuthClient for HttpOAuthClient {
         let resp = if direct_login {
             client
                 .post(&url)
-                .form(&[("email", email), ("password", password)])
+                .form(&[
+                    ("email", email),
+                    ("password", password),
+                ])
                 .send()
         } else {
             client
@@ -398,12 +400,8 @@ mod tests {
 
     #[test]
     fn test_is_direct_login_endpoint_detection() {
-        assert!(is_direct_login_endpoint(
-            "https://dev.try.direct/server/user/auth/login"
-        ));
-        assert!(is_direct_login_endpoint(
-            "https://dev.try.direct/server/user/auth/login/"
-        ));
+        assert!(is_direct_login_endpoint("https://dev.try.direct/server/user/auth/login"));
+        assert!(is_direct_login_endpoint("https://dev.try.direct/server/user/auth/login/"));
         assert!(!is_direct_login_endpoint("https://api.try.direct"));
     }
 
@@ -541,9 +539,8 @@ mod tests {
         };
         let creds = StoredCredentials::from(resp);
         let diff = creds.expires_at - Utc::now();
-        assert!(
-            diff.num_seconds() > (ten_hours as i64) - 100 && diff.num_seconds() <= ten_hours as i64
-        );
+        assert!(diff.num_seconds() > (ten_hours as i64) - 100
+            && diff.num_seconds() <= ten_hours as i64);
     }
 
     #[test]
@@ -812,8 +809,7 @@ mod tests {
     #[test]
     fn test_login_invalid_credentials_returns_error() {
         let (manager, _) = make_manager();
-        let oauth =
-            MockOAuthClient::failure("Authentication failed (HTTP 401 Unauthorized): invalid");
+        let oauth = MockOAuthClient::failure("Authentication failed (HTTP 401 Unauthorized): invalid");
         let request = LoginRequest {
             email: "bad@example.com".into(),
             password: "wrong".into(),

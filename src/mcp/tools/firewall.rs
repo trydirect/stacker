@@ -17,13 +17,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::connectors::user_service::UserServiceDeploymentResolver;
 use crate::db;
 use crate::forms::status_panel::{ConfigureFirewallCommandRequest, FirewallPortRule};
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::models::{Command, CommandPriority};
 use crate::services::{DeploymentIdentifier, DeploymentResolver};
+use crate::connectors::user_service::UserServiceDeploymentResolver;
 
 /// Execution method for firewall commands
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -153,7 +153,7 @@ impl ToolHandler for ConfigureFirewallTool {
                 // For SSH method, we would need to execute via Ansible
                 // This requires the deploy_role infrastructure
                 // For now, return a placeholder indicating SSH method
-
+                
                 let result = json!({
                     "status": "pending",
                     "execution_method": "ssh",

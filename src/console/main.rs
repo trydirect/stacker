@@ -294,9 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     get_command(command)?.call()
 }
 
-fn get_command(
-    command: Commands,
-) -> Result<Box<dyn stacker::console::commands::CallableTrait>, String> {
+fn get_command(command: Commands) -> Result<Box<dyn stacker::console::commands::CallableTrait>, String> {
     match command {
         Commands::AppClient { command } => match command {
             AppClientCommands::New { user_id } => Ok(Box::new(

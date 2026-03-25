@@ -352,7 +352,11 @@ impl ToolHandler for AdminListTemplateReviewsTool {
             "reviews": reviews,
         });
 
-        tracing::info!("Admin listed {} reviews for template {}", reviews.len(), id);
+        tracing::info!(
+            "Admin listed {} reviews for template {}",
+            reviews.len(),
+            id
+        );
 
         Ok(ToolContent::Text {
             text: serde_json::to_string(&result).unwrap(),

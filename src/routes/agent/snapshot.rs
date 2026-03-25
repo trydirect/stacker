@@ -89,13 +89,9 @@ pub async fn snapshot_handler(
     tracing::debug!("[SNAPSHOT HANDLER] Deployment : {:?}", deployment);
     // Fetch apps scoped to this specific deployment (falls back to project-level if no deployment-scoped apps)
     let apps = if let Some(deployment) = &deployment {
-        db::project_app::fetch_by_deployment(
-            agent_pool.get_ref(),
-            deployment.project_id,
-            deployment.id,
-        )
-        .await
-        .unwrap_or_default()
+        db::project_app::fetch_by_deployment(agent_pool.get_ref(), deployment.project_id, deployment.id)
+            .await
+            .unwrap_or_default()
     } else {
         vec![]
     };
@@ -241,10 +237,14 @@ pub async fn project_snapshot_handler(
 
     let (agent_snap, deployment_hash) = agent_snapshot;
 
-    let commands =
-        db::command::fetch_recent_by_deployment(agent_pool.get_ref(), &deployment_hash, 50, true)
-            .await
-            .unwrap_or_default();
+    let commands = db::command::fetch_recent_by_deployment(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        50,
+        true,
+    )
+    .await
+    .unwrap_or_default();
 
     let deployment =
         db::deployment::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
@@ -260,10 +260,14 @@ pub async fn project_snapshot_handler(
         vec![]
     };
 
-    let health_commands =
-        db::command::fetch_recent_by_deployment(agent_pool.get_ref(), &deployment_hash, 10, false)
-            .await
-            .unwrap_or_default();
+    let health_commands = db::command::fetch_recent_by_deployment(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        10,
+        false,
+    )
+    .await
+    .unwrap_or_default();
 
     let mut container_map: std::collections::HashMap<String, ContainerSnapshot> =
         std::collections::HashMap::new();

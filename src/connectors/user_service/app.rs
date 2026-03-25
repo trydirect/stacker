@@ -137,9 +137,7 @@ impl UserServiceClient {
             let body = response.text().await.unwrap_or_default();
             tracing::warn!(
                 "Catalog endpoint error ({}) for code={}: {}, falling back to search_applications",
-                status,
-                code,
-                body
+                status, code, body
             );
             return self.fallback_search_by_code(bearer_token, code).await;
         }

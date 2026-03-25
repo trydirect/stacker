@@ -33,10 +33,7 @@ fn test_destroy_no_deployment_returns_error() {
         .args(["destroy", "--confirm"])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("No deployment")
-                .or(predicate::str::contains("Nothing to destroy")),
-        );
+        .stderr(predicate::str::contains("No deployment").or(predicate::str::contains("Nothing to destroy")));
 }
 
 #[test]

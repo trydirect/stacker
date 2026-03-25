@@ -148,12 +148,9 @@ impl ToolHandler for RenderAnsibleTemplateTool {
         let params: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let response = call_install_service(
-            reqwest::Method::POST,
-            "/api/render-templates",
-            Some(params.payload),
-        )
-        .await?;
+        let response =
+            call_install_service(reqwest::Method::POST, "/api/render-templates", Some(params.payload))
+                .await?;
 
         Ok(ToolContent::Text {
             text: response.to_string(),
@@ -163,9 +160,8 @@ impl ToolHandler for RenderAnsibleTemplateTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "render_ansible_template".to_string(),
-            description:
-                "Render Ansible templates by calling Install Service /api/render-templates"
-                    .to_string(),
+            description: "Render Ansible templates by calling Install Service /api/render-templates"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

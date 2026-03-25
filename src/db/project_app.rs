@@ -255,16 +255,18 @@ pub async fn delete_by_project_and_code(
     code: &str,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!("Deleting app by project and code");
-    let result = sqlx::query("DELETE FROM project_app WHERE project_id = $1 AND code = $2")
-        .bind(project_id)
-        .bind(code)
-        .execute(pool)
-        .instrument(query_span)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to delete app by project and code: {:?}", e);
-            format!("Failed to delete app: {}", e)
-        })?;
+    let result = sqlx::query(
+        "DELETE FROM project_app WHERE project_id = $1 AND code = $2",
+    )
+    .bind(project_id)
+    .bind(code)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to delete app by project and code: {:?}", e);
+        format!("Failed to delete app: {}", e)
+    })?;
 
     Ok(result.rows_affected() > 0)
 }

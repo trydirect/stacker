@@ -35,9 +35,7 @@ impl CallableTrait for MarketplaceStatusCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
 
         let name = self.name.clone();
 
@@ -137,9 +135,7 @@ impl CallableTrait for MarketplaceLogsCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
 
         let name = self.name.clone();
 
@@ -148,7 +144,9 @@ impl CallableTrait for MarketplaceLogsCommand {
 
             // First, find the template by name to get its ID
             let templates = client.marketplace_list_mine().await?;
-            let template = templates.iter().find(|t| t.name == name || t.slug == name);
+            let template = templates
+                .iter()
+                .find(|t| t.name == name || t.slug == name);
 
             let template = match template {
                 Some(t) => t,

@@ -39,13 +39,8 @@ async fn mine_returns_empty_list_for_new_user() {
 
     assert_eq!(StatusCode::OK, response.status());
 
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .expect("Response should be valid JSON");
-    let list = body
-        .get("list")
-        .expect("Response body should contain 'list' field");
+    let body: serde_json::Value = response.json().await.expect("Response should be valid JSON");
+    let list = body.get("list").expect("Response body should contain 'list' field");
     assert!(list.is_array(), "'list' should be a JSON array");
     assert_eq!(
         0,
@@ -90,19 +85,10 @@ async fn mine_returns_only_the_authenticated_users_templates() {
 
     assert_eq!(StatusCode::OK, response.status());
 
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .expect("Response should be valid JSON");
-    let list = body["list"]
-        .as_array()
-        .expect("'list' should be a JSON array");
+    let body: serde_json::Value = response.json().await.expect("Response should be valid JSON");
+    let list = body["list"].as_array().expect("'list' should be a JSON array");
 
-    assert_eq!(
-        1,
-        list.len(),
-        "Should return exactly the authenticated user's template"
-    );
+    assert_eq!(1, list.len(), "Should return exactly the authenticated user's template");
     assert_eq!(
         "my-test-stack",
         list[0]["slug"].as_str().unwrap_or_default(),
