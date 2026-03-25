@@ -26,12 +26,12 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Default poll interval (seconds).
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 
-/// Resolve a deployment hash from explicit flag, deployment lock, or stacker.yml project name.
+/// Resolve a deployment hash from explicit flag, active project agent, or deployment lock.
 ///
 /// Resolution order:
 /// 1. Explicit `--deployment` flag value
-/// 2. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash
-/// 3. `stacker.yml` project name → API project lookup → latest deployment hash
+/// 2. `stacker.yml` project name → API project lookup → active agent hash (most reliable)
+/// 3. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash (fallback)
 fn resolve_deployment_hash(
     explicit: &Option<String>,
     ctx: &CliRuntime,
@@ -45,28 +45,37 @@ fn resolve_deployment_hash(
 
     let project_dir = std::env::current_dir().map_err(CliError::Io)?;
 
-    // 2. Deployment lock
+    // 2. stacker.yml project → active agent (takes priority over lock file)
+    // The lock file records the deployment_id at deploy time but the agent may
+    // have been redeployed since, leaving the lock pointing at a stale hash.
+    let config_path = project_dir.join("stacker.yml");
+    if config_path.exists() {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
+            if let Some(ref project_name) = config.project.identity {
+                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name)) {
+                    match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
+                        Ok((_, hash)) => {
+                            eprintln!(
+                                "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
+                                project_name, hash
+                            );
+                            return Ok(hash);
+                        }
+                        Err(_) => {
+                            // No active agent for this project; fall through to lock
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Deployment lock (fallback when no stacker.yml or no active project agent)
     if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
         if let Some(dep_id) = lock.deployment_id {
             let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
             if let Some(info) = info {
                 return Ok(info.deployment_hash);
-            }
-        }
-    }
-
-    // 3. stacker.yml project name → API lookup
-    let config_path = project_dir.join("stacker.yml");
-    if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
-            if let Some(ref project_name) = config.project.identity {
-                let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
-                if let Some(proj) = project {
-                    let dep = ctx.block_on(ctx.client.get_deployment_status_by_project(proj.id))?;
-                    if let Some(dep) = dep {
-                        return Ok(dep.deployment_hash);
-                    }
-                }
             }
         }
     }
@@ -103,6 +112,7 @@ fn run_agent_command(
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
+        let mut last_status = "pending".to_string();
 
         loop {
             tokio::time::sleep(interval).await;
@@ -110,6 +120,9 @@ fn run_agent_command(
             if tokio::time::Instant::now() >= deadline {
                 return Err(CliError::AgentCommandTimeout {
                     command_id: command_id.clone(),
+                    command_type: spinner_msg.to_string(),
+                    last_status,
+                    deployment_hash,
                 });
             }
 
@@ -118,6 +131,7 @@ fn run_agent_command(
                 .agent_command_status(&deployment_hash, &command_id)
                 .await?;
 
+            last_status = status.status.clone();
             progress::update_message(
                 &pb,
                 &format!("{} [{}]", spinner_msg, status.status),
@@ -138,7 +152,12 @@ fn run_agent_command(
             progress::finish_error(&pb, &format!("{} — {}", spinner_msg, info.status));
         }
         Err(e) => {
-            progress::finish_error(&pb, &format!("{} — {}", spinner_msg, e));
+            let short_msg = if matches!(e, CliError::AgentCommandTimeout { .. }) {
+                format!("{} — timed out", spinner_msg)
+            } else {
+                format!("{} — {}", spinner_msg, e)
+            };
+            progress::finish_error(&pb, &short_msg);
         }
     }
 
@@ -164,6 +183,87 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
 
     if let Some(ref error) = info.error {
         eprintln!("\nError: {}", fmt::pretty_json(error));
+    }
+}
+
+/// Pre-flight connection check for risky agent commands.
+///
+/// Enqueues a `check_connections` command to the agent and, if active HTTP
+/// connections are found, prompts the user interactively. When `force` is
+/// `true` the prompt is skipped and execution continues regardless.
+///
+/// Returns `Ok(())` when it's safe to proceed, or a `CliError` when the user
+/// aborts or the prompt cannot be answered.
+fn check_active_connections(
+    ctx: &CliRuntime,
+    hash: &str,
+    force: bool,
+) -> Result<(), CliError> {
+    let params = crate::forms::status_panel::CheckConnectionsCommandRequest { ports: None };
+    let request = AgentEnqueueRequest::new(hash, "check_connections")
+        .with_parameters(&params)
+        .map_err(|e| CliError::ConfigValidation(format!("check_connections parameters: {}", e)))?;
+
+    let info = match run_agent_command(ctx, &request, "Checking active connections", 15) {
+        Ok(info) => info,
+        Err(_) => {
+            // Non-fatal: if the check times out or fails we warn but proceed.
+            eprintln!(
+                "\x1b[33m⚠ Connection check skipped (agent did not respond in time)\x1b[0m"
+            );
+            return Ok(());
+        }
+    };
+
+    if info.status != "completed" {
+        return Ok(());
+    }
+
+    let result = match &info.result {
+        Some(r) => r.clone(),
+        None => return Ok(()),
+    };
+
+    let active: u64 = result
+        .get("active_connections")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if active == 0 {
+        return Ok(());
+    }
+
+    // Print a per-port table.
+    eprintln!("\n\x1b[33m⚠  {} active HTTP connection(s) detected:\x1b[0m", active);
+    if let Some(ports) = result.get("ports").and_then(|v| v.as_array()) {
+        for entry in ports {
+            let port = entry.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+            let conns = entry.get("connections").and_then(|v| v.as_u64()).unwrap_or(0);
+            if conns > 0 {
+                eprintln!("   port {:5} — {} connection(s)", port, conns);
+            }
+        }
+    }
+    eprintln!();
+
+    if force {
+        eprintln!("\x1b[2m(--force supplied, proceeding without confirmation)\x1b[0m");
+        return Ok(());
+    }
+
+    // Interactive prompt.
+    eprint!("Proceed anyway? [y/N] ");
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(CliError::Io)?;
+
+    match input.trim().to_lowercase().as_str() {
+        "y" | "yes" => Ok(()),
+        _ => Err(CliError::ConfigValidation(
+            "Aborted: active connections detected. Re-run with --force to skip this check."
+                .to_string(),
+        )),
     }
 }
 
@@ -291,6 +391,8 @@ impl CallableTrait for AgentRestartCommand {
         let ctx = CliRuntime::new("agent restart")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        check_active_connections(&ctx, &hash, self.force)?;
+
         let params = crate::forms::status_panel::RestartCommandRequest {
             app_code: self.app_code.clone(),
             container: None,
@@ -340,6 +442,8 @@ impl CallableTrait for AgentDeployAppCommand {
         let ctx = CliRuntime::new("agent deploy-app")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        check_active_connections(&ctx, &hash, self.force_recreate)?;
+
         let params = crate::forms::status_panel::DeployAppCommandRequest {
             app_code: self.app_code.clone(),
             compose_content: None,
@@ -367,11 +471,12 @@ impl CallableTrait for AgentDeployAppCommand {
 
 // ── Remove App ───────────────────────────────────────
 
-/// `stacker agent remove-app <app> [--volumes] [--json] [--deployment <hash>]`
+/// `stacker agent remove-app <app> [--volumes] [--force] [--json] [--deployment <hash>]`
 pub struct AgentRemoveAppCommand {
     pub app_code: String,
     pub remove_volumes: bool,
     pub remove_image: bool,
+    pub force: bool,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -381,10 +486,11 @@ impl AgentRemoveAppCommand {
         app_code: String,
         remove_volumes: bool,
         remove_image: bool,
+        force: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, remove_volumes, remove_image, json, deployment }
+        Self { app_code, remove_volumes, remove_image, force, json, deployment }
     }
 }
 
@@ -392,6 +498,8 @@ impl CallableTrait for AgentRemoveAppCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("agent remove-app")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        check_active_connections(&ctx, &hash, self.force)?;
 
         let params = crate::forms::status_panel::RemoveAppCommandRequest {
             app_code: self.app_code.clone(),
@@ -417,13 +525,14 @@ impl CallableTrait for AgentRemoveAppCommand {
 
 // ── Configure Firewall ───────────────────────────────
 
-/// `stacker agent configure-firewall [--action add] [--public-ports 80/tcp,443/tcp] [--private-ports 5432/tcp:10.0.0.0/8] [--json] [--deployment <hash>]`
+/// `stacker agent configure-firewall [--action add] [--public-ports 80/tcp,443/tcp] [--private-ports 5432/tcp:10.0.0.0/8] [--force] [--json] [--deployment <hash>]`
 pub struct AgentConfigureFirewallCommand {
     pub action: String,
     pub app_code: Option<String>,
     pub public_ports: Vec<String>,
     pub private_ports: Vec<String>,
     pub persist: bool,
+    pub force: bool,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -435,10 +544,11 @@ impl AgentConfigureFirewallCommand {
         public_ports: Vec<String>,
         private_ports: Vec<String>,
         persist: bool,
+        force: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { action, app_code, public_ports, private_ports, persist, json, deployment }
+        Self { action, app_code, public_ports, private_ports, persist, force, json, deployment }
     }
 
     /// Parse "80/tcp" or "443" into a FirewallPortRule (source defaults to 0.0.0.0/0).
@@ -488,6 +598,8 @@ impl CallableTrait for AgentConfigureFirewallCommand {
         let ctx = CliRuntime::new("agent configure-firewall")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        check_active_connections(&ctx, &hash, self.force)?;
+
         let public: Vec<crate::forms::status_panel::FirewallPortRule> = self
             .public_ports
             .iter()
@@ -527,13 +639,14 @@ impl CallableTrait for AgentConfigureFirewallCommand {
 
 // ── Configure Proxy ──────────────────────────────────
 
-/// `stacker agent configure-proxy <app> --domain <d> --port <p> [--json] [--deployment <hash>]`
+/// `stacker agent configure-proxy <app> --domain <d> --port <p> [--force] [--json] [--deployment <hash>]`
 pub struct AgentConfigureProxyCommand {
     pub app_code: String,
     pub domain: String,
     pub port: u16,
     pub ssl: bool,
     pub action: String,
+    pub force: bool,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -545,10 +658,11 @@ impl AgentConfigureProxyCommand {
         port: u16,
         ssl: bool,
         action: String,
+        force: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, domain, port, ssl, action, json, deployment }
+        Self { app_code, domain, port, ssl, action, force, json, deployment }
     }
 }
 
@@ -556,6 +670,8 @@ impl CallableTrait for AgentConfigureProxyCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("agent configure-proxy")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        check_active_connections(&ctx, &hash, self.force)?;
 
         let params = crate::forms::status_panel::ConfigureProxyCommandRequest {
             app_code: self.app_code.clone(),
@@ -611,9 +727,34 @@ impl CallableTrait for AgentStatusCommand {
 
         match snapshot {
             Ok(snap) => {
-                progress::finish_success(&pb, "Agent status fetched");
-
                 let item = snapshot_item(&snap);
+
+                let agent_status = item
+                    .get("agent")
+                    .and_then(|a| a.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
+                let version = item
+                    .get("agent")
+                    .and_then(|a| a.get("version"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let n_apps = item
+                    .get("apps")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+
+                progress::finish_success(
+                    &pb,
+                    &format!(
+                        "Agent status fetched — {} {} · v{} · {} app(s)",
+                        progress::status_icon(agent_status),
+                        agent_status,
+                        version,
+                        n_apps,
+                    ),
+                );
                 let live_containers = match fetch_live_containers(&ctx, &hash) {
                     Ok(list) => list,
                     Err(err) => {

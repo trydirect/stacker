@@ -26,6 +26,7 @@ pub const DEFAULT_VAULT_URL: &str = "https://vault.try.direct";
 
 /// Stacker server wraps responses in `{ "item": ..., "list": [...], "msg": "...", "_status": "OK" }`
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ApiResponse<T> {
     #[serde(rename = "_status")]
     pub status: Option<String>,
@@ -129,6 +130,37 @@ pub struct MarketplaceTemplate {
     pub tags: Vec<String>,
     pub status: Option<String>,
     pub stack_definition: Option<serde_json::Value>,
+}
+
+/// Marketplace template info as returned by `/api/templates/mine`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceTemplateInfo {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    #[serde(default)]
+    pub status: String,
+    pub short_description: Option<String>,
+    pub price: Option<f64>,
+    pub billing_cycle: Option<String>,
+    pub version: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub approved_at: Option<String>,
+    pub review_reason: Option<String>,
+}
+
+/// Review history entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceReviewInfo {
+    pub id: String,
+    pub template_id: String,
+    pub reviewer_user_id: Option<String>,
+    pub decision: String,
+    pub review_reason: Option<String>,
+    pub submitted_at: Option<String>,
+    pub reviewed_at: Option<String>,
+    pub security_checklist: Option<serde_json::Value>,
 }
 
 /// Deploy response from `/project/{id}/deploy`
@@ -988,14 +1020,68 @@ impl StackerClient {
 
     /// Force-complete a stuck deployment (paused or error → completed).
     /// `POST /api/v1/deployments/{id}/force-complete`
+    /// Fetch a deployment by its hash string.
+    /// `GET /api/v1/deployments/hash/{hash}`
+    pub async fn get_deployment_by_hash(
+        &self,
+        hash: &str,
+    ) -> Result<Option<DeploymentStatusInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/hash/{}",
+            self.base_url, hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "GET /api/v1/deployments/hash/{} failed ({}): {}",
+                    hash, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
     pub async fn force_complete_deployment(
         &self,
         deployment_id: i32,
+        force: bool,
     ) -> Result<DeploymentStatusInfo, CliError> {
-        let url = format!(
-            "{}/api/v1/deployments/{}/force-complete",
-            self.base_url, deployment_id
-        );
+        let url = if force {
+            format!(
+                "{}/api/v1/deployments/{}/force-complete?force=true",
+                self.base_url, deployment_id
+            )
+        } else {
+            format!(
+                "{}/api/v1/deployments/{}/force-complete",
+                self.base_url, deployment_id
+            )
+        };
         let resp = self
             .http
             .post(&url)
@@ -1143,12 +1229,17 @@ impl StackerClient {
             tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let interval = std::time::Duration::from_secs(poll_interval_secs);
 
+        let mut last_status = "pending".to_string();
+
         loop {
             tokio::time::sleep(interval).await;
 
             if tokio::time::Instant::now() >= deadline {
                 return Err(CliError::AgentCommandTimeout {
                     command_id: command_id.clone(),
+                    command_type: request.command_type.clone(),
+                    last_status,
+                    deployment_hash,
                 });
             }
 
@@ -1156,6 +1247,7 @@ impl StackerClient {
                 .agent_command_status(&deployment_hash, &command_id)
                 .await?;
 
+            last_status = status.status.clone();
             match status.status.as_str() {
                 "completed" | "failed" => return Ok(status),
                 _ => continue,
@@ -1206,6 +1298,204 @@ impl StackerClient {
                 command_id: String::new(),
                 error: format!("Invalid snapshot response: {}", e),
             })
+    }
+
+    /// Fetch the snapshot for the most recently active agent in a project.
+    /// Returns `(snapshot_json, deployment_hash)` so the caller can use the hash
+    /// for subsequent agent commands.
+    pub async fn agent_snapshot_by_project(
+        &self,
+        project_id: i32,
+    ) -> Result<(serde_json::Value, String), CliError> {
+        let url = format!("{}/api/v1/agent/project/{}", self.base_url, project_id);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("GET /api/v1/agent/project/{} failed ({}): {}", project_id, status, body),
+            });
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| CliError::AgentCommandFailed {
+            command_id: String::new(),
+            error: format!("Invalid project snapshot response: {}", e),
+        })?;
+
+        // Extract deployment_hash from the nested agent object
+        let hash = json
+            .get("item")
+            .unwrap_or(&json)
+            .get("agent")
+            .and_then(|a| a.get("deployment_hash"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| CliError::ConfigValidation(
+                "No active agent found for this project. \
+                 The agent may be offline or not yet deployed."
+                    .to_string(),
+            ))?;
+
+        Ok((json, hash))
+    }
+
+    // ── Marketplace (creator) ────────────────────────
+
+    /// List the current user's marketplace template submissions.
+    pub async fn marketplace_list_mine(&self) -> Result<Vec<MarketplaceTemplateInfo>, CliError> {
+        let url = format!("{}/api/templates/mine", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("GET /api/templates/mine failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<MarketplaceTemplateInfo> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get review history for a template by ID.
+    pub async fn marketplace_reviews(
+        &self,
+        template_id: &str,
+    ) -> Result<Vec<MarketplaceReviewInfo>, CliError> {
+        let url = format!("{}/api/admin/templates/{}", self.base_url, template_id);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!(
+                    "GET /api/admin/templates/{} failed ({}): {}",
+                    template_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<serde_json::Value> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        let item = api.item.unwrap_or(serde_json::json!({}));
+        let reviews: Vec<MarketplaceReviewInfo> = serde_json::from_value(
+            item.get("reviews")
+                .cloned()
+                .unwrap_or(serde_json::json!([])),
+        )
+        .unwrap_or_default();
+
+        Ok(reviews)
+    }
+
+    /// Create or update a marketplace template (POST /api/templates).
+    pub async fn marketplace_create_or_update(
+        &self,
+        body: serde_json::Value,
+    ) -> Result<MarketplaceTemplateInfo, CliError> {
+        let url = format!("{}/api/templates", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("create template: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Create template failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<MarketplaceTemplateInfo> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("create template response: {}", e),
+            }
+        })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "No template in response".to_string(),
+        })
+    }
+
+    /// Submit a template for marketplace review.
+    pub async fn marketplace_submit(&self, template_id: &str) -> Result<(), CliError> {
+        let url = format!("{}/api/templates/{}/submit", self.base_url, template_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Submit failed ({}): {}", status, body),
+            });
+        }
+
+        Ok(())
     }
 }
 

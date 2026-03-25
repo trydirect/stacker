@@ -28,6 +28,7 @@ pub struct CommandReportRequest {
     pub error: Option<serde_json::Value>,
     #[serde(default)]
     pub errors: Option<Vec<serde_json::Value>>, // preferred multi-error payload
+    #[allow(dead_code)]
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub completed_at: chrono::DateTime<chrono::Utc>,
 }

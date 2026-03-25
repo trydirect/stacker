@@ -57,7 +57,7 @@ fn start_policy_reloader(
     reload_interval: Duration,
 ) {
     // Reload Casbin policies only when the underlying rules change.
-    actix_web::rt::spawn(async move {
+    tokio::spawn(async move {
         let mut ticker = tokio::time::interval(reload_interval);
         let mut last_fingerprint: Option<(i64, i64)> = None;
         loop {

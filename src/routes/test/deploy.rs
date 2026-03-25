@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct DeployResponse {
     status: String,
     client: Arc<Client>,

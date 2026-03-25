@@ -789,6 +789,7 @@ fn extract_host_port(port_str: &str) -> String {
 }
 
 /// Resolve `${VAR_NAME}` references in a string using process environment.
+#[allow(dead_code)]
 fn resolve_env_vars(content: &str) -> Result<String, CliError> {
     resolve_env_vars_with_fallback(content, &HashMap::new())
 }

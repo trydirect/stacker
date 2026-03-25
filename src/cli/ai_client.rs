@@ -1626,10 +1626,15 @@ mod tests {
     }
 
     // ── Timeout resolution tests ────────────────
+    //
+    // These tests mutate the `STACKER_AI_TIMEOUT` env var, which is a
+    // process-global resource. They must not run concurrently with each other
+    // to avoid flaky results. A single static mutex serialises access.
+    static TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_resolve_timeout_uses_config_value() {
-        // Clean env to avoid interference
+        let _guard = TIMEOUT_ENV_LOCK.lock().unwrap();
         std::env::remove_var("STACKER_AI_TIMEOUT");
         assert_eq!(resolve_timeout(600), 600);
         assert_eq!(resolve_timeout(30), 30);
@@ -1637,6 +1642,7 @@ mod tests {
 
     #[test]
     fn test_resolve_timeout_default_fallback() {
+        let _guard = TIMEOUT_ENV_LOCK.lock().unwrap();
         std::env::remove_var("STACKER_AI_TIMEOUT");
         // 0 means "use default"
         assert_eq!(resolve_timeout(0), DEFAULT_AI_TIMEOUT_SECS);
@@ -1644,6 +1650,7 @@ mod tests {
 
     #[test]
     fn test_resolve_timeout_env_overrides_config() {
+        let _guard = TIMEOUT_ENV_LOCK.lock().unwrap();
         std::env::set_var("STACKER_AI_TIMEOUT", "900");
         assert_eq!(resolve_timeout(300), 900);
         std::env::remove_var("STACKER_AI_TIMEOUT");
@@ -1651,6 +1658,7 @@ mod tests {
 
     #[test]
     fn test_resolve_timeout_env_invalid_ignored() {
+        let _guard = TIMEOUT_ENV_LOCK.lock().unwrap();
         std::env::set_var("STACKER_AI_TIMEOUT", "not-a-number");
         assert_eq!(resolve_timeout(120), 120);
         std::env::remove_var("STACKER_AI_TIMEOUT");
@@ -1658,6 +1666,8 @@ mod tests {
 
     #[test]
     fn test_provider_timeout_from_config() {
+        let _guard = TIMEOUT_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("STACKER_AI_TIMEOUT");
         let config = AiConfig {
             enabled: true,
             provider: AiProviderType::Ollama,
@@ -1670,6 +1680,7 @@ mod tests {
 
     #[test]
     fn test_openai_provider_timeout_from_config() {
+        let _guard = TIMEOUT_ENV_LOCK.lock().unwrap();
         std::env::remove_var("STACKER_AI_TIMEOUT");
         let config = AiConfig {
             enabled: true,

@@ -2,10 +2,9 @@
 //!
 //! Uses russh to connect to servers and execute system check commands.
 
-use async_trait::async_trait;
 use russh::client::{Config, Handle};
-use russh::keys::key::KeyPair;
-use russh::Preferred;
+use russh::keys::key::PrivateKeyWithHashAlg;
+use russh::keys::PrivateKey;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,13 +114,12 @@ impl SystemCheckResult {
 /// SSH client handler for russh
 struct ClientHandler;
 
-#[async_trait]
 impl russh::client::Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::key::PublicKey,
+        _server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
         // Accept all host keys for server validation
         // In production, consider implementing host key verification
@@ -154,7 +152,6 @@ pub async fn check_server(
 
     // Build SSH config
     let config = Arc::new(Config {
-        preferred: Preferred::DEFAULT,
         ..Default::default()
     });
 
@@ -197,7 +194,7 @@ pub async fn check_server(
 }
 
 /// Parse a PEM-encoded private key (OpenSSH or traditional formats)
-fn parse_private_key(pem: &str) -> Result<KeyPair, anyhow::Error> {
+fn parse_private_key(pem: &str) -> Result<PrivateKey, anyhow::Error> {
     // russh-keys supports various formats including OpenSSH and traditional PEM
     let key = russh::keys::decode_secret_key(pem, None)?;
     Ok(key)
@@ -208,15 +205,23 @@ async fn connect_and_auth(
     config: Arc<Config>,
     addr: &str,
     username: &str,
-    key: KeyPair,
+    key: PrivateKey,
 ) -> Result<Handle<ClientHandler>, anyhow::Error> {
     let handler = ClientHandler;
     let mut handle = russh::client::connect(config, addr, handler).await?;
 
     // Authenticate with public key
-    let authenticated = handle.authenticate_publickey(username, Arc::new(key)).await?;
+    let auth_res = handle
+        .authenticate_publickey(
+            username,
+            PrivateKeyWithHashAlg::new(
+                Arc::new(key),
+                handle.best_supported_rsa_hash().await?.flatten(),
+            ),
+        )
+        .await?;
 
-    if !authenticated {
+    if !auth_res.success() {
         return Err(anyhow::anyhow!("Public key authentication failed"));
     }
 

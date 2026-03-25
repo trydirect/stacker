@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{
-    CommandExecutor, CommandOutput, ShellExecutor,
+    CommandExecutor, ShellExecutor,
 };
 use crate::console::commands::CallableTrait;
 
@@ -97,6 +97,7 @@ impl CallableTrait for DestroyCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::install_runner::CommandOutput;
     use std::sync::Mutex;
 
     struct MockExecutor {

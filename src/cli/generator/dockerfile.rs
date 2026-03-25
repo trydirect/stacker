@@ -9,6 +9,7 @@ use crate::cli::error::CliError;
 
 /// A fluent builder for producing multi-stage Dockerfile contents.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DockerfileBuilder {
     base_image: String,
     work_dir: String,
@@ -24,6 +25,7 @@ pub struct DockerfileBuilder {
 
 /// A named build stage for multi-stage builds.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Stage {
     name: String,
     base_image: String,

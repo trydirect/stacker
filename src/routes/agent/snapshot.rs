@@ -4,6 +4,7 @@ use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, ProjectApp};
 use actix_web::{get, web, Responder, Result};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Default)]
 pub struct SnapshotResponse {
@@ -15,11 +16,13 @@ pub struct SnapshotResponse {
 
 #[derive(Debug, Serialize, Default)]
 pub struct AgentSnapshot {
+    pub id: Option<Uuid>,
     pub version: Option<String>,
     pub capabilities: Option<serde_json::Value>,
     pub system_info: Option<serde_json::Value>,
     pub status: Option<String>,
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+    pub deployment_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -160,11 +163,13 @@ pub async fn snapshot_handler(
             None => "offline".to_string(), // Never had a heartbeat
         };
         AgentSnapshot {
+            id: Some(a.id),
             version: a.version,
             capabilities: a.capabilities,
             system_info: a.system_info,
             status: Some(effective_status),
             last_heartbeat: a.last_heartbeat,
+            deployment_hash: Some(a.deployment_hash),
         }
     });
     tracing::debug!("[SNAPSHOT HANDLER] Agent Snapshot : {:?}", agent_snapshot);
@@ -177,6 +182,130 @@ pub async fn snapshot_handler(
     };
 
     tracing::info!("[SNAPSHOT HANDLER] Snapshot response prepared: {:?}", resp);
+    Ok(JsonResponse::build()
+        .set_item(resp)
+        .ok("Snapshot fetched successfully"))
+}
+
+/// Returns the snapshot for the most recently active agent in a project.
+/// Used by the CLI as a stable project-scoped alternative to deployment-hash lookup.
+#[tracing::instrument(name = "Get project agent snapshot", skip(agent_pool))]
+#[get("/project/{project_id}")]
+pub async fn project_snapshot_handler(
+    path: web::Path<i32>,
+    agent_pool: web::Data<AgentPgPool>,
+) -> Result<impl Responder> {
+    let project_id = path.into_inner();
+
+    let agent = db::agent::fetch_active_by_project(agent_pool.get_ref(), project_id)
+        .await
+        .ok()
+        .flatten();
+
+    let agent_snapshot = match agent {
+        None => {
+            return Ok(JsonResponse::build()
+                .set_item(SnapshotResponse::default())
+                .ok("No active agent found for project"));
+        }
+        Some(a) => {
+            let effective_status = match a.last_heartbeat {
+                Some(hb) => {
+                    let stale_threshold = chrono::Duration::seconds(300);
+                    if chrono::Utc::now() - hb > stale_threshold {
+                        "offline".to_string()
+                    } else {
+                        a.status.clone()
+                    }
+                }
+                None => "offline".to_string(),
+            };
+            let deployment_hash = a.deployment_hash.clone();
+
+            let snap = AgentSnapshot {
+                id: Some(a.id),
+                version: a.version,
+                capabilities: a.capabilities,
+                system_info: a.system_info,
+                status: Some(effective_status),
+                last_heartbeat: a.last_heartbeat,
+                deployment_hash: Some(deployment_hash.clone()),
+            };
+            (snap, deployment_hash)
+        }
+    };
+
+    let (agent_snap, deployment_hash) = agent_snapshot;
+
+    let commands = db::command::fetch_recent_by_deployment(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        50,
+        true,
+    )
+    .await
+    .unwrap_or_default();
+
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(agent_pool.get_ref(), &deployment_hash)
+            .await
+            .ok()
+            .flatten();
+
+    let apps = if let Some(dep) = &deployment {
+        db::project_app::fetch_by_deployment(agent_pool.get_ref(), dep.project_id, dep.id)
+            .await
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let health_commands = db::command::fetch_recent_by_deployment(
+        agent_pool.get_ref(),
+        &deployment_hash,
+        10,
+        false,
+    )
+    .await
+    .unwrap_or_default();
+
+    let mut container_map: std::collections::HashMap<String, ContainerSnapshot> =
+        std::collections::HashMap::new();
+
+    for cmd in health_commands.iter() {
+        if cmd.r#type == "health" && cmd.status == "completed" {
+            if let Some(result) = &cmd.result {
+                if let Ok(health) = serde_json::from_value::<HealthCommandReport>(result.clone()) {
+                    let state = serde_json::to_value(&health.container_state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .map(|s| s.to_lowercase());
+
+                    let container = ContainerSnapshot {
+                        id: None,
+                        app: Some(health.app_code.clone()),
+                        state,
+                        image: None,
+                        name: None,
+                    };
+
+                    container_map
+                        .entry(health.app_code.clone())
+                        .or_insert(container);
+                }
+            }
+        }
+    }
+
+    let containers: Vec<ContainerSnapshot> = container_map.into_values().collect();
+
+    let resp = SnapshotResponse {
+        agent: Some(agent_snap),
+        commands,
+        containers,
+        apps,
+    };
+
     Ok(JsonResponse::build()
         .set_item(resp)
         .ok("Snapshot fetched successfully"))

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_audit_log;
 pub(crate) mod agreement;
 pub mod chat;
 pub mod client;
@@ -6,6 +7,7 @@ pub(crate) mod cloud;
 pub mod command;
 pub(crate) mod deployment;
 pub mod marketplace;
+pub mod pipe;
 pub mod product;
 pub mod project;
 pub mod project_app;

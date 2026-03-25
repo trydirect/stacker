@@ -206,12 +206,18 @@ pub async fn run(
                             .service(routes::agent::enqueue_handler)
                             .service(routes::agent::wait_handler)
                             .service(routes::agent::report_handler)
-                            .service(routes::agent::snapshot_handler),
+                            .service(routes::agent::snapshot_handler)
+                            .service(routes::agent::project_snapshot_handler)
+                            .service(routes::agent::login_handler)
+                            .service(routes::agent::link_handler)
+                            .service(routes::agent::agent_audit_ingest_handler)
+                            .service(routes::agent::agent_audit_query_handler),
                     )
                     .service(
                         web::scope("/v1/deployments")
                             .service(routes::deployment::capabilities_handler)
                             .service(routes::deployment::list_handler)
+                            .service(routes::deployment::status_by_hash_handler)
                             .service(routes::deployment::status_handler)
                             .service(routes::deployment::status_by_project_handler)
                             .service(routes::deployment::force_complete_handler),
@@ -222,6 +228,17 @@ pub async fn run(
                             .service(routes::command::list_handler)
                             .service(routes::command::get_handler)
                             .service(routes::command::cancel_handler),
+                    )
+                    .service(
+                        web::scope("/v1/pipes")
+                            .service(routes::pipe::create_template_handler)
+                            .service(routes::pipe::create_instance_handler)
+                            .service(routes::pipe::list_templates_handler)
+                            .service(routes::pipe::list_instances_handler)
+                            .service(routes::pipe::get_template_handler)
+                            .service(routes::pipe::get_instance_handler)
+                            .service(routes::pipe::delete_template_handler)
+                            .service(routes::pipe::delete_instance_handler),
                     )
                     .service(
                         web::scope("/admin")
@@ -240,6 +257,15 @@ pub async fn run(
                                 web::scope("/marketplace")
                                     .service(crate::routes::marketplace::admin::list_plans_handler),
                             ),
+                    ),
+            )
+            .service(
+                web::scope("/api/v1/marketplace")
+                    .service(crate::routes::marketplace::public::install_script_handler)
+                    .service(crate::routes::marketplace::public::download_stack_handler)
+                    .service(
+                        web::scope("/agents")
+                            .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),
                     ),
             )
             .service(

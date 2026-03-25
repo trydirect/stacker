@@ -199,16 +199,22 @@ fn resolve_deployment_hash(ctx: &CliRuntime) -> Result<String, CliError> {
         }
     }
 
-    // 2. stacker.yml project name → API lookup
+    // 2. stacker.yml project → active agent (most recent heartbeat)
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     if config_path.exists() {
         if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
             if let Some(ref project_name) = config.project.identity {
                 let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
                 if let Some(proj) = project {
-                    let dep = ctx.block_on(ctx.client.get_deployment_status_by_project(proj.id))?;
-                    if let Some(dep) = dep {
-                        return Ok(dep.deployment_hash);
+                    match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
+                        Ok((_, hash)) => {
+                            eprintln!(
+                                "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
+                                project_name, hash
+                            );
+                            return Ok(hash);
+                        }
+                        Err(_) => {}
                     }
                 }
             }
@@ -313,12 +319,17 @@ fn run_remote_agent_command(
             tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(REMOTE_POLL_INTERVAL_SECS);
 
+        let mut last_status = "pending".to_string();
+
         loop {
             tokio::time::sleep(interval).await;
 
             if tokio::time::Instant::now() >= deadline {
                 return Err(CliError::AgentCommandTimeout {
                     command_id: command_id.clone(),
+                    command_type: spinner_msg.to_string(),
+                    last_status,
+                    deployment_hash,
                 });
             }
 
@@ -327,6 +338,7 @@ fn run_remote_agent_command(
                 .agent_command_status(&deployment_hash, &command_id)
                 .await?;
 
+            last_status = status.status.clone();
             progress::update_message(
                 &pb,
                 &format!("{} [{}]", spinner_msg, status.status),
@@ -347,7 +359,12 @@ fn run_remote_agent_command(
             progress::finish_error(&pb, &format!("{} — {}", spinner_msg, info.status));
         }
         Err(e) => {
-            progress::finish_error(&pb, &format!("{} — {}", spinner_msg, e));
+            let short_msg = if matches!(e, CliError::AgentCommandTimeout { .. }) {
+                format!("{} — timed out", spinner_msg)
+            } else {
+                format!("{} — {}", spinner_msg, e)
+            };
+            progress::finish_error(&pb, &short_msg);
         }
     }
 
