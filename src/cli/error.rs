@@ -47,6 +47,9 @@ pub enum CliError {
     EnvFileNotFound { path: std::path::PathBuf },
     SecretKeyNotFound { key: String },
 
+    // Marketplace errors
+    MarketplaceFailed(String),
+
     // Agent errors
     AgentNotFound { deployment_hash: String },
     AgentOffline { deployment_hash: String },
@@ -147,6 +150,9 @@ impl fmt::Display for CliError {
             }
             Self::SecretKeyNotFound { key } => {
                 write!(f, "Secret key not found: {key}")
+            }
+            Self::MarketplaceFailed(msg) => {
+                write!(f, "Marketplace error: {msg}")
             }
             Self::AgentNotFound { deployment_hash } => {
                 write!(
