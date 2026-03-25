@@ -285,9 +285,10 @@ pub async fn resubmit_handler(
 #[tracing::instrument(name = "List my templates")]
 #[get("/mine")]
 pub async fn mine_handler(
-    user: web::ReqData<Arc<models::User>>,
+    user: Option<web::ReqData<Arc<models::User>>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
     db::marketplace::list_mine(pg_pool.get_ref(), &user.id)
         .await
         .map_err(|err| {
