@@ -101,7 +101,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    image: postgres:16.13
+    build:
+      context: ./stackerdb
+      dockerfile: Dockerfile
+    image: trydirect/stackerdb:18.3-pgcron
     restart: always
     ports:
       - 5432:5432

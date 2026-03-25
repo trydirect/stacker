@@ -2,7 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.6] — 2026-03-11
+## [Unreleased]
+
+### Added — Agent Audit Ingest Endpoint and Query API
+
+- New database migration `20260321000000_agent_audit_log` creating the `agent_audit_log` table
+- `POST /api/v1/agent/audit` — receives audit event batches from the Status Panel
+- `GET /api/v1/agent/audit` — queries the audit log with optional filters
+
+### Added — Pipe (Container Linking) Foundation
+
+- New `stacker pipe scan|create|list` CLI subcommands for connecting containerized apps
+- `ProbeEndpoints` agent command: auto-discovers OpenAPI, HTML forms, REST endpoints on containers
+- Two-level storage: `pipe_templates` (reusable) + `pipe_instances` (per-deployment)
+- REST API: `POST/GET/DELETE /api/v1/pipes/templates` and `/instances`
+- Data contracts with validation for probe_endpoints command parameters and results
+
+## [0.2.6] — 2026-03-17
+
+### Added — Marketplace Developer & Buyer Flows
+
+- New `stacker submit` command — packages the current stack and submits to marketplace for review
+- New `stacker marketplace status [name]` — shows developer submissions with status badges
+- New `stacker marketplace logs <name>` — shows review history
+- Auto-publish on approval
+
+### Added — Buyer Install Endpoints (Server)
+
+- `GET /api/v1/marketplace/install/{purchase_token}` — generates install script
+- `GET /api/v1/marketplace/download/{purchase_token}` — serves stack archive
+- `POST /api/v1/marketplace/agents/register` — agent self-registration endpoint
 
 ### Added — Firewall (iptables) Management
 

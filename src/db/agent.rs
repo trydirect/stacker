@@ -75,6 +75,34 @@ pub async fn fetch_by_deployment_hash(
     })
 }
 
+/// Fetch the most recently heartbeated agent for a project (heartbeat within last 5 minutes).
+pub async fn fetch_active_by_project(
+    pool: &PgPool,
+    project_id: i32,
+) -> Result<Option<models::Agent>, String> {
+    let query_span = tracing::info_span!("Fetching active agent by project");
+    sqlx::query_as::<_, models::Agent>(
+        r#"
+        SELECT a.id, a.deployment_hash, a.capabilities, a.version, a.system_info,
+               a.last_heartbeat, a.status, a.created_at, a.updated_at
+        FROM agents a
+        JOIN deployment d ON a.deployment_hash = d.deployment_hash
+        WHERE d.project_id = $1
+          AND a.last_heartbeat > NOW() - INTERVAL '5 minutes'
+        ORDER BY a.last_heartbeat DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch active agent by project: {:?}", err);
+        "Database error".to_string()
+    })
+}
+
 pub async fn update_heartbeat(pool: &PgPool, agent_id: Uuid, status: &str) -> Result<(), String> {
     let query_span = tracing::info_span!("Updating agent heartbeat");
     sqlx::query!(

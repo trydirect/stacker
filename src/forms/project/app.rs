@@ -135,7 +135,7 @@ impl App {
         };
 
         let mut envs = IndexMap::new();
-        for item in self.environment.environment.clone() {
+        if let Some(item) = self.environment.environment.clone() {
             let items = item
                 .into_iter()
                 .map(|env_var| {

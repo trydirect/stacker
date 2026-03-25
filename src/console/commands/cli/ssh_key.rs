@@ -311,16 +311,14 @@ async fn inject_key_via_ssh(
     use std::sync::Arc;
     use std::time::Duration;
     use russh::client::{Config, Handle};
-    use russh::Preferred;
 
     struct AcceptAllKeys;
 
-    #[async_trait::async_trait]
     impl russh::client::Handler for AcceptAllKeys {
         type Error = russh::Error;
         async fn check_server_key(
             &mut self,
-            _server_public_key: &russh::keys::key::PublicKey,
+            _server_public_key: &russh::keys::PublicKey,
         ) -> Result<bool, Self::Error> {
             Ok(true)
         }
@@ -330,7 +328,6 @@ async fn inject_key_via_ssh(
         .map_err(|e| CliError::ConfigValidation(format!("Invalid private key: {}", e)))?;
 
     let config = Arc::new(Config {
-        preferred: Preferred::DEFAULT,
         ..Default::default()
     });
 
@@ -341,12 +338,20 @@ async fn inject_key_via_ssh(
             .map_err(|_| CliError::ConfigValidation(format!("Connection to {}:{} timed out", host, port)))?
             .map_err(|e| CliError::ConfigValidation(format!("Connection failed: {}", e)))?;
 
-    let authenticated = handle
-        .authenticate_publickey(username, Arc::new(key))
+    let auth_res = handle
+        .authenticate_publickey(
+            username,
+            russh::keys::key::PrivateKeyWithHashAlg::new(
+                Arc::new(key),
+                handle.best_supported_rsa_hash().await
+                    .map_err(|e| CliError::ConfigValidation(format!("RSA hash negotiation failed: {}", e)))?
+                    .flatten(),
+            ),
+        )
         .await
         .map_err(|e| CliError::ConfigValidation(format!("Authentication error: {}", e)))?;
 
-    if !authenticated {
+    if !auth_res.success() {
         return Err(Box::new(CliError::ConfigValidation(
             "Authentication failed — the provided key is not accepted by the server".to_string(),
         )));

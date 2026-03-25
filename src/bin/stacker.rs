@@ -127,6 +127,27 @@ enum StackerCommands {
         #[arg(long)]
         force_new: bool,
     },
+    /// Submit current stack to the marketplace for review
+    Submit {
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Stack version (default: from stacker.yml or "1.0.0")
+        #[arg(long)]
+        version: Option<String>,
+        /// Short description for marketplace listing
+        #[arg(long)]
+        description: Option<String>,
+        /// Category code (e.g. ai-agents, data-pipelines, saas-starter)
+        #[arg(long)]
+        category: Option<String>,
+        /// Pricing: free, one_time, subscription (default: free)
+        #[arg(long, value_name = "TYPE")]
+        plan_type: Option<String>,
+        /// Price amount (required if plan_type is not free)
+        #[arg(long)]
+        price: Option<f64>,
+    },
     /// Show container logs
     Logs {
         /// Show logs for a specific service only
@@ -193,6 +214,12 @@ enum StackerCommands {
         /// Skip confirmation prompt (required)
         #[arg(long, short = 'y')]
         confirm: bool,
+        /// Force-complete even if the deployment is in_progress
+        #[arg(long)]
+        force: bool,
+        /// Target a specific deployment by hash (e.g. deployment_ad479fdb-…); defaults to latest
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Check for updates and self-update
     Update {
@@ -216,10 +243,40 @@ enum StackerCommands {
         #[command(subcommand)]
         command: CiCommands,
     },
+    /// Connect containerized apps with data pipes
+    Pipe {
+        #[command(subcommand)]
+        command: PipeCommands,
+    },
     /// Status Panel agent control (health, logs, restart, deploy)
     Agent {
         #[command(subcommand)]
         command: AgentCommands,
+    },
+    /// Marketplace operations (submit, check status)
+    Marketplace {
+        #[command(subcommand)]
+        command: MarketplaceCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MarketplaceCommands {
+    /// Check submission status for your marketplace templates
+    Status {
+        /// Stack name to check (omit for all)
+        name: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show review comments and history for a submission
+    Logs {
+        /// Stack name
+        name: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -460,6 +517,49 @@ enum CiCommands {
 }
 
 #[derive(Debug, Subcommand)]
+enum PipeCommands {
+    /// Discover connectable endpoints on a container
+    Scan {
+        /// App code to scan (e.g., "crm", "website")
+        app: String,
+        /// Protocols to probe (default: openapi,rest)
+        #[arg(long, value_delimiter = ',')]
+        protocols: Vec<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash (auto-detected from lock/config)
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Create a pipe between two apps (interactive)
+    Create {
+        /// Source app code
+        source: String,
+        /// Target app code
+        target: String,
+        /// Skip AI matching, manual selection only
+        #[arg(long)]
+        manual: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// List active pipes for a deployment
+    List {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AgentCommands {
     /// Check container health on the remote deployment
     Health {
@@ -533,6 +633,9 @@ enum AgentCommands {
         /// Also remove the image
         #[arg(long)]
         remove_image: bool,
+        /// Skip the active-connections pre-flight check
+        #[arg(long)]
+        force: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -561,6 +664,9 @@ enum AgentCommands {
         /// Persist rules across reboots
         #[arg(long, default_value_t = true)]
         persist: bool,
+        /// Skip the active-connections pre-flight check
+        #[arg(long)]
+        force: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -585,6 +691,9 @@ enum AgentCommands {
         /// Action: create, update, delete
         #[arg(long, default_value = "create")]
         action: String,
+        /// Skip the active-connections pre-flight check
+        #[arg(long)]
+        force: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -953,8 +1062,8 @@ fn get_command(
                 stacker::console::commands::cli::service::ServiceListCommand::new(online),
             ),
         },
-        StackerCommands::Resolve { confirm } => Box::new(
-            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm),
+        StackerCommands::Resolve { confirm, force, deployment } => Box::new(
+            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm, force, deployment),
         ),
         StackerCommands::Update { channel } => Box::new(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),
@@ -984,6 +1093,20 @@ fn get_command(
                 stacker::console::commands::cli::ci::CiValidateCommand::new(platform),
             ),
         },
+        StackerCommands::Pipe { command: pipe_cmd } => {
+            use stacker::console::commands::cli::pipe;
+            match pipe_cmd {
+                PipeCommands::Scan { app, protocols, json, deployment } => Box::new(
+                    pipe::PipeScanCommand::new(app, protocols, json, deployment),
+                ),
+                PipeCommands::Create { source, target, manual, json, deployment } => Box::new(
+                    pipe::PipeCreateCommand::new(source, target, manual, json, deployment),
+                ),
+                PipeCommands::List { json, deployment } => Box::new(
+                    pipe::PipeListCommand::new(json, deployment),
+                ),
+            }
+        },
         StackerCommands::Agent { command: agent_cmd } => {
             use stacker::console::commands::cli::agent;
             match agent_cmd {
@@ -999,10 +1122,10 @@ fn get_command(
                 AgentCommands::DeployApp { app, image, force, json, deployment } => Box::new(
                     agent::AgentDeployAppCommand::new(app, image, force, json, deployment),
                 ),
-                AgentCommands::RemoveApp { app, volumes, remove_image, json, deployment } => Box::new(
-                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, json, deployment),
+                AgentCommands::RemoveApp { app, volumes, remove_image, force, json, deployment } => Box::new(
+                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, force, json, deployment),
                 ),
-                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, json, deployment } => {
+                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, force, json, deployment } => {
                     let effective_action = if list { "list".to_string() } else { action };
                     Box::new(agent::AgentConfigureFirewallCommand::new(
                         effective_action,
@@ -1010,12 +1133,13 @@ fn get_command(
                         public_ports,
                         private_ports,
                         persist,
+                        force,
                         json,
                         deployment,
                     ))
                 }
-                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, json, deployment } => Box::new(
-                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, json, deployment),
+                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, force, json, deployment } => Box::new(
+                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, force, json, deployment),
                 ),
                 AgentCommands::List { command: list_cmd } => match list_cmd {
                     AgentListCommands::Apps { json, deployment } => Box::new(
@@ -1038,6 +1162,30 @@ fn get_command(
                     agent::AgentInstallCommand::new(file, json),
                 ),
             }
+        },
+        StackerCommands::Submit {
+            file,
+            version,
+            description,
+            category,
+            plan_type,
+            price,
+        } => Box::new(
+            stacker::console::commands::cli::submit::SubmitCommand::new(
+                file, version, description, category, plan_type, price,
+            ),
+        ),
+        StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {
+            MarketplaceCommands::Status { name, json } => Box::new(
+                stacker::console::commands::cli::marketplace::MarketplaceStatusCommand::new(
+                    name, json,
+                ),
+            ),
+            MarketplaceCommands::Logs { name, json } => Box::new(
+                stacker::console::commands::cli::marketplace::MarketplaceLogsCommand::new(
+                    name, json,
+                ),
+            ),
         },
         // Completion is handled in main() before this function is called.
         StackerCommands::Completion { .. } => unreachable!(),

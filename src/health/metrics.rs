@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct MetricSnapshot {
+    #[allow(dead_code)]
     pub timestamp: DateTime<Utc>,
     pub component: String,
     pub status: ComponentStatus,

@@ -46,6 +46,38 @@ impl From<models::Deployment> for DeploymentStatusResponse {
     }
 }
 
+/// `GET /api/v1/deployments/hash/{hash}`
+///
+/// Fetch a deployment by its deployment hash string.
+#[tracing::instrument(name = "Get deployment status by hash", skip(pg_pool))]
+#[get("/hash/{hash}")]
+pub async fn status_by_hash_handler(
+    path: web::Path<String>,
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let hash = path.into_inner();
+
+    let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &hash)
+        .await
+        .map_err(|err| JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err))?;
+
+    match deployment {
+        Some(d) => {
+            if d.user_id.as_deref() != Some(&user.id) {
+                return Err(JsonResponse::<DeploymentStatusResponse>::build()
+                    .not_found("Deployment not found"));
+            }
+            let resp: DeploymentStatusResponse = d.into();
+            Ok(JsonResponse::build()
+                .set_item(resp)
+                .ok("Deployment status fetched"))
+        }
+        None => Err(JsonResponse::<DeploymentStatusResponse>::build()
+            .not_found("Deployment not found")),
+    }
+}
+
 /// `GET /api/v1/deployments/{id}`
 ///
 /// Fetch deployment status by deployment ID.

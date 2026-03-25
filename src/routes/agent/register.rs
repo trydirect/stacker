@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct RegisterAgentRequest {
     pub deployment_hash: String,
+    #[allow(dead_code)]
     pub public_key: Option<String>,
     pub capabilities: Vec<String>,
     pub system_info: serde_json::Value,

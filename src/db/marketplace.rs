@@ -718,7 +718,7 @@ pub async fn admin_unapprove(
 
     // Insert a review record documenting the unapproval
     sqlx::query!(
-        r#"INSERT INTO stack_template_review (template_id, reviewer_user_id, decision, review_reason, reviewed_at) VALUES ($1::uuid, $2, 'unapproved', $3, now())"#,
+        r#"INSERT INTO stack_template_review (template_id, reviewer_user_id, decision, review_reason, reviewed_at) VALUES ($1::uuid, $2, 'rejected', $3, now())"#,
         template_id,
         reviewer_user_id,
         reason

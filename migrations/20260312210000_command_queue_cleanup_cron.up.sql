@@ -1,7 +1,14 @@
--- Enable pg_cron extension (requires shared_preload_libraries)
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+-- Enable pg_cron extension if available (requires pg_cron in shared_preload_libraries).
+-- Wrapped in DO block so migration doesn't fail on servers without pg_cron.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pg_cron;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'pg_cron extension not available, skipping: %', SQLERRM;
+END;
+$$;
 
--- Cleanup function for stale command_queue entries
+-- Cleanup function for stale command_queue entries (always created, pg_cron optional)
 CREATE OR REPLACE FUNCTION stacker_command_queue_cleanup(
     queue_ttl INTERVAL DEFAULT INTERVAL '48 hours'
 )
@@ -33,17 +40,20 @@ BEGIN
 END;
 $$;
 
--- Schedule hourly cleanup job (idempotent)
+-- Schedule hourly cleanup job if pg_cron is available (idempotent).
+-- Uses $cron$ quoting to avoid collision with the outer DO $$ block.
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM cron.job WHERE jobname = 'stacker_command_queue_cleanup'
-    ) THEN
-        PERFORM cron.schedule(
-            'stacker_command_queue_cleanup',
-            '0 * * * *',
-            $$SELECT stacker_command_queue_cleanup();$$
-        );
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM cron.job WHERE jobname = 'stacker_command_queue_cleanup'
+        ) THEN
+            PERFORM cron.schedule(
+                'stacker_command_queue_cleanup',
+                '0 * * * *',
+                $cron$SELECT stacker_command_queue_cleanup();$cron$
+            );
+        END IF;
     END IF;
 END;
 $$;

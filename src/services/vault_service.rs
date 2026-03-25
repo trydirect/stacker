@@ -48,6 +48,7 @@ struct VaultKvData {
     #[serde(default)]
     data: HashMap<String, serde_json::Value>,
     #[serde(default)]
+    #[allow(dead_code)]
     metadata: Option<VaultMetadata>,
 }
 
