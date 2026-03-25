@@ -141,7 +141,6 @@ jobs:
           cp target/release/server app/stacker/server
           if [ -d web/dist ]; then cp -a web/dist/. app/stacker; fi
           cp Dockerfile app/Dockerfile
-          cp access_control.conf.dist app/access_control.conf.dist
           cd app
           touch .env
           tar -czvf ../app.tar.gz .
@@ -158,16 +157,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: cicd-docker
     steps:
-      - name: Download app archive
-        uses: actions/download-artifact@v7
+      - name: Checkout sources
+        uses: actions/checkout@v6
         with:
-          name: artifact-linux-docker
-
-      - name: Extract app archive
-        run: tar -zxvf app.tar.gz
-
-      - name: Display structure of downloaded files
-        run: ls -R
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       -
         name: Set up QEMU
@@ -194,7 +187,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_tags.outputs.tags }}
 
   stackerdb-docker:
