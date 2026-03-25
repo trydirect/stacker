@@ -1384,7 +1384,7 @@ impl StackerClient {
         &self,
         template_id: &str,
     ) -> Result<Vec<MarketplaceReviewInfo>, CliError> {
-        let url = format!("{}/api/admin/templates/{}", self.base_url, template_id);
+        let url = format!("{}/api/templates/{}/reviews", self.base_url, template_id);
         let resp = self
             .http
             .get(&url)
@@ -1397,24 +1397,16 @@ impl StackerClient {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::MarketplaceFailed(format!(
-                "GET /api/admin/templates/{} failed ({}): {}",
+                "GET /api/templates/{}/reviews failed ({}): {}",
                 template_id, status, body
             )));
         }
 
-        let api: ApiResponse<serde_json::Value> = resp.json().await.map_err(|e| {
+        let api: ApiResponse<MarketplaceReviewInfo> = resp.json().await.map_err(|e| {
             CliError::MarketplaceFailed(format!("Invalid response from Stacker server: {}", e))
         })?;
 
-        let item = api.item.unwrap_or(serde_json::json!({}));
-        let reviews: Vec<MarketplaceReviewInfo> = serde_json::from_value(
-            item.get("reviews")
-                .cloned()
-                .unwrap_or(serde_json::json!([])),
-        )
-        .unwrap_or_default();
-
-        Ok(reviews)
+        Ok(api.list.unwrap_or_default())
     }
 
     /// Create or update a marketplace template (POST /api/templates).

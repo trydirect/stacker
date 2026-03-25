@@ -194,6 +194,7 @@ pub async fn run(
                         web::scope("/templates")
                             .service(crate::routes::marketplace::public::list_handler)
                             .service(crate::routes::marketplace::creator::mine_handler)
+                            .service(crate::routes::marketplace::creator::my_reviews_handler)
                             .service(crate::routes::marketplace::creator::create_handler)
                             .service(crate::routes::marketplace::creator::update_handler)
                             .service(crate::routes::marketplace::creator::submit_handler)
