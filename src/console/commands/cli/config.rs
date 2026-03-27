@@ -214,7 +214,8 @@ pub fn run_generate_remote_payload(
         .unwrap_or_else(|| "custom-stack".to_string());
     let provider_code = provider_code_for_remote(provider);
     let os = match provider_code {
-        "do" => "docker-20-04",
+        "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
+        "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
         _ => "ubuntu-22.04",
     };
 

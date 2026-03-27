@@ -1958,7 +1958,8 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
     let server_size = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cpx11".to_string());
     let os = match provider.as_str() {
-        "do" => "docker-20-04",
+        "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
+        "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
         _ => "ubuntu-22.04",
     };
 

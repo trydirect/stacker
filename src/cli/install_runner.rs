@@ -990,7 +990,8 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "custom-stack".to_string());
     let os = match provider.as_str() {
-        "do" => "docker-20-04",
+        "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
+        "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
         _ => "ubuntu-22.04",
     };
 
