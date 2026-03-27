@@ -1960,6 +1960,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let os = match provider.as_str() {
         "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
         "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
+        "cnt" => "ubuntu-22.04", // Contabo: standard Ubuntu image
         _ => "ubuntu-22.04",
     };
 

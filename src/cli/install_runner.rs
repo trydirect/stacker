@@ -798,6 +798,7 @@ pub fn provider_code_for_remote(config_provider: &str) -> &str {
         "aws" => "aws",
         "linode" => "lo",
         "vultr" => "vu",
+        "contabo" => "cnt",
         _ => config_provider,
     }
 }
@@ -924,6 +925,25 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
                 creds.insert("cloud_secret".to_string(), serde_json::Value::String(secret));
             }
         }
+        "cnt" => {
+            // Contabo uses four credentials: OAuth2 client_id/secret + API user/password.
+            if let Some(v) = first_non_empty_env(&["STACKER_CONTABO_CLIENT_ID", "CNT_CLIENT_ID"]) {
+                creds.insert("cloud_key".to_string(), serde_json::Value::String(v));
+            }
+            if let Some(v) =
+                first_non_empty_env(&["STACKER_CONTABO_CLIENT_SECRET", "CNT_CLIENT_SECRET"])
+            {
+                creds.insert("cloud_token".to_string(), serde_json::Value::String(v));
+            }
+            if let Some(v) = first_non_empty_env(&["STACKER_CONTABO_API_USER", "CNT_API_USER"]) {
+                creds.insert("cloud_user".to_string(), serde_json::Value::String(v));
+            }
+            if let Some(v) =
+                first_non_empty_env(&["STACKER_CONTABO_API_PASSWORD", "CNT_API_PASSWORD"])
+            {
+                creds.insert("cloud_password".to_string(), serde_json::Value::String(v));
+            }
+        }
         _ => {}
     }
 
@@ -990,8 +1010,9 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "custom-stack".to_string());
     let os = match provider.as_str() {
-        "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
-        "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
+        "do" => "docker-20-04",  // DigitalOcean marketplace image with Docker pre-installed
+        "htz" => "docker-ce",    // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
+        "cnt" => "ubuntu-22.04", // Contabo: standard Ubuntu image
         _ => "ubuntu-22.04",
     };
 
