@@ -4,7 +4,7 @@ use crate::db;
 use crate::helpers::security_validator;
 use crate::helpers::JsonResponse;
 use crate::models;
-use actix_web::{get, post, web, Responder, Result};
+use actix_web::{get, patch, post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -341,4 +341,42 @@ pub async fn list_plans_handler(
                 .collect();
             JsonResponse::build().set_list(plan_json).ok("OK")
         })
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct AdminPricingRequest {
+    pub price: Option<f64>,
+    pub billing_cycle: Option<String>,
+    pub required_plan_name: Option<String>,
+    pub currency: Option<String>,
+}
+
+#[tracing::instrument(name = "Admin update template pricing")]
+#[patch("/{id}/pricing")]
+pub async fn pricing_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminPricingRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let req = body.into_inner();
+    let updated = db::marketplace::admin_update_pricing(
+        pg_pool.get_ref(),
+        &id,
+        req.price,
+        req.billing_cycle.as_deref(),
+        req.required_plan_name.as_deref(),
+        req.currency.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
+
+    if updated {
+        Ok(JsonResponse::<serde_json::Value>::build().ok("Updated"))
+    } else {
+        Err(JsonResponse::<serde_json::Value>::build().not_found("Template not found"))
+    }
 }

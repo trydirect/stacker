@@ -938,3 +938,48 @@ pub async fn save_security_scan(
         "Internal Server Error".to_string()
     })
 }
+
+/// Admin: update pricing fields on any template regardless of status.
+/// Normalizes price to 0 when billing_cycle is "free".
+pub async fn admin_update_pricing(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    required_plan_name: Option<&str>,
+    currency: Option<&str>,
+) -> Result<bool, String> {
+    let query_span = tracing::info_span!(
+        "marketplace_admin_update_pricing",
+        template_id = %template_id
+    );
+
+    // Normalize price=0 when billing_cycle is "free"
+    let normalized_price = match billing_cycle {
+        Some("free") => Some(0.0_f64),
+        _ => price,
+    };
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template SET
+            price = COALESCE($2, price),
+            billing_cycle = COALESCE($3, billing_cycle),
+            required_plan_name = COALESCE($4, required_plan_name),
+            currency = COALESCE($5, currency)
+        WHERE id = $1"#,
+    )
+    .bind(*template_id)
+    .bind(normalized_price)
+    .bind(billing_cycle)
+    .bind(required_plan_name)
+    .bind(currency)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("admin_update_pricing error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
