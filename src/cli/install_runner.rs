@@ -179,7 +179,7 @@ impl DeployStrategy for LocalDeploy {
             args.push("--env-file".into());
             args.push(env_file_path.to_string_lossy().to_string());
         }
-        args.push("-f".into());
+        args.push("--file".into());
         args.push(compose_path.clone());
 
         if context.dry_run {
@@ -235,7 +235,7 @@ impl DeployStrategy for LocalDeploy {
             args.push("--env-file".into());
             args.push(env_file_path.to_string_lossy().to_string());
         }
-        args.push("-f".into());
+        args.push("--file".into());
         args.push(compose_path);
         args.push("down".into());
         args.push("--volumes".into());
