@@ -152,6 +152,20 @@ pub fn strategy_for(target: &DeployTarget) -> Box<dyn DeployStrategy> {
 // LocalDeploy — docker compose up/down
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Detect which compose invocation is available on this host.
+///
+/// Returns `("docker", vec!["compose"])` when the Docker Compose plugin is
+/// installed (`docker compose version` exits 0), or `("docker-compose", vec![])`
+/// when only the standalone tool is available.
+fn resolve_compose_cmd(executor: &dyn CommandExecutor) -> (&'static str, Vec<&'static str>) {
+    if let Ok(out) = executor.execute("docker", &["compose", "version"]) {
+        if out.success() {
+            return ("docker", vec!["compose"]);
+        }
+    }
+    ("docker-compose", vec![])
+}
+
 pub struct LocalDeploy;
 
 impl DeployStrategy for LocalDeploy {
@@ -167,9 +181,25 @@ impl DeployStrategy for LocalDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
+        // In dry-run mode, artifacts have already been generated.
+        // Skip calling docker compose — it may not be available in all environments,
+        // and "dry run" means "preview, don't execute".
+        if context.dry_run {
+            return Ok(DeployResult {
+                target: DeployTarget::Local,
+                message: "Local deployment previewed successfully (dry-run)".to_string(),
+                server_ip: None,
+                deployment_id: None,
+                project_id: None,
+                server_name: None,
+            });
+        }
+
         let compose_path = context.compose_path.to_string_lossy().to_string();
 
-        let mut args: Vec<String> = vec!["compose".into()];
+        let (cmd, base_args) = resolve_compose_cmd(executor);
+        let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+
         if let Some(ref env_file) = config.env_file {
             let env_file_path = if env_file.is_absolute() {
                 env_file.clone()
@@ -181,17 +211,12 @@ impl DeployStrategy for LocalDeploy {
         }
         args.push("--file".into());
         args.push(compose_path.clone());
-
-        if context.dry_run {
-            args.push("config".into());
-        } else {
-            args.push("up".into());
-            args.push("-d".into());
-            args.push("--build".into());
-        }
+        args.push("up".into());
+        args.push("-d".into());
+        args.push("--build".into());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let output = executor.execute("docker", &args_refs)?;
+        let output = executor.execute(cmd, &args_refs)?;
 
         if !output.stdout.trim().is_empty() {
             println!("{}", output.stdout);
@@ -207,10 +232,9 @@ impl DeployStrategy for LocalDeploy {
             });
         }
 
-        let action = if context.dry_run { "validated" } else { "started" };
         Ok(DeployResult {
             target: DeployTarget::Local,
-            message: format!("Local deployment {} successfully", action),
+            message: "Local deployment started successfully".to_string(),
             server_ip: None,
             deployment_id: None,
             project_id: None,
@@ -225,7 +249,10 @@ impl DeployStrategy for LocalDeploy {
         executor: &dyn CommandExecutor,
     ) -> Result<(), CliError> {
         let compose_path = context.compose_path.to_string_lossy().to_string();
-        let mut args: Vec<String> = vec!["compose".into()];
+
+        let (cmd, base_args) = resolve_compose_cmd(executor);
+        let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+
         if let Some(ref env_file) = config.env_file {
             let env_file_path = if env_file.is_absolute() {
                 env_file.clone()
@@ -240,7 +267,7 @@ impl DeployStrategy for LocalDeploy {
         args.push("down".into());
         args.push("--volumes".into());
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let output = executor.execute("docker", &args_refs)?;
+        let output = executor.execute(cmd, &args_refs)?;
 
         if !output.success() {
             return Err(CliError::DeployFailed {
@@ -1669,11 +1696,17 @@ mod tests {
 
         let result = strategy.deploy(&config, &context, &executor).unwrap();
         assert_eq!(result.target, DeployTarget::Local);
-        assert!(result.message.contains("validated"));
+        assert!(result.message.contains("dry-run") || result.message.contains("previewed"),
+            "dry-run message should indicate preview, got: {}", result.message);
 
-        let args = executor.last_args();
-        assert!(args.contains(&"config".to_string()));
-        assert!(!args.contains(&"up".to_string()));
+        // Dry-run should NOT invoke docker at all (no compose call)
+        let recorded = executor.recorded_calls.lock().unwrap();
+        // Only the compose-version probe may have been called (from resolve_compose_cmd),
+        // but the actual compose up/config should NOT be called.
+        assert!(!recorded.iter().any(|(_, args)| args.contains(&"up".to_string())),
+            "dry-run must not call docker compose up");
+        assert!(!recorded.iter().any(|(_, args)| args.contains(&"config".to_string())),
+            "dry-run must not call docker compose config");
     }
 
     #[test]
@@ -1725,7 +1758,7 @@ mod tests {
             .env_file(".env")
             .build()
             .unwrap();
-        let context = sample_context(true);
+        let context = sample_context(false); // real deploy, not dry-run
         let executor = MockExecutor::success();
         let strategy = LocalDeploy;
 
