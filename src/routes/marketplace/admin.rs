@@ -293,11 +293,14 @@ pub async fn security_scan_handler(
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
-    // Auto-set security_reviewed=true and hardened_images=true/false based on scan
-    if report.overall_passed {
-        let mut verif_patch = serde_json::json!({ "security_reviewed": true });
-        // Also persist the hardened_images result from static analysis
+    // Always persist the hardened_images result (true/false) regardless of overall scan outcome.
+    // security_reviewed is only set when the scan passes all gates.
+    {
+        let mut verif_patch = serde_json::json!({});
         verif_patch["hardened_images"] = serde_json::Value::Bool(report.hardened_images.passed);
+        if report.overall_passed {
+            verif_patch["security_reviewed"] = serde_json::Value::Bool(true);
+        }
         if let Err(e) = db::marketplace::update_verifications(
             pg_pool.get_ref(),
             &id,
@@ -305,7 +308,7 @@ pub async fn security_scan_handler(
         )
         .await
         {
-            tracing::warn!("Failed to auto-set verifications after passing scan: {}", e);
+            tracing::warn!("Failed to auto-set verifications after scan: {}", e);
         }
     }
 
