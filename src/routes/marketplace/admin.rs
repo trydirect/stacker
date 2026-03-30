@@ -293,6 +293,19 @@ pub async fn security_scan_handler(
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
+    // Auto-set security_reviewed=true when scan passes
+    if report.overall_passed {
+        if let Err(e) = db::marketplace::update_verifications(
+            pg_pool.get_ref(),
+            &id,
+            serde_json::json!({ "security_reviewed": true }),
+        )
+        .await
+        {
+            tracing::warn!("Failed to auto-set security_reviewed after passing scan: {}", e);
+        }
+    }
+
     let result = serde_json::json!({
         "template_id": template.id,
         "template_name": template.name,
@@ -376,6 +389,73 @@ pub async fn pricing_handler(
 
     if updated {
         Ok(JsonResponse::<serde_json::Value>::build().ok("Updated"))
+    } else {
+        Err(JsonResponse::<serde_json::Value>::build().not_found("Template not found"))
+    }
+}
+
+/// Request body for PATCH /{id}/verifications.
+/// Each key is a boolean flag. Unknown keys are accepted and stored as-is.
+/// Omitted keys are not touched (partial update via JSONB `||`).
+#[derive(serde::Deserialize, Debug)]
+pub struct AdminVerificationsRequest {
+    pub security_reviewed: Option<bool>,
+    pub https_ready: Option<bool>,
+    pub open_source: Option<bool>,
+    pub maintained: Option<bool>,
+    pub vulnerability_scanned: Option<bool>,
+}
+
+#[tracing::instrument(name = "Admin update template verifications")]
+#[patch("/{id}/verifications")]
+pub async fn update_verifications_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminVerificationsRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let req = body.into_inner();
+
+    // Build a partial JSONB patch containing only the supplied fields
+    let mut patch = serde_json::Map::new();
+    if let Some(v) = req.security_reviewed {
+        patch.insert("security_reviewed".to_string(), serde_json::Value::Bool(v));
+    }
+    if let Some(v) = req.https_ready {
+        patch.insert("https_ready".to_string(), serde_json::Value::Bool(v));
+    }
+    if let Some(v) = req.open_source {
+        patch.insert("open_source".to_string(), serde_json::Value::Bool(v));
+    }
+    if let Some(v) = req.maintained {
+        patch.insert("maintained".to_string(), serde_json::Value::Bool(v));
+    }
+    if let Some(v) = req.vulnerability_scanned {
+        patch.insert(
+            "vulnerability_scanned".to_string(),
+            serde_json::Value::Bool(v),
+        );
+    }
+
+    if patch.is_empty() {
+        return Err(
+            JsonResponse::<serde_json::Value>::build().bad_request("No verification flags provided")
+        );
+    }
+
+    let updated = db::marketplace::update_verifications(
+        pg_pool.get_ref(),
+        &id,
+        serde_json::Value::Object(patch),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    if updated {
+        Ok(JsonResponse::<serde_json::Value>::build().ok("Verifications updated"))
     } else {
         Err(JsonResponse::<serde_json::Value>::build().not_found("Template not found"))
     }

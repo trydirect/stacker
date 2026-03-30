@@ -31,7 +31,8 @@ pub async fn list_approved(
             t.currency,
             t.created_at,
             t.updated_at,
-            t.approved_at
+            t.approved_at,
+            t.verifications
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved'"#,
@@ -115,7 +116,8 @@ pub async fn get_by_slug_and_user(
             t.currency,
             t.created_at,
             t.updated_at,
-            t.approved_at
+            t.approved_at,
+            t.verifications
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.creator_user_id = $2"#,
@@ -137,8 +139,7 @@ pub async fn get_by_slug_with_latest(
 ) -> Result<(StackTemplate, Option<StackTemplateVersion>), String> {
     let query_span = tracing::info_span!("marketplace_get_by_slug_with_latest", slug = %slug);
 
-    let template = sqlx::query_as!(
-        StackTemplate,
+    let template = sqlx::query_as::<_, StackTemplate>(
         r#"SELECT 
             t.id,
             t.creator_user_id,
@@ -147,7 +148,7 @@ pub async fn get_by_slug_with_latest(
             t.slug,
             t.short_description,
             t.long_description,
-            c.name AS "category_code?",
+            c.name AS "category_code",
             t.product_id,
             t.tags,
             t.tech_stack,
@@ -161,12 +162,13 @@ pub async fn get_by_slug_with_latest(
             t.currency,
             t.created_at,
             t.updated_at,
-            t.approved_at
+            t.approved_at,
+            t.verifications
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.status = 'approved'"#,
-        slug
     )
+    .bind(slug)
     .fetch_one(pool)
     .instrument(query_span.clone())
     .await
@@ -206,8 +208,7 @@ pub async fn get_by_id(
 ) -> Result<Option<StackTemplate>, String> {
     let query_span = tracing::info_span!("marketplace_get_by_id", id = %template_id);
 
-    let template = sqlx::query_as!(
-        StackTemplate,
+    let template = sqlx::query_as::<_, StackTemplate>(
         r#"SELECT 
             t.id,
             t.creator_user_id,
@@ -216,7 +217,7 @@ pub async fn get_by_id(
             t.slug,
             t.short_description,
             t.long_description,
-            c.name AS "category_code?",
+            c.name AS "category_code",
             t.product_id,
             t.tags,
             t.tech_stack,
@@ -230,12 +231,13 @@ pub async fn get_by_id(
             t.required_plan_name,
             t.price,
             t.billing_cycle,
-            t.currency
+            t.currency,
+            t.verifications
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.id = $1"#,
-        template_id
     )
+    .bind(template_id)
     .fetch_optional(pool)
     .instrument(query_span)
     .await
@@ -266,8 +268,7 @@ pub async fn create_draft(
 
     let price_f64 = price;
 
-    let rec = sqlx::query_as!(
-        StackTemplate,
+    let rec = sqlx::query_as::<_, StackTemplate>(
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
@@ -281,7 +282,7 @@ pub async fn create_draft(
             slug,
             short_description,
             long_description,
-            (SELECT name FROM stack_category WHERE id = category_id) AS "category_code?",
+            (SELECT name FROM stack_category WHERE id = category_id) AS "category_code",
             product_id,
             tags,
             tech_stack,
@@ -295,21 +296,22 @@ pub async fn create_draft(
             currency,
             created_at,
             updated_at,
-            approved_at
+            approved_at,
+            verifications
         "#,
-        creator_user_id,
-        creator_name,
-        name,
-        slug,
-        short_description,
-        long_description,
-        category_code,
-        tags,
-        tech_stack,
-        price_f64,
-        billing_cycle,
-        currency
     )
+    .bind(creator_user_id)
+    .bind(creator_name)
+    .bind(name)
+    .bind(slug)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags)
+    .bind(tech_stack)
+    .bind(price_f64)
+    .bind(billing_cycle)
+    .bind(currency)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -551,8 +553,7 @@ pub async fn resubmit_with_new_version(
 pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate>, String> {
     let query_span = tracing::info_span!("marketplace_list_mine", user = %user_id);
 
-    sqlx::query_as!(
-        StackTemplate,
+    sqlx::query_as::<_, StackTemplate>(
         r#"SELECT 
             t.id,
             t.creator_user_id,
@@ -561,7 +562,7 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.slug,
             t.short_description,
             t.long_description,
-            c.name AS "category_code?",
+            c.name AS "category_code",
             t.product_id,
             t.tags,
             t.tech_stack,
@@ -575,13 +576,14 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.currency,
             t.created_at,
             t.updated_at,
-            t.approved_at
+            t.approved_at,
+            t.verifications
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.creator_user_id = $1
         ORDER BY t.created_at DESC"#,
-        user_id
     )
+    .bind(user_id)
     .fetch_all(pool)
     .instrument(query_span)
     .await
@@ -594,8 +596,7 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
 pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, String> {
     let query_span = tracing::info_span!("marketplace_admin_list_submitted");
 
-    sqlx::query_as!(
-        StackTemplate,
+    sqlx::query_as::<_, StackTemplate>(
         r#"SELECT 
             t.id,
             t.creator_user_id,
@@ -604,7 +605,7 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.slug,
             t.short_description,
             t.long_description,
-            c.name AS "category_code?",
+            c.name AS "category_code",
             t.product_id,
             t.tags,
             t.tech_stack,
@@ -618,7 +619,8 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.currency,
             t.created_at,
             t.updated_at,
-            t.approved_at
+            t.approved_at,
+            t.verifications
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status IN ('submitted', 'approved')
@@ -627,7 +629,7 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
                 WHEN 'submitted' THEN 0
                 WHEN 'approved' THEN 1
             END,
-            t.created_at ASC"#
+            t.created_at ASC"#,
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -978,6 +980,34 @@ pub async fn admin_update_pricing(
     .await
     .map_err(|e| {
         tracing::error!("admin_update_pricing error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
+
+/// Merge `updates` into the `verifications` JSONB column on a template.
+/// Uses the PostgreSQL `||` operator so only the provided keys are overwritten.
+pub async fn update_verifications(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    updates: serde_json::Value,
+) -> Result<bool, String> {
+    let query_span =
+        tracing::info_span!("marketplace_update_verifications", template_id = %template_id);
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template
+           SET verifications = verifications || $2
+           WHERE id = $1"#,
+    )
+    .bind(*template_id)
+    .bind(&updates)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("update_verifications error: {:?}", e);
         "Internal Server Error".to_string()
     })?;
 
