@@ -46,9 +46,16 @@ pub async fn list_approved(
     }
 
     match sort.unwrap_or("recent") {
-        "popular" => base.push_str(" ORDER BY t.deploy_count DESC, t.view_count DESC"),
-        "rating" => base.push_str(" ORDER BY (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST"),
-        _ => base.push_str(" ORDER BY t.approved_at DESC NULLS LAST, t.created_at DESC"),
+        // Hardened images always float to the top of each sort bucket
+        "popular" => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
+        ),
+        "rating" => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST",
+        ),
+        _ => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.approved_at DESC NULLS LAST, t.created_at DESC",
+        ),
     }
 
     let query_span = tracing::info_span!("marketplace_list_approved");

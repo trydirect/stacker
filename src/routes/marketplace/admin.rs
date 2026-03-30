@@ -293,16 +293,19 @@ pub async fn security_scan_handler(
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
-    // Auto-set security_reviewed=true when scan passes
+    // Auto-set security_reviewed=true and hardened_images=true/false based on scan
     if report.overall_passed {
+        let mut verif_patch = serde_json::json!({ "security_reviewed": true });
+        // Also persist the hardened_images result from static analysis
+        verif_patch["hardened_images"] = serde_json::Value::Bool(report.hardened_images.passed);
         if let Err(e) = db::marketplace::update_verifications(
             pg_pool.get_ref(),
             &id,
-            serde_json::json!({ "security_reviewed": true }),
+            verif_patch,
         )
         .await
         {
-            tracing::warn!("Failed to auto-set security_reviewed after passing scan: {}", e);
+            tracing::warn!("Failed to auto-set verifications after passing scan: {}", e);
         }
     }
 
@@ -404,6 +407,9 @@ pub struct AdminVerificationsRequest {
     pub open_source: Option<bool>,
     pub maintained: Option<bool>,
     pub vulnerability_scanned: Option<bool>,
+    /// Whether the stack uses hardened Docker images (auto-detected by security scan,
+    /// but can also be set manually by the admin).
+    pub hardened_images: Option<bool>,
 }
 
 #[tracing::instrument(name = "Admin update template verifications")]
@@ -438,6 +444,9 @@ pub async fn update_verifications_handler(
             "vulnerability_scanned".to_string(),
             serde_json::Value::Bool(v),
         );
+    }
+    if let Some(v) = req.hardened_images {
+        patch.insert("hardened_images".to_string(), serde_json::Value::Bool(v));
     }
 
     if patch.is_empty() {
