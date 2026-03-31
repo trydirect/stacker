@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Casbin ACL for marketplace compose access
+- Added Casbin policy granting `group_admin` role GET access to `/admin/project/:id/compose`.
+- This allows the User Service OAuth client (which authenticates as `root` → `group_admin`) to fetch compose definitions for marketplace templates.
+- Migration: `20260325140000_casbin_admin_compose_group_admin.up.sql`
+
 ### Added — Agent Audit Ingest Endpoint and Query API
 
 - New database migration `20260321000000_agent_audit_log` creating the `agent_audit_log` table

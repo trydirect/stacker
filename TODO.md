@@ -1100,3 +1100,47 @@ Deployment proceeds (user owns product)
 - [try.direct.user.service/TODO.md](try.direct.user.service/TODO.md) - User Service implementation
 - [try.direct.tools/TODO.md](try.direct.tools/TODO.md) - Shared utilities
 - [blog/TODO.md](blog/TODO.md) - Frontend marketplace UI
+
+
+## Marketplace Template Hardened Images — Docker Hub API Enhancement
+
+**Status:** Static analysis implemented. API-based verification pending.
+
+### What is implemented (static analysis in `security_validator.rs`)
+- `:latest` / untagged image detection
+- Non-root `user:` directive detection
+- `image@sha256:` digest pinning detection
+- Known hardened sources: `cgr.dev/`, `gcr.io/distroless/`, `bitnami/`, `rapidfort/`, `registry1.dso.mil/`
+- Docker Official Images (no-namespace single-word images like `nginx:1.25`)
+- `hardened_images` auto-set in `verifications` JSONB when security scan passes
+- Priority sort boost: hardened templates float to top of all `list_approved` sort orders
+
+### TODO: Docker Hub API integration
+
+To verify `is_official` and `is_verified_publisher` status for each image:
+
+1. **Extend `DockerHubConnector` trait** (`src/connectors/docker_hub/connector.rs`):
+   ```rust
+   async fn get_repository_info(&self, namespace: &str, name: &str) -> Result<RepositoryInfo, ConnectorError>;
+   ```
+   Where `RepositoryInfo` adds:
+   ```rust
+   pub is_official: bool,
+   pub is_verified_publisher: bool,
+   pub pull_count: u64,
+   ```
+
+2. **Make `security_scan_handler` call Docker Hub API** for each image found in the stack:
+   - Parse image names from `services.*.image`
+   - For each: call `docker_hub.get_repository_info(namespace, name)`
+   - Aggregate: set `hardened_images=true` if all images are official/verified-publisher OR from static hardened sources
+   - Currently the validator is sync — need to either make it async or do the Docker Hub check separately in the handler (preferred)
+
+3. **Rate limiting**: Docker Hub API allows 100 requests/hour for unauthenticated, 200/hour for authenticated. Cache results in Redis (`docker_hub:repo:{namespace}/{name}`) with 24h TTL.
+
+4. **Trivy/Grype integration** (separate from hardened_images):
+   - Run `trivy image --format json {image}` in a subprocess for each scanned stack
+   - Parse CVE list, severity counts
+   - Store results in `stack_template_review.security_checklist["cve_scan"]`
+   - Auto-set `verifications.vulnerability_scanned = true` when scan passes (no HIGH/CRITICAL CVEs)
+

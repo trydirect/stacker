@@ -18,7 +18,7 @@ jobs:
   cicd-docker:
     name: Cargo and npm build
     #runs-on: ubuntu-latest
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux]
     env:
       SQLX_OFFLINE: true
     steps:
@@ -156,7 +156,7 @@ jobs:
   cicd-linux-docker:
     name: CICD Docker
     #runs-on: ubuntu-latest
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux]
     needs: cicd-docker
     steps:
       - name: Checkout sources
@@ -195,7 +195,7 @@ jobs:
   stackerdb-docker:
     name: StackerDB Docker
     #runs-on: ubuntu-latest
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux]
     needs: cicd-docker
     steps:
       - name: Checkout sources
