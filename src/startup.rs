@@ -158,7 +158,8 @@ pub async fn run(
                 web::scope("/dockerhub")
                     .service(crate::routes::dockerhub::search_namespaces)
                     .service(crate::routes::dockerhub::list_repositories)
-                    .service(crate::routes::dockerhub::list_tags),
+                    .service(crate::routes::dockerhub::list_tags)
+                    .service(crate::routes::dockerhub::log_event),
             )
             .service(
                 web::scope("/admin")
