@@ -43,6 +43,7 @@ async fn test_deployment_free_template_allowed() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     // Should allow deployment of free template
@@ -82,6 +83,7 @@ async fn test_deployment_plan_requirement_validated() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     // Should allow deployment (mock user has professional plan)
@@ -125,6 +127,7 @@ async fn test_deployment_owned_paid_template_allowed() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
@@ -268,6 +271,7 @@ async fn test_deployment_validation_flow_with_connector() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     let result = validator
@@ -299,6 +303,7 @@ async fn test_deployment_validation_flow_with_connector() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     let result = validator
@@ -369,13 +374,13 @@ async fn test_plan_access_control() {
 
     // Mock always grants plan access
     let has_pro = connector
-        .user_has_plan("user1", "professional")
+        .user_has_plan("user1", "professional", None)
         .await
         .unwrap();
     assert!(has_pro, "Mock grants all plan access");
 
     let has_enterprise = connector
-        .user_has_plan("user1", "enterprise")
+        .user_has_plan("user1", "enterprise", None)
         .await
         .unwrap();
     assert!(has_enterprise, "Mock grants all plan access");
@@ -411,6 +416,7 @@ async fn test_multiple_deployments_mixed_templates() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     let result = validator
@@ -442,6 +448,7 @@ async fn test_multiple_deployments_mixed_templates() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     let result = validator
@@ -478,6 +485,7 @@ async fn test_multiple_deployments_mixed_templates() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     // The result will depend on whether the validator can verify ownership
@@ -531,6 +539,7 @@ fn test_template_status_values() {
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
+        verifications: serde_json::json!({}),
     };
 
     assert_eq!(template.status, "approved");

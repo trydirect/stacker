@@ -13,29 +13,6 @@
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
 
-### Three components
-
-| Component | What it does | Binary |
-|-----------|-------------|--------|
-| **Stacker CLI** | Developer tool — init, deploy, monitor from the terminal | `stacker-cli` |
-| **Stacker Server** | REST API + Stack Builder UI + deployment orchestration + MCP Server | `server` |
-| **Status Panel Agent** | Deployed alongside your app on the target server — executes commands, streams logs, reports health | *(separate repo)* |
-
-```
-┌──────────────┐         ┌──────────────────┐         ┌─────────────────────┐
-│  Stacker CLI │────────►│  Stacker Server  │────────►│  Status Panel Agent │
-│              │  REST   │                  │  queue  │  (on target server) │
-│  stacker.yml │  API    │  Stack Builder UI│  pull   │                     │
-│  init/deploy │         │  48+ MCP tools   │◄────────│  health / logs /    │
-│  status/logs │         │  Vault · AMQP    │  HMAC   │  restart / exec /   │
-└──────────────┘         └──────────────────┘         │  deploy_app / proxy │
-                                │                     └─────────────────────┘
-                                ▼
-                    Terraform + Ansible ──► Cloud
-                    (Hetzner, DO, AWS, Linode)
-```
-
----
 
 ## Quick Start
 
@@ -119,6 +96,34 @@ monitoring:
 Full schema reference: [docs/STACKER_YML_REFERENCE.md](docs/STACKER_YML_REFERENCE.md)
 
 ---
+
+
+### Three components
+
+| Component | What it does | Binary |
+|-----------|-------------|--------|
+| **Stacker CLI** | Developer tool — init, deploy, monitor from the terminal | `stacker-cli` |
+| **Stacker Server** | REST API + Stack Builder UI + deployment orchestration + MCP Server | `server` |
+| **Status Panel Agent** | Deployed alongside your app on the target server — executes commands, streams logs, reports health | *(separate repo)* |
+
+```
+┌──────────────┐         ┌──────────────────┐         ┌─────────────────────┐
+│  Stacker CLI │────────►│  Stacker Server  │────────►│  Status Panel Agent │
+│              │  REST   │                  │  queue  │  (on target server) │
+│  stacker.yml │  API    │  Stack Builder UI│  pull   │                     │
+│  init/deploy │         │  48+ MCP tools   │◄────────│  health / logs /    │
+│  status/logs │         │  Vault · AMQP    │  HMAC   │  restart / exec /   │
+└──────────────┘         └──────────────────┘         │  deploy_app / proxy │
+                                │                     └─────────────────────┘
+                                ▼
+                    Terraform + Ansible ──► Cloud
+                    (Hetzner, DO, AWS, Linode)
+```
+
+---
+
+
+
 
 ## 1. Stacker CLI
 
@@ -263,6 +268,7 @@ Stacker exposes **52+ Model Context Protocol tools** over WebSocket, enabling AI
 - **Marketplace** — publish and deploy community stacks
 
 ---
+
 
 ## 3. Status Panel Agent
 

@@ -60,6 +60,7 @@ impl UserServiceConnector for MockUserServiceConnector {
         &self,
         _user_id: &str,
         _required_plan_name: &str,
+        _user_token: Option<&str>,
     ) -> Result<bool, ConnectorError> {
         // Mock always grants access for testing
         Ok(true)

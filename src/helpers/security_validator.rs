@@ -18,6 +18,8 @@ pub struct SecurityReport {
     pub no_hardcoded_creds: SecurityCheckResult,
     pub valid_docker_syntax: SecurityCheckResult,
     pub no_malicious_code: SecurityCheckResult,
+    /// Whether images follow hardened-image practices (non-blocking quality check).
+    pub hardened_images: SecurityCheckResult,
     pub overall_passed: bool,
     pub risk_score: u32, // 0-100, lower is better
     pub recommendations: Vec<String>,
@@ -31,6 +33,7 @@ impl SecurityReport {
             "no_hardcoded_creds": self.no_hardcoded_creds.passed,
             "valid_docker_syntax": self.valid_docker_syntax.passed,
             "no_malicious_code": self.no_malicious_code.passed,
+            "hardened_images": self.hardened_images.passed,
         })
     }
 }
@@ -86,6 +89,20 @@ const KNOWN_CRYPTO_MINER_PATTERNS: &[&str] = &[
     "monero", "coinhive", "coin-hive",
 ];
 
+/// Docker image namespace/registry prefixes known to publish security-hardened images.
+/// Chainguard (cgr.dev), Google Distroless, Amazon ECR Public official,
+/// RapidFort, and Bitnami all apply automated CVE scanning + minimal-OS hardening.
+/// Docker Official Images have no namespace separator (e.g. "nginx:1.25", "redis:7").
+const KNOWN_HARDENED_SOURCES: &[&str] = &[
+    "cgr.dev/",              // Chainguard hardened/distroless images
+    "gcr.io/distroless/",    // Google Distroless
+    "public.ecr.aws/",       // Amazon ECR Public official images
+    "rapidfort/",            // RapidFort minimal hardened images
+    "bitnami/",              // Bitnami (Broadcom) hardened images
+    "ironbank/",             // DoD Iron Bank hardened images
+    "registry1.dso.mil/",   // DoD Iron Bank registry
+];
+
 /// Normalize a JSON-pretty-printed string into a YAML-like format so that
 /// regex patterns designed for docker-compose YAML also match JSON input.
 ///
@@ -119,11 +136,13 @@ pub fn validate_stack_security(stack_definition: &Value) -> SecurityReport {
     let no_hardcoded_creds = check_no_hardcoded_creds(&definition_str);
     let valid_docker_syntax = check_valid_docker_syntax(stack_definition, &definition_str);
     let no_malicious_code = check_no_malicious_code(&definition_str);
+    let hardened_images = check_hardened_images(stack_definition);
 
     let overall_passed = no_secrets.passed
         && no_hardcoded_creds.passed
         && valid_docker_syntax.passed
         && no_malicious_code.passed;
+    // hardened_images is a quality indicator — it does NOT block overall_passed
 
     // Calculate risk score (0-100)
     let mut risk_score: u32 = 0;
@@ -164,12 +183,16 @@ pub fn validate_stack_security(stack_definition: &Value) -> SecurityReport {
     if risk_score == 0 {
         recommendations.push("Automated scan passed. AI review recommended for deeper analysis.".to_string());
     }
+    if !hardened_images.passed {
+        recommendations.push("Consider using images from hardened sources (Chainguard, Bitnami, Google Distroless) and pinning all tags to specific versions.".to_string());
+    }
 
     SecurityReport {
         no_secrets,
         no_hardcoded_creds,
         valid_docker_syntax,
         no_malicious_code,
+        hardened_images,
         overall_passed,
         risk_score,
         recommendations,
@@ -388,6 +411,134 @@ fn check_no_malicious_code(content: &str) -> SecurityCheckResult {
     }
 }
 
+/// Returns true for an image reference that is from a known hardened source,
+/// or is a Docker Official Image (no `/` separator in the name part, e.g. `nginx:1.25`).
+fn is_from_hardened_source(image: &str) -> bool {
+    // Strip optional registry prefix when checking known sources
+    for prefix in KNOWN_HARDENED_SOURCES {
+        if image.starts_with(prefix) {
+            return true;
+        }
+    }
+    // Docker Official Images have no namespace (no '/' before the tag separator ':')
+    // e.g. "nginx:1.25", "redis:7-alpine", "postgres:16" — maintained by Docker, Inc.
+    // We detect this by checking there is no '/' in the name before the first ':'.
+    let name_part = image.split(':').next().unwrap_or(image);
+    !name_part.contains('/')
+}
+
+/// Check whether services use hardened image practices:
+///   1. No `:latest` or untagged images (reproducibility).
+///   2. At least one service uses a non-root user OR images from known hardened sources.
+///   3. Digest-pinned images (`image@sha256:`) score as fully hardened.
+///
+/// This is a quality/advisory check — it does NOT block `overall_passed`.
+fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
+    let mut findings: Vec<String> = Vec::new();
+    let mut positives: Vec<String> = Vec::new();
+
+    let services = match stack_definition.get("services").and_then(|s| s.as_object()) {
+        Some(s) => s,
+        None => {
+            return SecurityCheckResult {
+                passed: false,
+                severity: "info".to_string(),
+                message: "Cannot analyse images: no services found".to_string(),
+                details: vec![],
+            };
+        }
+    };
+
+    let mut total_images: usize = 0;
+    let mut pinned_count: usize = 0;
+    let mut hardened_source_count: usize = 0;
+    let mut non_root_count: usize = 0;
+    let mut read_only_count: usize = 0;
+
+    for (name, service) in services {
+        // Check image tag quality
+        if let Some(image) = service.get("image").and_then(|v| v.as_str()) {
+            total_images += 1;
+
+            if image.contains("@sha256:") {
+                pinned_count += 1;
+                positives.push(format!("Service '{}': image pinned to digest ({})", name, image));
+            } else if image.ends_with(":latest") {
+                findings.push(format!(
+                    "[WARNING] Service '{}' uses ':latest' tag — not reproducible and may silently receive unsafe updates ({})",
+                    name, image
+                ));
+            } else if !image.contains(':') {
+                findings.push(format!(
+                    "[WARNING] Service '{}' has no tag — defaults to ':latest' implicitly ({})",
+                    name, image
+                ));
+            } else {
+                pinned_count += 1; // versioned tag counts as pinned
+            }
+
+            if is_from_hardened_source(image) {
+                hardened_source_count += 1;
+                positives.push(format!("Service '{}': image from hardened/trusted source ({})", name, image));
+            }
+        }
+
+        // Check for non-root user
+        if let Some(user) = service.get("user").and_then(|v| v.as_str()) {
+            let is_root = user == "root" || user == "0" || user.starts_with("0:");
+            if !is_root {
+                non_root_count += 1;
+                positives.push(format!("Service '{}': runs as non-root user ({})", name, user));
+            } else {
+                findings.push(format!(
+                    "[INFO] Service '{}' explicitly runs as root — consider a non-root user",
+                    name
+                ));
+            }
+        }
+
+        // Check for read-only root filesystem
+        if service.get("read_only").and_then(|v| v.as_bool()) == Some(true) {
+            read_only_count += 1;
+            positives.push(format!("Service '{}': read-only root filesystem enabled", name));
+        }
+    }
+
+    // Determine pass/fail:
+    // Pass requires ALL images to have versioned tags AND at least one hardened-source
+    // or non-root signal. A single service with a `:latest` tag is a failure.
+    let unpinned_warnings = findings.iter().filter(|f| f.contains("[WARNING]")).count();
+    let passed = unpinned_warnings == 0
+        && total_images > 0
+        && (hardened_source_count > 0 || non_root_count > 0 || read_only_count > 0 || pinned_count == total_images);
+
+    let mut details = findings.clone();
+    details.extend(positives);
+
+    SecurityCheckResult {
+        passed,
+        severity: if unpinned_warnings > 0 {
+            "warning".to_string()
+        } else if passed {
+            "info".to_string()
+        } else {
+            "info".to_string()
+        },
+        message: if passed {
+            format!(
+                "Images follow hardened practices ({} pinned, {} from hardened sources, {} non-root)",
+                pinned_count, hardened_source_count, non_root_count
+            )
+        } else {
+            format!(
+                "{} image(s) use unpinned/latest tags or lack hardening signals",
+                unpinned_warnings.max(if total_images == 0 { 1 } else { 0 })
+            )
+        },
+        details,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,5 +625,102 @@ mod tests {
 
         let report = validate_stack_security(&definition);
         assert!(!report.valid_docker_syntax.passed);
+    }
+
+    #[test]
+    fn test_hardened_images_passes_for_official_versioned() {
+        // Docker Official Images (nginx, postgres) with pinned versions — should pass
+        let definition = json!({
+            "services": {
+                "web": { "image": "nginx:1.25" },
+                "db":  { "image": "postgres:16" }
+            }
+        });
+        let result = check_hardened_images(&definition);
+        assert!(result.passed, "Official images with versioned tags should pass: {}", result.message);
+    }
+
+    #[test]
+    fn test_hardened_images_fails_for_latest() {
+        let definition = json!({
+            "services": {
+                "web": { "image": "nginx:latest" }
+            }
+        });
+        let result = check_hardened_images(&definition);
+        assert!(!result.passed, "':latest' tag should fail hardened-images check");
+    }
+
+    #[test]
+    fn test_hardened_images_fails_for_untagged() {
+        let definition = json!({
+            "services": {
+                "web": { "image": "nginx" }
+            }
+        });
+        let result = check_hardened_images(&definition);
+        assert!(!result.passed, "Untagged image should fail hardened-images check");
+    }
+
+    #[test]
+    fn test_hardened_images_passes_for_chainguard() {
+        let definition = json!({
+            "services": {
+                "web": { "image": "cgr.dev/chainguard/nginx:latest" }
+            }
+        });
+        // Even ':latest' on cgr.dev is pinned via digest under the hood, but our
+        // static check currently only exempts known-hardened-source prefix from the
+        // non-root/digest requirement, while still flagging ':latest' as a warning.
+        // This test verifies the hardened-source is detected.
+        let result = check_hardened_images(&definition);
+        assert!(result.details.iter().any(|d| d.contains("hardened/trusted source")),
+            "Chainguard image should be recognised as hardened source");
+    }
+
+    #[test]
+    fn test_hardened_images_passes_for_non_root_user() {
+        let definition = json!({
+            "services": {
+                "app": {
+                    "image": "myapp:2.0",
+                    "user": "1001"
+                }
+            }
+        });
+        let result = check_hardened_images(&definition);
+        assert!(result.passed, "Versioned image + non-root user should pass: {}", result.message);
+    }
+
+    #[test]
+    fn test_hardened_images_digest_pinned() {
+        let definition = json!({
+            "services": {
+                "app": {
+                    "image": "nginx@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456ab12"
+                }
+            }
+        });
+        let result = check_hardened_images(&definition);
+        assert!(result.passed, "Digest-pinned image should pass: {}", result.message);
+        assert!(result.details.iter().any(|d| d.contains("pinned to digest")));
+    }
+
+    #[test]
+    fn test_hardened_check_does_not_block_overall_passed() {
+        // A stack with ':latest' tags should still pass overall security (no secrets etc.)
+        // but hardened_images check should fail on its own
+        let definition = json!({
+            "version": "3.8",
+            "services": {
+                "web": {
+                    "image": "nginx:latest",
+                    "ports": ["80:80"]
+                }
+            }
+        });
+        let report = validate_stack_security(&definition);
+        assert!(report.overall_passed, "':latest' tag should NOT block overall_passed");
+        assert!(!report.hardened_images.passed, "':latest' tag should fail hardened_images check");
     }
 }

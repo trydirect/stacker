@@ -216,7 +216,13 @@ impl UserServiceConnector for UserServiceClient {
         &self,
         user_id: &str,
         required_plan_name: &str,
+        user_token: Option<&str>,
     ) -> Result<bool, ConnectorError> {
+        // "free" plan never requires a subscription check
+        if required_plan_name.to_lowercase() == "free" {
+            return Ok(true);
+        }
+
         let span = tracing::info_span!(
             "user_service_check_plan",
             user_id = %user_id,
@@ -227,7 +233,11 @@ impl UserServiceConnector for UserServiceClient {
         let url = format!("{}/oauth_server/api/me", self.base_url);
         let mut req = self.http_client.get(&url);
 
-        if let Some(auth) = self.auth_header() {
+        // Prefer the user's own token; fall back to service account
+        let auth = user_token
+            .map(|t| format!("Bearer {}", t))
+            .or_else(|| self.auth_header());
+        if let Some(auth) = auth {
             req = req.header("Authorization", auth);
         }
 
@@ -256,12 +266,7 @@ impl UserServiceConnector for UserServiceClient {
                 serde_json::from_str::<UserMeResponse>(&text)
                     .map(|response| {
                         let user_plan = response.plan.and_then(|p| p.name).unwrap_or_default();
-                        // Check if user's plan matches or is higher tier than required
-                        if user_plan.is_empty() || required_plan_name.is_empty() {
-                            return user_plan == required_plan_name;
-                        }
-                        user_plan == required_plan_name
-                            || is_plan_higher_tier(&user_plan, required_plan_name)
+                        is_plan_higher_tier(&user_plan, required_plan_name)
                     })
                     .map_err(|_| ConnectorError::InvalidResponse(text))
             }

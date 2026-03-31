@@ -161,6 +161,7 @@ pub enum CloudProvider {
     Aws,
     Linode,
     Vultr,
+    Contabo,
 }
 
 /// Cloud orchestration mode.
@@ -180,6 +181,7 @@ impl fmt::Display for CloudProvider {
             Self::Aws => write!(f, "aws"),
             Self::Linode => write!(f, "linode"),
             Self::Vultr => write!(f, "vultr"),
+            Self::Contabo => write!(f, "contabo"),
         }
     }
 }
