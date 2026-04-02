@@ -30,11 +30,14 @@ pub trait UserServiceConnector: Send + Sync {
     async fn list_stacks(&self, user_id: &str) -> Result<Vec<StackResponse>, ConnectorError>;
 
     /// Check if user has access to a specific plan
-    /// Returns true if user's current plan allows access to required_plan_name
+    /// Returns true if user's current plan allows access to required_plan_name.
+    /// Pass `user_token` to authenticate as the user (preferred); falls back to
+    /// the service account token when `None`.
     async fn user_has_plan(
         &self,
         user_id: &str,
         required_plan_name: &str,
+        user_token: Option<&str>,
     ) -> Result<bool, ConnectorError>;
 
     /// Get user's current plan information

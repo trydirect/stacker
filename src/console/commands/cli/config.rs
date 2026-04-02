@@ -39,7 +39,7 @@ fn parse_cloud_provider(s: &str) -> Result<CloudProvider, CliError> {
     let json = format!("\"{}\"", s.trim().to_lowercase());
     serde_json::from_str::<CloudProvider>(&json).map_err(|_| {
         CliError::ConfigValidation(
-            "Invalid cloud provider. Use: hetzner, digitalocean, aws, linode, vultr"
+            "Invalid cloud provider. Use: hetzner, digitalocean, aws, linode, vultr, contabo"
                 .to_string(),
         )
     })
@@ -52,6 +52,7 @@ fn default_region_for_provider(provider: CloudProvider) -> &'static str {
         CloudProvider::Aws => "us-east-1",
         CloudProvider::Linode => "us-east",
         CloudProvider::Vultr => "ewr",
+        CloudProvider::Contabo => "EU",
     }
 }
 
@@ -62,6 +63,7 @@ fn default_size_for_provider(provider: CloudProvider) -> &'static str {
         CloudProvider::Aws => "t3.small",
         CloudProvider::Linode => "g6-standard-2",
         CloudProvider::Vultr => "vc2-2c-4gb",
+        CloudProvider::Contabo => "V45",
     }
 }
 
@@ -95,6 +97,7 @@ fn provider_code_for_remote(provider: CloudProvider) -> &'static str {
         CloudProvider::Aws => "aws",
         CloudProvider::Linode => "lo",
         CloudProvider::Vultr => "vu",
+        CloudProvider::Contabo => "cnt",
     }
 }
 

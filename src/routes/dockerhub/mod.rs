@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use crate::connectors::{DockerHubConnector, NamespaceSummary, RepositorySummary, TagSummary};
 use crate::helpers::JsonResponse;
-use actix_web::{get, web, Error, Responder};
+use actix_web::{get, post, web, Error, HttpResponse, Responder};
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Deserialize, Debug)]
 pub struct AutocompleteQuery {
@@ -84,6 +85,16 @@ pub async fn list_tags(
         .await
         .map(|tags| JsonResponse::<TagSummary>::build().set_list(tags).ok("OK"))
         .map_err(Error::from)
+}
+
+/// Receive a DockerHub autocomplete analytics event from the stack builder UI.
+/// The payload is `{event: string, payload: any}` — logged and discarded.
+/// Returns 204 No Content so the browser's fire-and-forget fetch succeeds.
+#[tracing::instrument(name = "dockerhub_log_event", skip(body))]
+#[post("/events")]
+pub async fn log_event(body: web::Json<Value>) -> HttpResponse {
+    tracing::debug!(event = ?body, "dockerhub autocomplete event received");
+    HttpResponse::NoContent().finish()
 }
 
 #[cfg(test)]

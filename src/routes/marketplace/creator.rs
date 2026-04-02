@@ -169,6 +169,12 @@ pub async fn update_handler(
 
     let req = body.into_inner();
 
+    // Normalize pricing: plan_type "free" forces price to 0
+    let price = match req.plan_type.as_deref() {
+        Some("free") => Some(0.0),
+        _ => req.price,
+    };
+
     let updated = db::marketplace::update_metadata(
         pg_pool.get_ref(),
         &id,
@@ -178,7 +184,7 @@ pub async fn update_handler(
         req.category_code.as_deref(),
         req.tags,
         req.tech_stack,
-        req.price,
+        price,
         req.plan_type.as_deref(),
         req.currency.as_deref(),
     )

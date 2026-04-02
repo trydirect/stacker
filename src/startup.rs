@@ -158,7 +158,8 @@ pub async fn run(
                 web::scope("/dockerhub")
                     .service(crate::routes::dockerhub::search_namespaces)
                     .service(crate::routes::dockerhub::list_repositories)
-                    .service(crate::routes::dockerhub::list_tags),
+                    .service(crate::routes::dockerhub::list_tags)
+                    .service(crate::routes::dockerhub::log_event),
             )
             .service(
                 web::scope("/admin")
@@ -252,7 +253,9 @@ pub async fn run(
                                     .service(crate::routes::marketplace::admin::approve_handler)
                                     .service(crate::routes::marketplace::admin::reject_handler)
                                     .service(crate::routes::marketplace::admin::unapprove_handler)
-                                    .service(crate::routes::marketplace::admin::security_scan_handler),
+                                    .service(crate::routes::marketplace::admin::security_scan_handler)
+                                    .service(crate::routes::marketplace::admin::pricing_handler)
+                                    .service(crate::routes::marketplace::admin::update_verifications_handler),
                             )
                             .service(
                                 web::scope("/marketplace")

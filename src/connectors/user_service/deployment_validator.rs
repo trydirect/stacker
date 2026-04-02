@@ -135,7 +135,7 @@ impl DeploymentValidator {
         // For now, we'll rely on User Service to validate the token
         let has_plan = self
             .user_service_connector
-            .user_has_plan(user_token, required_plan)
+            .user_has_plan(user_token, required_plan, Some(user_token))
             .instrument(span.clone())
             .await
             .map_err(|e| DeploymentValidationError::ValidationFailed {

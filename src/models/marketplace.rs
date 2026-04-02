@@ -34,6 +34,7 @@ pub struct StackTemplate {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,
+    pub verifications: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
