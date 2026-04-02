@@ -202,9 +202,11 @@ async fn mock_auth() -> actix_web::Result<impl Responder> {
     Ok(web::Json(user_form))
 }
 
-async fn mock_auth_server(listener: TcpListener) -> actix_web::dev::Server {
+async fn mock_auth_server(listener: TcpListener) {
     HttpServer::new(|| App::new().service(web::scope("/me").service(mock_auth)))
         .listen(listener)
         .unwrap()
         .run()
+        .await
+        .unwrap();
 }

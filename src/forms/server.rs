@@ -87,3 +87,96 @@ impl Into<ServerForm> for models::Server {
         form
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_ssh_port() {
+        assert_eq!(default_ssh_port(), Some(22));
+    }
+
+    #[test]
+    fn test_server_form_to_model() {
+        let form = ServerForm {
+            server_id: None,
+            cloud_id: Some(5),
+            region: Some("us-east-1".to_string()),
+            zone: Some("us-east-1a".to_string()),
+            server: Some("s-2vcpu".to_string()),
+            os: Some("ubuntu".to_string()),
+            disk_type: Some("ssd".to_string()),
+            srv_ip: Some("10.0.0.1".to_string()),
+            ssh_port: Some(2222),
+            ssh_user: Some("admin".to_string()),
+            name: Some("my-server".to_string()),
+            connection_mode: Some("ssh".to_string()),
+            vault_key_path: Some("/vault/path".to_string()),
+            public_key: None,
+            ssh_private_key: None,
+        };
+        let server: models::Server = (&form).into();
+        assert_eq!(server.cloud_id, Some(5));
+        assert_eq!(server.region, Some("us-east-1".to_string()));
+        assert_eq!(server.ssh_port, Some(2222));
+        assert_eq!(server.ssh_user, Some("admin".to_string()));
+        assert_eq!(server.connection_mode, "ssh");
+        assert_eq!(server.name, Some("my-server".to_string()));
+    }
+
+    #[test]
+    fn test_server_form_to_model_defaults() {
+        let form = ServerForm::default();
+        let server: models::Server = (&form).into();
+        assert_eq!(server.ssh_port, Some(22)); // default_ssh_port fallback
+        assert_eq!(server.connection_mode, "ssh");
+    }
+
+    #[test]
+    fn test_model_to_server_form() {
+        let server = models::Server {
+            id: 42,
+            cloud_id: Some(10),
+            region: Some("eu-west-1".to_string()),
+            ssh_port: Some(22),
+            ssh_user: Some("root".to_string()),
+            connection_mode: "ssh".to_string(),
+            name: Some("prod".to_string()),
+            vault_key_path: Some("/v/k".to_string()),
+            ..Default::default()
+        };
+        let form: ServerForm = server.into();
+        assert_eq!(form.server_id, Some(42));
+        assert_eq!(form.cloud_id, Some(10));
+        assert_eq!(form.region, Some("eu-west-1".to_string()));
+        assert_eq!(form.ssh_port, Some(22));
+        assert_eq!(form.connection_mode, Some("ssh".to_string()));
+        assert_eq!(form.name, Some("prod".to_string()));
+    }
+
+    #[test]
+    fn test_server_form_roundtrip() {
+        let server = models::Server {
+            id: 1,
+            cloud_id: Some(3),
+            region: Some("us-west".to_string()),
+            zone: Some("a".to_string()),
+            server: Some("large".to_string()),
+            os: Some("debian".to_string()),
+            disk_type: Some("nvme".to_string()),
+            srv_ip: Some("1.2.3.4".to_string()),
+            ssh_port: Some(2222),
+            ssh_user: Some("deploy".to_string()),
+            connection_mode: "ssh".to_string(),
+            vault_key_path: Some("path".to_string()),
+            name: Some("test".to_string()),
+            ..Default::default()
+        };
+        let form: ServerForm = server.into();
+        let back: models::Server = (&form).into();
+        assert_eq!(back.cloud_id, Some(3));
+        assert_eq!(back.region, Some("us-west".to_string()));
+        assert_eq!(back.ssh_port, Some(2222));
+    }
+}

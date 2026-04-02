@@ -109,18 +109,18 @@ async fn test_mock_user_has_plan() {
     let connector = mock::MockUserServiceConnector;
 
     let has_professional = connector
-        .user_has_plan("user_123", "professional")
+        .user_has_plan("user_123", "professional", None)
         .await
         .unwrap();
     assert!(has_professional);
 
     let has_enterprise = connector
-        .user_has_plan("user_123", "enterprise")
+        .user_has_plan("user_123", "enterprise", None)
         .await
         .unwrap();
     assert!(has_enterprise);
 
-    let has_basic = connector.user_has_plan("user_123", "basic").await.unwrap();
+    let has_basic = connector.user_has_plan("user_123", "basic", None).await.unwrap();
     assert!(has_basic);
 }
 
@@ -237,8 +237,23 @@ fn test_is_plan_higher_tier_hierarchy() {
     // Basic user cannot access enterprise
     assert!(!is_plan_higher_tier("basic", "enterprise"));
 
-    // Same plan should not be considered higher tier
-    assert!(!is_plan_higher_tier("professional", "professional"));
+    // Same plan satisfies the requirement
+    assert!(is_plan_higher_tier("professional", "professional"));
+
+    // Free plan user can access free tier
+    assert!(is_plan_higher_tier("free", "free"));
+
+    // Free plan user cannot access basic or higher
+    assert!(!is_plan_higher_tier("free", "basic"));
+
+    // Any paid plan satisfies free requirement
+    assert!(is_plan_higher_tier("basic", "free"));
+    assert!(is_plan_higher_tier("professional", "free"));
+    assert!(is_plan_higher_tier("enterprise", "free"));
+
+    // Case-insensitive comparison
+    assert!(is_plan_higher_tier("Professional", "professional"));
+    assert!(is_plan_higher_tier("ENTERPRISE", "basic"));
 }
 
 /// Test UserProfile deserialization with all fields

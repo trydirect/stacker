@@ -132,3 +132,120 @@ impl From<Server> for ServerWithProvider {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_valid::Validate;
+
+    #[test]
+    fn test_server_default() {
+        let server = Server::default();
+        assert_eq!(server.id, 0);
+        assert_eq!(server.connection_mode, "ssh");
+        assert_eq!(server.key_status, "none");
+        assert!(server.region.is_none());
+        assert!(server.ssh_port.is_none());
+    }
+
+    #[test]
+    fn test_default_connection_mode() {
+        assert_eq!(default_connection_mode(), "ssh");
+    }
+
+    #[test]
+    fn test_default_key_status() {
+        assert_eq!(default_key_status(), "none");
+    }
+
+    #[test]
+    fn test_server_validation_valid() {
+        let server = Server {
+            region: Some("us-east-1".to_string()),
+            zone: Some("us-east-1a".to_string()),
+            server: Some("s-2vcpu-4gb".to_string()),
+            os: Some("ubuntu-22".to_string()),
+            disk_type: Some("ssd".to_string()),
+            srv_ip: Some("192.168.1.100".to_string()),
+            ssh_port: Some(22),
+            ssh_user: Some("root".to_string()),
+            ..Default::default()
+        };
+        assert!(server.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_validation_short_region() {
+        let server = Server {
+            region: Some("a".to_string()), // too short, min 2
+            ..Default::default()
+        };
+        assert!(server.validate().is_err());
+    }
+
+    #[test]
+    fn test_server_validation_ssh_port_too_low() {
+        let server = Server {
+            ssh_port: Some(10), // minimum 20
+            ..Default::default()
+        };
+        assert!(server.validate().is_err());
+    }
+
+    #[test]
+    fn test_server_validation_ssh_port_too_high() {
+        let server = Server {
+            ssh_port: Some(70000), // maximum 65535
+            ..Default::default()
+        };
+        assert!(server.validate().is_err());
+    }
+
+    #[test]
+    fn test_server_validation_ssh_port_valid_range() {
+        let server = Server {
+            ssh_port: Some(22),
+            ..Default::default()
+        };
+        assert!(server.validate().is_ok());
+
+        let server_max = Server {
+            ssh_port: Some(65535),
+            ..Default::default()
+        };
+        assert!(server_max.validate().is_ok());
+    }
+
+    #[test]
+    fn test_server_to_server_with_provider() {
+        let server = Server {
+            id: 42,
+            user_id: "user1".to_string(),
+            project_id: 5,
+            cloud_id: Some(10),
+            region: Some("eu-west-1".to_string()),
+            connection_mode: "ssh".to_string(),
+            key_status: "active".to_string(),
+            name: Some("my-server".to_string()),
+            ..Default::default()
+        };
+        let provider: ServerWithProvider = server.into();
+        assert_eq!(provider.id, 42);
+        assert_eq!(provider.user_id, "user1");
+        assert_eq!(provider.project_id, 5);
+        assert_eq!(provider.cloud_id, Some(10));
+        assert!(provider.cloud.is_none()); // Populated by query later
+        assert_eq!(provider.region, Some("eu-west-1".to_string()));
+        assert_eq!(provider.connection_mode, "ssh");
+        assert_eq!(provider.key_status, "active");
+        assert_eq!(provider.name, Some("my-server".to_string()));
+    }
+
+    #[test]
+    fn test_server_serialization_defaults() {
+        let json = r#"{"id":0,"user_id":"","project_id":0,"cloud_id":null,"region":null,"zone":null,"server":null,"os":null,"disk_type":null,"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","srv_ip":null,"ssh_port":null,"ssh_user":null,"vault_key_path":null,"connection_mode":"ssh","key_status":"none","name":null}"#;
+        let server: Server = serde_json::from_str(json).unwrap();
+        assert_eq!(server.connection_mode, "ssh");
+        assert_eq!(server.key_status, "none");
+    }
+}

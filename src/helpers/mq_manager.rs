@@ -52,6 +52,28 @@ impl MqManager {
             })
     }
 
+    async fn declare_exchange(channel: &Channel, exchange: &str) -> Result<(), String> {
+        channel
+            .exchange_declare(
+                exchange,
+                ExchangeKind::Topic,
+                ExchangeDeclareOptions {
+                    passive: false,
+                    durable: true,
+                    auto_delete: false,
+                    internal: false,
+                    nowait: false,
+                },
+                FieldTable::default(),
+            )
+            .await
+            .map_err(|err| {
+                let msg = format!("declaring exchange '{}': {:?}", exchange, err);
+                tracing::error!(msg);
+                msg
+            })
+    }
+
     pub async fn publish<T: ?Sized + Serialize>(
         &self,
         exchange: String,
@@ -60,8 +82,9 @@ impl MqManager {
     ) -> Result<PublisherConfirm, String> {
         let payload = serde_json::to_string::<T>(msg).map_err(|err| format!("{:?}", err))?;
 
-        self.create_channel()
-            .await?
+        let channel = self.create_channel().await?;
+        Self::declare_exchange(&channel, &exchange).await?;
+        channel
             .basic_publish(
                 exchange.as_str(),
                 routing_key.as_str(),
@@ -108,26 +131,17 @@ impl MqManager {
     ) -> Result<Channel, String> {
         let channel = self.create_channel().await?;
 
-        channel
-            .exchange_declare(
-                exchange_name,
-                ExchangeKind::Topic,
-                ExchangeDeclareOptions {
-                    passive: false,
-                    durable: true,
-                    auto_delete: false,
-                    internal: false,
-                    nowait: false,
-                },
-                FieldTable::default(),
-            )
+        Self::declare_exchange(&channel, exchange_name)
             .await
-            .expect("Exchange declare failed");
+            .map_err(|e| {
+                tracing::error!("Exchange declare failed: {}", e);
+                e
+            })?;
 
         let mut args = FieldTable::default();
         args.insert("x-expires".into(), AMQPValue::LongUInt(3600000));
 
-        let _queue = channel
+        channel
             .queue_declare(
                 queue_name,
                 QueueDeclareOptions {
@@ -140,9 +154,13 @@ impl MqManager {
                 args,
             )
             .await
-            .expect("Queue declare failed");
+            .map_err(|err| {
+                let msg = format!("declaring queue '{}': {:?}", queue_name, err);
+                tracing::error!(msg);
+                msg
+            })?;
 
-        let _ = channel
+        channel
             .queue_bind(
                 queue_name,
                 exchange_name,
@@ -151,7 +169,11 @@ impl MqManager {
                 FieldTable::default(),
             )
             .await
-            .map_err(|err| format!("error {:?}", err));
+            .map_err(|err| {
+                let msg = format!("binding queue '{}' to exchange '{}': {:?}", queue_name, exchange_name, err);
+                tracing::error!(msg);
+                msg
+            })?;
 
         let channel = self.create_channel().await?;
         Ok(channel)

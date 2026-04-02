@@ -28,6 +28,6 @@ pub use deployment::{
 pub use marketplace::{
     AdminDecisionRequest, CreateTemplateRequest, ResubmitRequest, TemplateListQuery,
     UpdateTemplateRequest, UnapproveRequest, approve_handler, create_handler, list_plans_handler,
-    list_submitted_handler, mine_handler, reject_handler, resubmit_handler,
+    list_submitted_handler, mine_handler, my_reviews_handler, reject_handler, resubmit_handler,
     security_scan_handler, submit_handler, unapprove_handler, update_handler,
 };

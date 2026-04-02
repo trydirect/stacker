@@ -209,3 +209,160 @@ impl Default for ProjectApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_defaults() {
+        let app = ProjectApp::new(
+            1,
+            "nginx".to_string(),
+            "Nginx".to_string(),
+            "nginx:latest".to_string(),
+        );
+        assert_eq!(app.project_id, 1);
+        assert_eq!(app.code, "nginx");
+        assert_eq!(app.name, "Nginx");
+        assert_eq!(app.image, "nginx:latest");
+        assert_eq!(app.enabled, Some(true));
+        assert_eq!(app.ssl_enabled, Some(false));
+        assert_eq!(app.restart_policy, Some("unless-stopped".to_string()));
+        assert_eq!(app.config_version, Some(1));
+        assert!(app.vault_synced_at.is_none());
+        assert!(app.vault_sync_version.is_none());
+    }
+
+    #[test]
+    fn test_is_enabled_true() {
+        let app = ProjectApp {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(app.is_enabled());
+    }
+
+    #[test]
+    fn test_is_enabled_false() {
+        let app = ProjectApp {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        assert!(!app.is_enabled());
+    }
+
+    #[test]
+    fn test_is_enabled_none_defaults_true() {
+        let app = ProjectApp {
+            enabled: None,
+            ..Default::default()
+        };
+        assert!(app.is_enabled());
+    }
+
+    #[test]
+    fn test_env_map_with_data() {
+        let app = ProjectApp {
+            environment: Some(serde_json::json!({"DB_HOST": "localhost", "DB_PORT": "5432"})),
+            ..Default::default()
+        };
+        let map = app.env_map();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("DB_HOST").unwrap(), "localhost");
+    }
+
+    #[test]
+    fn test_env_map_empty() {
+        let app = ProjectApp {
+            environment: None,
+            ..Default::default()
+        };
+        let map = app.env_map();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_env_map_non_object() {
+        let app = ProjectApp {
+            environment: Some(serde_json::json!("not an object")),
+            ..Default::default()
+        };
+        let map = app.env_map();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_needs_vault_sync_never_synced() {
+        let app = ProjectApp {
+            config_version: Some(1),
+            vault_sync_version: None,
+            ..Default::default()
+        };
+        assert!(app.needs_vault_sync());
+    }
+
+    #[test]
+    fn test_needs_vault_sync_outdated() {
+        let app = ProjectApp {
+            config_version: Some(3),
+            vault_sync_version: Some(2),
+            ..Default::default()
+        };
+        assert!(app.needs_vault_sync());
+    }
+
+    #[test]
+    fn test_needs_vault_sync_up_to_date() {
+        let app = ProjectApp {
+            config_version: Some(2),
+            vault_sync_version: Some(2),
+            ..Default::default()
+        };
+        assert!(!app.needs_vault_sync());
+    }
+
+    #[test]
+    fn test_needs_vault_sync_no_version() {
+        let app = ProjectApp {
+            config_version: None,
+            vault_sync_version: None,
+            ..Default::default()
+        };
+        assert!(!app.needs_vault_sync());
+    }
+
+    #[test]
+    fn test_increment_version() {
+        let mut app = ProjectApp {
+            config_version: Some(1),
+            ..Default::default()
+        };
+        app.increment_version();
+        assert_eq!(app.config_version, Some(2));
+    }
+
+    #[test]
+    fn test_increment_version_from_none() {
+        let mut app = ProjectApp {
+            config_version: None,
+            ..Default::default()
+        };
+        app.increment_version();
+        assert_eq!(app.config_version, Some(1));
+    }
+
+    #[test]
+    fn test_mark_synced() {
+        let mut app = ProjectApp {
+            config_version: Some(3),
+            vault_synced_at: None,
+            vault_sync_version: None,
+            ..Default::default()
+        };
+        app.mark_synced();
+        assert!(app.vault_synced_at.is_some());
+        assert_eq!(app.vault_sync_version, Some(3));
+        assert!(!app.needs_vault_sync());
+    }
+}

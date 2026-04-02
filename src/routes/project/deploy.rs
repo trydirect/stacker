@@ -55,7 +55,7 @@ pub async fn item(
             // If template requires a specific plan, validate user has it
             if let Some(required_plan) = template.required_plan_name {
                 let has_plan = user_service
-                    .user_has_plan(&user.id, &required_plan)
+                    .user_has_plan(&user.id, &required_plan, user.access_token.as_deref())
                     .await
                     .map_err(|err| {
                         tracing::error!("Failed to validate plan: {:?}", err);
@@ -411,7 +411,7 @@ pub async fn saved_item(
             // If template requires a specific plan, validate user has it
             if let Some(required_plan) = template.required_plan_name {
                 let has_plan = user_service
-                    .user_has_plan(&user.id, &required_plan)
+                    .user_has_plan(&user.id, &required_plan, user.access_token.as_deref())
                     .await
                     .map_err(|err| {
                         tracing::error!("Failed to validate plan: {:?}", err);

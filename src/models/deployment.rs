@@ -56,3 +56,66 @@ impl Default for Deployment {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deployment_new() {
+        let deployment = Deployment::new(
+            1,
+            Some("user1".to_string()),
+            "hash-abc".to_string(),
+            "running".to_string(),
+            serde_json::json!({"apps": ["nginx"]}),
+        );
+        assert_eq!(deployment.id, 0);
+        assert_eq!(deployment.project_id, 1);
+        assert_eq!(deployment.user_id, Some("user1".to_string()));
+        assert_eq!(deployment.deployment_hash, "hash-abc");
+        assert_eq!(deployment.status, "running");
+        assert_eq!(deployment.deleted, Some(false));
+        assert!(deployment.last_seen_at.is_none());
+    }
+
+    #[test]
+    fn test_deployment_new_no_user() {
+        let deployment = Deployment::new(
+            2,
+            None,
+            "hash-xyz".to_string(),
+            "pending".to_string(),
+            Value::Null,
+        );
+        assert!(deployment.user_id.is_none());
+    }
+
+    #[test]
+    fn test_deployment_default() {
+        let deployment = Deployment::default();
+        assert_eq!(deployment.id, 0);
+        assert_eq!(deployment.project_id, 0);
+        assert_eq!(deployment.deployment_hash, "");
+        assert!(deployment.user_id.is_none());
+        assert_eq!(deployment.deleted, Some(false));
+        assert_eq!(deployment.status, "pending");
+        assert_eq!(deployment.metadata, Value::Null);
+    }
+
+    #[test]
+    fn test_deployment_serialization() {
+        let deployment = Deployment::new(
+            1,
+            Some("user1".to_string()),
+            "test-hash".to_string(),
+            "active".to_string(),
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_string(&deployment).unwrap();
+        let deserialized: Deployment = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.project_id, 1);
+        assert_eq!(deserialized.deployment_hash, "test-hash");
+        assert_eq!(deserialized.status, "active");
+    }
+}
