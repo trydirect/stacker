@@ -34,6 +34,36 @@ pub struct ProjectScanResult {
 
     /// Existing .env keys (values redacted for safety)
     pub env_keys: Vec<String>,
+
+    /// Locally inferred pipe opportunities discovered from dependencies,
+    /// env keys, and existing compose/services. These are advisory hints for
+    /// init-time AI generation, not runtime-verified endpoints.
+    pub pipe_hints: Vec<PipeHint>,
+}
+
+/// Advisory local integration hint derived from static project evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipeHint {
+    pub source: String,
+    pub target: String,
+    pub kind: String,
+    pub confidence: PipeHintConfidence,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeHintConfidence {
+    High,
+    Medium,
+}
+
+impl PipeHintConfidence {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+        }
+    }
 }
 
 /// Max bytes to read from any single file for AI context.
@@ -151,6 +181,14 @@ pub fn scan_project(project_dir: &Path, fs: &dyn FileSystem) -> ProjectScanResul
         file_contents.insert(filename.clone(), truncated);
     }
 
+    let pipe_hints = discover_local_pipe_hints(
+        &project_name,
+        detection.app_type.to_string(),
+        &root_files,
+        &file_contents,
+        &env_keys,
+    );
+
     ProjectScanResult {
         detection,
         root_files,
@@ -159,7 +197,131 @@ pub fn scan_project(project_dir: &Path, fs: &dyn FileSystem) -> ProjectScanResul
         existing_dockerfile,
         existing_compose,
         env_keys,
+        pipe_hints,
     }
+}
+
+fn discover_local_pipe_hints(
+    project_name: &str,
+    detected_app_type: String,
+    root_files: &[String],
+    file_contents: &HashMap<String, String>,
+    env_keys: &[String],
+) -> Vec<PipeHint> {
+    let mut hints = Vec::new();
+    let lower_env_keys: Vec<String> = env_keys.iter().map(|k| k.to_lowercase()).collect();
+
+    let package_json = file_contents
+        .get("package.json")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+    let requirements = file_contents
+        .get("requirements.txt")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+    let pyproject = file_contents
+        .get("pyproject.toml")
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+    let compose = file_contents
+        .get("docker-compose.yml")
+        .or_else(|| file_contents.get("docker-compose.yaml"))
+        .or_else(|| file_contents.get("compose.yml"))
+        .or_else(|| file_contents.get("compose.yaml"))
+        .map(|c| c.to_lowercase())
+        .unwrap_or_default();
+
+    let mut push_hint = |target: &str, kind: &str, confidence: PipeHintConfidence, evidence: Vec<String>| {
+        if evidence.is_empty() {
+            return;
+        }
+        hints.push(PipeHint {
+            source: project_name.to_string(),
+            target: target.to_string(),
+            kind: kind.to_string(),
+            confidence,
+            evidence,
+        });
+    };
+
+    let mut webhook_evidence = Vec::new();
+    if package_json.contains("webhook") || requirements.contains("webhook") || pyproject.contains("webhook") {
+        webhook_evidence.push("webhook-related dependency detected".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("webhook")) {
+        webhook_evidence.push("env keys reference webhooks".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("slack")) {
+        webhook_evidence.push("env keys reference Slack integration".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("discord")) {
+        webhook_evidence.push("env keys reference Discord integration".to_string());
+    }
+    if !webhook_evidence.is_empty() {
+        push_hint("external-webhook", "webhook", PipeHintConfidence::Medium, webhook_evidence);
+    }
+
+    let mut postgres_evidence = Vec::new();
+    if compose.contains("postgres") {
+        postgres_evidence.push("compose references postgres".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k == "database_url" || k.contains("postgres")) {
+        postgres_evidence.push("env keys reference postgres/database".to_string());
+    }
+    if !postgres_evidence.is_empty() {
+        push_hint("postgres", "database", PipeHintConfidence::High, postgres_evidence);
+    }
+
+    let mut redis_evidence = Vec::new();
+    if compose.contains("redis") {
+        redis_evidence.push("compose references redis".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k == "redis_url" || k.contains("redis")) {
+        redis_evidence.push("env keys reference redis".to_string());
+    }
+    if !redis_evidence.is_empty() {
+        push_hint("redis", "cache-or-queue", PipeHintConfidence::High, redis_evidence);
+    }
+
+    let mut qdrant_evidence = Vec::new();
+    if compose.contains("qdrant") {
+        qdrant_evidence.push("compose references qdrant".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("qdrant")) {
+        qdrant_evidence.push("env keys reference qdrant".to_string());
+    }
+    if !qdrant_evidence.is_empty() {
+        push_hint("qdrant", "vector-store", PipeHintConfidence::High, qdrant_evidence);
+    }
+
+    let mut llm_evidence = Vec::new();
+    if package_json.contains("openai") || requirements.contains("openai") || pyproject.contains("openai") {
+        llm_evidence.push("OpenAI dependency detected".to_string());
+    }
+    if package_json.contains("anthropic") || requirements.contains("anthropic") || pyproject.contains("anthropic") {
+        llm_evidence.push("Anthropic dependency detected".to_string());
+    }
+    if compose.contains("ollama") || lower_env_keys.iter().any(|k| k.contains("ollama")) {
+        llm_evidence.push("local Ollama usage detected".to_string());
+    }
+    if !llm_evidence.is_empty() {
+        push_hint("llm-provider", "ai-provider", PipeHintConfidence::Medium, llm_evidence);
+    }
+
+    let mut frontend_api_evidence = Vec::new();
+    let looks_like_frontend = detected_app_type == "node"
+        && root_files.iter().any(|f| f == "next.config.js" || f == "next.config.mjs" || f == "vite.config.ts" || f == "vite.config.js");
+    if looks_like_frontend {
+        frontend_api_evidence.push("frontend framework config detected".to_string());
+    }
+    if lower_env_keys.iter().any(|k| k.contains("api_url") || k.contains("api_base") || k.contains("backend_url")) {
+        frontend_api_evidence.push("env keys reference backend/api URL".to_string());
+    }
+    if !frontend_api_evidence.is_empty() {
+        push_hint("backend-api", "http-api", PipeHintConfidence::Medium, frontend_api_evidence);
+    }
+
+    hints
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -254,6 +416,28 @@ pub fn build_generation_prompt(scan: &ProjectScanResult) -> String {
     // Existing compose content
     if let Some(ref dc) = scan.existing_compose {
         sections.push(format!("--- Existing docker-compose ---\n{}", dc));
+    }
+
+    if !scan.pipe_hints.is_empty() {
+        let formatted = scan
+            .pipe_hints
+            .iter()
+            .map(|hint| {
+                format!(
+                    "- {} -> {} [{}] confidence={} evidence={}",
+                    hint.source,
+                    hint.target,
+                    hint.kind,
+                    hint.confidence.as_str(),
+                    hint.evidence.join("; ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!(
+            "Potential local pipe / integration hints (advisory, not runtime-verified):\n{}",
+            formatted
+        ));
     }
 
     sections.push(
@@ -485,6 +669,39 @@ mod tests {
         assert!(result.file_contents.is_empty());
     }
 
+    #[test]
+    fn test_discover_local_pipe_hints_from_env_and_compose() {
+        let mut file_contents = HashMap::new();
+        file_contents.insert(
+            "docker-compose.yml".to_string(),
+            "services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n".to_string(),
+        );
+
+        let hints = discover_local_pipe_hints(
+            "openclaw-app",
+            "node".to_string(),
+            &["docker-compose.yml".to_string()],
+            &file_contents,
+            &["DATABASE_URL".to_string(), "REDIS_URL".to_string()],
+        );
+
+        assert!(hints.iter().any(|h| h.target == "postgres" && h.kind == "database"));
+        assert!(hints.iter().any(|h| h.target == "redis" && h.kind == "cache-or-queue"));
+    }
+
+    #[test]
+    fn test_discover_local_pipe_hints_for_frontend_api() {
+        let hints = discover_local_pipe_hints(
+            "frontend-app",
+            "node".to_string(),
+            &["next.config.js".to_string()],
+            &HashMap::new(),
+            &["NEXT_PUBLIC_API_URL".to_string()],
+        );
+
+        assert!(hints.iter().any(|h| h.target == "backend-api" && h.kind == "http-api"));
+    }
+
     // ── build_generation_prompt ─────────────────────
 
     #[test]
@@ -574,6 +791,26 @@ mod tests {
         let prompt = build_generation_prompt(&scan);
         assert!(prompt.contains("package.json"));
         assert!(prompt.contains("express"));
+    }
+
+    #[test]
+    fn test_prompt_includes_pipe_hints() {
+        let scan = ProjectScanResult {
+            project_name: "openclaw-app".to_string(),
+            pipe_hints: vec![PipeHint {
+                source: "openclaw-app".to_string(),
+                target: "postgres".to_string(),
+                kind: "database".to_string(),
+                confidence: PipeHintConfidence::High,
+                evidence: vec!["env keys reference postgres/database".to_string()],
+            }],
+            ..Default::default()
+        };
+
+        let prompt = build_generation_prompt(&scan);
+        assert!(prompt.contains("Potential local pipe / integration hints"));
+        assert!(prompt.contains("openclaw-app -> postgres [database]"));
+        assert!(prompt.contains("confidence=high"));
     }
 
     // ── generate_config_with_ai_impl ────────────────

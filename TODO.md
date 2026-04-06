@@ -218,6 +218,16 @@ Stacker responsibilities:
 - [x] Reduce polling frequency and batch command status queries; prefer streaming/long-poll responses.
 - [ ] Add server-side aggregation: return only latest command states instead of fetching full 150+ rows each time.
 - [x] Add gzip/br on internal HTTP responses and trim response payloads.
+
+### Local pipe discovery follow-up
+- [ ] Design a local-only persistence layer for AI/discovery pipe hints before adding runtime semantics or `stacker.yml` schema changes.
+  - Scope: cache advisory local scan results for commands such as a future `stacker pipe scan-local`
+  - Preferred first option: SQLite in the workspace or `.stacker/` state
+  - Minimal tables:
+    - `pipe_scans(id, project_root, project_name, scanned_at)`
+    - `pipe_hints(id, scan_id, pipe_key, category, title, confidence, source, evidence, target)`
+  - Keep this separate from remote/runtime-verified pipe records and from server-side Postgres models
+  - Add user-confirmed decisions later only if the local discovery workflow proves useful
 - [x] Co-locate Stacker and User Service (same network/region) or use private networking to cut latency.
 
 ### Backlog hygiene
@@ -1143,4 +1153,3 @@ To verify `is_official` and `is_verified_publisher` status for each image:
    - Parse CVE list, severity counts
    - Store results in `stack_template_review.security_checklist["cve_scan"]`
    - Auto-set `verifications.vulnerability_scanned = true` when scan passes (no HIGH/CRITICAL CVEs)
-
