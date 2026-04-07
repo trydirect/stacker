@@ -47,7 +47,7 @@ and deployment for you.
 
 ### 1. Create a TryDirect account
 
-Sign up at [trydirect.com](https://trydirect.com) and connect your Hetzner
+Sign up at [try.direct](https://try.direct) and connect your Hetzner
 API token (or use TryDirect's built-in hosting).
 
 ### 2. Create your stack
