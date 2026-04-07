@@ -134,7 +134,7 @@ The end-user tool. No server required for local deploys.
 | Command | Description |
 |---------|-------------|
 | `stacker init` | Detect project type, generate `stacker.yml` + `.stacker/` artifacts |
-| `stacker deploy` | Build & deploy the stack (local, cloud, or server) |
+| `stacker deploy` | Build & deploy the stack (local, cloud, or server). `--runtime kata\|runc` selects container runtime |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
 | `stacker list deployments` | List deployments on the Stacker server |
@@ -155,7 +155,7 @@ The end-user tool. No server required for local deploys.
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
-| `stacker agent deploy-app` | Deploy or update an app container on the target server |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime |
 | `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
 | `stacker agent history` | Show recent command execution history |
@@ -338,11 +338,27 @@ cargo test deployment_validator    # Deployment validation
 
 ---
 
+## Kata Containers (Hardware Isolation)
+
+Stacker supports [Kata Containers](https://katacontainers.io/) as an alternative runtime, providing VM-level isolation for each container using hardware virtualization (KVM).
+
+**KVM requirement** — Kata needs nested or bare-metal KVM. Hetzner dedicated-CPU servers (CCX line) expose `/dev/kvm` out of the box, making them an ideal deployment target.
+
+```bash
+stacker deploy --runtime kata          # deploy the current stack with Kata isolation
+stacker agent deploy-app --runtime kata  # deploy a single app container with Kata
+```
+
+See [docs/kata/](docs/kata/README.md) for the full setup guide, network constraints, and monitoring reference. Automated provisioning (Ansible + Terraform for Hetzner CCX) is available via the TFA infrastructure toolkit.
+
+---
+
 ## Documentation
 
 - [stacker.yml reference](docs/STACKER_YML_REFERENCE.md) — full configuration schema
 - [CLI implementation plan](docs/STACKER_CLI_PLAN.md) — architecture and design decisions
 - [Changelog](CHANGELOG.md) — release history
+- [Kata Containers guide](docs/kata/README.md) — hardware-isolated containers with KVM
 
 ---
 

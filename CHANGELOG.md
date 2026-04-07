@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Kata Containers Runtime Support
+
+- `runtime` field on `deploy_app` and `deploy_with_configs` agent commands — values: `runc` (default), `kata`
+- Server-side validation rejects unknown runtime values with HTTP 422
+- Kata capability gating: agent `/capabilities` response checked before scheduling Kata deployments; agents without `kata` feature receive 422 rejection
+- `--runtime kata|runc` flag on `stacker deploy` and `stacker agent deploy-app` CLI commands
+- Database migration `20260406170000`: `runtime` column added to `deployment` table, persisted across redeploys
+- Vault integration: per-deployment runtime preference (`store_runtime_preference` / `fetch_runtime_preference`) and org-level runtime policy (`fetch_org_runtime_policy`)
+- Compose template support: `runtime:` field conditionally emitted in generated `docker-compose.yml` when runtime is not `runc` (both Tera and CLI generators)
+- Enhanced tracing: `runtime` field added to `Agent enqueue command` span for structured log filtering
+- Documentation: `docs/kata/` — setup guide, network constraints, monitoring/observability reference
+- Provisioning: Ansible role and Terraform module for Hetzner dedicated-CPU (CCX) servers with KVM/Kata pre-configured (integrated into TFA)
+
 ### Fixed — Casbin ACL for marketplace compose access
 - Added Casbin policy granting `group_admin` role GET access to `/admin/project/:id/compose`.
 - This allows the User Service OAuth client (which authenticates as `root` → `group_admin`) to fetch compose definitions for marketplace templates.

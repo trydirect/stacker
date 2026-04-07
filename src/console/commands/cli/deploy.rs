@@ -727,6 +727,8 @@ pub struct DeployCommand {
     pub lock: bool,
     /// Skip smart server pre-check and lockfile hints; force fresh cloud provision (--force-new).
     pub force_new: bool,
+    /// Container runtime: "runc" (default) or "kata" (--runtime).
+    pub runtime: String,
 }
 
 impl DeployCommand {
@@ -748,6 +750,7 @@ impl DeployCommand {
             watch: None,
             lock: false,
             force_new: false,
+            runtime: "runc".to_string(),
         }
     }
 
@@ -794,6 +797,18 @@ impl DeployCommand {
         self.force_new = force_new;
         self
     }
+
+    /// Builder method to set container runtime (--runtime flag).
+    pub fn with_runtime(mut self, runtime: String) -> Self {
+        let rt = runtime.to_lowercase();
+        if rt != "runc" && rt != "kata" {
+            eprintln!("Warning: unknown runtime '{}', defaulting to 'runc'", runtime);
+            self.runtime = "runc".to_string();
+        } else {
+            self.runtime = rt;
+        }
+        self
+    }
 }
 
 /// Parse a deploy target string into `DeployTarget`.
@@ -828,6 +843,7 @@ pub fn run_deploy(
     force_new: bool,
     executor: &dyn CommandExecutor,
     remote_overrides: &RemoteDeployOverrides,
+    runtime: &str,
 ) -> Result<DeployResult, CliError> {
     // 1. Load config
     let config_path = match config_file {
@@ -1099,6 +1115,7 @@ pub fn run_deploy(
             .server_name
             .clone()
             .or(lock_server_name),
+        runtime: runtime.to_string(),
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -1131,6 +1148,7 @@ impl CallableTrait for DeployCommand {
             self.force_new,
             &executor,
             &remote_overrides,
+            &self.runtime,
         );
 
         let result = match result {
@@ -1773,7 +1791,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
 
         // Generated files should exist
@@ -1791,7 +1809,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
 
         // Custom Dockerfile should not be overwritten
@@ -1812,7 +1830,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
 
         // .stacker/docker-compose.yml should NOT be generated
@@ -1829,7 +1847,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
     }
 
@@ -1841,7 +1859,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
 
         // No Dockerfile should be generated (using image)
@@ -1855,7 +1873,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1876,7 +1894,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // This should fail at validation since no credentials exist
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_err());
     }
 
@@ -1888,7 +1906,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1901,7 +1919,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1917,7 +1935,7 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
     }
 
@@ -1930,15 +1948,15 @@ mod tests {
         let executor = MockExecutor::success();
 
         // First deploy creates files
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
 
         // Second deploy without force_rebuild should succeed (reuses existing files)
-        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result2.is_ok());
 
         // With force_rebuild should also succeed (regenerates files)
-        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, false, &executor, &RemoteDeployOverrides::default());
+        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result3.is_ok());
     }
 
@@ -1971,7 +1989,7 @@ mod tests {
         let executor = MockExecutor::success();
 
         // Dry-run should succeed (hooks are just noted, not executed in dry-run)
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default());
+        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
         assert!(result.is_ok());
     }
 

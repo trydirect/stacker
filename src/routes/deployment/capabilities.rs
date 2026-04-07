@@ -17,6 +17,13 @@ pub struct CapabilityCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+pub struct CapabilityFeatures {
+    pub kata_runtime: bool,
+    pub compose: bool,
+    pub backup: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct CapabilitiesResponse {
     pub deployment_hash: String,
     pub agent_id: Option<String>,
@@ -26,6 +33,7 @@ pub struct CapabilitiesResponse {
     pub system_info: Option<serde_json::Value>,
     pub capabilities: Vec<String>,
     pub commands: Vec<CapabilityCommand>,
+    pub features: CapabilityFeatures,
 }
 
 struct CommandMetadata {
@@ -115,6 +123,11 @@ fn build_capabilities_payload(
         Some(agent) => {
             let capabilities = extract_capabilities(agent.capabilities.clone());
             let commands = filter_commands(&capabilities);
+            let features = CapabilityFeatures {
+                kata_runtime: capabilities.iter().any(|c| c == "kata"),
+                compose: capabilities.iter().any(|c| c == "compose"),
+                backup: capabilities.iter().any(|c| c == "backup"),
+            };
 
             CapabilitiesResponse {
                 deployment_hash,
@@ -125,6 +138,7 @@ fn build_capabilities_payload(
                 system_info: agent.system_info,
                 capabilities,
                 commands,
+                features,
             }
         }
         None => CapabilitiesResponse {
@@ -198,5 +212,33 @@ mod tests {
         let payload = build_capabilities_payload("hash".to_string(), Some(agent));
         assert_eq!(payload.status, "online");
         assert_eq!(payload.commands.len(), 5); // docker (4) + logs (1)
+    }
+
+    #[test]
+    fn capabilities_features_include_kata() {
+        let mut agent = Agent::new("hash".to_string());
+        agent.capabilities = Some(serde_json::json!(["docker", "kata"]));
+
+        let payload = build_capabilities_payload("hash".to_string(), Some(agent));
+        assert!(payload.features.kata_runtime);
+        assert!(!payload.features.compose);
+        assert!(!payload.features.backup);
+    }
+
+    #[test]
+    fn capabilities_features_default_no_kata() {
+        let mut agent = Agent::new("hash".to_string());
+        agent.capabilities = Some(serde_json::json!(["docker", "logs"]));
+
+        let payload = build_capabilities_payload("hash".to_string(), Some(agent));
+        assert!(!payload.features.kata_runtime);
+    }
+
+    #[test]
+    fn capabilities_features_offline_all_false() {
+        let payload = build_capabilities_payload("hash".to_string(), None);
+        assert!(!payload.features.kata_runtime);
+        assert!(!payload.features.compose);
+        assert!(!payload.features.backup);
     }
 }

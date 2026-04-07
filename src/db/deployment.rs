@@ -7,7 +7,7 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Deployment>,
     sqlx::query_as!(
         models::Deployment,
         r#"
-        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,
                last_seen_at, created_at, updated_at
         FROM deployment
         WHERE id=$1
@@ -35,9 +35,9 @@ pub async fn insert(
     sqlx::query!(
         r#"
         INSERT INTO deployment (
-            project_id, user_id, deployment_hash, deleted, status, metadata, last_seen_at, created_at, updated_at
+            project_id, user_id, deployment_hash, deleted, status, runtime, metadata, last_seen_at, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id;
         "#,
         deployment.project_id,
@@ -45,6 +45,7 @@ pub async fn insert(
         deployment.deployment_hash,
         deployment.deleted,
         deployment.status,
+        deployment.runtime,
         deployment.metadata,
         deployment.last_seen_at,
         deployment.created_at,
@@ -78,8 +79,9 @@ pub async fn update(
             deployment_hash=$4,
             deleted=$5,
             status=$6,
-            metadata=$7,
-            last_seen_at=$8,
+            runtime=$7,
+            metadata=$8,
+            last_seen_at=$9,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $1
         RETURNING *
@@ -90,6 +92,7 @@ pub async fn update(
         deployment.deployment_hash,
         deployment.deleted,
         deployment.status,
+        deployment.runtime,
         deployment.metadata,
         deployment.last_seen_at,
     )
@@ -115,7 +118,7 @@ pub async fn fetch_by_deployment_hash(
     sqlx::query_as!(
         models::Deployment,
         r#"
-        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,
                last_seen_at, created_at, updated_at
         FROM deployment
         WHERE deployment_hash = $1
@@ -144,7 +147,7 @@ pub async fn fetch_by_project_id(
     sqlx::query_as!(
         models::Deployment,
         r#"
-        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,
                last_seen_at, created_at, updated_at
         FROM deployment
         WHERE project_id = $1 AND deleted = false
@@ -174,7 +177,7 @@ pub async fn fetch_by_user(
     sqlx::query_as!(
         models::Deployment,
         r#"
-        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,
                last_seen_at, created_at, updated_at
         FROM deployment
         WHERE user_id = $1 AND deleted = false
@@ -206,7 +209,7 @@ pub async fn fetch_by_user_and_project(
     sqlx::query_as!(
         models::Deployment,
         r#"
-        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,
                last_seen_at, created_at, updated_at
         FROM deployment
         WHERE user_id = $1 AND project_id = $2 AND deleted = false

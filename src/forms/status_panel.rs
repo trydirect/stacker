@@ -116,10 +116,17 @@ pub struct DeployAppCommandRequest {
     /// Whether to remove existing container before deploying
     #[serde(default)]
     pub force_recreate: bool,
+    /// Container runtime to use: "runc" (default) or "kata"
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
 }
 
 fn default_deploy_pull() -> bool {
     true
+}
+
+fn default_runtime() -> String {
+    "runc".to_string()
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -436,6 +443,16 @@ pub fn validate_command_parameters(
             let params: DeployAppCommandRequest = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid deploy_app parameters: {}", err))?;
             ensure_app_code("deploy_app", &params.app_code)?;
+
+            // Validate runtime
+            let allowed_runtimes = ["runc", "kata"];
+            if !allowed_runtimes.contains(&params.runtime.as_str()) {
+                return Err(format!(
+                    "deploy_app: runtime must be one of: {}; got '{}'",
+                    allowed_runtimes.join(", "),
+                    params.runtime
+                ));
+            }
 
             serde_json::to_value(params)
                 .map(Some)
@@ -1108,5 +1125,37 @@ mod tests {
         )
         .expect("check_connections with null ports should validate");
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn deploy_app_defaults_runtime_to_runc() {
+        let params = json!({"app_code": "web"});
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["runtime"], "runc");
+    }
+
+    #[test]
+    fn deploy_app_accepts_kata_runtime() {
+        let params = json!({"app_code": "web", "runtime": "kata"});
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["runtime"], "kata");
+    }
+
+    #[test]
+    fn deploy_app_accepts_runc_runtime() {
+        let params = json!({"app_code": "web", "runtime": "runc"});
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["runtime"], "runc");
+    }
+
+    #[test]
+    fn deploy_app_rejects_unknown_runtime() {
+        let params = json!({"app_code": "web", "runtime": "containerd"});
+        let result = validate_command_parameters("deploy_app", &Some(params));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("runtime must be one of"));
     }
 }

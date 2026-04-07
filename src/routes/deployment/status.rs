@@ -185,6 +185,7 @@ mod tests {
             Some("user123".to_string()),
             "deployment_abc".to_string(),
             "in_progress".to_string(),
+            "runc".to_string(),
             serde_json::json!({}),
         );
         let resp: DeploymentStatusResponse = d.into();

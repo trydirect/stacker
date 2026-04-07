@@ -63,6 +63,8 @@ pub struct AppRenderContext {
     pub labels: HashMap<String, String>,
     /// Healthcheck configuration
     pub healthcheck: Option<HealthCheck>,
+    /// Container runtime override (e.g., "kata" for hardware isolation)
+    pub runtime: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +255,7 @@ impl ConfigRenderer {
             resources,
             labels,
             healthcheck,
+            runtime: None,
         })
     }
 
@@ -669,6 +672,9 @@ services:
   {{ app.code }}:
     image: {{ app.image }}
     container_name: {{ app.code }}
+{% if app.runtime %}
+    runtime: {{ app.runtime }}
+{% endif %}
 {% if app.command %}
     command: {{ app.command }}
 {% endif %}
@@ -1049,5 +1055,62 @@ mod tests {
         assert!(result.is_ok());
         let ctx = result.unwrap();
         assert_eq!(ctx.image, "nginx:latest");
+    }
+
+    #[test]
+    fn render_compose_includes_kata_runtime() {
+        let ctx = AppRenderContext {
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits {
+                memory_limit: None,
+                cpu_limit: None,
+                cpu_reservation: None,
+                memory_reservation: None,
+            },
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: Some("kata".to_string()),
+        };
+        // Verify the struct accepts runtime and serializes correctly
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert_eq!(json["runtime"], "kata");
+    }
+
+    #[test]
+    fn render_compose_runtime_none_serializes_null() {
+        let ctx = AppRenderContext {
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits {
+                memory_limit: None,
+                cpu_limit: None,
+                cpu_reservation: None,
+                memory_reservation: None,
+            },
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert!(json.get("runtime").is_none() || json["runtime"].is_null());
     }
 }

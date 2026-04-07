@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, project_id, deployment_hash, user_id, deleted, status, metadata,\n               last_seen_at, created_at, updated_at\n        FROM deployment\n        WHERE project_id = $1 AND deleted = false\n        ORDER BY created_at DESC\n        LIMIT 1\n        ",
+  "query": "\n        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,\n               last_seen_at, created_at, updated_at\n        FROM deployment\n        WHERE user_id = $1 AND project_id = $2 AND deleted = false\n        ORDER BY created_at DESC\n        LIMIT $3\n        ",
   "describe": {
     "columns": [
       {
@@ -35,28 +35,35 @@
       },
       {
         "ordinal": 6,
+        "name": "runtime",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
         "name": "metadata",
         "type_info": "Json"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "last_seen_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Int4"
+        "Text",
+        "Int4",
+        "Int8"
       ]
     },
     "nullable": [
@@ -67,10 +74,11 @@
       true,
       false,
       false,
+      false,
       true,
       false,
       false
     ]
   },
-  "hash": "8b3df91d5aec320fa8ffa47fc4d7fe61abe05cd5f4635d135d92dd605d065f56"
+  "hash": "e648979c7b4c4ced099543c181db8c71c1f4fd980368cbf872cb8954c1c7be9e"
 }
