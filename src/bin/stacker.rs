@@ -126,6 +126,9 @@ enum StackerCommands {
         /// Skip server pre-check; force fresh cloud provision even if deploy.server exists
         #[arg(long)]
         force_new: bool,
+        /// Container runtime: "runc" (default) or "kata" for hardware-isolated containers
+        #[arg(long, value_name = "RUNTIME", default_value = "runc")]
+        runtime: String,
     },
     /// Submit current stack to the marketplace for review
     Submit {
@@ -636,6 +639,9 @@ enum AgentCommands {
         /// Force recreate the container
         #[arg(long)]
         force: bool,
+        /// Container runtime: "runc" (default) or "kata"
+        #[arg(long, default_value = "runc")]
+        runtime: String,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -938,6 +944,7 @@ fn get_command(
             no_watch,
             lock,
             force_new,
+            runtime,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -949,7 +956,8 @@ fn get_command(
             .with_key_id(key_id)
             .with_watch(watch, no_watch)
             .with_lock(lock)
-            .with_force_new(force_new),
+            .with_force_new(force_new)
+            .with_runtime(runtime),
         ),
         StackerCommands::Logs {
             service,
@@ -1140,8 +1148,8 @@ fn get_command(
                 AgentCommands::Restart { app, force, json, deployment } => Box::new(
                     agent::AgentRestartCommand::new(app, force, json, deployment),
                 ),
-                AgentCommands::DeployApp { app, image, force, json, deployment } => Box::new(
-                    agent::AgentDeployAppCommand::new(app, image, force, json, deployment),
+                AgentCommands::DeployApp { app, image, force, runtime, json, deployment } => Box::new(
+                    agent::AgentDeployAppCommand::new(app, image, force, runtime, json, deployment),
                 ),
                 AgentCommands::RemoveApp { app, volumes, remove_image, force, json, deployment } => Box::new(
                     agent::AgentRemoveAppCommand::new(app, volumes, remove_image, force, json, deployment),

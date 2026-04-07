@@ -129,6 +129,7 @@ pub async fn create_handler(
                                     Some(user.id.clone()),
                                     req.deployment_hash.clone(),
                                     "pending".to_string(),
+                                    "runc".to_string(),
                                     serde_json::json!({"auto_created": true}),
                                 );
 

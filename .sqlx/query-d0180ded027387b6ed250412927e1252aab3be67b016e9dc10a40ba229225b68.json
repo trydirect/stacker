@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE deployment\n        SET\n            project_id=$2,\n            user_id=$3,\n            deployment_hash=$4,\n            deleted=$5,\n            status=$6,\n            metadata=$7,\n            last_seen_at=$8,\n            updated_at=NOW() at time zone 'utc'\n        WHERE id = $1\n        RETURNING *\n        ",
+  "query": "\n        UPDATE deployment\n        SET\n            project_id=$2,\n            user_id=$3,\n            deployment_hash=$4,\n            deleted=$5,\n            status=$6,\n            runtime=$7,\n            metadata=$8,\n            last_seen_at=$9,\n            updated_at=NOW() at time zone 'utc'\n        WHERE id = $1\n        RETURNING *\n        ",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,11 @@
         "ordinal": 9,
         "name": "user_id",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "runtime",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -61,6 +66,7 @@
         "Varchar",
         "Varchar",
         "Bool",
+        "Varchar",
         "Varchar",
         "Json",
         "Timestamptz"
@@ -76,8 +82,9 @@
       false,
       false,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "c59246b73cf3c5a0fd961d2709477ce724f60cdb03492eef912a9fe89aee2ac4"
+  "hash": "d0180ded027387b6ed250412927e1252aab3be67b016e9dc10a40ba229225b68"
 }

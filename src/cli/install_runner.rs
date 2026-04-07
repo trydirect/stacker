@@ -95,6 +95,9 @@ pub struct DeployContext {
     pub key_name_override: Option<String>,
     pub key_id_override: Option<i32>,
     pub server_name_override: Option<String>,
+
+    /// Container runtime preference ("runc" or "kata").
+    pub runtime: String,
 }
 
 impl DeployContext {
@@ -708,6 +711,14 @@ impl DeployStrategy for CloudDeploy {
                                 );
                             }
                         }
+                    }
+
+                    // Inject container runtime preference
+                    if let Some(form_obj) = deploy_form.as_object_mut() {
+                        form_obj.insert(
+                            "runtime".to_string(),
+                            serde_json::json!(context.runtime),
+                        );
                     }
 
                     // Step 5: Deploy
@@ -1581,6 +1592,7 @@ mod tests {
             key_name_override: None,
             key_id_override: None,
             server_name_override: None,
+            runtime: "runc".to_string(),
         }
     }
 
@@ -1683,6 +1695,7 @@ mod tests {
             key_name_override: None,
             key_id_override: None,
             server_name_override: None,
+            runtime: "runc".to_string(),
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }

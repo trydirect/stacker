@@ -165,6 +165,218 @@ impl VaultClient {
         Ok(())
     }
 
+    // ============ Runtime Preference Methods ============
+
+    /// Store runtime preference for a deployment
+    /// Path: {api_prefix}/{agent_prefix}/{deployment_hash}/runtime
+    #[tracing::instrument(name = "Store runtime preference in Vault", skip(self))]
+    pub async fn store_runtime_preference(
+        &self,
+        deployment_hash: &str,
+        runtime: &str,
+    ) -> Result<(), String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/runtime", base, prefix, deployment_hash)
+        } else {
+            format!(
+                "{}/{}/{}/{}/runtime",
+                base, api_prefix, prefix, deployment_hash
+            )
+        };
+
+        let payload = json!({
+            "data": {
+                "runtime": runtime,
+                "deployment_hash": deployment_hash
+            }
+        });
+
+        self.client
+            .post(&path)
+            .header("X-Vault-Token", &self.token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to store runtime preference in Vault: {:?}", e);
+                format!("Vault store error: {}", e)
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?;
+
+        tracing::info!(
+            deployment_hash = %deployment_hash,
+            runtime = %runtime,
+            "Runtime preference stored in Vault"
+        );
+        Ok(())
+    }
+
+    /// Fetch runtime preference from Vault
+    /// Returns None if not set
+    #[tracing::instrument(name = "Fetch runtime preference from Vault", skip(self))]
+    pub async fn fetch_runtime_preference(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<Option<String>, String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/runtime", base, prefix, deployment_hash)
+        } else {
+            format!(
+                "{}/{}/{}/{}/runtime",
+                base, api_prefix, prefix, deployment_hash
+            )
+        };
+
+        let response = self
+            .client
+            .get(&path)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch runtime preference from Vault: {:?}", e);
+                format!("Vault fetch error: {}", e)
+            })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let body: serde_json::Value = response
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?
+            .json()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to parse runtime preference response: {:?}", e);
+                format!("Vault parse error: {}", e)
+            })?;
+
+        let runtime = body
+            .pointer("/data/data/runtime")
+            .or_else(|| body.pointer("/data/runtime"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(runtime)
+    }
+
+    /// Delete runtime preference from Vault
+    #[tracing::instrument(name = "Delete runtime preference from Vault", skip(self))]
+    pub async fn delete_runtime_preference(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<(), String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/{}/runtime", base, prefix, deployment_hash)
+        } else {
+            format!(
+                "{}/{}/{}/{}/runtime",
+                base, api_prefix, prefix, deployment_hash
+            )
+        };
+
+        self.client
+            .delete(&path)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to delete runtime preference from Vault: {:?}", e);
+                format!("Vault delete error: {}", e)
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?;
+
+        tracing::info!(
+            deployment_hash = %deployment_hash,
+            "Runtime preference deleted from Vault"
+        );
+        Ok(())
+    }
+
+    // ============ Org Runtime Policy Methods ============
+
+    /// Fetch org-level runtime policy from Vault
+    /// Path: {api_prefix}/{agent_prefix}/org/{org_id}/runtime_policy
+    /// Returns the required runtime if an org policy exists, None otherwise
+    #[tracing::instrument(name = "Fetch org runtime policy from Vault", skip(self))]
+    pub async fn fetch_org_runtime_policy(
+        &self,
+        org_id: &str,
+    ) -> Result<Option<String>, String> {
+        let base = self.address.trim_end_matches('/');
+        let prefix = self.agent_path_prefix.trim_matches('/');
+        let api_prefix = self.api_prefix.trim_matches('/');
+        let path = if api_prefix.is_empty() {
+            format!("{}/{}/org/{}/runtime_policy", base, prefix, org_id)
+        } else {
+            format!(
+                "{}/{}/{}/org/{}/runtime_policy",
+                base, api_prefix, prefix, org_id
+            )
+        };
+
+        let response = self
+            .client
+            .get(&path)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch org runtime policy from Vault: {:?}", e);
+                format!("Vault fetch error: {}", e)
+            })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let body: serde_json::Value = response
+            .error_for_status()
+            .map_err(|e| {
+                tracing::error!("Vault returned error status: {:?}", e);
+                format!("Vault error: {}", e)
+            })?
+            .json()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to parse org runtime policy response: {:?}", e);
+                format!("Vault parse error: {}", e)
+            })?;
+
+        let require_kata = body
+            .pointer("/data/data/require_kata")
+            .or_else(|| body.pointer("/data/require_kata"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if require_kata {
+            Ok(Some("kata".to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
     // ============ SSH Key Management Methods ============
 
     /// Build the Vault API URL for SSH keys (KV v1).
@@ -408,6 +620,42 @@ mod tests {
         HttpResponse::NoContent().finish()
     }
 
+    async fn mock_store_runtime(body: web::Json<Value>) -> HttpResponse {
+        if body["data"]["runtime"].is_string() && body["data"]["deployment_hash"].is_string() {
+            HttpResponse::NoContent().finish()
+        } else {
+            HttpResponse::BadRequest().finish()
+        }
+    }
+
+    async fn mock_fetch_runtime(path: web::Path<(String, String)>) -> HttpResponse {
+        let (_prefix, deployment_hash) = path.into_inner();
+        let resp = json!({
+            "data": {
+                "data": {
+                    "runtime": "kata",
+                    "deployment_hash": deployment_hash
+                }
+            }
+        });
+        HttpResponse::Ok().json(resp)
+    }
+
+    async fn mock_fetch_org_policy() -> HttpResponse {
+        let resp = json!({
+            "data": {
+                "data": {
+                    "require_kata": true
+                }
+            }
+        });
+        HttpResponse::Ok().json(resp)
+    }
+
+    async fn mock_fetch_org_policy_none() -> HttpResponse {
+        HttpResponse::NotFound().finish()
+    }
+
     #[tokio::test]
     async fn test_vault_client_store_fetch_delete() {
         // Start mock Vault server
@@ -463,5 +711,130 @@ mod tests {
 
         // Delete
         client.delete_agent_token(dh).await.expect("delete token");
+    }
+
+    #[tokio::test]
+    async fn test_vault_runtime_preference_store_fetch_delete() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().unwrap().port();
+        let address = format!("http://127.0.0.1:{}", port);
+
+        let server = HttpServer::new(|| {
+            App::new()
+                .route(
+                    "/v1/{prefix}/{deployment_hash}/runtime",
+                    web::post().to(mock_store_runtime),
+                )
+                .route(
+                    "/v1/{prefix}/{deployment_hash}/runtime",
+                    web::get().to(mock_fetch_runtime),
+                )
+                .route(
+                    "/v1/{prefix}/{deployment_hash}/runtime",
+                    web::delete().to(mock_delete),
+                )
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+
+        let _ = tokio::spawn(server);
+
+        let settings = VaultSettings {
+            address,
+            token: "dev-token".to_string(),
+            agent_path_prefix: "agent".to_string(),
+            api_prefix: "v1".to_string(),
+            ssh_key_path_prefix: None,
+        };
+        let client = VaultClient::new(&settings);
+        let dh = "dep_runtime_test";
+
+        // Store runtime preference
+        client
+            .store_runtime_preference(dh, "kata")
+            .await
+            .expect("store runtime preference");
+
+        // Fetch runtime preference
+        let fetched = client
+            .fetch_runtime_preference(dh)
+            .await
+            .expect("fetch runtime preference");
+        assert_eq!(fetched, Some("kata".to_string()));
+
+        // Delete runtime preference
+        client
+            .delete_runtime_preference(dh)
+            .await
+            .expect("delete runtime preference");
+    }
+
+    #[tokio::test]
+    async fn test_vault_org_runtime_policy_enforced() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().unwrap().port();
+        let address = format!("http://127.0.0.1:{}", port);
+
+        let server = HttpServer::new(|| {
+            App::new().route(
+                "/v1/{prefix}/org/{org_id}/runtime_policy",
+                web::get().to(mock_fetch_org_policy),
+            )
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+
+        let _ = tokio::spawn(server);
+
+        let settings = VaultSettings {
+            address,
+            token: "dev-token".to_string(),
+            agent_path_prefix: "agent".to_string(),
+            api_prefix: "v1".to_string(),
+            ssh_key_path_prefix: None,
+        };
+        let client = VaultClient::new(&settings);
+
+        let policy = client
+            .fetch_org_runtime_policy("org-123")
+            .await
+            .expect("fetch org policy");
+        assert_eq!(policy, Some("kata".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_vault_org_runtime_policy_not_found() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().unwrap().port();
+        let address = format!("http://127.0.0.1:{}", port);
+
+        let server = HttpServer::new(|| {
+            App::new().route(
+                "/v1/{prefix}/org/{org_id}/runtime_policy",
+                web::get().to(mock_fetch_org_policy_none),
+            )
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+
+        let _ = tokio::spawn(server);
+
+        let settings = VaultSettings {
+            address,
+            token: "dev-token".to_string(),
+            agent_path_prefix: "agent".to_string(),
+            api_prefix: "v1".to_string(),
+            ssh_key_path_prefix: None,
+        };
+        let client = VaultClient::new(&settings);
+
+        let policy = client
+            .fetch_org_runtime_policy("org-no-policy")
+            .await
+            .expect("fetch org policy");
+        assert_eq!(policy, None);
     }
 }

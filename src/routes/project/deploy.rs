@@ -294,6 +294,7 @@ pub async fn item(
         Some(user.id.clone()),
         deployment_hash.clone(),
         String::from("pending"),
+        "runc".to_string(),
         json_request,
     );
 
@@ -650,6 +651,7 @@ pub async fn saved_item(
         Some(user.id.clone()),
         deployment_hash.clone(),
         String::from("pending"),
+        "runc".to_string(),
         json_request,
     );
 
