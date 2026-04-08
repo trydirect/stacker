@@ -27,7 +27,7 @@ pub async fn item(
             None => Err(JsonResponse::<models::Project>::build().not_found("")),
         })?;
 
-    db::project::delete(pg_pool.get_ref(), project.id)
+    db::project::delete(pg_pool.get_ref(), project.id, &user.id)
         .await
         .map_err(|err| JsonResponse::<Project>::build().internal_server_error(err))
         .and_then(|result| match result {

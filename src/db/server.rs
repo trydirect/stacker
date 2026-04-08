@@ -325,13 +325,14 @@ pub async fn update_srv_ip(
 }
 
 #[tracing::instrument(name = "Delete user's server.")]
-pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
+pub async fn delete(pool: &PgPool, id: i32, user_id: &str) -> Result<bool, String> {
     tracing::info!("Delete server {}", id);
-    sqlx::query::<sqlx::Postgres>("DELETE FROM server WHERE id = $1;")
+    sqlx::query::<sqlx::Postgres>("DELETE FROM server WHERE id = $1 AND user_id = $2;")
         .bind(id)
+        .bind(user_id)
         .execute(pool)
         .await
-        .map(|_| true)
+        .map(|r| r.rows_affected() > 0)
         .map_err(|err| {
             tracing::error!("Failed to delete server: {:?}", err);
             "Failed to delete server".to_string()

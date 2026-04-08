@@ -169,7 +169,7 @@ impl ToolHandler for DeleteCloudTool {
             .map_err(|e| format!("Cloud error: {}", e))?
             .ok_or_else(|| "Cloud not found".to_string())?;
 
-        db::cloud::delete(&context.pg_pool, args.id)
+        db::cloud::delete(&context.pg_pool, args.id, &context.user.id)
             .await
             .map_err(|e| format!("Failed to delete cloud: {}", e))?;
 

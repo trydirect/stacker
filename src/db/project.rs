@@ -51,6 +51,7 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::P
 pub async fn fetch_one_by_name(
     pool: &PgPool,
     name: &str,
+    user_id: &str,
 ) -> Result<Option<models::Project>, String> {
     let query_span = tracing::info_span!("Fetch one project by name.");
     sqlx::query_as!(
@@ -59,10 +60,11 @@ pub async fn fetch_one_by_name(
         SELECT
             *
         FROM project
-        WHERE name=$1
+        WHERE name=$1 AND user_id=$2
         LIMIT 1
         "#,
-        name
+        name,
+        user_id
     )
     .fetch_one(pool)
     .instrument(query_span)
@@ -150,13 +152,14 @@ pub async fn update(
 }
 
 #[tracing::instrument(name = "Delete user's project.")]
-pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
+pub async fn delete(pool: &PgPool, id: i32, user_id: &str) -> Result<bool, String> {
     tracing::info!("Delete project {}", id);
-    sqlx::query::<sqlx::Postgres>("DELETE FROM project WHERE id = $1;")
+    sqlx::query::<sqlx::Postgres>("DELETE FROM project WHERE id = $1 AND user_id = $2;")
         .bind(id)
+        .bind(user_id)
         .execute(pool)
         .await
-        .map(|_| true)
+        .map(|r| r.rows_affected() > 0)
         .map_err(|err| {
             tracing::error!("Failed to delete project: {:?}", err);
             "Failed to delete project".to_string()

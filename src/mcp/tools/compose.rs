@@ -30,7 +30,7 @@ impl ToolHandler for DeleteProjectTool {
             return Err("Unauthorized: You do not own this project".to_string());
         }
 
-        db::project::delete(&context.pg_pool, args.project_id)
+        db::project::delete(&context.pg_pool, args.project_id, &context.user.id)
             .await
             .map_err(|e| format!("Failed to delete project: {}", e))?;
 

@@ -27,7 +27,7 @@ pub async fn item(
             None => Err(JsonResponse::<models::Cloud>::build().not_found("not found")),
         })?;
 
-    db::cloud::delete(pg_pool.get_ref(), cloud.id)
+    db::cloud::delete(pg_pool.get_ref(), cloud.id, &user.id)
         .await
         .map_err(|err| JsonResponse::<Cloud>::build().internal_server_error(err))
         .and_then(|result| match result {

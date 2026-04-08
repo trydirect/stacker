@@ -152,7 +152,7 @@ pub async fn item(
     }
 
     // 4. Delete server record from DB
-    db::server::delete(pg_pool.get_ref(), server.id)
+    db::server::delete(pg_pool.get_ref(), server.id, &user.id)
         .await
         .map_err(|err| JsonResponse::<Server>::build().internal_server_error(err))
         .and_then(|result| match result {
