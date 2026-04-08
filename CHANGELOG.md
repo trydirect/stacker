@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.6] — 2026-04-08
+
 ### Added — Kata Containers Runtime Support
 
 - `runtime` field on `deploy_app` and `deploy_with_configs` agent commands — values: `runc` (default), `kata`
@@ -35,8 +37,6 @@ All notable changes to this project will be documented in this file.
 - Two-level storage: `pipe_templates` (reusable) + `pipe_instances` (per-deployment)
 - REST API: `POST/GET/DELETE /api/v1/pipes/templates` and `/instances`
 - Data contracts with validation for probe_endpoints command parameters and results
-
-## [0.2.6] — 2026-03-17
 
 ### Added — Marketplace Developer & Buyer Flows
 
