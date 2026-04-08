@@ -521,6 +521,7 @@ impl StackerClient {
     }
 
     /// Save cloud credentials to the Stacker server.
+    /// If credentials already exist for the provider, updates the existing record.
     pub async fn save_cloud(
         &self,
         provider: &str,
@@ -528,7 +529,82 @@ impl StackerClient {
         cloud_key: Option<&str>,
         cloud_secret: Option<&str>,
     ) -> Result<CloudInfo, CliError> {
+        // Check if credentials already exist for this provider — update instead of insert
+        if let Some(existing) = self.find_cloud_by_provider(provider).await? {
+            return self.update_cloud(
+                existing.id,
+                provider,
+                &existing.name,
+                cloud_token,
+                cloud_key,
+                cloud_secret,
+            ).await;
+        }
         self.save_cloud_with_name(provider, None, cloud_token, cloud_key, cloud_secret).await
+    }
+
+    /// Update existing cloud credentials by id.
+    pub async fn update_cloud(
+        &self,
+        id: i32,
+        provider: &str,
+        name: &str,
+        cloud_token: Option<&str>,
+        cloud_key: Option<&str>,
+        cloud_secret: Option<&str>,
+    ) -> Result<CloudInfo, CliError> {
+        let url = format!("{}/cloud/{}", self.base_url, id);
+
+        let mut payload = serde_json::json!({
+            "provider": provider,
+            "name": name,
+            "save_token": true,
+        });
+
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(t) = cloud_token {
+                obj.insert("cloud_token".to_string(), serde_json::Value::String(t.to_string()));
+            }
+            if let Some(k) = cloud_key {
+                obj.insert("cloud_key".to_string(), serde_json::Value::String(k.to_string()));
+            }
+            if let Some(s) = cloud_secret {
+                obj.insert("cloud_secret".to_string(), serde_json::Value::String(s.to_string()));
+            }
+        }
+
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&self.token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server PUT /cloud/{} failed ({}): {}", id, status, body),
+            });
+        }
+
+        let api: ApiResponse<CloudInfo> = resp.json().await.map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            }
+        })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "Stacker server updated cloud but returned no item".to_string(),
+        })
     }
 
     /// Save cloud credentials with an optional name.

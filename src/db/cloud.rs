@@ -45,16 +45,17 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::C
 pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::Cloud, String> {
     let query_span = tracing::info_span!("Saving user's cloud data into the database");
 
-    // If no name provided, we'll generate a default after insert (need the ID)
+    // If no name provided, generate a unique default using a UUID suffix to
+    // avoid collisions on the (user_id, name) unique constraint.
     let has_name = !cloud.name.is_empty();
     let insert_name = if has_name {
         cloud.name.clone()
     } else {
-        // Temporary placeholder; will be updated below
-        format!("{}-0", cloud.provider)
+        let suffix = uuid::Uuid::new_v4().to_string();
+        format!("{}-{}", cloud.provider, &suffix[..8])
     };
 
-    sqlx::query!(
+    let result = sqlx::query!(
         r#"
         INSERT INTO cloud (
         user_id,
@@ -81,21 +82,38 @@ pub async fn insert(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::C
     .fetch_one(pool)
     .instrument(query_span)
     .await
-    .map(move |result| {
-        cloud.id = result.id;
-        cloud
-    })
     .map_err(|e| {
         tracing::error!("Failed to execute query: {:?}", e);
         "Failed to insert".to_string()
-    })
-    .and_then(|mut cloud| {
-        // Auto-generate name if not provided: "{provider}-{id}"
-        if !has_name {
-            cloud.name = format!("{}-{}", cloud.provider, cloud.id);
-        }
-        Ok(cloud)
-    })
+    })?;
+
+    cloud.id = result.id;
+
+    // Set the final name: "{provider}-{id}" for auto-generated names
+    let final_name = if has_name {
+        insert_name
+    } else {
+        format!("{}-{}", cloud.provider, cloud.id)
+    };
+    cloud.name = final_name.clone();
+
+    // Persist the final name to the database
+    let update_span = tracing::info_span!("Updating cloud name after insert");
+    sqlx::query!(
+        r#"UPDATE cloud SET name = $1 WHERE id = $2"#,
+        final_name,
+        cloud.id
+    )
+    .execute(pool)
+    .instrument(update_span)
+    .await
+    .map_err(|e| {
+        tracing::warn!("Failed to update cloud name after insert: {:?}", e);
+        // Non-fatal: the row was inserted, name is just the temp placeholder
+        "Failed to update name".to_string()
+    })?;
+
+    Ok(cloud)
 }
 
 pub async fn update(pool: &PgPool, mut cloud: models::Cloud) -> Result<models::Cloud, String> {

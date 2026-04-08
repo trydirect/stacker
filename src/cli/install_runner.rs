@@ -601,7 +601,7 @@ impl DeployStrategy for CloudDeploy {
                                             )
                                             .await?;
                                         eprintln!(
-                                            "  Saved cloud credentials (id={})",
+                                            "  Saved/updated cloud credentials (id={})",
                                             saved.id
                                         );
                                         Some(saved.id)
