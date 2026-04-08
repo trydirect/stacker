@@ -24,6 +24,8 @@ pub struct ComposeService {
     pub depends_on: Vec<String>,
     pub restart: String,
     pub networks: Vec<String>,
+    /// Container runtime (e.g., "kata"). None or "runc" means default.
+    pub runtime: Option<String>,
 }
 
 impl Default for ComposeService {
@@ -39,6 +41,7 @@ impl Default for ComposeService {
             depends_on: Vec::new(),
             restart: "unless-stopped".to_string(),
             networks: vec!["app-network".to_string()],
+            runtime: None,
         }
     }
 }
@@ -257,6 +260,12 @@ impl ComposeDefinition {
                 out.push_str(&format!("      context: {}\n", ctx));
                 if let Some(ref df) = svc.dockerfile {
                     out.push_str(&format!("      dockerfile: {}\n", df));
+                }
+            }
+
+            if let Some(ref rt) = svc.runtime {
+                if rt != "runc" {
+                    out.push_str(&format!("    runtime: {}\n", rt));
                 }
             }
 
@@ -642,5 +651,68 @@ mod tests {
         assert!(npm.is_some());
         let npm = npm.unwrap();
         assert!(npm.ports.contains(&"81:81".to_string())); // NPM admin port
+    }
+
+    #[test]
+    fn render_includes_kata_runtime() {
+        let svc = ComposeService {
+            name: "web".to_string(),
+            image: Some("nginx:latest".to_string()),
+            runtime: Some("kata".to_string()),
+            ..Default::default()
+        };
+        let def = ComposeDefinition {
+            services: vec![svc],
+            networks: vec!["app-network".to_string()],
+            volumes: vec![],
+        };
+        let output = def.render();
+        assert!(
+            output.contains("runtime: kata"),
+            "Expected 'runtime: kata' in:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn render_excludes_runc_runtime() {
+        let svc = ComposeService {
+            name: "web".to_string(),
+            image: Some("nginx:latest".to_string()),
+            runtime: Some("runc".to_string()),
+            ..Default::default()
+        };
+        let def = ComposeDefinition {
+            services: vec![svc],
+            networks: vec!["app-network".to_string()],
+            volumes: vec![],
+        };
+        let output = def.render();
+        assert!(
+            !output.contains("runtime:"),
+            "runc runtime should not appear in:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn render_excludes_runtime_when_none() {
+        let svc = ComposeService {
+            name: "web".to_string(),
+            image: Some("nginx:latest".to_string()),
+            runtime: None,
+            ..Default::default()
+        };
+        let def = ComposeDefinition {
+            services: vec![svc],
+            networks: vec!["app-network".to_string()],
+            volumes: vec![],
+        };
+        let output = def.render();
+        assert!(
+            !output.contains("runtime:"),
+            "No runtime should appear in:\n{}",
+            output
+        );
     }
 }

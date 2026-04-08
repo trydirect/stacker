@@ -113,6 +113,7 @@ impl ToolHandler for StartDeploymentTool {
             Some(context.user.id.clone()),
             deployment_hash.clone(),
             "pending".to_string(),
+            "runc".to_string(),
             json!({ "environment": args.environment.unwrap_or_else(|| "production".to_string()), "cloud_id": args.cloud_id }),
         );
 

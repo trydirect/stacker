@@ -416,11 +416,12 @@ impl CallableTrait for AgentRestartCommand {
 
 // ── Deploy App ───────────────────────────────────────
 
-/// `stacker agent deploy-app <app> [--image <img>] [--force] [--json] [--deployment <hash>]`
+/// `stacker agent deploy-app <app> [--image <img>] [--force] [--runtime <rt>] [--json] [--deployment <hash>]`
 pub struct AgentDeployAppCommand {
     pub app_code: String,
     pub image: Option<String>,
     pub force_recreate: bool,
+    pub runtime: String,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -430,10 +431,11 @@ impl AgentDeployAppCommand {
         app_code: String,
         image: Option<String>,
         force_recreate: bool,
+        runtime: String,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { app_code, image, force_recreate, json, deployment }
+        Self { app_code, image, force_recreate, runtime, json, deployment }
     }
 }
 
@@ -451,6 +453,7 @@ impl CallableTrait for AgentDeployAppCommand {
             env_vars: None,
             pull: true,
             force_recreate: self.force_recreate,
+            runtime: self.runtime.clone(),
         };
 
         let request = AgentEnqueueRequest::new(&hash, "deploy_app")

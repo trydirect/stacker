@@ -38,6 +38,34 @@ pub async fn enqueue_handler(
         status_panel::validate_command_parameters(&payload.command_type, &payload.parameters)
             .map_err(|err| JsonResponse::<()>::build().bad_request(err))?;
 
+    // If runtime=kata requested, verify agent supports it
+    if let Some(ref params) = validated_parameters {
+        if params.get("runtime").and_then(|v| v.as_str()) == Some("kata") {
+            let agent = db::agent::fetch_by_deployment_hash(
+                agent_pool.as_ref(),
+                &payload.deployment_hash,
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!("Failed to fetch agent: {}", err);
+                JsonResponse::<()>::build().internal_server_error(err)
+            })?;
+
+            let has_kata = agent
+                .as_ref()
+                .and_then(|a| a.capabilities.as_ref())
+                .and_then(|c| serde_json::from_value::<Vec<String>>(c.clone()).ok())
+                .map(|caps| caps.iter().any(|c| c == "kata"))
+                .unwrap_or(false);
+
+            if !has_kata {
+                return Err(JsonResponse::<()>::build().bad_request(
+                    "Agent does not support Kata runtime. Check agent capabilities at GET /deployments/{hash}/capabilities"
+                ));
+            }
+        }
+    }
+
     // Generate command ID
     let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
 
@@ -92,9 +120,18 @@ pub async fn enqueue_handler(
         JsonResponse::<()>::build().internal_server_error(err)
     })?;
 
+    // Extract runtime for tracing
+    let runtime = validated_parameters
+        .as_ref()
+        .and_then(|p| p.get("runtime"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("runc");
+
     tracing::info!(
         command_id = %saved.command_id,
         deployment_hash = %saved.deployment_hash,
+        command_type = %payload.command_type,
+        runtime = %runtime,
         "Command enqueued, agent will poll"
     );
 
