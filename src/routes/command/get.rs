@@ -5,7 +5,7 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Get command by ID", skip(pg_pool, user))]
+#[tracing::instrument(name = "Get command by ID", skip_all)]
 #[get("/{deployment_hash}/{command_id}")]
 pub async fn get_handler(
     user: web::ReqData<Arc<User>>,

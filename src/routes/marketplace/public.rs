@@ -3,7 +3,7 @@ use crate::helpers::JsonResponse;
 use actix_web::{get, web, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 
-#[tracing::instrument(name = "List approved templates (public)")]
+#[tracing::instrument(name = "List approved templates (public)", skip_all)]
 #[get("")]
 pub async fn list_handler(
     query: web::Query<TemplateListQuery>,
@@ -21,7 +21,7 @@ pub async fn list_handler(
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }
 
-#[tracing::instrument(name = "Generate install script")]
+#[tracing::instrument(name = "Generate install script", skip_all)]
 #[get("/install/{purchase_token}")]
 pub async fn install_script_handler(path: web::Path<String>) -> Result<HttpResponse> {
     let purchase_token = path.into_inner();
@@ -104,7 +104,7 @@ echo ""
     )
 }
 
-#[tracing::instrument(name = "Download stack archive")]
+#[tracing::instrument(name = "Download stack archive", skip_all)]
 #[get("/download/{purchase_token}")]
 pub async fn download_stack_handler(
     path: web::Path<String>,
@@ -138,7 +138,7 @@ pub struct TemplateListQuery {
     pub sort: Option<String>, // recent|popular|rating
 }
 
-#[tracing::instrument(name = "Get template by slug (public)")]
+#[tracing::instrument(name = "Get template by slug (public)", skip_all)]
 #[get("/{slug}")]
 pub async fn detail_handler(
     path: web::Path<(String,)>,

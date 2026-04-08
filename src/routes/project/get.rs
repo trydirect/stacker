@@ -5,7 +5,7 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Get logged user project.")]
+#[tracing::instrument(name = "Get logged user project.", skip_all)]
 #[get("/{id}")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
@@ -27,7 +27,7 @@ pub async fn item(
         })
 }
 
-#[tracing::instrument(name = "Get project list.")]
+#[tracing::instrument(name = "Get project list.", skip_all)]
 #[get("")]
 pub async fn list(
     user: web::ReqData<Arc<models::User>>,
@@ -40,10 +40,10 @@ pub async fn list(
 }
 
 //admin's endpoint
-#[tracing::instrument(name = "Get user's project list.")]
+#[tracing::instrument(name = "Get user's project list.", skip_all)]
 #[get("/user/{id}")]
 pub async fn admin_list(
-    user: web::ReqData<Arc<models::User>>,
+    _user: web::ReqData<Arc<models::User>>,
     path: web::Path<(String,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {

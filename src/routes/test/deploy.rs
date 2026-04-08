@@ -11,7 +11,7 @@ struct DeployResponse {
     client: Arc<Client>,
 }
 
-#[tracing::instrument(name = "Test deploy.")]
+#[tracing::instrument(name = "Test deploy.", skip_all)]
 #[post("/deploy")]
 pub async fn handler(client: web::ReqData<Arc<Client>>) -> Result<impl Responder> {
     Ok(JsonResponse::build()

@@ -29,7 +29,7 @@ fn generate_token() -> String {
         .collect()
 }
 
-#[tracing::instrument(name = "Register marketplace agent", skip(_pg_pool))]
+#[tracing::instrument(name = "Register marketplace agent", skip_all)]
 #[post("/register")]
 pub async fn register_marketplace_agent_handler(
     _pg_pool: web::Data<PgPool>,

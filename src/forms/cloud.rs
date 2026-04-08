@@ -27,7 +27,7 @@ pub struct CloudForm {
 }
 
 impl CloudForm {
-    #[tracing::instrument(name = "impl CloudForm::decode()")]
+    #[tracing::instrument(name = "impl CloudForm::decode()", skip_all)]
     pub(crate) fn decode(secret: &mut Secret, encrypted_value: String) -> String {
         // tracing::error!("encrypted_value {:?}", &encrypted_value);
         let b64_decoded = Secret::b64_decode(&encrypted_value).unwrap();
@@ -61,7 +61,7 @@ impl CloudForm {
     }
 
     // @todo should be refactored, may be moved to cloud.into() or Secret::from()
-    #[tracing::instrument(name = "decode_model")]
+    #[tracing::instrument(name = "decode_model", skip_all)]
     pub fn decode_model(mut cloud: models::Cloud, reveal: bool) -> models::Cloud {
         let mut secret = Secret::new();
         secret.user_id = cloud.user_id.clone();
@@ -87,28 +87,16 @@ impl CloudForm {
 
 impl std::fmt::Debug for CloudForm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let cloud_key: String = match self.cloud_key.as_ref() {
-            Some(val) => val.chars().take(4).collect::<String>() + "****",
-            None => "".to_string(),
-        };
-        let cloud_token: String = match self.cloud_token.as_ref() {
-            Some(val) => {
-                eprintln!("cloud token {val:?}");
-                val.chars().take(4).collect::<String>() + "****"
-            }
-            None => "".to_string(),
-        };
-
-        let cloud_secret: String = match self.cloud_secret.as_ref() {
-            Some(val) => val.chars().take(4).collect::<String>() + "****",
-            None => "".to_string(),
-        };
-
-        write!(
-            f,
-            "{} cloud creds: cloud_key : {} cloud_token: {} cloud_secret: {} project_id: {:?}",
-            self.provider, cloud_key, cloud_token, cloud_secret, self.project_id
-        )
+        f.debug_struct("CloudForm")
+            .field("user_id", &self.user_id)
+            .field("project_id", &self.project_id)
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("cloud_token", &"[REDACTED]")
+            .field("cloud_key", &"[REDACTED]")
+            .field("cloud_secret", &"[REDACTED]")
+            .field("save_token", &self.save_token)
+            .finish()
     }
 }
 
@@ -129,7 +117,7 @@ fn encrypt_field(secret: &mut Secret, field_name: &str, value: Option<String>) -
 }
 
 impl Into<models::Cloud> for &CloudForm {
-    #[tracing::instrument(name = "impl Into<models::Cloud> for &CloudForm")]
+    #[tracing::instrument(name = "impl Into<models::Cloud> for &CloudForm", skip_all)]
     fn into(self) -> models::Cloud {
         let mut cloud = models::Cloud::default();
         cloud.provider = self.provider.clone();
@@ -160,7 +148,7 @@ impl Into<models::Cloud> for &CloudForm {
 
 // on deploy
 impl Into<CloudForm> for models::Cloud {
-    #[tracing::instrument(name = "Into<CloudForm> for models::Cloud .")]
+    #[tracing::instrument(name = "Into<CloudForm> for models::Cloud .", skip_all)]
     fn into(self) -> CloudForm {
         let mut form = CloudForm::default();
         form.provider = self.provider.clone();

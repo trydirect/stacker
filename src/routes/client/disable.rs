@@ -6,11 +6,11 @@ use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "User disable client.")]
+#[tracing::instrument(name = "User disable client.", skip_all)]
 #[put("/{id}/disable")]
 pub async fn disable_handler(
     user: web::ReqData<Arc<models::User>>,
-    settings: web::Data<Settings>,
+    _settings: web::Data<Settings>,
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
@@ -29,11 +29,11 @@ pub async fn disable_handler(
     disable_client(pg_pool.get_ref(), client).await
 }
 
-#[tracing::instrument(name = "Admin disable client.")]
+#[tracing::instrument(name = "Admin disable client.", skip_all)]
 #[put("/{id}/disable")]
 pub async fn admin_disable_handler(
-    user: web::ReqData<Arc<models::User>>,
-    settings: web::Data<Settings>,
+    _user: web::ReqData<Arc<models::User>>,
+    _settings: web::Data<Settings>,
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {

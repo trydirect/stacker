@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use std::ops::Deref;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Update server.")]
+#[tracing::instrument(name = "Update server.", skip_all)]
 #[put("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,

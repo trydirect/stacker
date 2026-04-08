@@ -14,7 +14,7 @@ pub struct Query {
 /// GET /chat/history?project_id={id}
 /// Returns the saved chat conversation for the logged-in user.
 /// project_id is optional; omit for canvas/onboarding mode.
-#[tracing::instrument(name = "Get chat history.")]
+#[tracing::instrument(name = "Get chat history.", skip_all)]
 #[get("/history")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,

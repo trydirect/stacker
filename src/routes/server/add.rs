@@ -13,7 +13,7 @@
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-// #[tracing::instrument(name = "Add server.")]
+// #[tracing::instrument(name = "Add server.", skip_all)]
 // #[post("")]
 // pub async fn add(
 //     user: web::ReqData<Arc<models::User>>,

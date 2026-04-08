@@ -58,7 +58,7 @@ async fn verify_server_ownership(
 
 /// Generate a new SSH key pair for a server
 /// POST /server/{id}/ssh-key/generate
-#[tracing::instrument(name = "Generate SSH key for server.")]
+#[tracing::instrument(name = "Generate SSH key for server.", skip_all)]
 #[post("/{id}/ssh-key/generate")]
 pub async fn generate_key(
     path: web::Path<(i32,)>,
@@ -131,7 +131,7 @@ pub async fn generate_key(
 
 /// Upload an existing SSH key pair for a server
 /// POST /server/{id}/ssh-key/upload
-#[tracing::instrument(name = "Upload SSH key for server.", skip(form))]
+#[tracing::instrument(name = "Upload SSH key for server.", skip_all)]
 #[post("/{id}/ssh-key/upload")]
 pub async fn upload_key(
     path: web::Path<(i32,)>,
@@ -195,7 +195,7 @@ pub async fn upload_key(
 
 /// Get the public key for a server (for copying to authorized_keys)
 /// GET /server/{id}/ssh-key/public
-#[tracing::instrument(name = "Get public SSH key for server.")]
+#[tracing::instrument(name = "Get public SSH key for server.", skip_all)]
 #[get("/{id}/ssh-key/public")]
 pub async fn get_public_key(
     path: web::Path<(i32,)>,
@@ -293,7 +293,7 @@ pub struct ValidateResponse {
 /// 3. Connects to the server via SSH and authenticates
 /// 4. Runs system diagnostic commands (whoami, df, docker, os-release, free)
 /// 5. Returns comprehensive system information
-#[tracing::instrument(name = "Validate SSH key for server.")]
+#[tracing::instrument(name = "Validate SSH key for server.", skip_all)]
 #[post("/{id}/ssh-key/validate")]
 pub async fn validate_key(
     path: web::Path<(i32,)>,
@@ -436,7 +436,7 @@ pub async fn validate_key(
 
 /// Delete SSH key for a server (disconnect)
 /// DELETE /server/{id}/ssh-key
-#[tracing::instrument(name = "Delete SSH key for server.")]
+#[tracing::instrument(name = "Delete SSH key for server.", skip_all)]
 #[delete("/{id}/ssh-key")]
 pub async fn delete_key(
     path: web::Path<(i32,)>,

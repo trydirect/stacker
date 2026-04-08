@@ -7,7 +7,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Admin add agreement.")]
+#[tracing::instrument(name = "Admin add agreement.", skip_all)]
 #[post("")]
 pub async fn admin_add_handler(
     form: web::Json<forms::agreement::AdminAddAgreement>,
@@ -31,7 +31,7 @@ pub async fn admin_add_handler(
         })
 }
 
-#[tracing::instrument(name = "Add user agreement.")]
+#[tracing::instrument(name = "Add user agreement.", skip_all)]
 #[post("")]
 pub async fn user_add_handler(
     user: web::ReqData<Arc<models::User>>,

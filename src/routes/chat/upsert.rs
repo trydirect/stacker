@@ -15,7 +15,7 @@ pub struct ChatHistoryRequest {
 
 /// PUT /chat/history
 /// Upserts the chat conversation for the logged-in user.
-#[tracing::instrument(name = "Upsert chat history.")]
+#[tracing::instrument(name = "Upsert chat history.", skip_all)]
 #[put("/history")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,

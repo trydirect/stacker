@@ -54,7 +54,7 @@ impl fmt::Display for DockerImage {
 }
 
 impl DockerImage {
-    #[tracing::instrument(name = "is_active")]
+    #[tracing::instrument(name = "is_active", skip_all)]
     pub async fn is_active(&self) -> Result<bool, String> {
         DockerHub::try_from(self)?.is_active().await
     }

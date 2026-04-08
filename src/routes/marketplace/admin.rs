@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 use uuid;
 
-#[tracing::instrument(name = "List submitted templates (admin)")]
+#[tracing::instrument(name = "List submitted templates (admin)", skip_all)]
 #[get("")]
 pub async fn list_submitted_handler(
     _admin: web::ReqData<Arc<models::User>>, // role enforced by Casbin
@@ -24,7 +24,7 @@ pub async fn list_submitted_handler(
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }
 
-#[tracing::instrument(name = "Get template detail (admin)")]
+#[tracing::instrument(name = "Get template detail (admin)", skip_all)]
 #[get("/{id}")]
 pub async fn detail_handler(
     _admin: web::ReqData<Arc<models::User>>,
@@ -66,7 +66,7 @@ pub struct AdminDecisionRequest {
     pub reason: Option<String>,
 }
 
-#[tracing::instrument(name = "Approve template (admin)")]
+#[tracing::instrument(name = "Approve template (admin)", skip_all)]
 #[post("/{id}/approve")]
 pub async fn approve_handler(
     admin: web::ReqData<Arc<models::User>>, // role enforced by Casbin
@@ -136,7 +136,7 @@ pub async fn approve_handler(
     Ok(JsonResponse::<serde_json::Value>::build().ok("Approved"))
 }
 
-#[tracing::instrument(name = "Reject template (admin)")]
+#[tracing::instrument(name = "Reject template (admin)", skip_all)]
 #[post("/{id}/reject")]
 pub async fn reject_handler(
     admin: web::ReqData<Arc<models::User>>, // role enforced by Casbin
@@ -196,7 +196,7 @@ pub struct UnapproveRequest {
     pub reason: Option<String>,
 }
 
-#[tracing::instrument(name = "Unapprove template (admin)")]
+#[tracing::instrument(name = "Unapprove template (admin)", skip_all)]
 #[post("/{id}/unapprove")]
 pub async fn unapprove_handler(
     admin: web::ReqData<Arc<models::User>>,
@@ -248,7 +248,7 @@ pub async fn unapprove_handler(
     Ok(JsonResponse::<serde_json::Value>::build().ok("Template unapproved and hidden from marketplace"))
 }
 
-#[tracing::instrument(name = "Security scan template (admin)")]
+#[tracing::instrument(name = "Security scan template (admin)", skip_all)]
 #[post("/{id}/security-scan")]
 pub async fn security_scan_handler(
     admin: web::ReqData<Arc<models::User>>,
@@ -331,7 +331,7 @@ pub async fn security_scan_handler(
         .ok("Security scan completed"))
 }
 
-#[tracing::instrument(name = "List available plans from User Service", skip(user_service))]
+#[tracing::instrument(name = "List available plans from User Service", skip_all)]
 #[get("/plans")]
 pub async fn list_plans_handler(
     _admin: web::ReqData<Arc<models::User>>, // role enforced by Casbin
@@ -370,7 +370,7 @@ pub struct AdminPricingRequest {
     pub currency: Option<String>,
 }
 
-#[tracing::instrument(name = "Admin update template pricing")]
+#[tracing::instrument(name = "Admin update template pricing", skip_all)]
 #[patch("/{id}/pricing")]
 pub async fn pricing_handler(
     _admin: web::ReqData<Arc<models::User>>,
@@ -415,7 +415,7 @@ pub struct AdminVerificationsRequest {
     pub hardened_images: Option<bool>,
 }
 
-#[tracing::instrument(name = "Admin update template verifications")]
+#[tracing::instrument(name = "Admin update template verifications", skip_all)]
 #[patch("/{id}/verifications")]
 pub async fn update_verifications_handler(
     _admin: web::ReqData<Arc<models::User>>,

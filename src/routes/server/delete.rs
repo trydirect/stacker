@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 /// Preview what would be deleted if the server is removed.
 /// Returns: ssh_key_shared, affected_deployments, agent_count
-#[tracing::instrument(name = "Preview server deletion impact.")]
+#[tracing::instrument(name = "Preview server deletion impact.", skip_all)]
 #[get("/{id}/delete-preview")]
 pub async fn delete_preview(
     user: web::ReqData<Arc<models::User>>,
@@ -70,7 +70,7 @@ pub async fn delete_preview(
     })).ok("Delete preview"))
 }
 
-#[tracing::instrument(name = "Delete user's server with cleanup.")]
+#[tracing::instrument(name = "Delete user's server with cleanup.", skip_all)]
 #[delete("/{id}")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,

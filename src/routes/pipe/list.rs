@@ -14,7 +14,7 @@ pub struct ListTemplatesQuery {
     pub public_only: bool,
 }
 
-#[tracing::instrument(name = "List pipe templates", skip(pg_pool, _user))]
+#[tracing::instrument(name = "List pipe templates", skip_all)]
 #[get("/templates")]
 pub async fn list_templates_handler(
     _user: web::ReqData<Arc<User>>,
@@ -38,7 +38,7 @@ pub async fn list_templates_handler(
         .ok("Pipe templates fetched successfully"))
 }
 
-#[tracing::instrument(name = "List pipe instances for deployment", skip(pg_pool, _user))]
+#[tracing::instrument(name = "List pipe instances for deployment", skip_all)]
 #[get("/instances/{deployment_hash}")]
 pub async fn list_instances_handler(
     _user: web::ReqData<Arc<User>>,

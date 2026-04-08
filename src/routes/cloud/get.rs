@@ -6,7 +6,7 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Get cloud credentials.")]
+#[tracing::instrument(name = "Get cloud credentials.", skip_all)]
 #[get("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
@@ -29,10 +29,10 @@ pub async fn item(
         })
 }
 
-#[tracing::instrument(name = "Get all clouds.")]
+#[tracing::instrument(name = "Get all clouds.", skip_all)]
 #[get("")]
 pub async fn list(
-    path: web::Path<()>,
+    _path: web::Path<()>,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {

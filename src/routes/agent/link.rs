@@ -38,7 +38,7 @@ fn generate_agent_token() -> String {
 /// The session_token proves the user authenticated via /api/v1/agent/login.
 /// Stacker validates token ownership, checks the user owns the deployment,
 /// then creates or returns an agent with credentials.
-#[tracing::instrument(name = "Link agent to deployment", skip(agent_pool, vault_client, user_service, req))]
+#[tracing::instrument(name = "Link agent to deployment", skip_all)]
 #[post("/link")]
 pub async fn link_handler(
     payload: web::Json<LinkAgentRequest>,

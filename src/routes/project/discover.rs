@@ -80,7 +80,7 @@ pub struct ContainerImport {
 /// - Registered apps with running containers (synced)
 /// - Running containers not in database (unregistered, can be imported)
 /// - Database apps with no running container (stopped or name mismatch)
-#[tracing::instrument(name = "Discover containers", skip(pg_pool))]
+#[tracing::instrument(name = "Discover containers", skip_all)]
 #[get("/{project_id}/containers/discover")]
 pub async fn discover_containers(
     user: web::ReqData<Arc<models::User>>,
@@ -330,7 +330,7 @@ pub async fn discover_containers(
 }
 
 /// Import unregistered containers into project_app
-#[tracing::instrument(name = "Import containers", skip(pg_pool, body))]
+#[tracing::instrument(name = "Import containers", skip_all)]
 #[post("/{project_id}/containers/import")]
 pub async fn import_containers(
     user: web::ReqData<Arc<models::User>>,

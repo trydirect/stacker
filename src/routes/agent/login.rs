@@ -5,10 +5,19 @@ use actix_web::{post, web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct AgentLoginRequest {
     pub email: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for AgentLoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentLoginRequest")
+            .field("email", &self.email)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -32,7 +41,7 @@ pub struct AgentLoginResponse {
 /// Proxy login for Status Panel agents. Authenticates the user against
 /// the TryDirect OAuth server, then returns a session token and the
 /// user's deployments so the agent can pick one to link to.
-#[tracing::instrument(name = "Agent proxy login", skip(settings, api_pool, user_service, _req))]
+#[tracing::instrument(name = "Agent proxy login", skip_all)]
 #[post("/login")]
 pub async fn login_handler(
     payload: web::Json<AgentLoginRequest>,

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cloud {
     pub id: i32,
     pub user_id: String,
@@ -13,6 +13,23 @@ pub struct Cloud {
     pub save_token: Option<bool>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for Cloud {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cloud")
+            .field("id", &self.id)
+            .field("user_id", &self.user_id)
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("cloud_token", &"[REDACTED]")
+            .field("cloud_key", &"[REDACTED]")
+            .field("cloud_secret", &"[REDACTED]")
+            .field("save_token", &self.save_token)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 fn mask_string(s: Option<&String>) -> String {

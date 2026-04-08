@@ -11,7 +11,7 @@ use std::sync::Arc;
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-#[tracing::instrument(name = "Get server.")]
+#[tracing::instrument(name = "Get server.", skip_all)]
 #[get("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
@@ -31,10 +31,10 @@ pub async fn item(
         })
 }
 
-#[tracing::instrument(name = "Get all servers.")]
+#[tracing::instrument(name = "Get all servers.", skip_all)]
 #[get("")]
 pub async fn list(
-    path: web::Path<()>,
+    _path: web::Path<()>,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -44,7 +44,7 @@ pub async fn list(
         .map_err(|_err| JsonResponse::<models::ServerWithProvider>::build().internal_server_error(""))
 }
 
-#[tracing::instrument(name = "Get servers by project.")]
+#[tracing::instrument(name = "Get servers by project.", skip_all)]
 #[get("/project/{project_id}")]
 pub async fn list_by_project(
     path: web::Path<(i32,)>,

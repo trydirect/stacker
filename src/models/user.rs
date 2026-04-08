@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct User {
     pub id: String,
     pub first_name: String,
@@ -19,5 +19,19 @@ impl User {
     pub fn with_token(mut self, token: String) -> Self {
         self.access_token = Some(token);
         self
+    }
+}
+
+impl std::fmt::Debug for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("User")
+            .field("id", &self.id)
+            .field("first_name", &self.first_name)
+            .field("last_name", &self.last_name)
+            .field("email", &self.email)
+            .field("role", &self.role)
+            .field("email_confirmed", &self.email_confirmed)
+            .field("access_token", &"[REDACTED]")
+            .finish()
     }
 }

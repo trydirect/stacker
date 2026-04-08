@@ -7,11 +7,11 @@ use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "User enable client.")]
+#[tracing::instrument(name = "User enable client.", skip_all)]
 #[put("/{id}/enable")]
 pub async fn enable_handler(
     user: web::ReqData<Arc<models::User>>,
-    settings: web::Data<Settings>,
+    _settings: web::Data<Settings>,
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
@@ -28,11 +28,11 @@ pub async fn enable_handler(
     enable_client(pg_pool.get_ref(), client).await
 }
 
-#[tracing::instrument(name = "Admin enable client.")]
+#[tracing::instrument(name = "Admin enable client.", skip_all)]
 #[put("/{id}/enable")]
 pub async fn admin_enable_handler(
-    user: web::ReqData<Arc<models::User>>,
-    settings: web::Data<Settings>,
+    _user: web::ReqData<Arc<models::User>>,
+    _settings: web::Data<Settings>,
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {

@@ -17,7 +17,7 @@ pub struct IngestResponse {
 ///
 /// Auth: `X-Internal-Key` header must match the `INTERNAL_SERVICES_ACCESS_KEY`
 /// environment variable.
-#[tracing::instrument(name = "Agent audit ingest", skip(pool, req, body))]
+#[tracing::instrument(name = "Agent audit ingest", skip_all)]
 #[post("/audit")]
 pub async fn agent_audit_ingest_handler(
     req: HttpRequest,
@@ -63,7 +63,7 @@ pub struct AuditQueryParams {
 /// Query the audit log.
 ///
 /// Auth: standard JWT or OAuth2 user auth (handled by middleware).
-#[tracing::instrument(name = "Agent audit query", skip(pool))]
+#[tracing::instrument(name = "Agent audit query", skip_all)]
 #[get("/audit")]
 pub async fn agent_audit_query_handler(
     params: web::Query<AuditQueryParams>,

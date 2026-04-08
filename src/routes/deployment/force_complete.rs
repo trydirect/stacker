@@ -22,7 +22,7 @@ pub struct ForceCompleteQuery {
 /// Without `?force=true`: only `paused` or `error` are accepted.
 /// With `?force=true`: `in_progress` is also accepted.
 /// Only the owning user may invoke this.
-#[tracing::instrument(name = "Force-complete deployment", skip(pg_pool))]
+#[tracing::instrument(name = "Force-complete deployment", skip_all)]
 #[post("/{id}/force-complete")]
 pub async fn force_complete_handler(
     path: web::Path<i32>,

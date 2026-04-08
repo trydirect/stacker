@@ -5,7 +5,7 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::convert::Into;
 
-#[tracing::instrument(name = "Anonymouse get rating.")]
+#[tracing::instrument(name = "Anonymouse get rating.", skip_all)]
 #[get("/{id}")]
 pub async fn anonymous_get_handler(
     path: web::Path<(i32,)>,
@@ -25,10 +25,10 @@ pub async fn anonymous_get_handler(
         .ok("OK"))
 }
 
-#[tracing::instrument(name = "Anonymous get all ratings.")]
+#[tracing::instrument(name = "Anonymous get all ratings.", skip_all)]
 #[get("")]
 pub async fn anonymous_list_handler(
-    path: web::Path<()>,
+    _path: web::Path<()>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     db::rating::fetch_all_visible(pg_pool.get_ref())
@@ -44,7 +44,7 @@ pub async fn anonymous_list_handler(
         .map_err(|_err| JsonResponse::<views::rating::Anonymous>::build().internal_server_error(""))
 }
 
-#[tracing::instrument(name = "Admin get rating.")]
+#[tracing::instrument(name = "Admin get rating.", skip_all)]
 #[get("/{id}")]
 pub async fn admin_get_handler(
     path: web::Path<(i32,)>,
@@ -64,10 +64,10 @@ pub async fn admin_get_handler(
         .ok("OK"))
 }
 
-#[tracing::instrument(name = "Admin get the list of ratings.")]
+#[tracing::instrument(name = "Admin get the list of ratings.", skip_all)]
 #[get("")]
 pub async fn admin_list_handler(
-    path: web::Path<()>,
+    _path: web::Path<()>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     db::rating::fetch_all(pg_pool.get_ref())

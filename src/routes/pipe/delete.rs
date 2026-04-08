@@ -11,7 +11,7 @@ struct DeleteResponse {
     deleted: bool,
 }
 
-#[tracing::instrument(name = "Delete pipe template", skip(pg_pool, _user))]
+#[tracing::instrument(name = "Delete pipe template", skip_all)]
 #[delete("/templates/{template_id}")]
 pub async fn delete_template_handler(
     _user: web::ReqData<Arc<User>>,
@@ -36,7 +36,7 @@ pub async fn delete_template_handler(
     }
 }
 
-#[tracing::instrument(name = "Delete pipe instance", skip(pg_pool, _user))]
+#[tracing::instrument(name = "Delete pipe instance", skip_all)]
 #[delete("/instances/{instance_id}")]
 pub async fn delete_instance_handler(
     _user: web::ReqData<Arc<User>>,

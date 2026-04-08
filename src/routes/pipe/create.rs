@@ -41,7 +41,7 @@ pub struct CreatePipeInstanceRequest {
     pub config_override: Option<JsonValue>,
 }
 
-#[tracing::instrument(name = "Create pipe template", skip(pg_pool, user))]
+#[tracing::instrument(name = "Create pipe template", skip_all)]
 #[post("/templates")]
 pub async fn create_template_handler(
     user: web::ReqData<Arc<User>>,
@@ -100,7 +100,7 @@ pub async fn create_template_handler(
         .created("Pipe template created successfully"))
 }
 
-#[tracing::instrument(name = "Create pipe instance", skip(pg_pool, user))]
+#[tracing::instrument(name = "Create pipe instance", skip_all)]
 #[post("/instances")]
 pub async fn create_instance_handler(
     user: web::ReqData<Arc<User>>,

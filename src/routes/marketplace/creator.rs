@@ -26,7 +26,7 @@ pub struct CreateTemplateRequest {
     pub currency: Option<String>,
 }
 
-#[tracing::instrument(name = "Create draft template")]
+#[tracing::instrument(name = "Create draft template", skip_all)]
 #[post("")]
 pub async fn create_handler(
     user: web::ReqData<Arc<models::User>>,
@@ -143,7 +143,7 @@ pub struct UpdateTemplateRequest {
     pub currency: Option<String>,
 }
 
-#[tracing::instrument(name = "Update template metadata")]
+#[tracing::instrument(name = "Update template metadata", skip_all)]
 #[put("/{id}")]
 pub async fn update_handler(
     user: web::ReqData<Arc<models::User>>,
@@ -198,7 +198,7 @@ pub async fn update_handler(
     }
 }
 
-#[tracing::instrument(name = "Submit template for review")]
+#[tracing::instrument(name = "Submit template for review", skip_all)]
 #[post("/{id}/submit")]
 pub async fn submit_handler(
     user: web::ReqData<Arc<models::User>>,
@@ -240,7 +240,7 @@ pub struct ResubmitRequest {
     pub changelog: Option<String>,
 }
 
-#[tracing::instrument(name = "Resubmit template with new version")]
+#[tracing::instrument(name = "Resubmit template with new version", skip_all)]
 #[post("/{id}/resubmit")]
 pub async fn resubmit_handler(
     user: web::ReqData<Arc<models::User>>,
@@ -288,7 +288,7 @@ pub async fn resubmit_handler(
         .ok("Resubmitted for review"))
 }
 
-#[tracing::instrument(name = "List my templates")]
+#[tracing::instrument(name = "List my templates", skip_all)]
 #[get("/mine")]
 pub async fn mine_handler(
     user: Option<web::ReqData<Arc<models::User>>>,
@@ -303,7 +303,7 @@ pub async fn mine_handler(
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
 }
 
-#[tracing::instrument(name = "List reviews for my template")]
+#[tracing::instrument(name = "List reviews for my template", skip_all)]
 #[get("/{id}/reviews")]
 pub async fn my_reviews_handler(
     user: Option<web::ReqData<Arc<models::User>>>,

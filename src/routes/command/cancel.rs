@@ -5,7 +5,7 @@ use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Cancel command", skip(pg_pool, user))]
+#[tracing::instrument(name = "Cancel command", skip_all)]
 #[post("/{deployment_hash}/{command_id}/cancel")]
 pub async fn cancel_handler(
     user: web::ReqData<Arc<User>>,

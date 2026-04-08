@@ -1,7 +1,7 @@
 use crate::connectors::ConnectorConfig;
 use serde;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
     pub app_port: u16,
@@ -26,6 +26,27 @@ pub struct Settings {
     pub connectors: ConnectorConfig,
     #[serde(default)]
     pub deployment: DeploymentSettings,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("database", &self.database)
+            .field("app_port", &self.app_port)
+            .field("app_host", &self.app_host)
+            .field("auth_url", &self.auth_url)
+            .field("user_service_url", &self.user_service_url)
+            .field("max_clients_number", &self.max_clients_number)
+            .field("agent_command_poll_timeout_secs", &self.agent_command_poll_timeout_secs)
+            .field("agent_command_poll_interval_secs", &self.agent_command_poll_interval_secs)
+            .field("casbin_reload_enabled", &self.casbin_reload_enabled)
+            .field("casbin_reload_interval_secs", &self.casbin_reload_interval_secs)
+            .field("amqp", &self.amqp)
+            .field("vault", &self.vault)
+            .field("connectors", &self.connectors)
+            .field("deployment", &self.deployment)
+            .finish()
+    }
 }
 
 impl Default for Settings {
@@ -71,13 +92,25 @@ impl Settings {
     }
 }
 
-#[derive(Debug, serde::Deserialize, Clone)]
+#[derive(serde::Deserialize, Clone)]
 pub struct DatabaseSettings {
     pub username: String,
     pub password: String,
     pub host: String,
     pub port: u16,
     pub database_name: String,
+}
+
+impl std::fmt::Debug for DatabaseSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseSettings")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database_name", &self.database_name)
+            .finish()
+    }
 }
 
 impl Default for DatabaseSettings {
@@ -92,12 +125,23 @@ impl Default for DatabaseSettings {
     }
 }
 
-#[derive(Debug, serde::Deserialize, Clone)]
+#[derive(serde::Deserialize, Clone)]
 pub struct AmqpSettings {
     pub username: String,
     pub password: String,
     pub host: String,
     pub port: u16,
+}
+
+impl std::fmt::Debug for AmqpSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AmqpSettings")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .finish()
+    }
 }
 
 impl Default for AmqpSettings {
@@ -145,7 +189,7 @@ impl DeploymentSettings {
     }
 }
 
-#[derive(Debug, serde::Deserialize, Clone)]
+#[derive(serde::Deserialize, Clone)]
 pub struct VaultSettings {
     pub address: String,
     pub token: String,
@@ -154,6 +198,18 @@ pub struct VaultSettings {
     pub api_prefix: String,
     #[serde(default)]
     pub ssh_key_path_prefix: Option<String>,
+}
+
+impl std::fmt::Debug for VaultSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultSettings")
+            .field("address", &self.address)
+            .field("token", &"[REDACTED]")
+            .field("agent_path_prefix", &self.agent_path_prefix)
+            .field("api_prefix", &self.api_prefix)
+            .field("ssh_key_path_prefix", &self.ssh_key_path_prefix)
+            .finish()
+    }
 }
 
 impl Default for VaultSettings {

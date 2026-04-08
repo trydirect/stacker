@@ -13,7 +13,7 @@ pub struct Query {
 
 /// DELETE /chat/history?project_id={id}
 /// Clears the stored chat conversation for the logged-in user.
-#[tracing::instrument(name = "Delete chat history.")]
+#[tracing::instrument(name = "Delete chat history.", skip_all)]
 #[delete("/history")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,

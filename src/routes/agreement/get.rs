@@ -5,10 +5,10 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Get agreement by id.")]
+#[tracing::instrument(name = "Get agreement by id.", skip_all)]
 #[get("/{id}")]
 pub async fn get_handler(
-    user: web::ReqData<Arc<models::User>>,
+    _user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -23,7 +23,7 @@ pub async fn get_handler(
         })
 }
 
-#[tracing::instrument(name = "Check if agreement signed/accepted.")]
+#[tracing::instrument(name = "Check if agreement signed/accepted.", skip_all)]
 #[get("/accepted/{id}")]
 pub async fn accept_handler(
     user: web::ReqData<Arc<models::User>>,

@@ -5,7 +5,7 @@ use serde_json::Value;
 use serde_valid::Validate;
 
 /// Docker registry credentials for pulling private images during deployment.
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegistryForm {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_username: Option<String>,
@@ -13,6 +13,16 @@ pub struct RegistryForm {
     pub docker_password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_registry: Option<String>,
+}
+
+impl std::fmt::Debug for RegistryForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryForm")
+            .field("docker_username", &self.docker_username)
+            .field("docker_password", &"[REDACTED]")
+            .field("docker_registry", &self.docker_registry)
+            .finish()
+    }
 }
 
 /// Validates that cloud deployments have required instance configuration

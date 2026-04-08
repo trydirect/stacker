@@ -5,7 +5,7 @@ use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Get pipe template by ID", skip(pg_pool, _user))]
+#[tracing::instrument(name = "Get pipe template by ID", skip_all)]
 #[get("/templates/{template_id}")]
 pub async fn get_template_handler(
     _user: web::ReqData<Arc<User>>,
@@ -29,7 +29,7 @@ pub async fn get_template_handler(
     }
 }
 
-#[tracing::instrument(name = "Get pipe instance by ID", skip(pg_pool, _user))]
+#[tracing::instrument(name = "Get pipe instance by ID", skip_all)]
 #[get("/instances/detail/{instance_id}")]
 pub async fn get_instance_handler(
     _user: web::ReqData<Arc<User>>,

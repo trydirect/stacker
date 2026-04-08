@@ -17,7 +17,7 @@ pub struct CommandListQuery {
     pub include_results: bool,
 }
 
-#[tracing::instrument(name = "List commands for deployment", skip(pg_pool, user))]
+#[tracing::instrument(name = "List commands for deployment", skip_all)]
 #[get("/{deployment_hash}")]
 pub async fn list_handler(
     user: web::ReqData<Arc<User>>,

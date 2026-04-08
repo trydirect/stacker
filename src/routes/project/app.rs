@@ -134,7 +134,7 @@ pub struct CreateAppRequest {
 }
 
 /// List all apps in a project
-#[tracing::instrument(name = "List project apps", skip(pg_pool))]
+#[tracing::instrument(name = "List project apps", skip_all)]
 #[get("/{project_id}/apps")]
 pub async fn list_apps(
     user: web::ReqData<Arc<models::User>>,
@@ -165,7 +165,7 @@ pub async fn list_apps(
 }
 
 /// Create or update an app in a project
-#[tracing::instrument(name = "Create project app", skip(pg_pool))]
+#[tracing::instrument(name = "Create project app", skip_all)]
 #[post("/{project_id}/apps")]
 pub async fn create_app(
     user: web::ReqData<Arc<models::User>>,
@@ -247,7 +247,7 @@ pub async fn create_app(
 }
 
 /// Get a specific app by code
-#[tracing::instrument(name = "Get project app", skip(pg_pool))]
+#[tracing::instrument(name = "Get project app", skip_all)]
 #[get("/{project_id}/apps/{code}")]
 pub async fn get_app(
     user: web::ReqData<Arc<models::User>>,
@@ -278,7 +278,7 @@ pub async fn get_app(
 }
 
 /// Get app configuration (env vars, ports, domain, etc.)
-#[tracing::instrument(name = "Get app config", skip(pg_pool))]
+#[tracing::instrument(name = "Get app config", skip_all)]
 #[get("/{project_id}/apps/{code}/config")]
 pub async fn get_app_config(
     user: web::ReqData<Arc<models::User>>,
@@ -325,7 +325,7 @@ pub async fn get_app_config(
 }
 
 /// Get environment variables for an app
-#[tracing::instrument(name = "Get app env vars", skip(pg_pool))]
+#[tracing::instrument(name = "Get app env vars", skip_all)]
 #[get("/{project_id}/apps/{code}/env")]
 pub async fn get_env_vars(
     user: web::ReqData<Arc<models::User>>,
@@ -365,7 +365,7 @@ pub async fn get_env_vars(
 }
 
 /// Update environment variables for an app
-#[tracing::instrument(name = "Update app env vars", skip(pg_pool, body))]
+#[tracing::instrument(name = "Update app env vars", skip_all)]
 #[put("/{project_id}/apps/{code}/env")]
 pub async fn update_env_vars(
     user: web::ReqData<Arc<models::User>>,
@@ -422,7 +422,7 @@ pub async fn update_env_vars(
 }
 
 /// Delete a specific environment variable
-#[tracing::instrument(name = "Delete app env var", skip(pg_pool))]
+#[tracing::instrument(name = "Delete app env var", skip_all)]
 #[delete("/{project_id}/apps/{code}/env/{name}")]
 pub async fn delete_env_var(
     user: web::ReqData<Arc<models::User>>,
@@ -482,7 +482,7 @@ pub async fn delete_env_var(
 }
 
 /// Update port mappings for an app
-#[tracing::instrument(name = "Update app ports", skip(pg_pool, body))]
+#[tracing::instrument(name = "Update app ports", skip_all)]
 #[put("/{project_id}/apps/{code}/ports")]
 pub async fn update_ports(
     user: web::ReqData<Arc<models::User>>,
@@ -535,7 +535,7 @@ pub async fn update_ports(
 }
 
 /// Update domain and SSL settings for an app
-#[tracing::instrument(name = "Update app domain", skip(pg_pool, body))]
+#[tracing::instrument(name = "Update app domain", skip_all)]
 #[put("/{project_id}/apps/{code}/domain")]
 pub async fn update_domain(
     user: web::ReqData<Arc<models::User>>,

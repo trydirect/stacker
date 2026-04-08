@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use std::ops::Deref;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Update cloud.")]
+#[tracing::instrument(name = "Update cloud.", skip_all)]
 #[put("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,
@@ -52,7 +52,7 @@ pub async fn item(
         }
     }
 
-    tracing::debug!("Updating cloud {:?}", cloud);
+    tracing::debug!("Updating cloud id={} provider={}", cloud.id, cloud.provider);
 
     db::cloud::update(pg_pool.get_ref(), cloud)
         .await

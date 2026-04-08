@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[tracing::instrument(name = "Deploy for every user", skip(user_service, install_service, vault_client))]
+#[tracing::instrument(name = "Deploy for every user", skip_all)]
 #[post("/{id}/deploy")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,
@@ -21,13 +21,13 @@ pub async fn item(
     mut form: web::Json<forms::project::Deploy>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
-    sets: Data<Settings>,
+    _sets: Data<Settings>,
     user_service: Data<Arc<dyn UserServiceConnector>>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
     vault_client: Data<VaultClient>,
 ) -> Result<impl Responder> {
     let id = path.0;
-    tracing::debug!("User {:?} is deploying project: {}", user, id);
+    tracing::debug!("User {} is deploying project: {}", user.id, id);
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
@@ -363,7 +363,7 @@ pub async fn item(
         })
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
 }
-#[tracing::instrument(name = "Deploy, when cloud token is saved", skip(user_service, install_service, vault_client))]
+#[tracing::instrument(name = "Deploy, when cloud token is saved", skip_all)]
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
@@ -371,7 +371,7 @@ pub async fn saved_item(
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
-    sets: Data<Settings>,
+    _sets: Data<Settings>,
     user_service: Data<Arc<dyn UserServiceConnector>>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
     vault_client: Data<VaultClient>,
@@ -380,8 +380,8 @@ pub async fn saved_item(
     let cloud_id = path.1;
 
     tracing::debug!(
-        "User {:?} is deploying project: {} to cloud: {} ",
-        user,
+        "User {} is deploying project: {} to cloud: {}",
+        user.id,
         id,
         cloud_id
     );

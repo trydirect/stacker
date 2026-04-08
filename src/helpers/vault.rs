@@ -2,7 +2,6 @@ use crate::configuration::VaultSettings;
 use reqwest::Client;
 use serde_json::json;
 
-#[derive(Debug)]
 pub struct VaultClient {
     client: Client,
     address: String,
@@ -10,6 +9,18 @@ pub struct VaultClient {
     agent_path_prefix: String,
     api_prefix: String,
     ssh_key_path_prefix: String,
+}
+
+impl std::fmt::Debug for VaultClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultClient")
+            .field("address", &self.address)
+            .field("token", &"[REDACTED]")
+            .field("agent_path_prefix", &self.agent_path_prefix)
+            .field("api_prefix", &self.api_prefix)
+            .field("ssh_key_path_prefix", &self.ssh_key_path_prefix)
+            .finish()
+    }
 }
 
 impl VaultClient {
@@ -28,7 +39,7 @@ impl VaultClient {
     }
 
     /// Store agent token in Vault at agent/{deployment_hash}/token
-    #[tracing::instrument(name = "Store agent token in Vault", skip(self, token))]
+    #[tracing::instrument(name = "Store agent token in Vault", skip_all)]
     pub async fn store_agent_token(
         &self,
         deployment_hash: &str,
@@ -77,7 +88,7 @@ impl VaultClient {
     }
 
     /// Fetch agent token from Vault
-    #[tracing::instrument(name = "Fetch agent token from Vault", skip(self))]
+    #[tracing::instrument(name = "Fetch agent token from Vault", skip_all)]
     pub async fn fetch_agent_token(&self, deployment_hash: &str) -> Result<String, String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
@@ -129,7 +140,7 @@ impl VaultClient {
     }
 
     /// Delete agent token from Vault
-    #[tracing::instrument(name = "Delete agent token from Vault", skip(self))]
+    #[tracing::instrument(name = "Delete agent token from Vault", skip_all)]
     pub async fn delete_agent_token(&self, deployment_hash: &str) -> Result<(), String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
@@ -169,7 +180,7 @@ impl VaultClient {
 
     /// Store runtime preference for a deployment
     /// Path: {api_prefix}/{agent_prefix}/{deployment_hash}/runtime
-    #[tracing::instrument(name = "Store runtime preference in Vault", skip(self))]
+    #[tracing::instrument(name = "Store runtime preference in Vault", skip_all)]
     pub async fn store_runtime_preference(
         &self,
         deployment_hash: &str,
@@ -220,7 +231,7 @@ impl VaultClient {
 
     /// Fetch runtime preference from Vault
     /// Returns None if not set
-    #[tracing::instrument(name = "Fetch runtime preference from Vault", skip(self))]
+    #[tracing::instrument(name = "Fetch runtime preference from Vault", skip_all)]
     pub async fn fetch_runtime_preference(
         &self,
         deployment_hash: &str,
@@ -275,7 +286,7 @@ impl VaultClient {
     }
 
     /// Delete runtime preference from Vault
-    #[tracing::instrument(name = "Delete runtime preference from Vault", skip(self))]
+    #[tracing::instrument(name = "Delete runtime preference from Vault", skip_all)]
     pub async fn delete_runtime_preference(
         &self,
         deployment_hash: &str,
@@ -319,7 +330,7 @@ impl VaultClient {
     /// Fetch org-level runtime policy from Vault
     /// Path: {api_prefix}/{agent_prefix}/org/{org_id}/runtime_policy
     /// Returns the required runtime if an org policy exists, None otherwise
-    #[tracing::instrument(name = "Fetch org runtime policy from Vault", skip(self))]
+    #[tracing::instrument(name = "Fetch org runtime policy from Vault", skip_all)]
     pub async fn fetch_org_runtime_policy(
         &self,
         org_id: &str,
@@ -420,7 +431,7 @@ impl VaultClient {
     }
 
     /// Store SSH keypair in Vault at users/{user_id}/ssh_keys/{server_id}
-    #[tracing::instrument(name = "Store SSH key in Vault", skip(self, private_key))]
+    #[tracing::instrument(name = "Store SSH key in Vault", skip_all)]
     pub async fn store_ssh_key(
         &self,
         user_id: &str,
@@ -471,7 +482,7 @@ impl VaultClient {
     }
 
     /// Fetch SSH private key from Vault
-    #[tracing::instrument(name = "Fetch SSH key from Vault", skip(self))]
+    #[tracing::instrument(name = "Fetch SSH key from Vault", skip_all)]
     pub async fn fetch_ssh_key(&self, user_id: &str, server_id: i32) -> Result<String, String> {
         let path = self.ssh_key_path(user_id, server_id);
 
@@ -513,7 +524,7 @@ impl VaultClient {
     }
 
     /// Fetch SSH public key from Vault
-    #[tracing::instrument(name = "Fetch SSH public key from Vault", skip(self))]
+    #[tracing::instrument(name = "Fetch SSH public key from Vault", skip_all)]
     pub async fn fetch_ssh_public_key(
         &self,
         user_id: &str,
@@ -559,7 +570,7 @@ impl VaultClient {
     }
 
     /// Delete SSH key from Vault (disconnect)
-    #[tracing::instrument(name = "Delete SSH key from Vault", skip(self))]
+    #[tracing::instrument(name = "Delete SSH key from Vault", skip_all)]
     pub async fn delete_ssh_key(&self, user_id: &str, server_id: i32) -> Result<(), String> {
         let path = self.ssh_key_path(user_id, server_id);
 

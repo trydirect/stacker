@@ -6,7 +6,7 @@ use actix_web::{delete, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Delete project of a user.")]
+#[tracing::instrument(name = "Delete project of a user.", skip_all)]
 #[delete("/{id}")]
 pub async fn item(
     user: web::ReqData<Arc<models::User>>,

@@ -75,7 +75,7 @@ pub struct App {
 }
 
 impl App {
-    #[tracing::instrument(name = "named_volumes")]
+    #[tracing::instrument(name = "named_volumes", skip_all)]
     pub fn named_volumes(&self) -> IndexMap<String, dctypes::MapOrEmpty<dctypes::ComposeVolume>> {
         let mut named_volumes = IndexMap::default();
 

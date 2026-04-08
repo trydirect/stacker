@@ -43,7 +43,7 @@ fn generate_agent_token() -> String {
         .collect()
 }
 
-#[tracing::instrument(name = "Register agent", skip(agent_pool, vault_client, req))]
+#[tracing::instrument(name = "Register agent", skip_all)]
 #[post("/register")]
 pub async fn register_handler(
     payload: web::Json<RegisterAgentRequest>,

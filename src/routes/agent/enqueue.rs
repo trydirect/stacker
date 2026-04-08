@@ -18,7 +18,7 @@ pub struct EnqueueRequest {
     pub timeout_seconds: Option<i32>,
 }
 
-#[tracing::instrument(name = "Agent enqueue command", skip(agent_pool, user))]
+#[tracing::instrument(name = "Agent enqueue command", skip_all)]
 #[post("/commands/enqueue")]
 pub async fn enqueue_handler(
     user: web::ReqData<Arc<User>>,

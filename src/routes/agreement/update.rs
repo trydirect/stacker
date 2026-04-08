@@ -6,7 +6,7 @@ use actix_web::{put, web, Responder, Result};
 use serde_valid::Validate;
 use sqlx::PgPool;
 
-#[tracing::instrument(name = "Admin update agreement.")]
+#[tracing::instrument(name = "Admin update agreement.", skip_all)]
 #[put("/{id}")]
 pub async fn admin_update_handler(
     path: web::Path<(i32,)>,

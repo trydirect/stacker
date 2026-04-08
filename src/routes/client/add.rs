@@ -7,7 +7,7 @@ use actix_web::{post, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Add client.")]
+#[tracing::instrument(name = "Add client.", skip_all)]
 #[post("")]
 pub async fn add_handler(
     user: web::ReqData<Arc<models::User>>,

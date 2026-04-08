@@ -8,7 +8,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Add rating.")]
+#[tracing::instrument(name = "Add rating.", skip_all)]
 #[post("")]
 pub async fn user_add_handler(
     user: web::ReqData<Arc<models::User>>,

@@ -96,7 +96,7 @@ const COMMAND_CATALOG: &[CommandMetadata] = &[
     },
 ];
 
-#[tracing::instrument(name = "Get agent capabilities", skip(pg_pool))]
+#[tracing::instrument(name = "Get agent capabilities", skip_all)]
 #[get("/{deployment_hash}/capabilities")]
 pub async fn capabilities_handler(
     path: web::Path<String>,

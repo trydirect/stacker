@@ -23,11 +23,8 @@ pub struct RepositoryPath {
     pub repository: String,
 }
 
-#[tracing::instrument(
-    name = "dockerhub_search_namespaces",
-    skip(connector),
-    fields(query = query.q.as_deref().unwrap_or_default())
-)]
+#[tracing::instrument(name = "dockerhub_search_namespaces",
+    fields(query = query.q.as_deref().unwrap_or_default()), skip_all)]
 #[get("/namespaces")]
 pub async fn search_namespaces(
     connector: web::Data<Arc<dyn DockerHubConnector>>,
@@ -45,11 +42,8 @@ pub async fn search_namespaces(
         .map_err(Error::from)
 }
 
-#[tracing::instrument(
-    name = "dockerhub_list_repositories",
-    skip(connector),
-    fields(namespace = %path.namespace, query = query.q.as_deref().unwrap_or_default())
-)]
+#[tracing::instrument(name = "dockerhub_list_repositories",
+    fields(namespace = %path.namespace, query = query.q.as_deref().unwrap_or_default()), skip_all)]
 #[get("/{namespace}/repositories")]
 pub async fn list_repositories(
     connector: web::Data<Arc<dyn DockerHubConnector>>,
@@ -68,11 +62,8 @@ pub async fn list_repositories(
         .map_err(Error::from)
 }
 
-#[tracing::instrument(
-    name = "dockerhub_list_tags",
-    skip(connector),
-    fields(namespace = %path.namespace, repository = %path.repository, query = query.q.as_deref().unwrap_or_default())
-)]
+#[tracing::instrument(name = "dockerhub_list_tags",
+    fields(namespace = %path.namespace, repository = %path.repository, query = query.q.as_deref().unwrap_or_default()), skip_all)]
 #[get("/{namespace}/repositories/{repository}/tags")]
 pub async fn list_tags(
     connector: web::Data<Arc<dyn DockerHubConnector>>,
@@ -90,7 +81,7 @@ pub async fn list_tags(
 /// Receive a DockerHub autocomplete analytics event from the stack builder UI.
 /// The payload is `{event: string, payload: any}` — logged and discarded.
 /// Returns 204 No Content so the browser's fire-and-forget fetch succeeds.
-#[tracing::instrument(name = "dockerhub_log_event", skip(body))]
+#[tracing::instrument(name = "dockerhub_log_event", skip_all)]
 #[post("/events")]
 pub async fn log_event(body: web::Json<Value>) -> HttpResponse {
     tracing::debug!(event = ?body, "dockerhub autocomplete event received");

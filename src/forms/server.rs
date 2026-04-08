@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_valid::Validate;
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize, Validate)]
 pub struct ServerForm {
     /// If provided, update this existing server instead of creating new
     pub server_id: Option<i32>,
@@ -36,6 +36,28 @@ pub struct ServerForm {
     /// Not persisted to the database.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_private_key: Option<String>,
+}
+
+impl std::fmt::Debug for ServerForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerForm")
+            .field("server_id", &self.server_id)
+            .field("cloud_id", &self.cloud_id)
+            .field("region", &self.region)
+            .field("zone", &self.zone)
+            .field("server", &self.server)
+            .field("os", &self.os)
+            .field("disk_type", &self.disk_type)
+            .field("srv_ip", &self.srv_ip)
+            .field("ssh_port", &self.ssh_port)
+            .field("ssh_user", &self.ssh_user)
+            .field("name", &self.name)
+            .field("connection_mode", &self.connection_mode)
+            .field("vault_key_path", &self.vault_key_path)
+            .field("public_key", &"[REDACTED]")
+            .field("ssh_private_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 pub fn default_ssh_port() -> Option<i32> {

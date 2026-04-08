@@ -13,7 +13,7 @@ use std::sync::Arc;
 // ACL - access to func for a user
 // ACL - access to objects for a user
 
-#[tracing::instrument(name = "User edit rating.")]
+#[tracing::instrument(name = "User edit rating.", skip_all)]
 #[put("/{id}")]
 pub async fn user_edit_handler(
     path: web::Path<(i32,)>,
@@ -49,7 +49,7 @@ pub async fn user_edit_handler(
         })
 }
 
-#[tracing::instrument(name = "Admin edit rating.")]
+#[tracing::instrument(name = "Admin edit rating.", skip_all)]
 #[put("/{id}")]
 pub async fn admin_edit_handler(
     path: web::Path<(i32,)>,

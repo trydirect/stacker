@@ -8,7 +8,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Update project.")]
+#[tracing::instrument(name = "Update project.", skip_all)]
 #[put("/{id}")]
 pub async fn item(
     path: web::Path<(i32,)>,

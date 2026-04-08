@@ -6,11 +6,11 @@ use actix_web::{put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "User update client.")]
+#[tracing::instrument(name = "User update client.", skip_all)]
 #[put("/{id}")]
 pub async fn update_handler(
     user: web::ReqData<Arc<models::User>>,
-    settings: web::Data<Settings>,
+    _settings: web::Data<Settings>,
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {
@@ -27,11 +27,11 @@ pub async fn update_handler(
     update_client(pg_pool.get_ref(), client).await
 }
 
-#[tracing::instrument(name = "Admin update client.")]
+#[tracing::instrument(name = "Admin update client.", skip_all)]
 #[put("/{id}")]
 pub async fn admin_update_handler(
-    user: web::ReqData<Arc<models::User>>,
-    settings: web::Data<Settings>,
+    _user: web::ReqData<Arc<models::User>>,
+    _settings: web::Data<Settings>,
     pg_pool: web::Data<PgPool>,
     path: web::Path<(i32,)>,
 ) -> Result<impl Responder> {

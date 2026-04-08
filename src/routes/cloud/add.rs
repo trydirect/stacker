@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use std::ops::Deref;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Add cloud.")]
+#[tracing::instrument(name = "Add cloud.", skip_all)]
 #[post("")]
 pub async fn add(
     user: web::ReqData<Arc<models::User>>,

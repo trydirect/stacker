@@ -49,7 +49,7 @@ impl From<models::Deployment> for DeploymentStatusResponse {
 /// `GET /api/v1/deployments/hash/{hash}`
 ///
 /// Fetch a deployment by its deployment hash string.
-#[tracing::instrument(name = "Get deployment status by hash", skip(pg_pool))]
+#[tracing::instrument(name = "Get deployment status by hash", skip_all)]
 #[get("/hash/{hash}")]
 pub async fn status_by_hash_handler(
     path: web::Path<String>,
@@ -82,7 +82,7 @@ pub async fn status_by_hash_handler(
 ///
 /// Fetch deployment status by deployment ID.
 /// Requires authentication (inherited from the `/api` scope middleware).
-#[tracing::instrument(name = "Get deployment status by ID", skip(pg_pool))]
+#[tracing::instrument(name = "Get deployment status by ID", skip_all)]
 #[get("/{id}")]
 pub async fn status_handler(
     path: web::Path<i32>,
@@ -115,7 +115,7 @@ pub async fn status_handler(
 /// `GET /api/v1/deployments`
 ///
 /// List deployments for the authenticated user.
-#[tracing::instrument(name = "List deployments", skip(pg_pool, user))]
+#[tracing::instrument(name = "List deployments", skip_all)]
 #[get("")]
 pub async fn list_handler(
     user: web::ReqData<Arc<models::User>>,
@@ -145,7 +145,7 @@ pub async fn list_handler(
 ///
 /// Fetch the latest deployment status for a project.
 /// Returns the most recent (non-deleted) deployment.
-#[tracing::instrument(name = "Get deployment status by project ID", skip(pg_pool))]
+#[tracing::instrument(name = "Get deployment status by project ID", skip_all)]
 #[get("/project/{project_id}")]
 pub async fn status_by_project_handler(
     path: web::Path<i32>,

@@ -8,7 +8,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "Add project.")]
+#[tracing::instrument(name = "Add project.", skip_all)]
 #[post("")]
 pub async fn item(
     web::Json(request_json): web::Json<serde_json::Value>,

@@ -33,7 +33,7 @@ pub struct CreateCommandResponse {
     pub status: String,
 }
 
-#[tracing::instrument(name = "Create command", skip(pg_pool, user, settings))]
+#[tracing::instrument(name = "Create command", skip_all)]
 #[post("")]
 pub async fn create_handler(
     user: web::ReqData<Arc<User>>,

@@ -6,7 +6,7 @@ use actix_web::{delete, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-#[tracing::instrument(name = "User delete rating.")]
+#[tracing::instrument(name = "User delete rating.", skip_all)]
 #[delete("/{id}")]
 pub async fn user_delete_handler(
     user: web::ReqData<Arc<models::User>>,
@@ -33,10 +33,10 @@ pub async fn user_delete_handler(
         })
 }
 
-#[tracing::instrument(name = "Admin delete rating.")]
+#[tracing::instrument(name = "Admin delete rating.", skip_all)]
 #[delete("/{id}")]
 pub async fn admin_delete_handler(
-    user: web::ReqData<Arc<models::User>>,
+    _user: web::ReqData<Arc<models::User>>,
     path: web::Path<(i32,)>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {

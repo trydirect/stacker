@@ -46,7 +46,7 @@ fn default_command_limit() -> i64 {
     50
 }
 
-#[tracing::instrument(name = "Get deployment snapshot", skip(agent_pool, query))]
+#[tracing::instrument(name = "Get deployment snapshot", skip_all)]
 #[get("/deployments/{deployment_hash}")]
 pub async fn snapshot_handler(
     path: web::Path<String>,
@@ -189,7 +189,7 @@ pub async fn snapshot_handler(
 
 /// Returns the snapshot for the most recently active agent in a project.
 /// Used by the CLI as a stable project-scoped alternative to deployment-hash lookup.
-#[tracing::instrument(name = "Get project agent snapshot", skip(agent_pool))]
+#[tracing::instrument(name = "Get project agent snapshot", skip_all)]
 #[get("/project/{project_id}")]
 pub async fn project_snapshot_handler(
     path: web::Path<i32>,
