@@ -17,12 +17,14 @@ pub struct ListTemplatesQuery {
 #[tracing::instrument(name = "List pipe templates", skip_all)]
 #[get("/templates")]
 pub async fn list_templates_handler(
-    _user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<User>>,
     query: web::Query<ListTemplatesQuery>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    let templates = db::pipe::list_templates(
+    // Show user's own templates + public templates (never other users' private templates)
+    let templates = db::pipe::list_templates_for_user(
         pg_pool.get_ref(),
+        &user.id,
         query.source_app_type.as_deref(),
         query.target_app_type.as_deref(),
         query.public_only,
@@ -41,11 +43,24 @@ pub async fn list_templates_handler(
 #[tracing::instrument(name = "List pipe instances for deployment", skip_all)]
 #[get("/instances/{deployment_hash}")]
 pub async fn list_instances_handler(
-    _user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<String>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let deployment_hash = path.into_inner();
+
+    // Verify deployment belongs to the requesting user
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
+            .await
+            .map_err(|err| JsonResponse::internal_server_error(err))?;
+
+    match &deployment {
+        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+        _ => {
+            return Err(JsonResponse::not_found("Deployment not found"));
+        }
+    }
 
     let instances = db::pipe::list_instances(pg_pool.get_ref(), &deployment_hash)
         .await

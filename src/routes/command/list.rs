@@ -28,6 +28,19 @@ pub async fn list_handler(
     let deployment_hash = path.into_inner();
     let limit = query.limit.unwrap_or(50).max(1).min(500);
 
+    // Verify deployment belongs to the requesting user
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
+            .await
+            .map_err(|err| JsonResponse::internal_server_error(err))?;
+
+    match &deployment {
+        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+        _ => {
+            return Err(JsonResponse::not_found("Deployment not found"));
+        }
+    }
+
     let commands = if let Some(since_raw) = &query.since {
         let since = DateTime::parse_from_rfc3339(since_raw)
             .map_err(|_err| JsonResponse::bad_request("Invalid since timestamp"))?

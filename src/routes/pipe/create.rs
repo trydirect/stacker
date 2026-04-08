@@ -118,6 +118,19 @@ pub async fn create_instance_handler(
             .bad_request("either target_container or target_url is required"));
     }
 
+    // Verify deployment belongs to the requesting user
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), req.deployment_hash.trim())
+            .await
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
+
+    match &deployment {
+        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+        _ => {
+            return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
+        }
+    }
+
     // Verify template exists if provided
     if let Some(template_id) = &req.template_id {
         let template = db::pipe::get_template(pg_pool.get_ref(), template_id)

@@ -14,6 +14,19 @@ pub async fn get_handler(
 ) -> Result<impl Responder> {
     let (deployment_hash, command_id) = path.into_inner();
 
+    // Verify deployment belongs to the requesting user
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
+            .await
+            .map_err(|err| JsonResponse::internal_server_error(err))?;
+
+    match &deployment {
+        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+        _ => {
+            return Err(JsonResponse::not_found("Deployment not found"));
+        }
+    }
+
     // Fetch command by its string command_id (e.g. "cmd_<uuid>"), not the row UUID
     let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &command_id)
         .await

@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[tracing::instrument(name = "Get pipe template by ID", skip_all)]
 #[get("/templates/{template_id}")]
 pub async fn get_template_handler(
-    _user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<uuid::Uuid>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -22,9 +22,15 @@ pub async fn get_template_handler(
         })?;
 
     match template {
-        Some(t) => Ok(JsonResponse::build()
-            .set_item(Some(t))
-            .ok("Pipe template fetched successfully")),
+        Some(t) => {
+            // Only allow access to own templates or public ones
+            if !t.is_public.unwrap_or(false) && t.created_by != user.id {
+                return Err(JsonResponse::not_found("Pipe template not found"));
+            }
+            Ok(JsonResponse::build()
+                .set_item(Some(t))
+                .ok("Pipe template fetched successfully"))
+        }
         None => Err(JsonResponse::not_found("Pipe template not found")),
     }
 }
@@ -32,7 +38,7 @@ pub async fn get_template_handler(
 #[tracing::instrument(name = "Get pipe instance by ID", skip_all)]
 #[get("/instances/detail/{instance_id}")]
 pub async fn get_instance_handler(
-    _user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<uuid::Uuid>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
@@ -46,9 +52,24 @@ pub async fn get_instance_handler(
         })?;
 
     match instance {
-        Some(i) => Ok(JsonResponse::build()
-            .set_item(Some(i))
-            .ok("Pipe instance fetched successfully")),
+        Some(i) => {
+            // Verify the deployment belongs to the requesting user
+            let deployment =
+                db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &i.deployment_hash)
+                    .await
+                    .map_err(|err| JsonResponse::internal_server_error(err))?;
+
+            match &deployment {
+                Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+                _ => {
+                    return Err(JsonResponse::not_found("Pipe instance not found"));
+                }
+            }
+
+            Ok(JsonResponse::build()
+                .set_item(Some(i))
+                .ok("Pipe instance fetched successfully"))
+        }
         None => Err(JsonResponse::not_found("Pipe instance not found")),
     }
 }

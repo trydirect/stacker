@@ -14,11 +14,29 @@ struct DeleteResponse {
 #[tracing::instrument(name = "Delete pipe template", skip_all)]
 #[delete("/templates/{template_id}")]
 pub async fn delete_template_handler(
-    _user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<uuid::Uuid>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let template_id = path.into_inner();
+
+    // Verify the template belongs to the requesting user
+    let template = db::pipe::get_template(pg_pool.get_ref(), &template_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch pipe template: {}", err);
+            JsonResponse::<()>::build().internal_server_error(err)
+        })?;
+
+    match &template {
+        Some(t) if t.created_by == user.id => {}
+        Some(_) => {
+            return Err(JsonResponse::not_found("Pipe template not found"));
+        }
+        None => {
+            return Err(JsonResponse::not_found("Pipe template not found"));
+        }
+    }
 
     let deleted = db::pipe::delete_template(pg_pool.get_ref(), &template_id)
         .await
@@ -39,11 +57,38 @@ pub async fn delete_template_handler(
 #[tracing::instrument(name = "Delete pipe instance", skip_all)]
 #[delete("/instances/{instance_id}")]
 pub async fn delete_instance_handler(
-    _user: web::ReqData<Arc<User>>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<uuid::Uuid>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let instance_id = path.into_inner();
+
+    // Verify the instance belongs to the requesting user via deployment ownership
+    let instance = db::pipe::get_instance(pg_pool.get_ref(), &instance_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch pipe instance: {}", err);
+            JsonResponse::<()>::build().internal_server_error(err)
+        })?;
+
+    match &instance {
+        Some(i) => {
+            let deployment =
+                db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &i.deployment_hash)
+                    .await
+                    .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
+
+            match &deployment {
+                Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+                _ => {
+                    return Err(JsonResponse::not_found("Pipe instance not found"));
+                }
+            }
+        }
+        None => {
+            return Err(JsonResponse::not_found("Pipe instance not found"));
+        }
+    }
 
     let deleted = db::pipe::delete_instance(pg_pool.get_ref(), &instance_id)
         .await

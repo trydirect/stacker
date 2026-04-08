@@ -33,6 +33,21 @@ pub async fn enqueue_handler(
         return Err(JsonResponse::<()>::build().bad_request("command_type is required"));
     }
 
+    // Verify deployment belongs to the requesting user
+    let deployment = db::deployment::fetch_by_deployment_hash(
+        agent_pool.as_ref(),
+        &payload.deployment_hash,
+    )
+    .await
+    .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
+
+    match &deployment {
+        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+        _ => {
+            return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
+        }
+    }
+
     // Validate parameters
     let validated_parameters =
         status_panel::validate_command_parameters(&payload.command_type, &payload.parameters)

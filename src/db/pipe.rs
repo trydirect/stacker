@@ -99,6 +99,64 @@ pub async fn get_template_by_name(
     })
 }
 
+/// List pipe templates visible to a specific user (own templates + public templates)
+#[tracing::instrument(name = "List pipe templates for user", skip(pool))]
+pub async fn list_templates_for_user(
+    pool: &PgPool,
+    user_id: &str,
+    source_app_type: Option<&str>,
+    target_app_type: Option<&str>,
+    public_only: bool,
+) -> Result<Vec<PipeTemplate>, String> {
+    let query_span = tracing::info_span!("Listing pipe templates for user");
+
+    let mut sql = String::from(
+        r#"
+        SELECT id, name, description, source_app_type, source_endpoint,
+               target_app_type, target_endpoint, target_external_url,
+               field_mapping, config, is_public, created_by, created_at, updated_at
+        FROM pipe_templates
+        WHERE (created_by = $1 OR is_public = true)
+        "#,
+    );
+
+    let mut param_idx = 2;
+    if source_app_type.is_some() {
+        sql.push_str(&format!(" AND source_app_type = ${}", param_idx));
+        param_idx += 1;
+    }
+    if target_app_type.is_some() {
+        sql.push_str(&format!(" AND target_app_type = ${}", param_idx));
+        param_idx += 1;
+    }
+    if public_only {
+        sql.push_str(&format!(" AND is_public = ${}", param_idx));
+    }
+    sql.push_str(" ORDER BY created_at DESC");
+
+    let mut query = sqlx::query_as::<_, PipeTemplate>(&sql);
+    query = query.bind(user_id.to_string());
+
+    if let Some(source) = source_app_type {
+        query = query.bind(source.to_string());
+    }
+    if let Some(target) = target_app_type {
+        query = query.bind(target.to_string());
+    }
+    if public_only {
+        query = query.bind(true);
+    }
+
+    query
+        .fetch_all(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to list pipe templates for user: {:?}", err);
+            format!("Failed to list pipe templates: {}", err)
+        })
+}
+
 /// List pipe templates with optional filters
 #[tracing::instrument(name = "List pipe templates", skip(pool))]
 pub async fn list_templates(
