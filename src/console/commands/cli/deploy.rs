@@ -921,17 +921,17 @@ pub fn run_deploy(
                     });
                 }
             }
-        } else if DeploymentLock::exists(project_dir) {
+        } else if DeploymentLock::exists_for_target(project_dir, "cloud") || DeploymentLock::exists(project_dir) {
             // No deploy.server in config, but a lockfile exists from a prior deploy.
             // Auto-inject the server name so the cloud deploy API reuses the same server.
-            if let Ok(Some(lock)) = DeploymentLock::load(project_dir) {
+            if let Ok(Some(lock)) = DeploymentLock::load_for_target(project_dir, "cloud") {
                 if let Some(ref name) = lock.server_name {
-                    eprintln!("  ℹ Found previous deployment (server='{}') — reusing server", name);
+                    eprintln!("  ℹ Found previous cloud deployment (server='{}') — reusing server", name);
                     eprintln!("    To provision a new server instead: stacker deploy --force-new");
                     lock_server_name = Some(name.clone());
                 } else if let Some(ref ip) = lock.server_ip {
                     if ip != "127.0.0.1" {
-                        eprintln!("  ℹ Found previous deployment to {} (from .stacker/deployment.lock)", ip);
+                        eprintln!("  ℹ Found previous deployment to {} (from deployment lock)", ip);
                         eprintln!("    Server name unknown — cannot auto-reuse. Run: stacker config lock");
                         eprintln!("    To provision a new server instead:   stacker deploy --force-new");
                     }

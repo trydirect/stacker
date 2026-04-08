@@ -11,8 +11,13 @@ use crate::cli::install_runner::DeployResult;
 // DeploymentLock — persisted deployment context
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Filename for the deployment lockfile inside `.stacker/`.
+/// Legacy filename for the deployment lockfile inside `.stacker/`.
 pub const LOCKFILE_NAME: &str = "deployment.lock";
+
+/// Returns the per-target lockfile name, e.g. `deployment-cloud.lock`.
+pub fn lockfile_name_for_target(target: &str) -> String {
+    format!("deployment-{}.lock", target)
+}
 
 /// Persisted deployment context written after a successful deploy.
 ///
@@ -140,14 +145,21 @@ impl DeploymentLock {
 
     // ── Persistence ──────────────────────────────────
 
-    /// Resolve the lockfile path inside `.stacker/` relative to the project dir.
+    /// Resolve the per-target lockfile path (e.g. `.stacker/deployment-cloud.lock`).
+    pub fn lockfile_path_for_target(project_dir: &Path, target: &str) -> PathBuf {
+        project_dir
+            .join(".stacker")
+            .join(lockfile_name_for_target(target))
+    }
+
+    /// Legacy lockfile path (`.stacker/deployment.lock`).
     pub fn lockfile_path(project_dir: &Path) -> PathBuf {
         project_dir.join(".stacker").join(LOCKFILE_NAME)
     }
 
-    /// Save the lock to `.stacker/deployment.lock`.
+    /// Save the lock to `.stacker/deployment-{target}.lock`.
     pub fn save(&self, project_dir: &Path) -> Result<PathBuf, CliError> {
-        let path = Self::lockfile_path(project_dir);
+        let path = Self::lockfile_path_for_target(project_dir, &self.target);
 
         // Ensure .stacker/ exists
         if let Some(parent) = path.parent() {
@@ -163,17 +175,34 @@ impl DeploymentLock {
         Ok(path)
     }
 
-    /// Load a deployment lock from `.stacker/deployment.lock`.
-    /// Returns `None` if the file does not exist.
-    pub fn load(project_dir: &Path) -> Result<Option<Self>, CliError> {
-        let path = Self::lockfile_path(project_dir);
+    /// Load a deployment lock for a specific target.
+    /// Falls back to the legacy `deployment.lock` if the per-target file doesn't exist.
+    pub fn load_for_target(project_dir: &Path, target: &str) -> Result<Option<Self>, CliError> {
+        let target_path = Self::lockfile_path_for_target(project_dir, target);
+        if target_path.exists() {
+            let content = std::fs::read_to_string(&target_path).map_err(CliError::Io)?;
+            let lock: Self = serde_yaml::from_str(&content).map_err(|e| {
+                CliError::ConfigValidation(format!(
+                    "Failed to parse deployment lock ({}): {}. Delete the file and redeploy.",
+                    target_path.display(),
+                    e
+                ))
+            })?;
+            return Ok(Some(lock));
+        }
 
+        // Fallback: try legacy deployment.lock (only if its target matches)
+        Self::load_legacy(project_dir, Some(target))
+    }
+
+    /// Load the legacy `deployment.lock`, optionally filtering by target.
+    fn load_legacy(project_dir: &Path, filter_target: Option<&str>) -> Result<Option<Self>, CliError> {
+        let path = Self::lockfile_path(project_dir);
         if !path.exists() {
             return Ok(None);
         }
 
         let content = std::fs::read_to_string(&path).map_err(CliError::Io)?;
-
         let lock: Self = serde_yaml::from_str(&content).map_err(|e| {
             CliError::ConfigValidation(format!(
                 "Failed to parse deployment lock ({}): {}. Delete the file and redeploy.",
@@ -182,11 +211,49 @@ impl DeploymentLock {
             ))
         })?;
 
+        if let Some(target) = filter_target {
+            if lock.target != target {
+                return Ok(None);
+            }
+        }
+
         Ok(Some(lock))
     }
 
-    /// Check whether a lockfile exists for this project.
+    /// Load a deployment lock from `.stacker/deployment.lock` (legacy).
+    /// Returns `None` if the file does not exist.
+    pub fn load(project_dir: &Path) -> Result<Option<Self>, CliError> {
+        // Try all per-target files first, then fall back to legacy
+        for target in &["cloud", "server", "local"] {
+            let target_path = Self::lockfile_path_for_target(project_dir, target);
+            if target_path.exists() {
+                let content = std::fs::read_to_string(&target_path).map_err(CliError::Io)?;
+                let lock: Self = serde_yaml::from_str(&content).map_err(|e| {
+                    CliError::ConfigValidation(format!(
+                        "Failed to parse deployment lock ({}): {}. Delete the file and redeploy.",
+                        target_path.display(),
+                        e
+                    ))
+                })?;
+                return Ok(Some(lock));
+            }
+        }
+
+        Self::load_legacy(project_dir, None)
+    }
+
+    /// Check whether a lockfile exists for a given target.
+    pub fn exists_for_target(project_dir: &Path, target: &str) -> bool {
+        Self::lockfile_path_for_target(project_dir, target).exists()
+    }
+
+    /// Check whether any lockfile exists for this project (per-target or legacy).
     pub fn exists(project_dir: &Path) -> bool {
+        for target in &["cloud", "server", "local"] {
+            if Self::lockfile_path_for_target(project_dir, target).exists() {
+                return true;
+            }
+        }
         Self::lockfile_path(project_dir).exists()
     }
 
@@ -277,8 +344,9 @@ mod tests {
 
         let path = lock.save(tmp.path()).unwrap();
         assert!(path.exists());
+        assert!(path.ends_with("deployment-cloud.lock"));
 
-        let loaded = DeploymentLock::load(tmp.path()).unwrap().unwrap();
+        let loaded = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap().unwrap();
         assert_eq!(loaded.server_ip, lock.server_ip);
         assert_eq!(loaded.deployment_id, lock.deployment_id);
         assert_eq!(loaded.project_id, lock.project_id);
@@ -291,15 +359,75 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let result = DeploymentLock::load(tmp.path()).unwrap();
         assert!(result.is_none());
+        let result = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
     fn exists_detection() {
         let tmp = TempDir::new().unwrap();
         assert!(!DeploymentLock::exists(tmp.path()));
+        assert!(!DeploymentLock::exists_for_target(tmp.path(), "cloud"));
 
         sample_lock().save(tmp.path()).unwrap();
         assert!(DeploymentLock::exists(tmp.path()));
+        assert!(DeploymentLock::exists_for_target(tmp.path(), "cloud"));
+        assert!(!DeploymentLock::exists_for_target(tmp.path(), "local"));
+    }
+
+    #[test]
+    fn local_and_cloud_locks_coexist() {
+        let tmp = TempDir::new().unwrap();
+
+        // Save cloud lock
+        let cloud_lock = sample_lock();
+        cloud_lock.save(tmp.path()).unwrap();
+
+        // Save local lock
+        let local_lock = DeploymentLock::for_local();
+        local_lock.save(tmp.path()).unwrap();
+
+        // Both exist
+        assert!(DeploymentLock::exists_for_target(tmp.path(), "cloud"));
+        assert!(DeploymentLock::exists_for_target(tmp.path(), "local"));
+
+        // Load each independently
+        let loaded_cloud = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap().unwrap();
+        assert_eq!(loaded_cloud.server_ip, Some("203.0.113.42".to_string()));
+        assert_eq!(loaded_cloud.deployment_id, Some(123));
+
+        let loaded_local = DeploymentLock::load_for_target(tmp.path(), "local").unwrap().unwrap();
+        assert_eq!(loaded_local.server_ip, Some("127.0.0.1".to_string()));
+        assert_eq!(loaded_local.deployment_id, None);
+
+        // Generic load() prefers cloud over local
+        let generic = DeploymentLock::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(generic.target, "cloud");
+    }
+
+    #[test]
+    fn legacy_lockfile_fallback() {
+        let tmp = TempDir::new().unwrap();
+
+        // Manually write a legacy deployment.lock
+        let stacker_dir = tmp.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        let legacy_lock = sample_lock();
+        let content = serde_yaml::to_string(&legacy_lock).unwrap();
+        std::fs::write(stacker_dir.join("deployment.lock"), &content).unwrap();
+
+        // load_for_target("cloud") should find it via legacy fallback
+        let loaded = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap().unwrap();
+        assert_eq!(loaded.target, "cloud");
+        assert_eq!(loaded.deployment_id, Some(123));
+
+        // load_for_target("local") should NOT find it (target mismatch)
+        let loaded_local = DeploymentLock::load_for_target(tmp.path(), "local").unwrap();
+        assert!(loaded_local.is_none());
+
+        // Generic load() should find the legacy file
+        let generic = DeploymentLock::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(generic.target, "cloud");
     }
 
     #[test]

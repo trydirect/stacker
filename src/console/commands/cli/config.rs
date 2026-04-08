@@ -823,11 +823,11 @@ impl CallableTrait for ConfigLockCommand {
         let config_path_str = resolve_config_path(&self.file);
         let config_path = project_dir.join(&config_path_str);
 
-        // 1. Load lockfile
+        // 1. Load lockfile (prefer cloud/server)
         let lock = match DeploymentLock::load(&project_dir)? {
             Some(l) => l,
             None => {
-                eprintln!("No deployment lock found (.stacker/deployment.lock).");
+                eprintln!("No deployment lock found in .stacker/.");
                 eprintln!("Deploy first with `stacker deploy`, then run this command.");
                 return Ok(());
             }
