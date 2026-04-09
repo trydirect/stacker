@@ -65,14 +65,31 @@ fn write_env_lines(path: &Path, lines: &[String]) -> Result<(), CliError> {
         }
     }
     std::fs::write(path, lines.join("\n") + "\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
 /// Resolve the env file path: use explicit `--file`, otherwise look in
 /// `stacker.yml`'s `env_file` field, otherwise default to `.env`.
-fn resolve_env_path(explicit: Option<&str>) -> PathBuf {
+fn validate_env_path(p: &str) -> Result<PathBuf, CliError> {
+    let path = Path::new(p);
+    for component in path.components() {
+        if let std::path::Component::ParentDir = component {
+            return Err(CliError::ConfigValidation(
+                format!("Path traversal ('..') is not allowed for --file: {}", p),
+            ));
+        }
+    }
+    Ok(PathBuf::from(p))
+}
+
+fn resolve_env_path(explicit: Option<&str>) -> Result<PathBuf, CliError> {
     if let Some(p) = explicit {
-        return PathBuf::from(p);
+        return validate_env_path(p);
     }
     // Try to read from stacker.yml
     if let Ok(content) = std::fs::read_to_string(DEFAULT_CONFIG_FILE) {
@@ -81,12 +98,12 @@ fn resolve_env_path(explicit: Option<&str>) -> PathBuf {
             if trimmed.starts_with("env_file:") {
                 let val = trimmed["env_file:".len()..].trim().trim_matches('"').trim_matches('\'');
                 if !val.is_empty() {
-                    return PathBuf::from(val);
+                    return validate_env_path(val);
                 }
             }
         }
     }
-    PathBuf::from(DEFAULT_ENV_FILE)
+    Ok(PathBuf::from(DEFAULT_ENV_FILE))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -116,13 +133,14 @@ impl CallableTrait for SecretsSetCommand {
         let key = self.key_value[..pos].trim().to_string();
         let value = self.key_value[pos + 1..].to_string();
 
-        if key.is_empty() {
+        let valid_key = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
+        if !valid_key.is_match(&key) {
             return Err(Box::new(CliError::ConfigValidation(
-                "Key must not be empty".to_string(),
+                format!("Invalid key '{}': must match [A-Za-z_][A-Za-z0-9_]*", key),
             )));
         }
 
-        let env_path = resolve_env_path(self.file.as_deref());
+        let env_path = resolve_env_path(self.file.as_deref())?;
         let mut lines = read_env_lines(&env_path)?;
 
         let new_line = format!("{key}={value}");
@@ -165,7 +183,7 @@ impl SecretsGetCommand {
 
 impl CallableTrait for SecretsGetCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let env_path = resolve_env_path(self.file.as_deref());
+        let env_path = resolve_env_path(self.file.as_deref())?;
 
         if !env_path.exists() {
             return Err(Box::new(CliError::EnvFileNotFound {
@@ -211,7 +229,7 @@ impl SecretsListCommand {
 
 impl CallableTrait for SecretsListCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let env_path = resolve_env_path(self.file.as_deref());
+        let env_path = resolve_env_path(self.file.as_deref())?;
 
         if !env_path.exists() {
             eprintln!(
@@ -265,7 +283,7 @@ impl SecretsDeleteCommand {
 
 impl CallableTrait for SecretsDeleteCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let env_path = resolve_env_path(self.file.as_deref());
+        let env_path = resolve_env_path(self.file.as_deref())?;
 
         if !env_path.exists() {
             return Err(Box::new(CliError::EnvFileNotFound {
@@ -345,7 +363,7 @@ impl CallableTrait for SecretsValidateCommand {
         }
 
         // Load .env file values
-        let env_path = resolve_env_path(None);
+        let env_path = resolve_env_path(None)?;
         let env_lines = read_env_lines(&env_path).unwrap_or_default();
         let mut env_map = std::collections::HashMap::new();
         for line in &env_lines {
@@ -387,5 +405,256 @@ impl CallableTrait for SecretsValidateCommand {
                 missing.join(", ")
             ))))
         }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Security tests
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ── Helper ────────────────────────────────────────
+    fn write_env(dir: &TempDir, name: &str, content: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    // ── SECURITY: Path traversal via --file flag ──────
+    // CWE-22: Improper Limitation of a Pathname to a Restricted Directory
+    //
+    // The --file flag accepts arbitrary paths. An attacker could read or
+    // write files outside the project directory using `../../etc/crontab`
+    // style paths. The resolve_env_path function does not sanitize paths.
+
+    #[test]
+    fn test_resolve_env_path_rejects_path_traversal() {
+        let result = resolve_env_path(Some("../../etc/passwd"));
+        assert!(result.is_err(), "Path traversal must be rejected");
+    }
+
+    #[test]
+    fn test_resolve_env_path_allows_absolute_path_without_traversal() {
+        let result = resolve_env_path(Some("/etc/passwd"));
+        assert!(result.is_ok(), "Absolute paths without traversal are allowed");
+    }
+
+    #[test]
+    fn test_resolve_env_path_accepts_relative_safe_path() {
+        let result = resolve_env_path(Some("config/.env"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("config/.env"));
+    }
+
+    // ── SECURITY: Env file has no restricted permissions ──
+    // CWE-732: Incorrect Permission Assignment for Critical Resource
+    //
+    // The .env file may contain secrets but write_env_lines does not
+    // set restrictive file permissions (unlike credentials.json which
+    // correctly sets 0o600).
+
+    #[test]
+    #[cfg(unix)]
+    fn test_env_file_permissions_are_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let lines = vec!["DB_PASSWORD=supersecret".to_string()];
+        write_env_lines(&env_path, &lines).unwrap();
+
+        let perms = std::fs::metadata(&env_path).unwrap().permissions();
+        let mode = perms.mode() & 0o777;
+        assert_eq!(mode, 0o600, "Env file containing secrets must have 0o600 permissions");
+    }
+
+    // ── SECURITY: Key validation ──────────────────────
+    // CWE-20: Improper Input Validation
+    //
+    // Secret keys can contain newlines or equals signs that break .env parsing.
+
+    #[test]
+    fn test_secrets_set_rejects_empty_key() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let cmd = SecretsSetCommand::new(
+            "=value".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        let result = cmd.call();
+        assert!(result.is_err(), "Expected error for empty key");
+    }
+
+    #[test]
+    fn test_secrets_set_key_with_newline_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let cmd = SecretsSetCommand::new(
+            "LEGIT\nMALICIOUS_KEY=injected".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        let result = cmd.call();
+        assert!(result.is_err(), "Keys with newlines must be rejected");
+    }
+
+    #[test]
+    fn test_secrets_set_key_with_spaces_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let cmd = SecretsSetCommand::new(
+            "BAD KEY=value".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        let result = cmd.call();
+        assert!(result.is_err(), "Keys with spaces must be rejected");
+    }
+
+    #[test]
+    fn test_secrets_set_valid_key_accepted() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let cmd = SecretsSetCommand::new(
+            "_MY_VAR_123=value".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        let result = cmd.call();
+        assert!(result.is_ok(), "Valid env key must be accepted");
+    }
+
+    // ── SECURITY: Value parsing edge cases ────────────
+    // CWE-20: Improper Input Validation
+
+    #[test]
+    fn test_parse_env_line_basic() {
+        let (k, v) = parse_env_line("FOO=bar").unwrap();
+        assert_eq!(k, "FOO");
+        assert_eq!(v, "bar");
+    }
+
+    #[test]
+    fn test_parse_env_line_quoted() {
+        let (k, v) = parse_env_line("FOO=\"bar baz\"").unwrap();
+        assert_eq!(k, "FOO");
+        assert_eq!(v, "bar baz");
+    }
+
+    #[test]
+    fn test_parse_env_line_single_quoted() {
+        let (k, v) = parse_env_line("FOO='bar baz'").unwrap();
+        assert_eq!(k, "FOO");
+        assert_eq!(v, "bar baz");
+    }
+
+    #[test]
+    fn test_parse_env_line_comment() {
+        assert!(parse_env_line("# this is a comment").is_none());
+    }
+
+    #[test]
+    fn test_parse_env_line_empty() {
+        assert!(parse_env_line("").is_none());
+    }
+
+    #[test]
+    fn test_parse_env_line_no_equals() {
+        assert!(parse_env_line("JUST_A_KEY").is_none());
+    }
+
+    #[test]
+    fn test_parse_env_line_value_with_equals() {
+        let (k, v) = parse_env_line("FOO=bar=baz").unwrap();
+        assert_eq!(k, "FOO");
+        assert_eq!(v, "bar=baz");
+    }
+
+    // ── Round-trip tests ──────────────────────────────
+
+    #[test]
+    fn test_write_and_read_env_lines() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".env");
+        let lines = vec!["FOO=bar".to_string(), "BAZ=qux".to_string()];
+        write_env_lines(&path, &lines).unwrap();
+        let read = read_env_lines(&path).unwrap();
+        assert_eq!(read, vec!["FOO=bar", "BAZ=qux"]);
+    }
+
+    #[test]
+    fn test_read_env_lines_nonexistent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("does-not-exist");
+        let lines = read_env_lines(&path).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    // ── Functional secrets tests ──────────────────────
+
+    #[test]
+    fn test_secrets_set_and_get() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+
+        let set_cmd = SecretsSetCommand::new(
+            "MY_SECRET=hello123".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        set_cmd.call().unwrap();
+
+        // Verify the file was written
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("MY_SECRET=hello123"));
+    }
+
+    #[test]
+    fn test_secrets_set_updates_existing_key() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, "MY_KEY=old_value\nOTHER=keep\n").unwrap();
+
+        let cmd = SecretsSetCommand::new(
+            "MY_KEY=new_value".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        cmd.call().unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("MY_KEY=new_value"));
+        assert!(!content.contains("old_value"));
+        assert!(content.contains("OTHER=keep"));
+    }
+
+    #[test]
+    fn test_secrets_delete_removes_key() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, "KEEP=yes\nDELETE_ME=gone\n").unwrap();
+
+        let cmd = SecretsDeleteCommand::new(
+            "DELETE_ME".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        cmd.call().unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(!content.contains("DELETE_ME"));
+        assert!(content.contains("KEEP=yes"));
+    }
+
+    #[test]
+    fn test_secrets_delete_nonexistent_key_errors() {
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, "FOO=bar\n").unwrap();
+
+        let cmd = SecretsDeleteCommand::new(
+            "NONEXISTENT".to_string(),
+            Some(env_path.to_string_lossy().to_string()),
+        );
+        let result = cmd.call();
+        assert!(result.is_err());
     }
 }
