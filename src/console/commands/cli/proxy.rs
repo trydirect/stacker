@@ -59,7 +59,7 @@ impl CallableTrait for ProxyAddCommand {
             self.upstream.as_deref(),
             self.ssl.as_deref(),
         );
-        let block = generate_nginx_server_block(&config);
+        let block = generate_nginx_server_block(&config)?;
         println!("{}", block);
         eprintln!("✓ Proxy entry generated for {}", self.domain);
         Ok(())

@@ -248,11 +248,35 @@ fn extract_snapshot_ports(container: &serde_json::Value) -> Vec<u16> {
 // generate_nginx_server_block — produce nginx config snippet
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+fn validate_domain(domain: &str) -> Result<(), CliError> {
+    let re = regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$").unwrap();
+    if !re.is_match(domain) {
+        return Err(CliError::ConfigValidation(format!(
+            "Invalid domain '{}': must contain only alphanumeric, dots, hyphens, underscores",
+            domain
+        )));
+    }
+    Ok(())
+}
+
+fn validate_upstream(upstream: &str) -> Result<(), CliError> {
+    let re = regex::Regex::new(r"^[a-zA-Z0-9._-]+:[0-9]+$").unwrap();
+    if !re.is_match(upstream) {
+        return Err(CliError::ConfigValidation(format!(
+            "Invalid upstream '{}': must match host:port format",
+            upstream
+        )));
+    }
+    Ok(())
+}
+
 /// Generate an nginx `server { }` block for a single domain configuration.
 ///
 /// Produces a config suitable for inclusion in `/etc/nginx/conf.d/`.
 /// SSL directives are included when `ssl` is `Auto` or `Manual`.
-pub fn generate_nginx_server_block(domain: &DomainConfig) -> String {
+pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliError> {
+    validate_domain(&domain.domain)?;
+    validate_upstream(&domain.upstream)?;
     let mut block = String::new();
 
     block.push_str("server {\n");
@@ -314,23 +338,23 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> String {
         }
     }
 
-    block
+    Ok(block)
 }
 
 /// Generate nginx configs for all domains in a proxy config.
 /// Returns a map of `filename → config content` for writing to `./nginx/conf.d/`.
 pub fn generate_nginx_configs(
     domains: &[DomainConfig],
-) -> HashMap<String, String> {
+) -> Result<HashMap<String, String>, CliError> {
     let mut configs = HashMap::new();
 
     for domain in domains {
-        let filename = format!("{}.conf", domain.domain.replace('.', "_"));
-        let content = generate_nginx_server_block(domain);
+        let filename = format!("{}.conf", domain.domain.replace('.', "_").replace('/', "_"));
+        let content = generate_nginx_server_block(domain)?;
         configs.insert(filename, content);
     }
 
-    configs
+    Ok(configs)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -486,7 +510,7 @@ mod tests {
             ssl: SslMode::Auto,
             upstream: "app:3000".to_string(),
         };
-        let block = generate_nginx_server_block(&domain);
+        let block = generate_nginx_server_block(&domain).unwrap();
         assert!(block.contains("server_name app.example.com;"));
         assert!(block.contains("listen 443 ssl http2;"));
         assert!(block.contains("proxy_pass http://app:3000;"));
@@ -501,7 +525,7 @@ mod tests {
             ssl: SslMode::Manual,
             upstream: "app:3000".to_string(),
         };
-        let block = generate_nginx_server_block(&domain);
+        let block = generate_nginx_server_block(&domain).unwrap();
         assert!(block.contains("listen 443 ssl http2;"));
         assert!(block.contains("/etc/nginx/ssl/cert.pem"));
         assert!(!block.contains("letsencrypt"));
@@ -514,7 +538,7 @@ mod tests {
             ssl: SslMode::Off,
             upstream: "app:8080".to_string(),
         };
-        let block = generate_nginx_server_block(&domain);
+        let block = generate_nginx_server_block(&domain).unwrap();
         assert!(block.contains("listen 80;"));
         assert!(block.contains("server_name app.local;"));
         assert!(block.contains("proxy_pass http://app:8080;"));
@@ -536,7 +560,7 @@ mod tests {
                 upstream: "web:3000".to_string(),
             },
         ];
-        let configs = generate_nginx_configs(&domains);
+        let configs = generate_nginx_configs(&domains).unwrap();
         assert_eq!(configs.len(), 2);
         assert!(configs.contains_key("api_example_com.conf"));
         assert!(configs.contains_key("web_example_com.conf"));
@@ -684,5 +708,45 @@ mod tests {
         });
         let detection = detect_proxy_from_snapshot(&snap);
         assert_eq!(detection.proxy_type, ProxyType::NginxProxyManager);
+    }
+
+    // ── SECURITY: nginx config injection ──────────────
+    // CWE-74: Improper Neutralization of Special Elements in Output
+    //
+    // The domain name and upstream are interpolated directly into nginx
+    // config without sanitization. A malicious domain or upstream value
+    // can inject arbitrary nginx directives.
+
+    #[test]
+    fn test_nginx_config_rejects_injection_via_domain_name() {
+        let domain = DomainConfig {
+            domain: "evil.com; location /admin { return 200 'pwned'; }".to_string(),
+            ssl: SslMode::Off,
+            upstream: "app:3000".to_string(),
+        };
+        let result = generate_nginx_server_block(&domain);
+        assert!(result.is_err(), "Domain with special chars must be rejected");
+    }
+
+    #[test]
+    fn test_nginx_config_rejects_injection_via_upstream() {
+        let domain = DomainConfig {
+            domain: "safe.example.com".to_string(),
+            ssl: SslMode::Off,
+            upstream: "app:3000;\n        add_header X-Injected true".to_string(),
+        };
+        let result = generate_nginx_server_block(&domain);
+        assert!(result.is_err(), "Upstream with special chars must be rejected");
+    }
+
+    #[test]
+    fn test_nginx_configs_rejects_domain_with_slashes() {
+        let domains = vec![DomainConfig {
+            domain: "../../../etc/nginx/evil".to_string(),
+            ssl: SslMode::Off,
+            upstream: "app:3000".to_string(),
+        }];
+        let result = generate_nginx_configs(&domains);
+        assert!(result.is_err(), "Domain with slashes must be rejected");
     }
 }
