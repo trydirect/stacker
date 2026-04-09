@@ -260,10 +260,11 @@ fn validate_domain(domain: &str) -> Result<(), CliError> {
 }
 
 fn validate_upstream(upstream: &str) -> Result<(), CliError> {
-    let re = regex::Regex::new(r"^[a-zA-Z0-9._-]+:[0-9]+$").unwrap();
+    // Allow optional http:// or https:// prefix
+    let re = regex::Regex::new(r"^(https?://)?[a-zA-Z0-9._-]+:[0-9]+$").unwrap();
     if !re.is_match(upstream) {
         return Err(CliError::ConfigValidation(format!(
-            "Invalid upstream '{}': must match host:port format",
+            "Invalid upstream '{}': must match [http://]host:port format",
             upstream
         )));
     }
