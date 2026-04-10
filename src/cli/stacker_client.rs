@@ -237,6 +237,42 @@ pub struct PipeInstanceInfo {
     pub updated_at: String,
 }
 
+/// Pipe execution info from `/api/v1/pipes/executions`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeExecutionInfo {
+    pub id: String,
+    pub pipe_instance_id: String,
+    pub deployment_hash: String,
+    pub trigger_type: String,
+    pub status: String,
+    #[serde(default)]
+    pub source_data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub mapped_data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub target_response: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub replay_of: Option<String>,
+    pub created_by: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// Replay response from `/api/v1/pipes/executions/{id}/replay`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeReplayResponse {
+    pub execution_id: String,
+    pub replay_of: String,
+    #[serde(default)]
+    pub command_id: Option<String>,
+    pub status: String,
+}
+
 /// Request body for creating a pipe template
 #[derive(Debug, Clone, Serialize)]
 pub struct CreatePipeTemplateApiRequest {
@@ -1729,6 +1765,116 @@ impl StackerClient {
             resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid templates response: {}", e)))?;
 
         Ok(api.list.unwrap_or_default())
+    }
+
+    // ── Pipe Executions ──────────────────────────────
+
+    /// List executions for a pipe instance (paginated).
+    ///
+    /// `GET /api/v1/pipes/instances/{instance_id}/executions?limit=N&offset=M`
+    pub async fn list_pipe_executions(
+        &self,
+        instance_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PipeExecutionInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/{}/executions?limit={}&offset={}",
+            self.base_url, instance_id, limit, offset
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to list executions: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "List executions failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeExecutionInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid executions response: {}", e)))?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get a single pipe execution by ID.
+    ///
+    /// `GET /api/v1/pipes/executions/{execution_id}`
+    pub async fn get_pipe_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<PipeExecutionInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/executions/{}",
+            self.base_url, execution_id
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to get execution: {}", e)))?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Get execution failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeExecutionInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid execution response: {}", e)))?;
+
+        Ok(api.item)
+    }
+
+    /// Replay a previous pipe execution.
+    ///
+    /// `POST /api/v1/pipes/executions/{execution_id}/replay`
+    pub async fn replay_pipe_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<PipeReplayResponse, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/executions/{}/replay",
+            self.base_url, execution_id
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to replay execution: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Replay failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeReplayResponse> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid replay response: {}", e)))?;
+
+        api.item.ok_or_else(|| CliError::ConfigValidation("No replay response returned".to_string()))
     }
 
     // ── Marketplace (creator) ────────────────────────

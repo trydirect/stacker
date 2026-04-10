@@ -178,6 +178,84 @@ impl PipeInstance {
     }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PipeExecution — full execution history for pipe triggers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PipeExecution {
+    pub id: Uuid,
+    pub pipe_instance_id: Uuid,
+    pub deployment_hash: String,
+    pub trigger_type: String,
+    pub status: String,
+    pub source_data: Option<JsonValue>,
+    pub mapped_data: Option<JsonValue>,
+    pub target_response: Option<JsonValue>,
+    pub error: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub replay_of: Option<Uuid>,
+    pub created_by: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl PipeExecution {
+    pub fn new(
+        pipe_instance_id: Uuid,
+        deployment_hash: String,
+        trigger_type: String,
+        created_by: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            pipe_instance_id,
+            deployment_hash,
+            trigger_type,
+            status: "running".to_string(),
+            source_data: None,
+            mapped_data: None,
+            target_response: None,
+            error: None,
+            duration_ms: None,
+            replay_of: None,
+            created_by,
+            started_at: Utc::now(),
+            completed_at: None,
+        }
+    }
+
+    pub fn with_replay_of(mut self, original_id: Uuid) -> Self {
+        self.replay_of = Some(original_id);
+        self
+    }
+
+    pub fn complete_success(
+        mut self,
+        source_data: JsonValue,
+        mapped_data: JsonValue,
+        target_response: JsonValue,
+    ) -> Self {
+        let now = Utc::now();
+        self.status = "success".to_string();
+        self.source_data = Some(source_data);
+        self.mapped_data = Some(mapped_data);
+        self.target_response = Some(target_response);
+        self.duration_ms = Some((now - self.started_at).num_milliseconds());
+        self.completed_at = Some(now);
+        self
+    }
+
+    pub fn complete_failure(mut self, error: String) -> Self {
+        let now = Utc::now();
+        self.status = "failed".to_string();
+        self.error = Some(error);
+        self.duration_ms = Some((now - self.started_at).num_milliseconds());
+        self.completed_at = Some(now);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +407,111 @@ mod tests {
         assert_eq!(deserialized.deployment_hash, "deploy_test");
         assert_eq!(deserialized.source_container, "container_a");
         assert_eq!(deserialized.status, "draft");
+    }
+
+    // ── PipeExecution tests ──
+
+    #[test]
+    fn test_pipe_execution_new() {
+        let instance_id = Uuid::new_v4();
+        let exec = PipeExecution::new(
+            instance_id,
+            "deploy_abc".to_string(),
+            "manual".to_string(),
+            "user1".to_string(),
+        );
+
+        assert_eq!(exec.pipe_instance_id, instance_id);
+        assert_eq!(exec.deployment_hash, "deploy_abc");
+        assert_eq!(exec.trigger_type, "manual");
+        assert_eq!(exec.status, "running");
+        assert_eq!(exec.created_by, "user1");
+        assert!(exec.source_data.is_none());
+        assert!(exec.mapped_data.is_none());
+        assert!(exec.target_response.is_none());
+        assert!(exec.error.is_none());
+        assert!(exec.duration_ms.is_none());
+        assert!(exec.replay_of.is_none());
+        assert!(exec.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_pipe_execution_complete_success() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            "deploy_abc".to_string(),
+            "webhook".to_string(),
+            "user1".to_string(),
+        )
+        .complete_success(
+            json!({"id": 1, "title": "Hello"}),
+            json!({"subject": "Hello"}),
+            json!({"status": 200, "id": "mc_123"}),
+        );
+
+        assert_eq!(exec.status, "success");
+        assert_eq!(exec.source_data, Some(json!({"id": 1, "title": "Hello"})));
+        assert_eq!(exec.mapped_data, Some(json!({"subject": "Hello"})));
+        assert_eq!(
+            exec.target_response,
+            Some(json!({"status": 200, "id": "mc_123"}))
+        );
+        assert!(exec.error.is_none());
+        assert!(exec.duration_ms.is_some());
+        assert!(exec.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_pipe_execution_complete_failure() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            "deploy_abc".to_string(),
+            "poll".to_string(),
+            "user1".to_string(),
+        )
+        .complete_failure("Connection refused".to_string());
+
+        assert_eq!(exec.status, "failed");
+        assert_eq!(exec.error, Some("Connection refused".to_string()));
+        assert!(exec.source_data.is_none());
+        assert!(exec.duration_ms.is_some());
+        assert!(exec.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_pipe_execution_with_replay_of() {
+        let original_id = Uuid::new_v4();
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            "deploy_abc".to_string(),
+            "replay".to_string(),
+            "user1".to_string(),
+        )
+        .with_replay_of(original_id);
+
+        assert_eq!(exec.replay_of, Some(original_id));
+        assert_eq!(exec.trigger_type, "replay");
+    }
+
+    #[test]
+    fn test_pipe_execution_serialization() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            "deploy_test".to_string(),
+            "manual".to_string(),
+            "user_test".to_string(),
+        )
+        .complete_success(
+            json!({"key": "value"}),
+            json!({"mapped_key": "value"}),
+            json!({"ok": true}),
+        );
+
+        let json_str = serde_json::to_string(&exec).unwrap();
+        let deserialized: PipeExecution = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.deployment_hash, "deploy_test");
+        assert_eq!(deserialized.trigger_type, "manual");
+        assert_eq!(deserialized.status, "success");
+        assert_eq!(deserialized.source_data, Some(json!({"key": "value"})));
     }
 }

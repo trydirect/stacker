@@ -775,6 +775,15 @@ pub fn validate_command_result(
                 return Err("trigger_pipe result deployment_hash mismatch".to_string());
             }
 
+            // Validate trigger_type if present
+            let valid_trigger_types = ["manual", "webhook", "poll", "replay"];
+            if !valid_trigger_types.contains(&report.trigger_type.as_str()) {
+                return Err(format!(
+                    "trigger_pipe: trigger_type must be one of: {}; got '{}'",
+                    valid_trigger_types.join(", "), report.trigger_type
+                ));
+            }
+
             serde_json::to_value(report)
                 .map(Some)
                 .map_err(|err| format!("Failed to encode trigger_pipe result: {}", err))
@@ -809,6 +818,9 @@ pub struct ProbeEndpointsCommandRequest {
     /// Timeout per probe request in seconds
     #[serde(default = "default_probe_timeout")]
     pub probe_timeout: u32,
+    /// Whether to capture sample responses from discovered endpoints
+    #[serde(default)]
+    pub capture_samples: bool,
 }
 
 /// A discovered API endpoint
@@ -829,6 +841,9 @@ pub struct ProbeOperation {
     pub summary: String,
     #[serde(default)]
     pub fields: Vec<String>,
+    /// Sample response captured during probing (when capture_samples=true)
+    #[serde(default)]
+    pub sample_response: Option<serde_json::Value>,
 }
 
 /// A discovered HTML form
@@ -906,6 +921,7 @@ fn default_source_method() -> String { "GET".to_string() }
 fn default_target_method() -> String { "POST".to_string() }
 fn default_trigger_type() -> String { "webhook".to_string() }
 fn default_poll_interval() -> u32 { 300 }
+fn default_trigger_type_manual() -> String { "manual".to_string() }
 
 /// Request to deactivate a pipe instance on the agent
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -971,6 +987,9 @@ pub struct TriggerPipeCommandReport {
     #[serde(default)]
     pub error: Option<String>,
     pub triggered_at: String,
+    /// Trigger type: manual, webhook, poll
+    #[serde(default = "default_trigger_type_manual")]
+    pub trigger_type: String,
 }
 
 #[cfg(test)]
@@ -1494,5 +1513,145 @@ mod tests {
             })),
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_capture_samples_defaults_false() {
+        let params = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "wordpress"
+            })),
+        )
+        .expect("should validate")
+        .expect("should have params");
+
+        assert_eq!(params["capture_samples"], false);
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_capture_samples_true() {
+        let params = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "wordpress",
+                "capture_samples": true
+            })),
+        )
+        .expect("should validate")
+        .expect("should have params");
+
+        assert_eq!(params["capture_samples"], true);
+    }
+
+    #[test]
+    fn probe_endpoints_result_with_sample_response() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "deploy-hash",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "deploy-hash",
+                "app_code": "wordpress",
+                "protocols_detected": ["openapi"],
+                "endpoints": [{
+                    "protocol": "openapi",
+                    "base_url": "http://wordpress:80",
+                    "spec_url": "http://wordpress:80/wp-json",
+                    "operations": [{
+                        "path": "/wp/v2/posts",
+                        "method": "GET",
+                        "summary": "List posts",
+                        "fields": ["id", "title", "author"],
+                        "sample_response": {
+                            "id": 1,
+                            "title": {"rendered": "Hello World"},
+                            "author": 42
+                        }
+                    }]
+                }],
+                "forms": [],
+                "probed_at": "2026-04-10T12:00:00Z"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        let sample = &payload["endpoints"][0]["operations"][0]["sample_response"];
+        assert_eq!(sample["id"], 1);
+        assert_eq!(sample["author"], 42);
+    }
+
+    #[test]
+    fn trigger_pipe_result_with_trigger_type() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": true,
+                "triggered_at": "2026-01-01T00:00:00Z",
+                "trigger_type": "webhook"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "webhook");
+    }
+
+    #[test]
+    #[test]
+    fn trigger_pipe_result_rejects_invalid_trigger_type() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": true,
+                "triggered_at": "2026-01-01T00:00:00Z",
+                "trigger_type": "invalid_type"
+            })),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("trigger_type"));
+    }
+
+    #[test]
+    fn trigger_pipe_result_accepts_replay_trigger_type() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": true,
+                "triggered_at": "2026-01-01T00:00:00Z",
+                "trigger_type": "replay"
+            })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_result_trigger_type_defaults_manual() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": false,
+                "error": "Connection refused",
+                "triggered_at": "2026-01-01T00:00:00Z"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "manual");
     }
 }
