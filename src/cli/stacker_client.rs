@@ -186,6 +186,93 @@ pub struct DeploymentStatusInfo {
     pub updated_at: String,
 }
 
+/// Pipe template info from `/api/v1/pipes/templates`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeTemplateInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub source_app_type: String,
+    pub source_endpoint: serde_json::Value,
+    pub target_app_type: String,
+    pub target_endpoint: serde_json::Value,
+    #[serde(default)]
+    pub target_external_url: Option<String>,
+    pub field_mapping: serde_json::Value,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub is_public: Option<bool>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Pipe instance info from `/api/v1/pipes/instances`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeInstanceInfo {
+    pub id: String,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    pub deployment_hash: String,
+    pub source_container: String,
+    #[serde(default)]
+    pub target_container: Option<String>,
+    #[serde(default)]
+    pub target_url: Option<String>,
+    #[serde(default)]
+    pub field_mapping_override: Option<serde_json::Value>,
+    #[serde(default)]
+    pub config_override: Option<serde_json::Value>,
+    pub status: String,
+    #[serde(default)]
+    pub last_triggered_at: Option<String>,
+    #[serde(default)]
+    pub trigger_count: i64,
+    #[serde(default)]
+    pub error_count: i64,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Request body for creating a pipe template
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePipeTemplateApiRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub source_app_type: String,
+    pub source_endpoint: serde_json::Value,
+    pub target_app_type: String,
+    pub target_endpoint: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_external_url: Option<String>,
+    pub field_mapping: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_public: Option<bool>,
+}
+
+/// Request body for creating a pipe instance
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePipeInstanceApiRequest {
+    pub deployment_hash: String,
+    pub source_container: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_container: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_mapping_override: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_override: Option<serde_json::Value>,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StackerClient — HTTP client for the Stacker server
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1424,6 +1511,224 @@ impl StackerClient {
             ))?;
 
         Ok((json, hash))
+    }
+
+    // ── Pipe management ─────────────────────────────
+
+    /// List pipe instances for a deployment.
+    ///
+    /// `GET /api/v1/pipes/instances/{deployment_hash}`
+    pub async fn list_pipe_instances(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<Vec<PipeInstanceInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/{}",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to list pipes: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "List pipes failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid pipe list response: {}", e)))?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get a pipe instance by ID.
+    ///
+    /// `GET /api/v1/pipes/instances/detail/{instance_id}`
+    pub async fn get_pipe_instance(
+        &self,
+        instance_id: &str,
+    ) -> Result<Option<PipeInstanceInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/detail/{}",
+            self.base_url, instance_id
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to get pipe: {}", e)))?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Get pipe failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid pipe response: {}", e)))?;
+
+        Ok(api.item)
+    }
+
+    /// Create a pipe template.
+    ///
+    /// `POST /api/v1/pipes/templates`
+    pub async fn create_pipe_template(
+        &self,
+        request: &CreatePipeTemplateApiRequest,
+    ) -> Result<PipeTemplateInfo, CliError> {
+        let url = format!("{}/api/v1/pipes/templates", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create pipe template: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Create pipe template failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeTemplateInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid template response: {}", e)))?;
+
+        api.item.ok_or_else(|| CliError::ConfigValidation("Empty template response".to_string()))
+    }
+
+    /// Create a pipe instance.
+    ///
+    /// `POST /api/v1/pipes/instances`
+    pub async fn create_pipe_instance(
+        &self,
+        request: &CreatePipeInstanceApiRequest,
+    ) -> Result<PipeInstanceInfo, CliError> {
+        let url = format!("{}/api/v1/pipes/instances", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to create pipe instance: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Create pipe instance failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid instance response: {}", e)))?;
+
+        api.item.ok_or_else(|| CliError::ConfigValidation("Empty instance response".to_string()))
+    }
+
+    /// Update pipe instance status.
+    ///
+    /// `PUT /api/v1/pipes/instances/{instance_id}/status`
+    pub async fn update_pipe_status(
+        &self,
+        instance_id: &str,
+        status: &str,
+    ) -> Result<PipeInstanceInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/{}/status",
+            self.base_url, instance_id
+        );
+        let body = serde_json::json!({ "status": status });
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to update pipe status: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status_code = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Update pipe status failed ({}): {}",
+                status_code, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid status response: {}", e)))?;
+
+        api.item.ok_or_else(|| CliError::ConfigValidation("Empty status response".to_string()))
+    }
+
+    /// List pipe templates visible to the current user.
+    ///
+    /// `GET /api/v1/pipes/templates`
+    pub async fn list_pipe_templates(
+        &self,
+        source_app_type: Option<&str>,
+        target_app_type: Option<&str>,
+    ) -> Result<Vec<PipeTemplateInfo>, CliError> {
+        let mut url = format!("{}/api/v1/pipes/templates", self.base_url);
+        let mut params = Vec::new();
+        if let Some(source) = source_app_type {
+            params.push(format!("source_app_type={}", source));
+        }
+        if let Some(target) = target_app_type {
+            params.push(format!("target_app_type={}", target));
+        }
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to list templates: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "List templates failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeTemplateInfo> =
+            resp.json().await.map_err(|e| CliError::ConfigValidation(format!("Invalid templates response: {}", e)))?;
+
+        Ok(api.list.unwrap_or_default())
     }
 
     // ── Marketplace (creator) ────────────────────────

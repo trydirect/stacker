@@ -11,7 +11,10 @@ use crate::cli::error::CliError;
 use crate::cli::fmt;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
-use crate::cli::stacker_client::{AgentCommandInfo, AgentEnqueueRequest};
+use crate::cli::stacker_client::{
+    AgentCommandInfo, AgentEnqueueRequest, CreatePipeInstanceApiRequest,
+    CreatePipeTemplateApiRequest,
+};
 use crate::console::commands::CallableTrait;
 
 /// Default poll timeout for pipe probe commands (seconds).
@@ -339,7 +342,7 @@ fn print_scan_result(info: &AgentCommandInfo) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// stacker pipe create (placeholder for Phase 1)
+// stacker pipe create — interactive pipe creation
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct PipeCreateCommand {
@@ -366,6 +369,39 @@ impl PipeCreateCommand {
             deployment,
         }
     }
+}
+
+/// Extract operations from a probe result as a flat list of (method, path, summary, fields).
+fn extract_operations(info: &AgentCommandInfo) -> Vec<(String, String, String, Vec<String>)> {
+    let mut ops = Vec::new();
+    if let Some(ref result) = info.result {
+        if let Some(endpoints) = result["endpoints"].as_array() {
+            for ep in endpoints {
+                let base = ep["base_url"].as_str().unwrap_or("");
+                if let Some(operations) = ep["operations"].as_array() {
+                    for op in operations {
+                        let method = op["method"].as_str().unwrap_or("GET").to_string();
+                        let path = format!(
+                            "{}{}",
+                            base,
+                            op["path"].as_str().unwrap_or("")
+                        );
+                        let summary = op["summary"].as_str().unwrap_or("").to_string();
+                        let fields = op["fields"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        ops.push((method, path, summary, fields));
+                    }
+                }
+            }
+        }
+    }
+    ops
 }
 
 impl CallableTrait for PipeCreateCommand {
@@ -419,23 +455,193 @@ impl CallableTrait for PipeCreateCommand {
             PROBE_TIMEOUT_SECS,
         )?;
 
-        // Print results for both
-        println!("\n=== Source: {} ===", self.source);
-        print_scan_result(&source_info);
+        if source_info.status != "completed" || target_info.status != "completed" {
+            eprintln!("Scan failed for one or both apps. Cannot create pipe.");
+            if source_info.status != "completed" {
+                eprintln!("  Source '{}': {}", self.source, source_info.status);
+            }
+            if target_info.status != "completed" {
+                eprintln!("  Target '{}': {}", self.target, target_info.status);
+            }
+            return Ok(());
+        }
 
-        println!("\n=== Target: {} ===", self.target);
-        print_scan_result(&target_info);
+        // Step 2: Extract discovered endpoints
+        let source_ops = extract_operations(&source_info);
+        let target_ops = extract_operations(&target_info);
 
-        // TODO Phase 1: Interactive matching + AI field mapping + pipe storage
-        println!("Interactive pipe creation will be available in the next release.");
-        println!("For now, use 'stacker pipe scan <app>' to discover endpoints.");
+        if source_ops.is_empty() {
+            eprintln!("No endpoints discovered on source app '{}'. Cannot create pipe.", self.source);
+            return Ok(());
+        }
+        if target_ops.is_empty() {
+            eprintln!("No endpoints discovered on target app '{}'. Cannot create pipe.", self.target);
+            return Ok(());
+        }
+
+        // Step 3: Let user select source endpoint
+        let source_labels: Vec<String> = source_ops
+            .iter()
+            .map(|(m, p, s, _)| {
+                if s.is_empty() {
+                    format!("{:>6} {}", m, p)
+                } else {
+                    format!("{:>6} {} — {}", m, p, s)
+                }
+            })
+            .collect();
+
+        println!("\n  Select source endpoint (data comes FROM here):");
+        let source_idx = dialoguer::Select::new()
+            .items(&source_labels)
+            .default(0)
+            .interact()?;
+
+        let (ref src_method, ref src_path, _, ref src_fields) = source_ops[source_idx];
+
+        // Step 4: Let user select target endpoint
+        let target_labels: Vec<String> = target_ops
+            .iter()
+            .map(|(m, p, s, _)| {
+                if s.is_empty() {
+                    format!("{:>6} {}", m, p)
+                } else {
+                    format!("{:>6} {} — {}", m, p, s)
+                }
+            })
+            .collect();
+
+        println!("\n  Select target endpoint (data goes TO here):");
+        let target_idx = dialoguer::Select::new()
+            .items(&target_labels)
+            .default(0)
+            .interact()?;
+
+        let (ref tgt_method, ref tgt_path, _, ref tgt_fields) = target_ops[target_idx];
+
+        // Step 5: Build field mapping
+        let field_mapping = if !self.manual && !src_fields.is_empty() && !tgt_fields.is_empty() {
+            // Auto-suggest mapping by matching field names
+            println!("\n  Auto-matching fields (source → target):");
+            let mut mapping = serde_json::Map::new();
+            for tgt_field in tgt_fields {
+                // Direct name match
+                if src_fields.contains(tgt_field) {
+                    println!("    {} → {} ✓", tgt_field, tgt_field);
+                    mapping.insert(
+                        tgt_field.clone(),
+                        serde_json::Value::String(format!("$.{}", tgt_field)),
+                    );
+                }
+            }
+
+            // Show unmatched target fields
+            let unmatched: Vec<&String> = tgt_fields
+                .iter()
+                .filter(|f| !mapping.contains_key(*f))
+                .collect();
+            if !unmatched.is_empty() {
+                println!("    Unmatched target fields: {}", unmatched.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+                println!("    (You can edit the field mapping later via the API)");
+            }
+
+            if mapping.is_empty() {
+                // No auto-matches — create pass-through
+                println!("    No auto-matches found. Creating pass-through mapping.");
+                for sf in src_fields {
+                    mapping.insert(
+                        sf.clone(),
+                        serde_json::Value::String(format!("$.{}", sf)),
+                    );
+                }
+            }
+
+            serde_json::Value::Object(mapping)
+        } else {
+            // Manual mode or no fields discovered
+            println!("\n  No field auto-matching available. Creating identity mapping.");
+            serde_json::json!({})
+        };
+
+        // Step 6: Ask for pipe name
+        let default_name = format!("{}-to-{}", self.source, self.target);
+        let pipe_name: String = dialoguer::Input::new()
+            .with_prompt("Pipe name")
+            .default(default_name)
+            .interact_text()?;
+
+        // Step 7: Create template via API
+        let template_request = CreatePipeTemplateApiRequest {
+            name: pipe_name.clone(),
+            description: Some(format!(
+                "{} {} → {} {}",
+                src_method, src_path, tgt_method, tgt_path
+            )),
+            source_app_type: self.source.clone(),
+            source_endpoint: serde_json::json!({
+                "path": src_path,
+                "method": src_method,
+            }),
+            target_app_type: self.target.clone(),
+            target_endpoint: serde_json::json!({
+                "path": tgt_path,
+                "method": tgt_method,
+            }),
+            target_external_url: None,
+            field_mapping: field_mapping.clone(),
+            config: Some(serde_json::json!({"retry_count": 3})),
+            is_public: Some(false),
+        };
+
+        let pb = progress::spinner("Creating pipe template...");
+        let template = ctx.block_on(ctx.client.create_pipe_template(&template_request))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Template creation failed");
+                e
+            })?;
+        progress::finish_success(&pb, "Template created");
+
+        // Step 8: Create instance linked to this deployment
+        let instance_request = CreatePipeInstanceApiRequest {
+            deployment_hash: hash.clone(),
+            source_container: self.source.clone(),
+            target_container: Some(self.target.clone()),
+            target_url: None,
+            template_id: Some(template.id.clone()),
+            field_mapping_override: None,
+            config_override: None,
+        };
+
+        let pb = progress::spinner("Creating pipe instance...");
+        let instance = ctx.block_on(ctx.client.create_pipe_instance(&instance_request))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Instance creation failed");
+                e
+            })?;
+        progress::finish_success(&pb, "Pipe instance created");
+
+        if self.json {
+            let output = serde_json::json!({
+                "template": template,
+                "instance": instance,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!("\n  ✓ Pipe '{}' created successfully", pipe_name);
+            println!("  Template ID:  {}", template.id);
+            println!("  Instance ID:  {}", instance.id);
+            println!("  Source:       {} ({})", self.source, src_path);
+            println!("  Target:       {} ({})", self.target, tgt_path);
+            println!("  Status:       {} (use 'stacker pipe activate {}' to start)", instance.status, instance.id);
+            println!("  Mapping:      {}", serde_json::to_string(&field_mapping)?);
+        }
 
         Ok(())
     }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// stacker pipe list (placeholder for Phase 1)
+// stacker pipe list — list active pipes for a deployment
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct PipeListCommand {
@@ -451,9 +657,294 @@ impl PipeListCommand {
 
 impl CallableTrait for PipeListCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO Phase 1: Query pipes from database
-        println!("No pipes configured yet.");
-        println!("Use 'stacker pipe create <source> <target>' to create a pipe.");
+        let ctx = CliRuntime::new("pipe list")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let pb = progress::spinner("Fetching pipes...");
+        let pipes = ctx.block_on(ctx.client.list_pipe_instances(&hash))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Failed to fetch pipes");
+                e
+            })?;
+        progress::finish_success(&pb, &format!("{} pipe(s) found", pipes.len()));
+
+        if pipes.is_empty() {
+            println!("No pipes configured for this deployment.");
+            println!("Use 'stacker pipe create <source> <target>' to create a pipe.");
+            return Ok(());
+        }
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&pipes)?);
+            return Ok(());
+        }
+
+        // Table header
+        println!(
+            "\n{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
+            "ID", "SOURCE", "TARGET", "STATUS", "TRIGGERS", "ERRORS", "LAST TRIGGERED"
+        );
+        println!("{}", "─".repeat(120));
+
+        for pipe in &pipes {
+            let target = pipe
+                .target_container
+                .as_deref()
+                .or(pipe.target_url.as_deref())
+                .unwrap_or("-");
+            let last = pipe
+                .last_triggered_at
+                .as_deref()
+                .unwrap_or("never");
+            let status_icon = match pipe.status.as_str() {
+                "active" => "● active",
+                "paused" => "◉ paused",
+                "error" => "✗ error",
+                _ => "○ draft",
+            };
+
+            println!(
+                "{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
+                &pipe.id,
+                truncate_str(&pipe.source_container, 14),
+                truncate_str(target, 14),
+                status_icon,
+                pipe.trigger_count,
+                pipe.error_count,
+                last,
+            );
+        }
+
+        println!("\n{} pipe(s) total.", pipes.len());
+        Ok(())
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe activate — activate a pipe instance
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct PipeActivateCommand {
+    pub pipe_id: String,
+    pub trigger: String,
+    pub poll_interval: u32,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeActivateCommand {
+    pub fn new(
+        pipe_id: String,
+        trigger: String,
+        poll_interval: u32,
+        json: bool,
+        deployment: Option<String>,
+    ) -> Self {
+        Self { pipe_id, trigger, poll_interval, json, deployment }
+    }
+}
+
+impl CallableTrait for PipeActivateCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("pipe activate")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        // Fetch pipe instance details to get source/target info
+        let pb = progress::spinner("Fetching pipe details...");
+        let pipe = ctx.block_on(ctx.client.get_pipe_instance(&self.pipe_id))
+            .map_err(|e| { progress::finish_error(&pb, "Failed"); e })?
+            .ok_or_else(|| CliError::ConfigValidation(
+                format!("Pipe instance '{}' not found", self.pipe_id),
+            ))?;
+        progress::finish_success(&pb, "Pipe found");
+
+        // Get template info for endpoint details (if linked)
+        let (source_endpoint, source_method, target_endpoint, target_method, field_mapping) =
+            if let Some(ref tid) = pipe.template_id {
+                let templates = ctx.block_on(ctx.client.list_pipe_templates(None, None))?;
+                if let Some(tmpl) = templates.iter().find(|t| &t.id == tid) {
+                    (
+                        tmpl.source_endpoint["path"].as_str().unwrap_or("/").to_string(),
+                        tmpl.source_endpoint["method"].as_str().unwrap_or("GET").to_string(),
+                        tmpl.target_endpoint["path"].as_str().unwrap_or("/").to_string(),
+                        tmpl.target_endpoint["method"].as_str().unwrap_or("POST").to_string(),
+                        pipe.field_mapping_override.clone().unwrap_or(tmpl.field_mapping.clone()),
+                    )
+                } else {
+                    ("/".to_string(), "GET".to_string(), "/".to_string(), "POST".to_string(), serde_json::json!({}))
+                }
+            } else {
+                ("/".to_string(), "GET".to_string(), "/".to_string(), "POST".to_string(),
+                 pipe.field_mapping_override.clone().unwrap_or(serde_json::json!({})))
+            };
+
+        // 1. Update status to "active" via API
+        let pb = progress::spinner("Setting pipe status to active...");
+        ctx.block_on(ctx.client.update_pipe_status(&self.pipe_id, "active"))
+            .map_err(|e| { progress::finish_error(&pb, "Status update failed"); e })?;
+        progress::finish_success(&pb, "Status: active");
+
+        // 2. Send activate_pipe command to agent
+        let params = serde_json::json!({
+            "pipe_instance_id": self.pipe_id,
+            "source_container": pipe.source_container,
+            "source_endpoint": source_endpoint,
+            "source_method": source_method,
+            "target_container": pipe.target_container,
+            "target_url": pipe.target_url,
+            "target_endpoint": target_endpoint,
+            "target_method": target_method,
+            "field_mapping": field_mapping,
+            "trigger_type": self.trigger,
+            "poll_interval_secs": self.poll_interval,
+        });
+
+        let request = AgentEnqueueRequest::new(&hash, "activate_pipe")
+            .with_raw_parameters(params);
+
+        let info = run_agent_command(
+            &ctx,
+            &request,
+            "Activating pipe on agent",
+            PROBE_TIMEOUT_SECS,
+        )?;
+
+        print_command_result(&info, self.json);
+
+        if !self.json && info.status == "completed" {
+            println!("\n  ✓ Pipe '{}' is now active", self.pipe_id);
+            println!("  Trigger type: {}", self.trigger);
+            if self.trigger == "poll" {
+                println!("  Poll interval: {}s", self.poll_interval);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe deactivate — stop a pipe
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct PipeDeactivateCommand {
+    pub pipe_id: String,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeDeactivateCommand {
+    pub fn new(pipe_id: String, json: bool, deployment: Option<String>) -> Self {
+        Self { pipe_id, json, deployment }
+    }
+}
+
+impl CallableTrait for PipeDeactivateCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("pipe deactivate")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        // 1. Update status to "paused" via API
+        let pb = progress::spinner("Setting pipe status to paused...");
+        ctx.block_on(ctx.client.update_pipe_status(&self.pipe_id, "paused"))
+            .map_err(|e| { progress::finish_error(&pb, "Status update failed"); e })?;
+        progress::finish_success(&pb, "Status: paused");
+
+        // 2. Send deactivate_pipe command to agent
+        let params = serde_json::json!({
+            "pipe_instance_id": self.pipe_id,
+        });
+
+        let request = AgentEnqueueRequest::new(&hash, "deactivate_pipe")
+            .with_raw_parameters(params);
+
+        let info = run_agent_command(
+            &ctx,
+            &request,
+            "Deactivating pipe on agent",
+            PROBE_TIMEOUT_SECS,
+        )?;
+
+        print_command_result(&info, self.json);
+
+        if !self.json && info.status == "completed" {
+            println!("\n  ✓ Pipe '{}' deactivated", self.pipe_id);
+        }
+
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe trigger — one-shot pipe execution
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct PipeTriggerCommand {
+    pub pipe_id: String,
+    pub data: Option<String>,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeTriggerCommand {
+    pub fn new(pipe_id: String, data: Option<String>, json: bool, deployment: Option<String>) -> Self {
+        Self { pipe_id, data, json, deployment }
+    }
+}
+
+impl CallableTrait for PipeTriggerCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("pipe trigger")?;
+        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let input_data = match &self.data {
+            Some(raw) => {
+                let parsed: serde_json::Value = serde_json::from_str(raw)
+                    .map_err(|e| CliError::ConfigValidation(format!("Invalid JSON data: {}", e)))?;
+                Some(parsed)
+            }
+            None => None,
+        };
+
+        let params = serde_json::json!({
+            "pipe_instance_id": self.pipe_id,
+            "input_data": input_data,
+        });
+
+        let request = AgentEnqueueRequest::new(&hash, "trigger_pipe")
+            .with_raw_parameters(params);
+
+        let info = run_agent_command(
+            &ctx,
+            &request,
+            "Triggering pipe",
+            PROBE_TIMEOUT_SECS,
+        )?;
+
+        print_command_result(&info, self.json);
+
+        if !self.json {
+            if info.status == "completed" {
+                if let Some(ref result) = info.result {
+                    let success = result["success"].as_bool().unwrap_or(false);
+                    if success {
+                        println!("\n  ✓ Pipe '{}' triggered successfully", self.pipe_id);
+                    } else {
+                        let error = result["error"].as_str().unwrap_or("unknown error");
+                        eprintln!("\n  ✗ Pipe trigger failed: {}", error);
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }

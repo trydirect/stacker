@@ -581,6 +581,48 @@ enum PipeCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Activate a pipe instance (start listening for triggers)
+    Activate {
+        /// Pipe instance ID (UUID)
+        pipe_id: String,
+        /// Trigger type: webhook, poll, or manual
+        #[arg(long, default_value = "webhook")]
+        trigger: String,
+        /// Poll interval in seconds (only for --trigger=poll)
+        #[arg(long, default_value = "300")]
+        poll_interval: u32,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Deactivate a pipe instance (stop listening)
+    Deactivate {
+        /// Pipe instance ID (UUID)
+        pipe_id: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Trigger a pipe instance manually (one-shot execution)
+    Trigger {
+        /// Pipe instance ID (UUID)
+        pipe_id: String,
+        /// Optional JSON input data to feed into the pipe
+        #[arg(long)]
+        data: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1133,6 +1175,15 @@ fn get_command(
                 ),
                 PipeCommands::List { json, deployment } => Box::new(
                     pipe::PipeListCommand::new(json, deployment),
+                ),
+                PipeCommands::Activate { pipe_id, trigger, poll_interval, json, deployment } => Box::new(
+                    pipe::PipeActivateCommand::new(pipe_id, trigger, poll_interval, json, deployment),
+                ),
+                PipeCommands::Deactivate { pipe_id, json, deployment } => Box::new(
+                    pipe::PipeDeactivateCommand::new(pipe_id, json, deployment),
+                ),
+                PipeCommands::Trigger { pipe_id, data, json, deployment } => Box::new(
+                    pipe::PipeTriggerCommand::new(pipe_id, data, json, deployment),
                 ),
             }
         },
