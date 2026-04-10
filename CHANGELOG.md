@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.7] — 2026-04-10
+
+### Security — IDOR Hardening & Test Coverage
+
+- **69 IDOR security integration tests** across 12 test files (`tests/security_*.rs`) covering every API endpoint
+- **18 CLI endpoint security tests** (`tests/security_cli.rs`) — verify `stacker list`, `deploy`, `destroy` honor user boundaries
+- **Defense-in-depth**: `user_id` parameter added to `project::delete`, `project::fetch_one_by_name`, `cloud::delete`, `server::delete` DB functions
+- **Cross-user isolation**: all list endpoints (projects, clouds, servers, deployments, commands, pipes, clients, chats, ratings) return only the authenticated user's resources
+- **Credential logging hardened**: sensitive cloud tokens and secrets no longer printed to server logs
+
+### Added — Pipe Feature Phase 1 (Container Linking)
+
+- `stacker pipe list` — query and display pipe instances for a deployment (status, triggers, errors, last triggered)
+- `stacker pipe create <source> <target>` — interactive flow: scan both apps via agent, pick endpoints, auto-match fields by name, create template + instance via API
+- `stacker pipe activate <id>` — set pipe to active, send `activate_pipe` agent command with full config (endpoints, field mapping, trigger type, poll interval)
+- `stacker pipe deactivate <id>` — pause pipe, send `deactivate_pipe` agent command
+- `stacker pipe trigger <id>` — one-shot pipe execution with optional `--data` JSON input
+- `PUT /api/v1/pipes/instances/{id}/status` — new REST endpoint for pipe status updates
+- Agent command types: `activate_pipe`, `deactivate_pipe`, `trigger_pipe` with full parameter/result validation (9 unit tests)
+- 6 new client methods + 4 API request/response structs in `stacker_client.rs`
+
+### Fixed — Per-Target Deployment Lock Files
+
+- Deployment lock files are now namespaced by target: `.stacker/<target>.lock` (e.g. `local.lock`, `cloud.lock`, `server.lock`)
+- Local deploys no longer overwrite cloud/server connection details
+- Existing `deployment.lock` files automatically migrated on read
+
 ### Added — Kata Containers Runtime Support
 
 - `runtime` field on `deploy_app` and `deploy_with_configs` agent commands — values: `runc` (default), `kata`

@@ -18,18 +18,18 @@ git pull
 ### 2) Create and publish the release
 
 ```bash
-gh release create v0.2.5 --generate-notes
+gh release create v0.2.7 --generate-notes
 ```
 
-This creates the `v0.2.5` tag and publishes the release, which triggers:
+This creates the `v0.2.7` tag and publishes the release, which triggers:
 
 - CLI binary builds (linux + macOS) and uploads to the release.
-- Docker image build and push tagged as `trydirect/stacker:v0.2.5`.
+- Docker image build and push tagged as `trydirect/stacker:v0.2.7`.
 
 ### 3) Verify artifacts
 
 ```bash
-gh release view v0.2.5 --json assets --jq '.assets[].name'
+gh release view v0.2.7 --json assets --jq '.assets[].name'
 ```
 
 ### 4) Check workflows

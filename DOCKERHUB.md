@@ -1,7 +1,7 @@
 # Stacker — Build, Deploy & Manage Containerised Apps
 
 [![Discord](https://img.shields.io/discord/578119430391988232?label=discord&logo=discord&color=5865F2)](https://discord.gg/mNhsa8VdYX)
-[![Version](https://img.shields.io/badge/version-0.2.5-blue)](https://github.com/trydirect/stacker/releases)
+[![Version](https://img.shields.io/badge/version-0.2.7-blue)](https://github.com/trydirect/stacker/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/trydirect/stacker/blob/main/LICENSE)
 [![GitHub](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/trydirect/stacker)
 
@@ -160,6 +160,12 @@ The CLI (`stacker-cli`) is a standalone binary — no server required for local 
 | `stacker ai ask` | Ask AI about your stack, or let it modify config |
 | `stacker service add` | Add from 20+ built-in service templates |
 | `stacker ssh-key generate` | Generate Vault-backed SSH keys |
+| `stacker pipe scan` | Discover API endpoints on running containers |
+| `stacker pipe create` | Create data pipes between containers (interactive) |
+| `stacker pipe list` | List active and paused pipe instances |
+| `stacker pipe activate` | Activate a pipe (start trigger-based data flow) |
+| `stacker pipe deactivate` | Pause an active pipe |
+| `stacker pipe trigger` | One-shot pipe execution with optional input |
 
 ### AI-Powered Init
 
@@ -280,7 +286,7 @@ Stacker auto-detects and generates optimised multi-stage Dockerfiles for:
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release |
-| `x.y.z` | Specific version (e.g. `0.2.5`) |
+| `x.y.z` | Specific version (e.g. `0.2.7`) |
 | `test` | Development/testing builds |
 
 ---

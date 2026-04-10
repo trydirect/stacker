@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.6-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.2.7-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -160,6 +160,12 @@ The end-user tool. No server required for local deploys.
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
+| `stacker pipe scan <app>` | Discover API endpoints on a running container |
+| `stacker pipe create <src> <tgt>` | Create a data pipe between two containers (interactive) |
+| `stacker pipe list` | List pipe instances for the current deployment |
+| `stacker pipe activate <id>` | Activate a pipe (start listening for triggers) |
+| `stacker pipe deactivate <id>` | Pause an active pipe |
+| `stacker pipe trigger <id>` | One-shot pipe execution with optional input data |
 | `stacker submit` | Package current stack and submit to marketplace for review |
 | `stacker marketplace status` | Check submission status for your marketplace templates |
 | `stacker marketplace logs <name>` | Show review comments and history for a submission |
@@ -244,6 +250,11 @@ cargo run --bin server                           # http://127.0.0.1:8000
 | `GET /api/v1/marketplace/install/{token}` | Generate install.sh script for buyers |
 | `GET /api/v1/marketplace/download/{token}` | Download stack archive (purchase token validated) |
 | `POST /api/v1/marketplace/agents/register` | Agent self-registration after install |
+| `POST /api/v1/pipes/templates` | Create a reusable pipe template (source→target mapping) |
+| `GET /api/v1/pipes/templates` | List pipe templates (with optional filters) |
+| `POST /api/v1/pipes/instances` | Create a pipe instance for a deployment |
+| `GET /api/v1/pipes/instances` | List pipe instances by deployment hash |
+| `PUT /api/v1/pipes/instances/{id}/status` | Update pipe instance status (active/paused) |
 
 ### MCP Server
 
@@ -300,6 +311,10 @@ All agent requests are **HMAC-signed** (`X-Agent-Signature` header) using a toke
 | `stacker.exec` | Execute a command inside a running container (with security blocklist) |
 | `stacker.server_resources` | Collect server resource metrics (CPU, memory, disk, network) |
 | `apply_config` | Pull config from Vault and apply to a running container |
+| `probe_endpoints` | Discover API endpoints on containers (OpenAPI, REST, HTML forms, GraphQL) |
+| `activate_pipe` | Activate a pipe instance — start polling/webhook triggers |
+| `deactivate_pipe` | Deactivate a running pipe instance |
+| `trigger_pipe` | One-shot pipe execution: fetch source data → map fields → post to target |
 
 ### Agent registration
 
@@ -330,10 +345,11 @@ sqlx migrate revert   # rollback
 ## Testing
 
 ```bash
-cargo test                         # all tests (467+)
+cargo test                         # all tests (772+ unit, 69 security integration)
 cargo test user_service_client     # User Service connector
 cargo test marketplace_webhook     # Marketplace webhook flows
 cargo test deployment_validator    # Deployment validation
+cargo test --test security_cli     # CLI endpoint IDOR security tests
 ```
 
 ---
