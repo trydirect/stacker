@@ -335,9 +335,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (heroCommand && heroOutput) {
         new TypeWriter(heroCommand, heroOutput, [
             'stacker init --with-ai',
-            'stacker deploy --cloud hetzner',
+            'stacker service add wordpress',
+            'stacker deploy --target server --runtime kata',
             'stacker status',
-            'stacker ai ask "optimize my config"',
+            './stacker ai ask "how do I connect my metal bare server"',
+            'stacker agent configure-firewall --public-ports 80/tcp,443/tcp',
         ], [
             [
                 '▸ Scanning project structure...',
@@ -346,9 +348,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 '✓ stacker.yml created with 6 services',
             ],
             [
-                '▸ Provisioning infrastructure on Hetzner Cloud...',
-                '▸ Running Terraform plan (3 resources)...',
-                '▸ Configuring with Ansible...',
+                '▸ Resolving template: wordpress...',
+                '✓ Added service \'wordpress\' (wordpress:latest)',
+                '  Also added dependency: mysql',
+                '✓ stacker.yml updated (backup: stacker.yml.bak)',
+            ],
+            [
+                '▸ Connecting to bare-metal target...',
+                '▸ Validating Kata runtime support...',
+                '▸ Configuring server with Ansible...',
                 '✓ Stack deployed! https://my-app.example.com',
             ],
             [
@@ -358,10 +366,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 '✓ All systems operational',
             ],
             [
-                '▸ Analyzing your stacker.yml...',
-                '✓ Suggestion: Add health checks to redis service',
-                '✓ Suggestion: Set memory limits for postgres (512MB → 1GB)',
-                '✓ Config optimized. Run "stacker deploy" to apply.',
+                '▸ AI inspecting deploy.server config...',
+                '✓ Suggested host, user, port, and ssh_key fields',
+                '✓ Ready to run: stacker deploy --target server',
+            ],
+            [
+                '▸ Checking deployment and agent capabilities...',
+                '✓ Opened 80/tcp and 443/tcp to the public internet',
+                '✓ Firewall rules persisted for future reboots',
             ],
         ], 45);
     }

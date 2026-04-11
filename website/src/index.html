@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stacker — AI-Powered Infrastructure CLI by TryDirect</title>
-  <meta name="description" content="Deploy infrastructure with AI. Stacker scans your project, generates Docker Compose configs, and deploys to any cloud — all from your terminal.">
+  <title>Stacker v0.2.7 — AI Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Stacker v0.2.7 scans your project, generates stacker.yml with AI, deploys to cloud or bare metal, manages agents, and links apps with pipes — all from your terminal.">
   <meta name="theme-color" content="#7e57c2">
   <link rel="icon" type="image/png" href="assets/stacker-logo.png">
   <link rel="stylesheet" href="styles.css">
@@ -25,8 +25,9 @@
       </a>
       <div class="nav__links" id="navLinks">
         <a href="#features" class="nav__link">Features</a>
+        <a href="#release" class="nav__link">Release</a>
         <a href="#ai" class="nav__link">AI Engine</a>
-        <a href="#quickstart" class="nav__link">Quick Start</a>
+        <a href="#examples" class="nav__link">Examples</a>
         <a href="#commands" class="nav__link">Commands</a>
         <a href="#providers" class="nav__link">Providers</a>
       </div>
@@ -51,15 +52,16 @@
       <div class="hero__content">
         <div class="hero__badge" data-animate="fade-up">
           <span class="hero__badge-dot"></span>
-          Open Source &middot; AI-Powered &middot; Multi-Cloud
+          New Release v0.2.7 &middot; AI-Powered &middot; Cloud + Bare Metal
         </div>
         <h1 class="hero__title" data-animate="fade-up" data-delay="100">
-          Deploy infrastructure<br>
-          <span class="gradient-text">with a single command.</span>
+          Ship your stack from code to server<br>
+          <span class="gradient-text">with one CLI.</span>
         </h1>
         <p class="hero__subtitle" data-animate="fade-up" data-delay="200">
-          Stacker scans your project, leverages AI to generate perfect Docker&nbsp;Compose 
-          configurations, and deploys to any cloud provider — all from your terminal.
+          Stacker scans your project, generates a production-ready <code>stacker.yml</code>,
+          deploys to cloud or bare metal, manages remote agents, links apps with pipes,
+          and ships marketplace-ready stacks — all from your terminal.
         </p>
         <div class="hero__actions" data-animate="fade-up" data-delay="300">
           <a href="#quickstart" class="btn btn--primary btn--lg">
@@ -70,6 +72,20 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
             View on GitHub
           </a>
+        </div>
+        <div class="hero__release" data-animate="fade-up" data-delay="350">
+          <div class="hero__release-version">v0.2.7</div>
+          <p class="hero__release-text">
+            Latest release includes <strong>pipes</strong>, <strong>agent control + firewall</strong>,
+            <strong>Kata runtime</strong>, <strong>marketplace submit/status/logs</strong>, and
+            <strong>multi-user security hardening</strong>.
+          </p>
+          <div class="hero__release-chips">
+            <span class="hero__release-chip">Pipe automation</span>
+            <span class="hero__release-chip">Agent ops</span>
+            <span class="hero__release-chip">Kata isolation</span>
+            <span class="hero__release-chip">Marketplace flows</span>
+          </div>
         </div>
         <div class="hero__terminal" data-animate="fade-up" data-delay="400">
           <div class="terminal">
@@ -101,7 +117,7 @@
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Features</span>
         <h2 class="section__title">Everything you need to deploy.<br><span class="gradient-text">Nothing you don't.</span></h2>
-        <p class="section__desc">From project scanning to cloud deployment, Stacker handles the entire infrastructure lifecycle.</p>
+        <p class="section__desc">From AI-generated config to agent operations, bare-metal deploys, secure runtime isolation, and marketplace shipping, Stacker covers the full delivery path.</p>
       </div>
       <div class="features__grid">
         <div class="feature-card feature-card--highlight" data-animate="fade-up" data-delay="0">
@@ -109,7 +125,7 @@
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2a4 4 0 0 1 4 4v1a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><circle cx="12" cy="6" r="1"/><path d="M9 10l3 2 3-2"/></svg>
           </div>
           <h3 class="feature-card__title">AI-Powered Configuration</h3>
-          <p class="feature-card__desc">Run <code>stacker init --with-ai</code> and watch as AI deeply scans your project structure, detects frameworks, databases, and services — then generates a production-ready <code>stacker.yml</code>.</p>
+          <p class="feature-card__desc">Run <code>stacker init --with-ai</code> or <code>stacker ai ask</code> to scan your project, detect frameworks and services, update <code>stacker.yml</code>, and answer real deployment questions from your terminal.</p>
           <div class="feature-card__tag">Flagship Feature</div>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
@@ -117,42 +133,56 @@
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
           </div>
           <h3 class="feature-card__title">Deep Project Scanning</h3>
-          <p class="feature-card__desc">Automatically detects <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>package.json</code>, <code>Cargo.toml</code>, <code>requirements.txt</code>, and 20+ other project files to build a complete picture.</p>
+          <p class="feature-card__desc">Automatically detects <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>package.json</code>, <code>Cargo.toml</code>, <code>requirements.txt</code>, and the rest of the stack before it writes config.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="200">
           <div class="feature-card__icon feature-card__icon--providers">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
           </div>
           <h3 class="feature-card__title">Multi-Provider AI</h3>
-          <p class="feature-card__desc">Supports <strong>OpenAI</strong>, <strong>Anthropic</strong>, <strong>Ollama</strong> (local), and custom endpoints. Auto-detects available Ollama models — no manual configuration needed.</p>
+          <p class="feature-card__desc">Supports <strong>OpenAI</strong>, <strong>Anthropic</strong>, <strong>Ollama</strong> (local), and custom endpoints. Use local models for private infrastructure work or cloud models for fast iteration.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="0">
           <div class="feature-card__icon feature-card__icon--cloud">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
           </div>
-          <h3 class="feature-card__title">Multi-Cloud Deploy</h3>
-          <p class="feature-card__desc">Deploy to <strong>DigitalOcean</strong>, <strong>Hetzner</strong>, <strong>AWS</strong>, <strong>Linode</strong>, <strong>UpCloud</strong>, or your own server. One config, any cloud.</p>
+          <h3 class="feature-card__title">Cloud + Bare Metal Deploy</h3>
+          <p class="feature-card__desc">Deploy to <strong>DigitalOcean</strong>, <strong>Hetzner</strong>, <strong>AWS</strong>, <strong>Linode</strong>, <strong>UpCloud</strong>, or your own server with the same workflow.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
-          <div class="feature-card__icon feature-card__icon--docker">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M6 8h4v4H6z"/><path d="M10 8h4v4h-4z"/><path d="M14 8h4v4h-4z"/><path d="M6 12h4v4H6z"/><path d="M10 12h4v4h-4z"/></svg>
+          <div class="feature-card__icon feature-card__icon--runtime">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
           </div>
-          <h3 class="feature-card__title">Docker Compose Generation</h3>
-          <p class="feature-card__desc">Generates production-ready <code>docker-compose.yml</code> with proper networking, volumes, healthchecks, and environment variables.</p>
+          <h3 class="feature-card__title">Kata Runtime Isolation</h3>
+          <p class="feature-card__desc">Deploy with <code>--runtime kata</code> when you need hardware-isolated containers for sensitive workloads, while keeping <code>runc</code> as the fast default.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="200">
-          <div class="feature-card__icon feature-card__icon--proxy">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <div class="feature-card__icon feature-card__icon--ops">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 13h6"/><path d="M14 13h6"/><path d="M12 4v6"/><path d="M12 14v6"/><circle cx="12" cy="12" r="2"/></svg>
           </div>
-          <h3 class="feature-card__title">Proxy & SSL</h3>
-          <p class="feature-card__desc">Auto-configures Nginx or Traefik reverse proxy with Let's Encrypt SSL certificates. Zero-touch HTTPS for all your services.</p>
+          <h3 class="feature-card__title">Agent Control + Firewall</h3>
+          <p class="feature-card__desc">Use <code>stacker agent</code> to inspect health, tail logs, restart apps, deploy directly, configure proxies, and manage iptables firewall rules on remote servers.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="0">
+          <div class="feature-card__icon feature-card__icon--pipe">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 7h4a3 3 0 0 1 3 3v1"/><path d="M17 17h-4a3 3 0 0 1-3-3v-1"/><circle cx="7" cy="7" r="3"/><circle cx="17" cy="17" r="3"/></svg>
+          </div>
+          <h3 class="feature-card__title">Pipes &amp; Container Linking</h3>
+          <p class="feature-card__desc">Discover endpoints, map fields, trigger flows, replay executions, and connect apps together with <code>stacker pipe</code> automation.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="100">
+          <div class="feature-card__icon feature-card__icon--marketplace">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h18l-2 13H5L3 7z"/><path d="M8 7a4 4 0 0 1 8 0"/></svg>
+          </div>
+          <h3 class="feature-card__title">Marketplace Shipping</h3>
+          <p class="feature-card__desc">Package and submit your stack, check review status, and follow feedback with <code>stacker submit</code> and <code>stacker marketplace</code>.</p>
+        </div>
+        <div class="feature-card" data-animate="fade-up" data-delay="200">
           <div class="feature-card__icon feature-card__icon--catalog">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           </div>
           <h3 class="feature-card__title">Service Catalog</h3>
-          <p class="feature-card__desc">20+ built-in service templates — Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI do it.</p>
+          <p class="feature-card__desc">20+ built-in service templates — Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI update the stack for you.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
           <div class="feature-card__icon feature-card__icon--ssh">
@@ -161,6 +191,39 @@
           <h3 class="feature-card__title">SSH Key Management</h3>
           <p class="feature-card__desc">Generate, view, and upload SSH keys for your servers — all stored securely in HashiCorp Vault. No manual key juggling.</p>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Release Section -->
+  <section class="section release" id="release">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Latest Release</span>
+        <h2 class="section__title">Stacker v0.2.7<br><span class="gradient-text">brings the operator tools.</span></h2>
+        <p class="section__desc">The newest release expands Stacker from deployment setup into ongoing operations, app-to-app automation, secure runtime options, and marketplace delivery.</p>
+      </div>
+      <div class="release__grid">
+        <article class="release-card" data-animate="fade-up" data-delay="0">
+          <span class="release-card__eyebrow">Automation</span>
+          <h3 class="release-card__title">Pipes</h3>
+          <p class="release-card__desc">Create, activate, trigger, replay, and inspect pipe executions to move data between apps without building glue code first.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="100">
+          <span class="release-card__eyebrow">Operations</span>
+          <h3 class="release-card__title">Remote agent control</h3>
+          <p class="release-card__desc">Health checks, logs, deploy-app, configure-proxy, and configure-firewall are now first-class CLI workflows for live environments.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="200">
+          <span class="release-card__eyebrow">Security</span>
+          <h3 class="release-card__title">Kata runtime + hardening</h3>
+          <p class="release-card__desc">Choose <code>kata</code> for stronger container isolation and ship with tightened cross-user access controls backed by new IDOR coverage.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="300">
+          <span class="release-card__eyebrow">Distribution</span>
+          <h3 class="release-card__title">Marketplace workflows</h3>
+          <p class="release-card__desc">Submit stacks for review, track approval status, and inspect reviewer feedback directly from the CLI.</p>
+        </article>
       </div>
     </div>
   </section>
@@ -217,10 +280,10 @@
           <div class="ai-step__number ai-step__number--final">4</div>
           <div class="ai-step__content">
             <h3>Deploy</h3>
-            <p>One command deployes your entire stack to any cloud provider with Terraform + Ansible.</p>
+            <p>One command deploys your entire stack to cloud or bare-metal targets with Terraform + Ansible.</p>
           </div>
           <div class="ai-step__code">
-            <code>$ stacker deploy --cloud hetzner --region eu-central</code>
+            <code>$ stacker deploy --target server --runtime kata</code>
           </div>
         </div>
       </div>
@@ -257,6 +320,59 @@
             <span class="provider-card__detail">Any OpenAI-compatible API</span>
           </div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Examples Section -->
+  <section class="section examples" id="examples">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Examples</span>
+        <h2 class="section__title">Real commands.<br><span class="gradient-text">Real operator output.</span></h2>
+        <p class="section__desc">Examples from the current CLI, including AI guidance for bare-metal servers and remote operations on live deployments.</p>
+      </div>
+      <div class="examples__grid">
+        <article class="example-card" data-animate="fade-up" data-delay="0">
+          <div class="example-card__label">Real AI example</div>
+          <h3 class="example-card__title">Ask how to connect a metal bare server</h3>
+          <pre class="example-card__output"><code>❯ ./stacker ai ask "how do I connect my metal bare server"
+To connect your metal bare server using the provided `stacker.yml` configuration, you need to update the `deploy.server` section with the necessary details. Here is an example of how to configure it:
+
+```yaml
+deploy:
+  target: server
+  compose_file: null
+  cloud: null
+  server:
+    host: your_server_ip_or_hostname
+    user: root
+    port: 22
+    ssh_key: ~/.ssh/id_rsa
+```
+
+Replace `your_server_ip_or_hostname` with the actual IP address or hostname of your metal bare server.
+
+After updating the `deploy.server` section, you can deploy to your server using:
+
+```sh
+stacker deploy --target server
+```
+
+Make sure that your SSH key is correctly set up and that the user has the necessary permissions on the server.</code></pre>
+        </article>
+        <article class="example-card" data-animate="fade-up" data-delay="100">
+          <div class="example-card__label">New in v0.2.7</div>
+          <h3 class="example-card__title">Open ports and keep your database private</h3>
+          <pre class="example-card__output"><code>❯ stacker agent configure-firewall \
+    --public-ports 80/tcp,443/tcp \
+    --private-ports 5432/tcp:10.0.0.0/8
+▸ Checking deployment and agent capabilities...
+▸ Applying iptables rules on target server...
+✓ Opened 80/tcp and 443/tcp to the public internet
+✓ Restricted 5432/tcp to 10.0.0.0/8
+✓ Firewall rules persisted for future reboots</code></pre>
+        </article>
       </div>
     </div>
   </section>
@@ -323,7 +439,7 @@
         <div class="quickstart__step">
           <div class="quickstart__step-num">3</div>
           <div class="quickstart__step-content">
-            <h3>Deploy</h3>
+            <h3>Deploy to cloud or your own server</h3>
             <div class="quickstart__code">
               <div class="terminal terminal--compact">
                 <div class="terminal__header">
@@ -332,10 +448,10 @@
                 <div class="terminal__body">
                   <div class="terminal__line">
                     <span class="terminal__prompt">$</span>
-                    <span class="terminal__text">stacker deploy</span>
+                    <span class="terminal__text">stacker deploy --target server</span>
                   </div>
                   <div class="terminal__line terminal__line--output">
-                    <span class="terminal__text terminal__text--info">▸ Provisioning infrastructure on Hetzner...</span>
+                    <span class="terminal__text terminal__text--info">▸ Connecting to your server over SSH...</span>
                   </div>
                   <div class="terminal__line terminal__line--output">
                     <span class="terminal__text terminal__text--success">✓ Stack deployed! https://your-app.example.com</span>
@@ -354,8 +470,8 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Commands</span>
-        <h2 class="section__title">14 commands.<br><span class="gradient-text">Complete control.</span></h2>
-        <p class="section__desc">Every stage of your infrastructure lifecycle, covered.</p>
+        <h2 class="section__title">21 top-level commands.<br><span class="gradient-text">Complete control.</span></h2>
+        <p class="section__desc">Build, deploy, automate, secure, publish, and operate your stack from one CLI.</p>
       </div>
       <div class="commands__grid" data-animate="fade-up" data-delay="100">
         <div class="command-card" data-command="login">
@@ -375,7 +491,7 @@
           <div class="command-card__header">
             <code class="command-card__cmd">stacker deploy</code>
           </div>
-          <p class="command-card__desc">Deploy your stack to the configured cloud provider via Terraform + Ansible.</p>
+          <p class="command-card__desc">Deploy your stack to cloud or server targets, with optional <code>--runtime kata</code> isolation.</p>
         </div>
         <div class="command-card" data-command="logs">
           <div class="command-card__header">
@@ -407,7 +523,7 @@
             <code class="command-card__cmd">stacker ai</code>
             <span class="command-card__flag">ask</span>
           </div>
-          <p class="command-card__desc">Ask questions about your infrastructure or get deployment advice from AI.</p>
+          <p class="command-card__desc">Ask questions about your infrastructure, generate config changes, and get direct answers for cloud or bare-metal deploys.</p>
         </div>
         <div class="command-card" data-command="proxy">
           <div class="command-card__header">
@@ -421,6 +537,38 @@
             <span class="command-card__flag">add &lt;name&gt;</span>
           </div>
           <p class="command-card__desc">Add services from 20+ built-in templates — Postgres, Redis, WordPress, and more. Auto-adds dependencies.</p>
+        </div>
+        <div class="command-card" data-command="pipe">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker pipe</code>
+            <span class="command-card__flag">create</span>
+          </div>
+          <p class="command-card__desc">Discover endpoints, connect apps, activate flows, replay executions, and inspect automation history.</p>
+        </div>
+        <div class="command-card" data-command="agent">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker agent</code>
+            <span class="command-card__flag">configure-firewall</span>
+          </div>
+          <p class="command-card__desc">Operate live deployments with health, logs, restart, deploy-app, configure-proxy, and firewall controls.</p>
+        </div>
+        <div class="command-card" data-command="marketplace">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker marketplace</code>
+          </div>
+          <p class="command-card__desc">Track submission status, review logs, and manage your published stacks after marketplace submission.</p>
+        </div>
+        <div class="command-card" data-command="secrets">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker secrets</code>
+          </div>
+          <p class="command-card__desc">Manage <code>.env</code> values, mask secrets in output, and validate config references before deploys.</p>
+        </div>
+        <div class="command-card" data-command="ci">
+          <div class="command-card__header">
+            <code class="command-card__cmd">stacker ci</code>
+          </div>
+          <p class="command-card__desc">Export and validate CI/CD workflows so your pipelines stay aligned with <code>stacker.yml</code>.</p>
         </div>
         <div class="command-card" data-command="ssh-key">
           <div class="command-card__header">
@@ -443,7 +591,7 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Providers</span>
-        <h2 class="section__title">Deploy anywhere.<br><span class="gradient-text">Your cloud, your choice.</span></h2>
+        <h2 class="section__title">Deploy anywhere.<br><span class="gradient-text">Your cloud, your server, your choice.</span></h2>
       </div>
       <div class="providers__logos" data-animate="fade-up" data-delay="100">
         <div class="cloud-logo">
@@ -480,7 +628,7 @@
           <div class="cloud-logo__icon">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M2 9h20"/><circle cx="7" cy="6" r="1" fill="currentColor"/><circle cx="11" cy="6" r="1" fill="currentColor"/></svg>
           </div>
-          <span>Own Server</span>
+          <span>Bare Metal / Own Server</span>
         </div>
       </div>
     </div>
@@ -492,7 +640,7 @@
       <div class="cta__inner" data-animate="fade-up">
         <div class="cta__glow" aria-hidden="true"></div>
         <h2 class="cta__title">Ready to deploy<br><span class="gradient-text">smarter?</span></h2>
-        <p class="cta__desc">Join developers who ship infrastructure with AI. Open source, free forever.</p>
+        <p class="cta__desc">Ship with the current Stacker release: AI config, bare-metal deploys, pipes, agent ops, and marketplace workflows in one place.</p>
         <div class="cta__actions">
           <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="btn btn--primary btn--lg">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
@@ -504,7 +652,7 @@
         </div>
         <div class="cta__stats">
           <div class="cta__stat">
-            <span class="cta__stat-value" data-count="14">0</span>
+            <span class="cta__stat-value" data-count="21">0</span>
             <span class="cta__stat-label">CLI Commands</span>
           </div>
           <div class="cta__stat">
@@ -516,8 +664,8 @@
             <span class="cta__stat-label">Cloud Platforms</span>
           </div>
           <div class="cta__stat">
-            <span class="cta__stat-value" data-count="536">0</span>
-            <span class="cta__stat-label">Tests Passing</span>
+            <span class="cta__stat-value" data-count="994">0</span>
+            <span class="cta__stat-label">Tests in Suite</span>
           </div>
         </div>
       </div>
@@ -536,9 +684,10 @@
           <div class="footer__col">
             <h4>Product</h4>
             <a href="#features">Features</a>
+            <a href="#release">Release</a>
             <a href="#ai">AI Engine</a>
+            <a href="#examples">Examples</a>
             <a href="#commands">Commands</a>
-            <a href="#quickstart">Quick Start</a>
           </div>
           <div class="footer__col">
             <h4>Resources</h4>
