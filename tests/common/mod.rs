@@ -174,14 +174,40 @@ async fn mock_auth_server_two_users(listener: TcpListener) {
 
 /// Insert a minimal cloud credential into the DB and return its id.
 pub async fn create_test_cloud(pool: &PgPool, user_id: &str, name: &str, provider: &str) -> i32 {
+    let cloud_form = forms::CloudForm {
+        user_id: Some(user_id.to_string()),
+        project_id: None,
+        name: Some(name.to_string()),
+        provider: provider.to_string(),
+        cloud_token: Some("test-cloud-token".to_string()),
+        cloud_key: None,
+        cloud_secret: None,
+        save_token: Some(true),
+    };
+
+    let cloud: stacker::models::Cloud = (&cloud_form).into();
     sqlx::query(
-        r#"INSERT INTO cloud (user_id, name, provider, cloud_token, save_token, created_at, updated_at)
-        VALUES ($1, $2, $3, 'test-token-encrypted', true, NOW(), NOW())
+        r#"INSERT INTO cloud (
+            user_id,
+            name,
+            provider,
+            cloud_token,
+            cloud_key,
+            cloud_secret,
+            save_token,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         RETURNING id"#,
     )
-    .bind(user_id)
-    .bind(name)
-    .bind(provider)
+    .bind(cloud.user_id)
+    .bind(cloud.name)
+    .bind(cloud.provider)
+    .bind(cloud.cloud_token)
+    .bind(cloud.cloud_key)
+    .bind(cloud.cloud_secret)
+    .bind(cloud.save_token)
     .fetch_one(pool)
     .await
     .map(|row| {
@@ -199,8 +225,17 @@ pub async fn create_test_deployment(
     deployment_hash: &str,
 ) -> i32 {
     sqlx::query(
-        r#"INSERT INTO deployment (project_id, deployment_hash, user_id, status, runtime, created_at, updated_at)
-        VALUES ($1, $2, $3, 'running', 'runc', NOW(), NOW())
+        r#"INSERT INTO deployment (
+            project_id,
+            deployment_hash,
+            user_id,
+            metadata,
+            status,
+            runtime,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, '{}'::jsonb, 'running', 'runc', NOW(), NOW())
         RETURNING id"#,
     )
     .bind(project_id)
@@ -320,8 +355,8 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
 /// Required because server.project_id has a FK constraint to project(id).
 pub async fn create_test_project(pool: &PgPool, user_id: &str) -> i32 {
     sqlx::query(
-        r#"INSERT INTO project (stack_id, user_id, name, body, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, 'Test Project', '{}', NOW(), NOW())
+        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, NOW(), NOW())
         RETURNING id"#,
     )
     .bind(user_id)

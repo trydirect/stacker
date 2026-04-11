@@ -1151,8 +1151,10 @@ To verify `is_official` and `is_verified_publisher` status for each image:
   - Add vendor verification states, onboarding flow, and payout account linkage.
   - Persist enough payout metadata to support auditing, support, and marketplace operations.
 - [ ] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
-  - Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
-  - Use these fields in API responses and deployment validation so incompatible targets are blocked early.
+  - [x] Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
+  - [x] Use these fields in marketplace create/read/update flows and webhook payloads.
+  - [x] Use `supported_clouds` and `supported_os` in deployment validation so incompatible targets are blocked early.
+  - [ ] Enforce numeric capacity requirements (`min_ram_mb`, `min_disk_gb`, `min_cpu_cores`) once deploy-time target metadata is normalized.
 - [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
   - Send notifications for submit/approve/reject/update-required events.
   - Include actionable review reasons and the next expected developer action.

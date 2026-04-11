@@ -69,6 +69,7 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             Some(tags.clone()),
             Some(tech_stack.clone()),
+            Some(infrastructure_requirements.clone()),
             Some(price),
             Some(billing_cycle.as_str()),
             Some(currency.as_str()),
@@ -151,6 +152,7 @@ pub struct UpdateTemplateRequest {
     pub category_code: Option<String>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
+    pub infrastructure_requirements: Option<serde_json::Value>,
     pub plan_type: Option<String>,
     pub price: Option<f64>,
     pub currency: Option<String>,
@@ -181,6 +183,7 @@ pub async fn update_handler(
     }
 
     let req = body.into_inner();
+    let infrastructure_requirements = req.infrastructure_requirements.clone();
 
     // Normalize pricing: plan_type "free" forces price to 0
     let price = match req.plan_type.as_deref() {
@@ -197,6 +200,7 @@ pub async fn update_handler(
         req.category_code.as_deref(),
         req.tags,
         req.tech_stack,
+        infrastructure_requirements,
         price,
         req.plan_type.as_deref(),
         req.currency.as_deref(),

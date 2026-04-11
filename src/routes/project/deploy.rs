@@ -9,9 +9,72 @@ use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde_valid::Validate;
+use std::collections::HashSet;
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
+
+fn validate_template_target_requirements(
+    template: &models::StackTemplate,
+    provider: &str,
+    os: Option<&str>,
+) -> Result<(), String> {
+    let requirements: models::InfrastructureRequirements =
+        serde_json::from_value(template.infrastructure_requirements.clone()).map_err(|err| {
+            tracing::error!(
+                "Failed to parse infrastructure requirements for template {}: {}",
+                template.id,
+                err
+            );
+            "Template infrastructure requirements are invalid".to_string()
+        })?;
+
+    let mut mismatches = Vec::new();
+
+    if !requirements.supported_clouds.is_empty() {
+        let supported: HashSet<String> = requirements
+            .supported_clouds
+            .iter()
+            .map(|cloud| cloud.to_ascii_lowercase())
+            .collect();
+        if !supported.contains(&provider.to_ascii_lowercase()) {
+            mismatches.push(format!(
+                "cloud provider '{}' is not supported (allowed: {})",
+                provider,
+                requirements.supported_clouds.join(", ")
+            ));
+        }
+    }
+
+    if !requirements.supported_os.is_empty() {
+        match os {
+            Some(target_os)
+                if requirements
+                    .supported_os
+                    .iter()
+                    .any(|supported_os| supported_os.eq_ignore_ascii_case(target_os)) => {}
+            Some(target_os) => mismatches.push(format!(
+                "operating system '{}' is not supported (allowed: {})",
+                target_os,
+                requirements.supported_os.join(", ")
+            )),
+            None => mismatches.push(format!(
+                "operating system is required (allowed: {})",
+                requirements.supported_os.join(", ")
+            )),
+        }
+    }
+
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Template '{}' cannot be deployed to this target: {}",
+            template.slug,
+            mismatches.join("; ")
+        ))
+    }
+}
 
 #[tracing::instrument(name = "Deploy for every user", skip_all)]
 #[post("/{id}/deploy")]
@@ -46,16 +109,15 @@ pub async fn item(
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
 
-    // Check marketplace template plan requirements if project was created from template
-    if let Some(template_id) = project.source_template_id {
-        if let Some(template) = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+    let marketplace_template = if let Some(template_id) = project.source_template_id {
+        let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
             .await
-            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
-        {
-            // If template requires a specific plan, validate user has it
-            if let Some(required_plan) = template.required_plan_name {
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+        if let Some(template) = template {
+            if let Some(required_plan) = template.required_plan_name.as_deref() {
                 let has_plan = user_service
-                    .user_has_plan(&user.id, &required_plan, user.access_token.as_deref())
+                    .user_has_plan(&user.id, required_plan, user.access_token.as_deref())
                     .await
                     .map_err(|err| {
                         tracing::error!("Failed to validate plan: {:?}", err);
@@ -76,15 +138,16 @@ pub async fn item(
                     )));
                 }
             }
-        }
-    }
 
-    // Build compose
+            Some(template)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let id = project.id;
-    let dc = DcBuilder::new(project);
-    let fc = dc
-        .build()
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     form.cloud.user_id = Some(user.id.clone());
     form.cloud.project_id = Some(id);
@@ -185,6 +248,22 @@ pub async fn item(
                     .internal_server_error("Internal Server Error")
             })?
     };
+
+    if let Some(template) = marketplace_template.as_ref() {
+        validate_template_target_requirements(
+            template,
+            &form.cloud.provider,
+            server.os.as_deref(),
+        )
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    }
+
+    // Build compose only after marketplace compatibility checks so unsupported
+    // targets fail with a client error before we do deeper deployment work.
+    let dc = DcBuilder::new(project);
+    let fc = dc
+        .build()
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     // Ensure every deploy payload carries the Stacker public key so the Install
     // Service can inject it into authorized_keys on the remote server.
@@ -404,16 +483,15 @@ pub async fn saved_item(
             None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
 
-    // Check marketplace template plan requirements if project was created from template
-    if let Some(template_id) = project.source_template_id {
-        if let Some(template) = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+    let marketplace_template = if let Some(template_id) = project.source_template_id {
+        let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
             .await
-            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
-        {
-            // If template requires a specific plan, validate user has it
-            if let Some(required_plan) = template.required_plan_name {
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+        if let Some(template) = template {
+            if let Some(required_plan) = template.required_plan_name.as_deref() {
                 let has_plan = user_service
-                    .user_has_plan(&user.id, &required_plan, user.access_token.as_deref())
+                    .user_has_plan(&user.id, required_plan, user.access_token.as_deref())
                     .await
                     .map_err(|err| {
                         tracing::error!("Failed to validate plan: {:?}", err);
@@ -434,15 +512,16 @@ pub async fn saved_item(
                     )));
                 }
             }
-        }
-    }
 
-    // Build compose
+            Some(template)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let id = project.id;
-    let dc = DcBuilder::new(project);
-    let fc = dc
-        .build()
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     let cloud = match db::cloud::fetch(pg_pool.get_ref(), cloud_id).await {
         Ok(cloud) => match cloud {
@@ -544,6 +623,18 @@ pub async fn saved_item(
                     .internal_server_error("Failed to create server")
             })?
     };
+
+    if let Some(template) = marketplace_template.as_ref() {
+        validate_template_target_requirements(template, &cloud.provider, server.os.as_deref())
+            .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    }
+
+    // Build compose only after marketplace compatibility checks so unsupported
+    // targets fail with a client error before we do deeper deployment work.
+    let dc = DcBuilder::new(project);
+    let fc = dc
+        .build()
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     // Ensure every deploy payload carries the Stacker public key so the Install
     // Service can inject it into authorized_keys on the remote server.

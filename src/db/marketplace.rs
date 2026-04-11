@@ -412,6 +412,7 @@ pub async fn update_metadata(
     category_code: Option<&str>,
     tags: Option<serde_json::Value>,
     tech_stack: Option<serde_json::Value>,
+    infrastructure_requirements: Option<serde_json::Value>,
     price: Option<f64>,
     billing_cycle: Option<&str>,
     currency: Option<&str>,
@@ -435,7 +436,7 @@ pub async fn update_metadata(
         return Err("Template not editable in current status".to_string());
     }
 
-    let res = sqlx::query!(
+    let res = sqlx::query(
         r#"UPDATE stack_template SET 
             name = COALESCE($2, name),
             short_description = COALESCE($3, short_description),
@@ -443,21 +444,23 @@ pub async fn update_metadata(
             category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
             tags = COALESCE($6, tags),
             tech_stack = COALESCE($7, tech_stack),
-            price = COALESCE($8, price),
-            billing_cycle = COALESCE($9, billing_cycle),
-            currency = COALESCE($10, currency)
-        WHERE id = $1::uuid"#,
-        template_id,
-        name,
-        short_description,
-        long_description,
-        category_code,
-        tags,
-        tech_stack,
-        price,
-        billing_cycle,
-        currency
+            infrastructure_requirements = COALESCE($8, infrastructure_requirements),
+            price = COALESCE($9, price),
+            billing_cycle = COALESCE($10, billing_cycle),
+            currency = COALESCE($11, currency)
+        WHERE id = $1::uuid"#
     )
+    .bind(template_id)
+    .bind(name)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags)
+    .bind(tech_stack)
+    .bind(infrastructure_requirements)
+    .bind(price)
+    .bind(billing_cycle)
+    .bind(currency)
     .execute(pool)
     .instrument(query_span)
     .await

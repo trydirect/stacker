@@ -37,6 +37,18 @@ async fn create_template_with_body(
         .expect("Failed to send template create request")
 }
 
+async fn list_my_templates(client: &Client, address: &str, token: &str) -> Value {
+    client
+        .get(format!("{}/api/templates/mine", address))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("Failed to fetch my templates")
+        .json()
+        .await
+        .expect("Templates response should be valid JSON")
+}
+
 #[tokio::test]
 async fn create_template_with_duplicate_slug_by_different_user_returns_409() {
     let app = match common::spawn_app_two_users().await {
@@ -174,5 +186,62 @@ async fn create_template_returns_infrastructure_requirements_when_provided() {
             "min_cpu_cores": 2
         }),
         body["item"]["infrastructure_requirements"]
+    );
+}
+
+#[tokio::test]
+async fn update_template_persists_infrastructure_requirements() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let create_response = create_template(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        "Updatable Template",
+        "updatable-template",
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let update_response = client
+        .put(format!("{}/api/templates/{}", app.address, template_id))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "infrastructure_requirements": {
+                "supported_clouds": ["digitalocean"],
+                "min_ram_mb": 1024
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to update template");
+    assert_eq!(StatusCode::OK, update_response.status());
+
+    let mine = list_my_templates(&client, &app.address, "test-bearer-token").await;
+    let templates = mine["list"]
+        .as_array()
+        .expect("Mine response should contain a list");
+    let template = templates
+        .iter()
+        .find(|template| template["slug"] == "updatable-template")
+        .expect("Updated template should be present in my templates");
+
+    assert_eq!(
+        json!({
+            "supported_clouds": ["digitalocean"],
+            "min_ram_mb": 1024
+        }),
+        template["infrastructure_requirements"]
     );
 }

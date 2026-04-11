@@ -69,6 +69,10 @@ pub struct MarketplaceWebhookPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tech_stack: Option<serde_json::Value>,
 
+    /// Infrastructure compatibility metadata for deployment validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub infrastructure_requirements: Option<serde_json::Value>,
+
     /// Creator display name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator_name: Option<String>,
@@ -206,6 +210,13 @@ impl MarketplaceWebhookSender {
             } else {
                 None
             },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
             creator_name: template.creator_name.clone(),
             deploy_count: template.deploy_count,
             view_count: template.view_count,
@@ -256,6 +267,13 @@ impl MarketplaceWebhookSender {
             } else {
                 None
             },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
             creator_name: template.creator_name.clone(),
             deploy_count: template.deploy_count,
             view_count: template.view_count,
@@ -293,6 +311,7 @@ impl MarketplaceWebhookSender {
             tags: None,
             long_description: None,
             tech_stack: None,
+            infrastructure_requirements: None,
             creator_name: None,
             deploy_count: None,
             view_count: None,
