@@ -34,12 +34,10 @@ pub async fn enqueue_handler(
     }
 
     // Verify deployment belongs to the requesting user
-    let deployment = db::deployment::fetch_by_deployment_hash(
-        agent_pool.as_ref(),
-        &payload.deployment_hash,
-    )
-    .await
-    .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
+            .await
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
 
     match &deployment {
         Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
@@ -56,15 +54,13 @@ pub async fn enqueue_handler(
     // If runtime=kata requested, verify agent supports it
     if let Some(ref params) = validated_parameters {
         if params.get("runtime").and_then(|v| v.as_str()) == Some("kata") {
-            let agent = db::agent::fetch_by_deployment_hash(
-                agent_pool.as_ref(),
-                &payload.deployment_hash,
-            )
-            .await
-            .map_err(|err| {
-                tracing::error!("Failed to fetch agent: {}", err);
-                JsonResponse::<()>::build().internal_server_error(err)
-            })?;
+            let agent =
+                db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to fetch agent: {}", err);
+                        JsonResponse::<()>::build().internal_server_error(err)
+                    })?;
 
             let has_kata = agent
                 .as_ref()

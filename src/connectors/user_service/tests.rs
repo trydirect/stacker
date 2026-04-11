@@ -120,7 +120,10 @@ async fn test_mock_user_has_plan() {
         .unwrap();
     assert!(has_enterprise);
 
-    let has_basic = connector.user_has_plan("user_123", "basic", None).await.unwrap();
+    let has_basic = connector
+        .user_has_plan("user_123", "basic", None)
+        .await
+        .unwrap();
     assert!(has_basic);
 }
 

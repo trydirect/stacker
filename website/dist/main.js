@@ -3,6 +3,7 @@
 // Stacker Website — TypeScript Interactions
 // Particle system, typing effect, scroll animations, counters
 // ============================================================
+Object.defineProperty(exports, "__esModule", { value: true });
 class ParticleSystem {
     constructor(canvas) {
         this.particles = [];

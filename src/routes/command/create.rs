@@ -561,15 +561,11 @@ pub async fn discover_and_register_child_services(
     deployment_hash: &str,
 ) -> usize {
     // Resolve actual deployment ID from hash for scoping apps per deployment
-    let actual_deployment_id = match crate::db::deployment::fetch_by_deployment_hash(
-        pg_pool,
-        deployment_hash,
-    )
-    .await
-    {
-        Ok(Some(dep)) => Some(dep.id),
-        _ => None,
-    };
+    let actual_deployment_id =
+        match crate::db::deployment::fetch_by_deployment_hash(pg_pool, deployment_hash).await {
+            Ok(Some(dep)) => Some(dep.id),
+            _ => None,
+        };
 
     // Parse the compose file to extract services
     let services = match parse_compose_services(compose_content) {

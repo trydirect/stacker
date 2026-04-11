@@ -76,7 +76,13 @@ impl CallableTrait for SubmitCommand {
         let slug = name
             .to_lowercase()
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>()
             .split('-')
             .filter(|s| !s.is_empty())
@@ -126,10 +132,7 @@ impl CallableTrait for SubmitCommand {
 
             // Success message
             println!();
-            println!(
-                "Submitted '{}' v{} for marketplace review.",
-                name, version
-            );
+            println!("Submitted '{}' v{} for marketplace review.", name, version);
             println!(
                 "Your stack will be published automatically once accepted by the review team."
             );

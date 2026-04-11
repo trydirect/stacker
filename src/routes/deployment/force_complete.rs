@@ -41,23 +41,19 @@ pub async fn force_complete_handler(
     let mut deployment = match deployment {
         Some(d) => {
             if d.user_id.as_deref() != Some(&user.id) {
-                return Err(
-                    JsonResponse::<DeploymentStatusResponse>::build()
-                        .not_found("Deployment not found"),
-                );
+                return Err(JsonResponse::<DeploymentStatusResponse>::build()
+                    .not_found("Deployment not found"));
             }
             d
         }
         None => {
             return Err(
-                JsonResponse::<DeploymentStatusResponse>::build()
-                    .not_found("Deployment not found"),
+                JsonResponse::<DeploymentStatusResponse>::build().not_found("Deployment not found")
             );
         }
     };
 
-    let status_ok = query.force
-        || FORCE_COMPLETE_ALLOWED.contains(&deployment.status.as_str());
+    let status_ok = query.force || FORCE_COMPLETE_ALLOWED.contains(&deployment.status.as_str());
 
     if !status_ok {
         return Err(JsonResponse::<DeploymentStatusResponse>::build().bad_request(format!(

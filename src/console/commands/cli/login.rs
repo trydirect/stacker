@@ -1,9 +1,7 @@
 use std::io::{self, IsTerminal};
 
+use crate::cli::credentials::{login, CredentialsManager, HttpOAuthClient, LoginRequest};
 use crate::console::commands::CallableTrait;
-use crate::cli::credentials::{
-    CredentialsManager, HttpOAuthClient, LoginRequest, login,
-};
 use dialoguer::Password;
 
 /// `stacker login [--org <name>] [--domain <domain>] [--auth-url <url>]`

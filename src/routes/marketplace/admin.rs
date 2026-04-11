@@ -208,14 +208,10 @@ pub async fn unapprove_handler(
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
     let req = body.into_inner();
 
-    let updated = db::marketplace::admin_unapprove(
-        pg_pool.get_ref(),
-        &id,
-        &admin.id,
-        req.reason.as_deref(),
-    )
-    .await
-    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let updated =
+        db::marketplace::admin_unapprove(pg_pool.get_ref(), &id, &admin.id, req.reason.as_deref())
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     if !updated {
         return Err(JsonResponse::<serde_json::Value>::build()
@@ -245,7 +241,8 @@ pub async fn unapprove_handler(
         }
     });
 
-    Ok(JsonResponse::<serde_json::Value>::build().ok("Template unapproved and hidden from marketplace"))
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .ok("Template unapproved and hidden from marketplace"))
 }
 
 #[tracing::instrument(name = "Security scan template (admin)", skip_all)]
@@ -301,12 +298,8 @@ pub async fn security_scan_handler(
         if report.overall_passed {
             verif_patch["security_reviewed"] = serde_json::Value::Bool(true);
         }
-        if let Err(e) = db::marketplace::update_verifications(
-            pg_pool.get_ref(),
-            &id,
-            verif_patch,
-        )
-        .await
+        if let Err(e) =
+            db::marketplace::update_verifications(pg_pool.get_ref(), &id, verif_patch).await
         {
             tracing::warn!("Failed to auto-set verifications after scan: {}", e);
         }
@@ -453,9 +446,8 @@ pub async fn update_verifications_handler(
     }
 
     if patch.is_empty() {
-        return Err(
-            JsonResponse::<serde_json::Value>::build().bad_request("No verification flags provided")
-        );
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("No verification flags provided"));
     }
 
     let updated = db::marketplace::update_verifications(

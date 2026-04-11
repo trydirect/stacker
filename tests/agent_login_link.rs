@@ -128,7 +128,11 @@ async fn test_agent_link_rejects_invalid_token() {
     let status = resp.status();
     println!("Link with invalid token response status: {}", status);
     // Should be 403 (invalid session token) — not 404 (route not found)
-    assert_ne!(status.as_u16(), 404, "Route /api/v1/agent/link should exist");
+    assert_ne!(
+        status.as_u16(),
+        404,
+        "Route /api/v1/agent/link should exist"
+    );
     assert!(
         status.is_client_error(),
         "Expected client error for invalid token, got {}",

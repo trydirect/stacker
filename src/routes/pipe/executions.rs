@@ -85,10 +85,9 @@ pub async fn get_execution_handler(
     match execution {
         Some(exec) => {
             // Verify ownership: execution -> instance -> deployment -> user
-            let instance =
-                db::pipe::get_instance(pg_pool.get_ref(), &exec.pipe_instance_id)
-                    .await
-                    .map_err(|err| JsonResponse::internal_server_error(err))?;
+            let instance = db::pipe::get_instance(pg_pool.get_ref(), &exec.pipe_instance_id)
+                .await
+                .map_err(|err| JsonResponse::internal_server_error(err))?;
 
             match instance {
                 Some(i) => {

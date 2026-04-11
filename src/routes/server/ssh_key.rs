@@ -107,7 +107,10 @@ pub async fn generate_key(
             (Some(path), "active", "SSH key generated and stored in Vault successfully. Copy the public key to your server's authorized_keys.".to_string(), false)
         }
         Err(e) => {
-            tracing::warn!("Failed to store SSH key in Vault (continuing without Vault): {}", e);
+            tracing::warn!(
+                "Failed to store SSH key in Vault (continuing without Vault): {}",
+                e
+            );
             (None, "active", format!("SSH key generated successfully, but could not be stored in Vault ({}). Please save the private key shown below - it will not be shown again!", e), true)
         }
     };
@@ -119,7 +122,11 @@ pub async fn generate_key(
 
     let response = GenerateKeyResponseWithPrivate {
         public_key: public_key.clone(),
-        private_key: if include_private_key { Some(private_key) } else { None },
+        private_key: if include_private_key {
+            Some(private_key)
+        } else {
+            None
+        },
         fingerprint: None, // TODO: Calculate fingerprint
         message,
     };
@@ -286,7 +293,7 @@ pub struct ValidateResponse {
 
 /// Validate SSH connection for a server
 /// POST /server/{id}/ssh-key/validate
-/// 
+///
 /// This endpoint:
 /// 1. Verifies the server exists and belongs to the user
 /// 2. Checks the SSH key is active and retrieves it from Vault
@@ -359,7 +366,10 @@ pub async fn validate_key(
     {
         Ok(key) => key,
         Err(e) => {
-            tracing::warn!("Failed to fetch SSH key from Vault during validation: {}", e);
+            tracing::warn!(
+                "Failed to fetch SSH key from Vault during validation: {}",
+                e
+            );
             let response = ValidateResponse {
                 valid: false,
                 server_id,
@@ -382,7 +392,10 @@ pub async fn validate_key(
 
     // Get SSH connection parameters
     let ssh_port = server.ssh_port.unwrap_or(22) as u16;
-    let ssh_user = server.ssh_user.clone().unwrap_or_else(|| "root".to_string());
+    let ssh_user = server
+        .ssh_user
+        .clone()
+        .unwrap_or_else(|| "root".to_string());
 
     // Perform SSH connection and system check
     let check_result = ssh_client::check_server(
@@ -399,7 +412,9 @@ pub async fn validate_key(
     let message = if valid {
         check_result.summary()
     } else {
-        check_result.error.unwrap_or_else(|| "SSH validation failed".to_string())
+        check_result
+            .error
+            .unwrap_or_else(|| "SSH validation failed".to_string())
     };
 
     let response = ValidateResponse {
@@ -410,7 +425,11 @@ pub async fn validate_key(
         connected: check_result.connected,
         authenticated: check_result.authenticated,
         // Include vault public key in response when auth fails (helps debug key mismatch)
-        vault_public_key: if !check_result.authenticated { vault_public_key } else { None },
+        vault_public_key: if !check_result.authenticated {
+            vault_public_key
+        } else {
+            None
+        },
         username: check_result.username,
         disk_total_gb: check_result.disk_total_gb,
         disk_available_gb: check_result.disk_available_gb,

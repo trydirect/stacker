@@ -505,14 +505,16 @@ pub fn validate_command_parameters(
             }
 
             // Validate port rules
-            for rule in params.public_ports.iter().chain(params.private_ports.iter()) {
+            for rule in params
+                .public_ports
+                .iter()
+                .chain(params.private_ports.iter())
+            {
                 if rule.port == 0 {
                     return Err("configure_firewall: port must be > 0".to_string());
                 }
                 if !["tcp", "udp"].contains(&rule.protocol.as_str()) {
-                    return Err(
-                        "configure_firewall: protocol must be one of: tcp, udp".to_string(),
-                    );
+                    return Err("configure_firewall: protocol must be one of: tcp, udp".to_string());
                 }
             }
 
@@ -564,7 +566,9 @@ pub fn validate_command_parameters(
                 .map_err(|err| format!("Failed to encode check_connections parameters: {}", err))
         }
         "activate_pipe" => {
-            let value = parameters.clone().ok_or_else(|| "activate_pipe requires parameters".to_string())?;
+            let value = parameters
+                .clone()
+                .ok_or_else(|| "activate_pipe requires parameters".to_string())?;
             let params: ActivatePipeCommandRequest = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid activate_pipe parameters: {}", err))?;
 
@@ -574,19 +578,26 @@ pub fn validate_command_parameters(
             }
             // Validate target: at least one of target_container or target_url
             if params.target_container.is_none() && params.target_url.is_none() {
-                return Err("activate_pipe: either target_container or target_url is required".to_string());
+                return Err(
+                    "activate_pipe: either target_container or target_url is required".to_string(),
+                );
             }
             // Validate trigger_type
             let valid_triggers = ["webhook", "poll", "manual"];
             if !valid_triggers.contains(&params.trigger_type.as_str()) {
                 return Err(format!(
                     "activate_pipe: trigger_type must be one of: {}; got '{}'",
-                    valid_triggers.join(", "), params.trigger_type
+                    valid_triggers.join(", "),
+                    params.trigger_type
                 ));
             }
             // Validate poll_interval for poll trigger
-            if params.trigger_type == "poll" && (params.poll_interval_secs < 10 || params.poll_interval_secs > 86400) {
-                return Err("activate_pipe: poll_interval_secs must be between 10 and 86400".to_string());
+            if params.trigger_type == "poll"
+                && (params.poll_interval_secs < 10 || params.poll_interval_secs > 86400)
+            {
+                return Err(
+                    "activate_pipe: poll_interval_secs must be between 10 and 86400".to_string(),
+                );
             }
 
             serde_json::to_value(params)
@@ -594,7 +605,9 @@ pub fn validate_command_parameters(
                 .map_err(|err| format!("Failed to encode activate_pipe parameters: {}", err))
         }
         "deactivate_pipe" => {
-            let value = parameters.clone().ok_or_else(|| "deactivate_pipe requires parameters".to_string())?;
+            let value = parameters
+                .clone()
+                .ok_or_else(|| "deactivate_pipe requires parameters".to_string())?;
             let params: DeactivatePipeCommandRequest = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid deactivate_pipe parameters: {}", err))?;
 
@@ -607,7 +620,9 @@ pub fn validate_command_parameters(
                 .map_err(|err| format!("Failed to encode deactivate_pipe parameters: {}", err))
         }
         "trigger_pipe" => {
-            let value = parameters.clone().ok_or_else(|| "trigger_pipe requires parameters".to_string())?;
+            let value = parameters
+                .clone()
+                .ok_or_else(|| "trigger_pipe requires parameters".to_string())?;
             let params: TriggerPipeCommandRequest = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid trigger_pipe parameters: {}", err))?;
 
@@ -700,7 +715,9 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Invalid configure_firewall result: {}", err))?;
 
             if report.command_type != "configure_firewall" {
-                return Err("configure_firewall result must include type='configure_firewall'".to_string());
+                return Err(
+                    "configure_firewall result must include type='configure_firewall'".to_string(),
+                );
             }
             if report.deployment_hash != deployment_hash {
                 return Err("configure_firewall result deployment_hash mismatch".to_string());
@@ -718,7 +735,9 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Invalid probe_endpoints result: {}", err))?;
 
             if report.command_type != "probe_endpoints" {
-                return Err("probe_endpoints result must include type='probe_endpoints'".to_string());
+                return Err(
+                    "probe_endpoints result must include type='probe_endpoints'".to_string()
+                );
             }
             if report.deployment_hash != deployment_hash {
                 return Err("probe_endpoints result deployment_hash mismatch".to_string());
@@ -729,7 +748,8 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Failed to encode probe_endpoints result: {}", err))
         }
         "activate_pipe" => {
-            let value = result.clone()
+            let value = result
+                .clone()
                 .ok_or_else(|| "activate_pipe result payload is required".to_string())?;
             let report: ActivatePipeCommandReport = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid activate_pipe result: {}", err))?;
@@ -746,13 +766,16 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Failed to encode activate_pipe result: {}", err))
         }
         "deactivate_pipe" => {
-            let value = result.clone()
+            let value = result
+                .clone()
                 .ok_or_else(|| "deactivate_pipe result payload is required".to_string())?;
             let report: DeactivatePipeCommandReport = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid deactivate_pipe result: {}", err))?;
 
             if report.command_type != "deactivate_pipe" {
-                return Err("deactivate_pipe result must include type='deactivate_pipe'".to_string());
+                return Err(
+                    "deactivate_pipe result must include type='deactivate_pipe'".to_string()
+                );
             }
             if report.deployment_hash != deployment_hash {
                 return Err("deactivate_pipe result deployment_hash mismatch".to_string());
@@ -763,7 +786,8 @@ pub fn validate_command_result(
                 .map_err(|err| format!("Failed to encode deactivate_pipe result: {}", err))
         }
         "trigger_pipe" => {
-            let value = result.clone()
+            let value = result
+                .clone()
                 .ok_or_else(|| "trigger_pipe result payload is required".to_string())?;
             let report: TriggerPipeCommandReport = serde_json::from_value(value)
                 .map_err(|err| format!("Invalid trigger_pipe result: {}", err))?;
@@ -780,7 +804,8 @@ pub fn validate_command_result(
             if !valid_trigger_types.contains(&report.trigger_type.as_str()) {
                 return Err(format!(
                     "trigger_pipe: trigger_type must be one of: {}; got '{}'",
-                    valid_trigger_types.join(", "), report.trigger_type
+                    valid_trigger_types.join(", "),
+                    report.trigger_type
                 ));
             }
 
@@ -917,11 +942,21 @@ pub struct ActivatePipeCommandRequest {
     pub poll_interval_secs: u32,
 }
 
-fn default_source_method() -> String { "GET".to_string() }
-fn default_target_method() -> String { "POST".to_string() }
-fn default_trigger_type() -> String { "webhook".to_string() }
-fn default_poll_interval() -> u32 { 300 }
-fn default_trigger_type_manual() -> String { "manual".to_string() }
+fn default_source_method() -> String {
+    "GET".to_string()
+}
+fn default_target_method() -> String {
+    "POST".to_string()
+}
+fn default_trigger_type() -> String {
+    "webhook".to_string()
+}
+fn default_poll_interval() -> u32 {
+    300
+}
+fn default_trigger_type_manual() -> String {
+    "manual".to_string()
+}
 
 /// Request to deactivate a pipe instance on the agent
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1353,11 +1388,9 @@ mod tests {
 
     #[test]
     fn check_connections_accepts_null_ports() {
-        let result = validate_command_parameters(
-            "check_connections",
-            &Some(json!({ "ports": null })),
-        )
-        .expect("check_connections with null ports should validate");
+        let result =
+            validate_command_parameters("check_connections", &Some(json!({ "ports": null })))
+                .expect("check_connections with null ports should validate");
         assert!(result.is_some());
     }
 
@@ -1453,10 +1486,8 @@ mod tests {
 
     #[test]
     fn trigger_pipe_requires_instance_id() {
-        let err = validate_command_parameters(
-            "trigger_pipe",
-            &Some(json!({ "pipe_instance_id": "" })),
-        );
+        let err =
+            validate_command_parameters("trigger_pipe", &Some(json!({ "pipe_instance_id": "" })));
         assert!(err.is_err());
     }
 

@@ -159,8 +159,11 @@ pub async fn check_server(
     let addr = format!("{}:{}", host, port);
     tracing::info!("Connecting to {} as {}", addr, username);
 
-    let connection_result =
-        timeout(connection_timeout, connect_and_auth(config, &addr, username, key)).await;
+    let connection_result = timeout(
+        connection_timeout,
+        connect_and_auth(config, &addr, username, key),
+    )
+    .await;
 
     match connection_result {
         Ok(Ok(handle)) => {
@@ -174,7 +177,10 @@ pub async fn check_server(
         Ok(Err(e)) => {
             tracing::warn!("SSH connection/auth failed: {}", e);
             let error_str = e.to_string().to_lowercase();
-            if error_str.contains("auth") || error_str.contains("key") || error_str.contains("permission") {
+            if error_str.contains("auth")
+                || error_str.contains("key")
+                || error_str.contains("permission")
+            {
                 result.connected = true;
                 result.error = Some(format!("Authentication failed: {}", e));
             } else {
@@ -317,19 +323,25 @@ fn parse_disk_info(result: &mut SystemCheckResult, output: &str) {
     let parts: Vec<&str> = output.split_whitespace().collect();
     if parts.len() >= 4 {
         // Parse total (index 1)
-        if let Some(total) = parts.get(1).and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
+        if let Some(total) = parts
+            .get(1)
+            .and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
         {
             result.disk_total_gb = Some(total);
         }
 
         // Parse available (index 3)
-        if let Some(avail) = parts.get(3).and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
+        if let Some(avail) = parts
+            .get(3)
+            .and_then(|s| s.trim_end_matches('G').parse::<f64>().ok())
         {
             result.disk_available_gb = Some(avail);
         }
 
         // Parse usage percentage (index 4)
-        if let Some(usage) = parts.get(4).and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        if let Some(usage) = parts
+            .get(4)
+            .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
         {
             result.disk_usage_percent = Some(usage);
         }

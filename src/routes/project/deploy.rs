@@ -97,11 +97,7 @@ pub async fn item(
             .cloud_token
             .as_ref()
             .map_or(true, |t| t.is_empty());
-        let key_empty = form
-            .cloud
-            .cloud_key
-            .as_ref()
-            .map_or(true, |k| k.is_empty());
+        let key_empty = form.cloud.cloud_key.as_ref().map_or(true, |k| k.is_empty());
         let secret_empty = form
             .cloud
             .cloud_secret
@@ -140,11 +136,10 @@ pub async fn item(
         let existing = db::server::fetch(pg_pool.get_ref(), server_id)
             .await
             .map_err(|_| {
-                JsonResponse::<models::Server>::build().internal_server_error("Failed to fetch server")
+                JsonResponse::<models::Server>::build()
+                    .internal_server_error("Failed to fetch server")
             })?
-            .ok_or_else(|| {
-                JsonResponse::<models::Server>::build().not_found("Server not found")
-            })?;
+            .ok_or_else(|| JsonResponse::<models::Server>::build().not_found("Server not found"))?;
 
         // Verify ownership
         if existing.user_id != user.id {
@@ -170,7 +165,8 @@ pub async fn item(
         db::server::update(pg_pool.get_ref(), server)
             .await
             .map_err(|_| {
-                JsonResponse::<models::Server>::build().internal_server_error("Failed to update server")
+                JsonResponse::<models::Server>::build()
+                    .internal_server_error("Failed to update server")
             })?
     } else {
         // Create new server
@@ -185,7 +181,8 @@ pub async fn item(
         db::server::insert(pg_pool.get_ref(), server)
             .await
             .map_err(|_| {
-                JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+                JsonResponse::<models::Server>::build()
+                    .internal_server_error("Internal Server Error")
             })?
     };
 
@@ -320,13 +317,17 @@ pub async fn item(
                 .await
             {
                 Ok(pk) => {
-                    tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
+                    tracing::info!(
+                        "Fetched SSH private key from Vault for server {}",
+                        server.id
+                    );
                     Some(pk)
                 }
                 Err(e) => {
                     tracing::warn!(
                         "Failed to fetch SSH private key from Vault for server {}: {}",
-                        server.id, e
+                        server.id,
+                        e
                     );
                     None
                 }
@@ -466,10 +467,7 @@ pub async fn saved_item(
             .cloud_token
             .as_ref()
             .map_or(true, |t| t.is_empty());
-        let key_empty = test_cloud
-            .cloud_key
-            .as_ref()
-            .map_or(true, |k| k.is_empty());
+        let key_empty = test_cloud.cloud_key.as_ref().map_or(true, |k| k.is_empty());
         let secret_empty = test_cloud
             .cloud_secret
             .as_ref()
@@ -499,11 +497,10 @@ pub async fn saved_item(
         let existing = db::server::fetch(pg_pool.get_ref(), server_id)
             .await
             .map_err(|_| {
-                JsonResponse::<models::Server>::build().internal_server_error("Failed to fetch server")
+                JsonResponse::<models::Server>::build()
+                    .internal_server_error("Failed to fetch server")
             })?
-            .ok_or_else(|| {
-                JsonResponse::<models::Server>::build().not_found("Server not found")
-            })?;
+            .ok_or_else(|| JsonResponse::<models::Server>::build().not_found("Server not found"))?;
 
         // Verify ownership
         if existing.user_id != user.id {
@@ -530,7 +527,8 @@ pub async fn saved_item(
         db::server::update(pg_pool.get_ref(), server)
             .await
             .map_err(|_| {
-                JsonResponse::<models::Server>::build().internal_server_error("Failed to update server")
+                JsonResponse::<models::Server>::build()
+                    .internal_server_error("Failed to update server")
             })?
     } else {
         // Create new server
@@ -542,7 +540,8 @@ pub async fn saved_item(
         db::server::insert(pg_pool.get_ref(), server)
             .await
             .map_err(|_| {
-                JsonResponse::<models::Server>::build().internal_server_error("Failed to create server")
+                JsonResponse::<models::Server>::build()
+                    .internal_server_error("Failed to create server")
             })?
     };
 
@@ -679,13 +678,17 @@ pub async fn saved_item(
                 .await
             {
                 Ok(pk) => {
-                    tracing::info!("Fetched SSH private key from Vault for server {}", server.id);
+                    tracing::info!(
+                        "Fetched SSH private key from Vault for server {}",
+                        server.id
+                    );
                     Some(pk)
                 }
                 Err(e) => {
                     tracing::warn!(
                         "Failed to fetch SSH private key from Vault for server {}: {}",
-                        server.id, e
+                        server.id,
+                        e
                     );
                     None
                 }

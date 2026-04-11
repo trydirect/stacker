@@ -57,9 +57,9 @@ deploy:
 ai:
   enabled: true
   provider: ollama
-  model: qwen3-coder
+  model: glm4.7-flash
   api_key: null
-  endpoint: http://192.168.100.245:11434
+  endpoint: http://ai.try.direct:11434
   timeout: 300
   tasks:
   - dockerfile

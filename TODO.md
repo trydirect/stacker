@@ -1144,3 +1144,41 @@ To verify `is_official` and `is_verified_publisher` status for each image:
    - Store results in `stack_template_review.security_checklist["cve_scan"]`
    - Auto-set `verifications.vulnerability_scanned = true` when scan passes (no HIGH/CRITICAL CVEs)
 
+## Missing Features Implementation Plan (2026-04)
+
+### Phase 1 - Marketplace Foundation and Revenue Loop
+- [ ] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
+  - Add vendor verification states, onboarding flow, and payout account linkage.
+  - Persist enough payout metadata to support auditing, support, and marketplace operations.
+- [ ] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
+  - Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
+  - Use these fields in API responses and deployment validation so incompatible targets are blocked early.
+- [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
+  - Send notifications for submit/approve/reject/update-required events.
+  - Include actionable review reasons and the next expected developer action.
+
+### Phase 2 - Reliability and User-Facing Correctness
+- [ ] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
+  - Convert duplicate-slug failures from generic 500 errors into explicit 409/validation feedback.
+  - Keep CLI and UI messaging aligned so the user gets a recoverable error.
+- [ ] **[stacker-rollback]** Add version-aware deployment rollback.
+  - Allow operators to choose a prior template or deployment version and roll back safely.
+  - Persist rollback history and expose the effective version in deployment details.
+
+### Phase 3 - Team and Integration Expansion
+- [ ] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
+  - Prioritize Bitbucket and Jenkins, then evaluate CircleCI or other demand-driven exporters.
+  - Keep export templates aligned with current Stacker project and secret conventions.
+- [ ] **[stacker-team-projects]** Add shared project ownership and team collaboration primitives.
+  - Introduce org/team ownership, invitations, seat-aware permissions, and shared deployment visibility.
+  - Define how ownership flows through marketplace, deployments, and future billing.
+
+### Phase 4 - Control Plane Completion
+- [ ] **[stacker-pipe-execution]** Finish pipe execution end-to-end across Stacker and Status Panel.
+  - Ensure the server, queueing layer, and agent all support the same pipe command set.
+  - Coordinate command provenance, reporting, and error surfaces with Status Panel.
+
+### Delivery Order
+- [ ] Start with `stacker-vendor-payouts`, `stacker-template-requirements`, and `stacker-duplicate-slug-409`.
+- [ ] Follow with `stacker-review-notifications` and `stacker-rollback` once the marketplace data contract is stable.
+- [ ] Treat `stacker-team-projects` and `stacker-pipe-execution` as multi-sprint workstreams with cross-project coordination.
