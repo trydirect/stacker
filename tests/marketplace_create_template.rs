@@ -10,13 +10,28 @@ async fn create_template(
     name: &str,
     slug: &str,
 ) -> Response {
+    create_template_with_body(
+        client,
+        address,
+        token,
+        json!({
+            "name": name,
+            "slug": slug,
+        }),
+    )
+    .await
+}
+
+async fn create_template_with_body(
+    client: &Client,
+    address: &str,
+    token: &str,
+    body: Value,
+) -> Response {
     client
         .post(format!("{}/api/templates", address))
         .bearer_auth(token)
-        .json(&json!({
-            "name": name,
-            "slug": slug,
-        }))
+        .json(&body)
         .send()
         .await
         .expect("Failed to send template create request")
@@ -114,5 +129,50 @@ async fn create_template_same_slug_same_user_updates_existing_template() {
         Some("Renamed Template"),
         second_body["item"]["name"].as_str(),
         "Second request should update template metadata"
+    );
+}
+
+#[tokio::test]
+async fn create_template_returns_infrastructure_requirements_when_provided() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Requirements Template",
+            "slug": "requirements-template",
+            "infrastructure_requirements": {
+                "supported_clouds": ["hetzner", "aws"],
+                "supported_os": ["ubuntu-22.04"],
+                "min_ram_mb": 2048,
+                "min_disk_gb": 20,
+                "min_cpu_cores": 2
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(StatusCode::CREATED, response.status());
+
+    let body: Value = response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+
+    assert_eq!(
+        json!({
+            "supported_clouds": ["hetzner", "aws"],
+            "supported_os": ["ubuntu-22.04"],
+            "min_ram_mb": 2048,
+            "min_disk_gb": 20,
+            "min_cpu_cores": 2
+        }),
+        body["item"]["infrastructure_requirements"]
     );
 }

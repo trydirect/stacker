@@ -35,6 +35,21 @@ pub struct StackTemplate {
     pub updated_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,
     pub verifications: serde_json::Value,
+    pub infrastructure_requirements: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct InfrastructureRequirements {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_clouds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_os: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_ram_mb: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_disk_gb: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_cpu_cores: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
@@ -59,4 +74,50 @@ pub struct StackTemplateReview {
     pub security_checklist: Option<serde_json::Value>,
     pub submitted_at: Option<DateTime<Utc>>,
     pub reviewed_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InfrastructureRequirements;
+
+    #[test]
+    fn infrastructure_requirements_default_is_empty() {
+        let requirements = InfrastructureRequirements::default();
+
+        assert!(requirements.supported_clouds.is_empty());
+        assert!(requirements.supported_os.is_empty());
+        assert_eq!(None, requirements.min_ram_mb);
+        assert_eq!(None, requirements.min_disk_gb);
+        assert_eq!(None, requirements.min_cpu_cores);
+    }
+
+    #[test]
+    fn infrastructure_requirements_round_trip_serialization() {
+        let requirements = InfrastructureRequirements {
+            supported_clouds: vec!["hetzner".to_string(), "aws".to_string()],
+            supported_os: vec!["ubuntu-22.04".to_string()],
+            min_ram_mb: Some(2048),
+            min_disk_gb: Some(20),
+            min_cpu_cores: Some(2),
+        };
+
+        let value = serde_json::to_value(&requirements).expect("serialize requirements");
+        let round_trip: InfrastructureRequirements =
+            serde_json::from_value(value).expect("deserialize requirements");
+
+        assert_eq!(requirements, round_trip);
+    }
+
+    #[test]
+    fn infrastructure_requirements_partial_json_deserializes() {
+        let requirements: InfrastructureRequirements =
+            serde_json::from_value(serde_json::json!({ "min_ram_mb": 512 }))
+                .expect("deserialize partial requirements");
+
+        assert!(requirements.supported_clouds.is_empty());
+        assert!(requirements.supported_os.is_empty());
+        assert_eq!(Some(512), requirements.min_ram_mb);
+        assert_eq!(None, requirements.min_disk_gb);
+        assert_eq!(None, requirements.min_cpu_cores);
+    }
 }

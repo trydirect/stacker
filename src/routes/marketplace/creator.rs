@@ -24,6 +24,7 @@ pub struct CreateTemplateRequest {
     pub price: Option<f64>,
     /// ISO 4217 currency code, default "USD"
     pub currency: Option<String>,
+    pub infrastructure_requirements: Option<serde_json::Value>,
 }
 
 #[tracing::instrument(name = "Create draft template", skip_all)]
@@ -37,6 +38,9 @@ pub async fn create_handler(
 
     let tags = req.tags.unwrap_or(serde_json::json!([]));
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
+    let infrastructure_requirements = req
+        .infrastructure_requirements
+        .unwrap_or(serde_json::json!({}));
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
 
@@ -100,6 +104,7 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             tags,
             tech_stack,
+            infrastructure_requirements,
             price,
             &billing_cycle,
             &currency,

@@ -44,6 +44,7 @@ async fn test_deployment_free_template_allowed() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // Should allow deployment of free template
@@ -84,6 +85,7 @@ async fn test_deployment_plan_requirement_validated() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // Should allow deployment (mock user has professional plan)
@@ -128,6 +130,7 @@ async fn test_deployment_owned_paid_template_allowed() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
@@ -272,6 +275,7 @@ async fn test_deployment_validation_flow_with_connector() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -304,6 +308,7 @@ async fn test_deployment_validation_flow_with_connector() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -417,6 +422,7 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -449,6 +455,7 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -486,6 +493,7 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // The result will depend on whether the validator can verify ownership
@@ -540,6 +548,7 @@ fn test_template_status_values() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     assert_eq!(template.status, "approved");

@@ -40,7 +40,8 @@ pub async fn list_approved(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved'"#,
@@ -132,7 +133,8 @@ pub async fn get_by_slug_and_user(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.creator_user_id = $2"#,
@@ -178,7 +180,8 @@ pub async fn get_by_slug_with_latest(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.status = 'approved'"#,
@@ -247,7 +250,8 @@ pub async fn get_by_id(
             t.price,
             t.billing_cycle,
             t.currency,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.id = $1"#,
@@ -275,6 +279,7 @@ pub async fn create_draft(
     category_code: Option<&str>,
     tags: serde_json::Value,
     tech_stack: serde_json::Value,
+    infrastructure_requirements: serde_json::Value,
     price: f64,
     billing_cycle: &str,
     currency: &str,
@@ -287,8 +292,8 @@ pub async fn create_draft(
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
-            tags, tech_stack, status, price, billing_cycle, currency
-        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft',$10,$11,$12)
+            tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, currency
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13)
         RETURNING 
             id,
             creator_user_id,
@@ -312,7 +317,8 @@ pub async fn create_draft(
             created_at,
             updated_at,
             approved_at,
-            verifications
+            verifications,
+            infrastructure_requirements
         "#,
     )
     .bind(creator_user_id)
@@ -324,6 +330,7 @@ pub async fn create_draft(
     .bind(category_code)
     .bind(tags)
     .bind(tech_stack)
+    .bind(infrastructure_requirements)
     .bind(price_f64)
     .bind(billing_cycle)
     .bind(currency)
@@ -587,7 +594,8 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.creator_user_id = $1
@@ -630,7 +638,8 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status IN ('submitted', 'approved')
