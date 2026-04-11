@@ -712,7 +712,7 @@ Stacker responsibilities:
 ## Tasks
 
 ### Bugfix: Return clear duplicate slug error
-- [ ] When `stack_template.slug` violates uniqueness (code 23505), return 409/400 with a descriptive message (e.g., "slug already exists") instead of 500 so clients (blog/stack-builder) can surface a user-friendly error.
+- [x] When `stack_template.slug` violates uniqueness (code 23505), return 409/400 with a descriptive message (e.g., "slug already exists") instead of 500 so clients (blog/stack-builder) can surface a user-friendly error.
 
 ### 1. Create User Service Connector
 **File**: `app/<stacker-module>/connectors/user_service_connector.py` (in Stacker repo)
@@ -1158,7 +1158,7 @@ To verify `is_official` and `is_verified_publisher` status for each image:
   - Include actionable review reasons and the next expected developer action.
 
 ### Phase 2 - Reliability and User-Facing Correctness
-- [ ] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
+- [x] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
   - Convert duplicate-slug failures from generic 500 errors into explicit 409/validation feedback.
   - Keep CLI and UI messaging aligned so the user gets a recoverable error.
 - [ ] **[stacker-rollback]** Add version-aware deployment rollback.

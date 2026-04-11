@@ -49,10 +49,9 @@ pub async fn create_handler(
     };
     let currency = req.currency.unwrap_or_else(|| "USD".to_string());
 
-    // Check if template with this slug already exists for this user
     let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
         .await
-        .ok();
+        .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
 
     let template = if let Some(existing_template) = existing {
         // Update existing template
@@ -106,12 +105,17 @@ pub async fn create_handler(
             &currency,
         )
         .await
-        .map_err(|err| {
-            // If error message indicates duplicate slug, return 409 Conflict
-            if err.contains("already in use") {
-                return JsonResponse::<models::StackTemplate>::build().conflict(err);
+        .map_err(|err| match err {
+            db::marketplace::CreateDraftError::DuplicateSlug { slug } => {
+                JsonResponse::<models::StackTemplate>::build().conflict(format!(
+                    "Template slug '{}' is already in use. Please choose a different slug.",
+                    slug
+                ))
             }
-            JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+            db::marketplace::CreateDraftError::Internal => {
+                JsonResponse::<models::StackTemplate>::build()
+                    .internal_server_error("Internal Server Error")
+            }
         })?
     };
 

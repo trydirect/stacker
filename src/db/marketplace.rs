@@ -2,6 +2,14 @@ use crate::models::{StackCategory, StackTemplate, StackTemplateReview, StackTemp
 use sqlx::PgPool;
 use tracing::Instrument;
 
+pub const SLUG_UNIQUE_CONSTRAINT: &str = "stack_template_slug_key";
+
+#[derive(Debug)]
+pub enum CreateDraftError {
+    DuplicateSlug { slug: String },
+    Internal,
+}
+
 pub async fn list_approved(
     pool: &PgPool,
     category: Option<&str>,
@@ -96,7 +104,7 @@ pub async fn get_by_slug_and_user(
     pool: &PgPool,
     slug: &str,
     user_id: &str,
-) -> Result<StackTemplate, String> {
+) -> Result<Option<StackTemplate>, String> {
     let query_span =
         tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
 
@@ -131,12 +139,12 @@ pub async fn get_by_slug_and_user(
     )
     .bind(slug)
     .bind(user_id)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .instrument(query_span)
     .await
     .map_err(|e| {
-        tracing::debug!("get_by_slug_and_user error: {:?}", e);
-        "Not Found".to_string()
+        tracing::error!("get_by_slug_and_user error: {:?}", e);
+        "Internal Server Error".to_string()
     })
 }
 
@@ -270,7 +278,7 @@ pub async fn create_draft(
     price: f64,
     billing_cycle: &str,
     currency: &str,
-) -> Result<StackTemplate, String> {
+) -> Result<StackTemplate, CreateDraftError> {
     let query_span = tracing::info_span!("marketplace_create_draft", slug = %slug);
 
     let price_f64 = price;
@@ -325,22 +333,17 @@ pub async fn create_draft(
     .map_err(|e| {
         tracing::error!("create_draft error: {:?}", e);
 
-        // Provide user-friendly error messages for common constraint violations
         if let sqlx::Error::Database(db_err) = &e {
-            if let Some(code) = db_err.code() {
-                if code == "23505" {
-                    // Unique constraint violation
-                    if db_err.message().contains("stack_template_slug_key") {
-                        return format!(
-                            "Template slug '{}' is already in use. Please choose a different slug.",
-                            slug
-                        );
-                    }
-                }
+            if db_err.code().as_deref() == Some("23505")
+                && db_err.constraint() == Some(SLUG_UNIQUE_CONSTRAINT)
+            {
+                return CreateDraftError::DuplicateSlug {
+                    slug: slug.to_string(),
+                };
             }
         }
 
-        "Internal Server Error".to_string()
+        CreateDraftError::Internal
     })?;
 
     Ok(rec)
