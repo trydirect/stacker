@@ -167,7 +167,10 @@ async fn create_template_same_slug_same_user_updates_existing_template() {
     let second_id = second_body["item"]["id"]
         .as_str()
         .expect("Updated template should include an id");
-    assert_eq!(first_id, second_id, "Same-user duplicate slug should upsert");
+    assert_eq!(
+        first_id, second_id,
+        "Same-user duplicate slug should upsert"
+    );
     assert_eq!(
         Some("Renamed Template"),
         second_body["item"]["name"].as_str(),
@@ -319,7 +322,10 @@ async fn submit_template_sends_template_submitted_webhook() {
         .expect("Created template should include an id");
 
     let submit_response = client
-        .post(format!("{}/api/templates/{}/submit", app.address, template_id))
+        .post(format!(
+            "{}/api/templates/{}/submit",
+            app.address, template_id
+        ))
         .bearer_auth("test-bearer-token")
         .send()
         .await

@@ -44,11 +44,7 @@ async fn insert_template(pool: &sqlx::PgPool, creator_user_id: &str, slug: &str)
     .to_string()
 }
 
-async fn fetch_template_detail(
-    address: &str,
-    template_id: &str,
-    token: &str,
-) -> reqwest::Response {
+async fn fetch_template_detail(address: &str, template_id: &str, token: &str) -> reqwest::Response {
     reqwest::Client::new()
         .get(format!("{}/api/admin/templates/{}", address, template_id))
         .header("Authorization", format!("Bearer {}", token))
@@ -76,7 +72,10 @@ async fn admin_detail_returns_default_vendor_profile_when_missing() {
 
     assert_eq!(StatusCode::OK, response.status());
 
-    let body: Value = response.json().await.expect("detail response should be valid JSON");
+    let body: Value = response
+        .json()
+        .await
+        .expect("detail response should be valid JSON");
     let vendor_profile = &body["item"]["vendor_profile"];
 
     assert_eq!("vendor-user-1", vendor_profile["creator_user_id"]);
@@ -126,7 +125,10 @@ async fn admin_detail_returns_vendor_profile_for_template_creator() {
 
     assert_eq!(StatusCode::OK, response.status());
 
-    let body: Value = response.json().await.expect("detail response should be valid JSON");
+    let body: Value = response
+        .json()
+        .await
+        .expect("detail response should be valid JSON");
     let vendor_profile = &body["item"]["vendor_profile"];
 
     assert_eq!("vendor-user-2", vendor_profile["creator_user_id"]);
@@ -177,7 +179,10 @@ async fn admin_patch_vendor_profile_creates_profile_when_missing() {
     let detail = fetch_template_detail(&app.address, &template_id, &create_admin_jwt()).await;
     assert_eq!(StatusCode::OK, detail.status());
 
-    let body: Value = detail.json().await.expect("detail response should be valid JSON");
+    let body: Value = detail
+        .json()
+        .await
+        .expect("detail response should be valid JSON");
     let vendor_profile = &body["item"]["vendor_profile"];
 
     assert_eq!("vendor-user-3", vendor_profile["creator_user_id"]);
@@ -242,7 +247,10 @@ async fn admin_patch_vendor_profile_preserves_unspecified_fields() {
     let detail = fetch_template_detail(&app.address, &template_id, &create_admin_jwt()).await;
     assert_eq!(StatusCode::OK, detail.status());
 
-    let body: Value = detail.json().await.expect("detail response should be valid JSON");
+    let body: Value = detail
+        .json()
+        .await
+        .expect("detail response should be valid JSON");
     let vendor_profile = &body["item"]["vendor_profile"];
 
     assert_eq!("vendor-user-4", vendor_profile["creator_user_id"]);
@@ -305,24 +313,21 @@ async fn admin_patch_vendor_profile_requires_admin_role() {
         ))
         .header(
             "Authorization",
-            format!(
-                "Bearer {}",
-                {
-                    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-                    let header = json!({"alg": "HS256", "typ": "JWT"});
-                    let payload = json!({
-                        "role": "group_user",
-                        "email": "user@test.com",
-                        "exp": (Utc::now() + Duration::minutes(30)).timestamp(),
-                    });
-                    format!(
-                        "{}.{}.{}",
-                        URL_SAFE_NO_PAD.encode(header.to_string()),
-                        URL_SAFE_NO_PAD.encode(payload.to_string()),
-                        "test_signature"
-                    )
-                }
-            )
+            format!("Bearer {}", {
+                use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+                let header = json!({"alg": "HS256", "typ": "JWT"});
+                let payload = json!({
+                    "role": "group_user",
+                    "email": "user@test.com",
+                    "exp": (Utc::now() + Duration::minutes(30)).timestamp(),
+                });
+                format!(
+                    "{}.{}.{}",
+                    URL_SAFE_NO_PAD.encode(header.to_string()),
+                    URL_SAFE_NO_PAD.encode(payload.to_string()),
+                    "test_signature"
+                )
+            }),
         )
         .json(&json!({
             "verification_status": "pending"

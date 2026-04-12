@@ -52,7 +52,10 @@ async fn test_owner_can_mint_and_resolve_handoff() {
     assert_eq!(resolved["item"]["deployment"]["id"], deployment_id);
     assert_eq!(resolved["item"]["deployment"]["hash"], "handoff-dep-001");
     assert_eq!(resolved["item"]["project"]["id"], project_id);
-    assert_eq!(resolved["item"]["credentials"]["access_token"], USER_A_TOKEN);
+    assert_eq!(
+        resolved["item"]["credentials"]["access_token"],
+        USER_A_TOKEN
+    );
 }
 
 #[tokio::test]

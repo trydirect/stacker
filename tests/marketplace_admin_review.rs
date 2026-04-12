@@ -111,18 +111,20 @@ async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
 
     assert_eq!(StatusCode::OK, admin_response.status());
 
-    let template_status = sqlx::query_scalar::<_, String>(
-        r#"SELECT status FROM stack_template WHERE id = $1::uuid"#,
-    )
-    .bind(uuid::Uuid::parse_str(&template_id).expect("template id should be a uuid"))
-    .fetch_one(&app.db_pool)
-    .await
-    .expect("Failed to fetch updated template status");
+    let template_status =
+        sqlx::query_scalar::<_, String>(r#"SELECT status FROM stack_template WHERE id = $1::uuid"#)
+            .bind(uuid::Uuid::parse_str(&template_id).expect("template id should be a uuid"))
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch updated template status");
 
     assert_eq!("needs_changes", template_status);
 
     let reviews_response = reqwest::Client::new()
-        .get(format!("{}/api/templates/{}/reviews", app.address, template_id))
+        .get(format!(
+            "{}/api/templates/{}/reviews",
+            app.address, template_id
+        ))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -173,13 +175,12 @@ async fn admin_cannot_mark_approved_template_as_needs_changes() {
 
     assert_eq!(StatusCode::BAD_REQUEST, admin_response.status());
 
-    let template_status = sqlx::query_scalar::<_, String>(
-        r#"SELECT status FROM stack_template WHERE id = $1::uuid"#,
-    )
-    .bind(uuid::Uuid::parse_str(&template_id).expect("template id should be a uuid"))
-    .fetch_one(&app.db_pool)
-    .await
-    .expect("Failed to fetch template status");
+    let template_status =
+        sqlx::query_scalar::<_, String>(r#"SELECT status FROM stack_template WHERE id = $1::uuid"#)
+            .bind(uuid::Uuid::parse_str(&template_id).expect("template id should be a uuid"))
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch template status");
 
     assert_eq!("approved", template_status);
 }

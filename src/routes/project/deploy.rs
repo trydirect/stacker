@@ -1,7 +1,7 @@
 use crate::configuration::Settings;
 use crate::connectors::{
-    app_service_catalog,
-    install_service::InstallServiceConnector, user_service::UserServiceConnector,
+    app_service_catalog, install_service::InstallServiceConnector,
+    user_service::UserServiceConnector,
 };
 use crate::db;
 use crate::forms;
@@ -10,8 +10,8 @@ use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde_valid::Validate;
-use std::collections::HashSet;
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -373,7 +373,12 @@ pub async fn item(
         let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
-        validate_template_target_requirements(template, &requirements, &form.cloud.provider, server.os.as_deref())
+        validate_template_target_requirements(
+            template,
+            &requirements,
+            &form.cloud.provider,
+            server.os.as_deref(),
+        )
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
         validate_template_server_capacity_requirements(
@@ -762,8 +767,13 @@ pub async fn saved_item(
         let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
-        validate_template_target_requirements(template, &requirements, &cloud.provider, server.os.as_deref())
-            .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+        validate_template_target_requirements(
+            template,
+            &requirements,
+            &cloud.provider,
+            server.os.as_deref(),
+        )
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
         validate_template_server_capacity_requirements(
             template,

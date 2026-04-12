@@ -13,6 +13,6 @@ fn test_connect_help_shows_handoff_usage() {
         .success()
         .stdout(
             predicate::str::contains("connect --handoff")
-                .and(predicate::str::contains("Handoff token"))
+                .and(predicate::str::contains("Handoff token")),
         );
 }

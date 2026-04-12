@@ -490,6 +490,40 @@ pub async fn get_execution(pool: &PgPool, id: &Uuid) -> Result<Option<PipeExecut
     })
 }
 
+/// Find the latest pending replay execution for an instance/deployment pair.
+#[tracing::instrument(name = "Find pending replay execution", skip(pool))]
+pub async fn find_pending_replay_execution(
+    pool: &PgPool,
+    instance_id: &Uuid,
+    deployment_hash: &str,
+) -> Result<Option<PipeExecution>, String> {
+    let query_span = tracing::info_span!("Finding pending replay execution");
+    sqlx::query_as::<_, PipeExecution>(
+        r#"
+        SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
+               source_data, mapped_data, target_response, error, duration_ms,
+               replay_of, created_by, started_at, completed_at
+        FROM pipe_executions
+        WHERE pipe_instance_id = $1
+          AND deployment_hash = $2
+          AND trigger_type = 'replay'
+          AND replay_of IS NOT NULL
+          AND status = 'running'
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(instance_id)
+    .bind(deployment_hash)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to find pending replay execution: {:?}", err);
+        format!("Failed to find pending replay execution: {}", err)
+    })
+}
+
 /// List pipe executions for a specific instance (paginated, newest first)
 #[tracing::instrument(name = "List pipe executions for instance", skip(pool))]
 pub async fn list_executions(

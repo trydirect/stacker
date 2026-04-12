@@ -557,14 +557,20 @@ impl CallableTrait for PipeCreateCommand {
             target_ops[target_idx];
 
         // Step 5: Build field mapping (smart matching with sample data)
-        let (field_mapping, match_result) = if !self.manual && !src_fields.is_empty() && !tgt_fields.is_empty() {
+        let (field_mapping, match_result) = if !self.manual
+            && !src_fields.is_empty()
+            && !tgt_fields.is_empty()
+        {
             let matcher = select_field_matcher(self.ai, self.no_ai);
             let result = matcher.match_fields(src_fields, tgt_fields, src_sample.as_ref());
             let mode_label = match result.mode {
                 crate::cli::field_matcher::MatchingMode::Ai => "AI",
                 crate::cli::field_matcher::MatchingMode::Deterministic => "deterministic",
             };
-            println!("\n  Auto-matching fields ({} mode, source → target):", mode_label);
+            println!(
+                "\n  Auto-matching fields ({} mode, source → target):",
+                mode_label
+            );
 
             let matched: Vec<String> = result
                 .mapping
@@ -655,15 +661,17 @@ impl CallableTrait for PipeCreateCommand {
                 config["field_confidence"] = serde_json::Value::Object(conf_map);
             }
             if !result.suggestions.is_empty() {
-                config["transformations"] = serde_json::json!(
-                    result.suggestions.iter().map(|s| {
+                config["transformations"] = serde_json::json!(result
+                    .suggestions
+                    .iter()
+                    .map(|s| {
                         serde_json::json!({
                             "target": s.target_field,
                             "expr": s.expression,
                             "description": s.description,
                         })
-                    }).collect::<Vec<_>>()
-                );
+                    })
+                    .collect::<Vec<_>>());
             }
         }
 
@@ -877,7 +885,9 @@ fn select_field_matcher(force_ai: bool, force_no_ai: bool) -> Box<dyn FieldMatch
                 }
             }
         } else if force_ai {
-            eprintln!("  ⚠ --ai flag set but no ai: config in stacker.yml, falling back to deterministic");
+            eprintln!(
+                "  ⚠ --ai flag set but no ai: config in stacker.yml, falling back to deterministic"
+            );
         }
     }
 

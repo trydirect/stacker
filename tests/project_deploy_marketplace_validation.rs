@@ -145,7 +145,8 @@ async fn deploy_rejects_marketplace_targets_that_do_not_match_template_requireme
 }
 
 #[tokio::test]
-async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_match_template_requirements() {
+async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_match_template_requirements(
+) {
     let Some(app) = common::spawn_app_with_vault().await else {
         return;
     };
@@ -159,7 +160,8 @@ async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_match_t
         }),
     )
     .await;
-    let cloud_id = common::create_test_cloud(&app.db_pool, "test_user_id", "saved-aws", "aws").await;
+    let cloud_id =
+        common::create_test_cloud(&app.db_pool, "test_user_id", "saved-aws", "aws").await;
 
     let response = reqwest::Client::new()
         .post(format!(
@@ -279,8 +281,8 @@ async fn deploy_rejects_marketplace_targets_that_do_not_meet_min_ram_mb_requirem
 }
 
 #[tokio::test]
-async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_meet_min_ram_mb_requirement()
-{
+async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_meet_min_ram_mb_requirement(
+) {
     let _guard = APP_SERVICE_ENV_LOCK.lock().await;
     let Some(app) = common::spawn_app_with_vault().await else {
         return;
@@ -426,8 +428,8 @@ async fn deploy_rejects_marketplace_targets_that_do_not_meet_min_disk_gb_require
 }
 
 #[tokio::test]
-async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_meet_min_disk_gb_requirement()
-{
+async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_meet_min_disk_gb_requirement(
+) {
     let _guard = APP_SERVICE_ENV_LOCK.lock().await;
     let Some(app) = common::spawn_app_with_vault().await else {
         return;
@@ -573,8 +575,8 @@ async fn deploy_rejects_marketplace_targets_that_do_not_meet_min_cpu_cores_requi
 }
 
 #[tokio::test]
-async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_meet_min_cpu_cores_requirement()
-{
+async fn deploy_with_saved_cloud_rejects_marketplace_targets_that_do_not_meet_min_cpu_cores_requirement(
+) {
     let _guard = APP_SERVICE_ENV_LOCK.lock().await;
     let Some(app) = common::spawn_app_with_vault().await else {
         return;
