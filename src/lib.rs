@@ -6,6 +6,7 @@ pub mod console;
 pub mod db;
 pub mod forms;
 pub mod health;
+pub mod handoff;
 pub mod helpers;
 pub mod mcp;
 mod middleware;

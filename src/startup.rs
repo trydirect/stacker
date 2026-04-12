@@ -195,6 +195,15 @@ pub async fn run(
                                  web::scope("/templates")
                                      .service(crate::routes::marketplace::public::list_handler)
                                      .service(crate::routes::marketplace::creator::mine_handler)
+                                     .service(
+                                         crate::routes::marketplace::creator::self_vendor_profile_handler,
+                                     )
+                                     .service(
+                                         crate::routes::marketplace::creator::create_onboarding_link_handler,
+                                     )
+                                     .service(
+                                         crate::routes::marketplace::creator::complete_onboarding_handler,
+                                     )
                                      .service(crate::routes::marketplace::creator::my_reviews_handler)
                                      .service(
                                          crate::routes::marketplace::creator::vendor_profile_status_handler,
@@ -256,14 +265,17 @@ pub async fn run(
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,
                                     )
-                                    .service(crate::routes::marketplace::admin::detail_handler)
-                                    .service(crate::routes::marketplace::admin::approve_handler)
-                                    .service(crate::routes::marketplace::admin::reject_handler)
-                                    .service(crate::routes::marketplace::admin::unapprove_handler)
-                                    .service(crate::routes::marketplace::admin::security_scan_handler)
-                                    .service(crate::routes::marketplace::admin::pricing_handler)
-                                    .service(crate::routes::marketplace::admin::update_verifications_handler)
-                                    .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
+                                     .service(crate::routes::marketplace::admin::detail_handler)
+                                     .service(crate::routes::marketplace::admin::approve_handler)
+                                     .service(crate::routes::marketplace::admin::reject_handler)
+                                     .service(
+                                         crate::routes::marketplace::admin::needs_changes_handler,
+                                     )
+                                     .service(crate::routes::marketplace::admin::unapprove_handler)
+                                     .service(crate::routes::marketplace::admin::security_scan_handler)
+                                     .service(crate::routes::marketplace::admin::pricing_handler)
+                                     .service(crate::routes::marketplace::admin::update_verifications_handler)
+                                     .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
                              )
                              .service(
                                  web::scope("/marketplace")

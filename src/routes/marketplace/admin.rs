@@ -80,6 +80,11 @@ pub struct AdminDecisionRequest {
     pub reason: Option<String>,
 }
 
+#[derive(serde::Deserialize, Debug)]
+pub struct AdminReviewReasonRequest {
+    pub reason: Option<String>,
+}
+
 #[tracing::instrument(name = "Approve template (admin)", skip_all)]
 #[post("/{id}/approve")]
 pub async fn approve_handler(
@@ -203,6 +208,49 @@ pub async fn reject_handler(
     });
 
     Ok(JsonResponse::<serde_json::Value>::build().ok("Rejected"))
+}
+
+#[tracing::instrument(name = "Mark template as needs changes (admin)", skip_all)]
+#[post("/{id}/needs-changes")]
+pub async fn needs_changes_handler(
+    admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminReviewReasonRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+    let req = body.into_inner();
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    if template.status != "submitted" && template.status != "under_review" {
+        return Err(
+            JsonResponse::<serde_json::Value>::build()
+                .bad_request("Template cannot be marked as needs_changes from its current status")
+        );
+    }
+
+    let updated = db::marketplace::admin_decide(
+        pg_pool.get_ref(),
+        &id,
+        &admin.id,
+        "needs_changes",
+        req.reason.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    if !updated {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
+    }
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Needs changes requested"))
 }
 
 #[derive(serde::Deserialize, Debug)]

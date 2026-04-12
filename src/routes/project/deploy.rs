@@ -1,5 +1,6 @@
 use crate::configuration::Settings;
 use crate::connectors::{
+    app_service_catalog,
     install_service::InstallServiceConnector, user_service::UserServiceConnector,
 };
 use crate::db;
@@ -14,21 +15,25 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+fn parse_template_requirements(
+    template: &models::StackTemplate,
+) -> Result<models::InfrastructureRequirements, String> {
+    serde_json::from_value(template.infrastructure_requirements.clone()).map_err(|err| {
+        tracing::error!(
+            "Failed to parse infrastructure requirements for template {}: {}",
+            template.id,
+            err
+        );
+        "Template infrastructure requirements are invalid".to_string()
+    })
+}
+
 fn validate_template_target_requirements(
     template: &models::StackTemplate,
+    requirements: &models::InfrastructureRequirements,
     provider: &str,
     os: Option<&str>,
 ) -> Result<(), String> {
-    let requirements: models::InfrastructureRequirements =
-        serde_json::from_value(template.infrastructure_requirements.clone()).map_err(|err| {
-            tracing::error!(
-                "Failed to parse infrastructure requirements for template {}: {}",
-                template.id,
-                err
-            );
-            "Template infrastructure requirements are invalid".to_string()
-        })?;
-
     let mut mismatches = Vec::new();
 
     if !requirements.supported_clouds.is_empty() {
@@ -74,6 +79,121 @@ fn validate_template_target_requirements(
             mismatches.join("; ")
         ))
     }
+}
+
+fn validate_min_ram_requirement(
+    template: &models::StackTemplate,
+    server_slug: &str,
+    minimum_ram_mb: i32,
+    server_capacity: &app_service_catalog::ServerCapacity,
+) -> Result<(), String> {
+    match server_capacity.ram_mb {
+        Some(available_ram_mb) if available_ram_mb >= minimum_ram_mb => Ok(()),
+        Some(available_ram_mb) => Err(format!(
+            "Template '{}' cannot be deployed to this target: selected server '{}' does not meet minimum RAM requirement (required: {} MB, available: {} MB)",
+            template.slug, server_slug, minimum_ram_mb, available_ram_mb
+        )),
+        None => Err(format!(
+            "Template '{}' cannot be deployed to this target: selected server '{}' is missing RAM metadata",
+            template.slug, server_slug
+        )),
+    }
+}
+
+fn validate_min_disk_requirement(
+    template: &models::StackTemplate,
+    server_slug: &str,
+    minimum_disk_gb: i32,
+    server_capacity: &app_service_catalog::ServerCapacity,
+) -> Result<(), String> {
+    match server_capacity.disk_gb {
+        Some(available_disk_gb) if available_disk_gb >= minimum_disk_gb => Ok(()),
+        Some(available_disk_gb) => Err(format!(
+            "Template '{}' cannot be deployed to this target: selected server '{}' does not meet minimum disk requirement (required: {} GB, available: {} GB)",
+            template.slug, server_slug, minimum_disk_gb, available_disk_gb
+        )),
+        None => Err(format!(
+            "Template '{}' cannot be deployed to this target: selected server '{}' is missing disk metadata",
+            template.slug, server_slug
+        )),
+    }
+}
+
+fn validate_min_cpu_requirement(
+    template: &models::StackTemplate,
+    server_slug: &str,
+    minimum_cpu_cores: i32,
+    server_capacity: &app_service_catalog::ServerCapacity,
+) -> Result<(), String> {
+    match server_capacity.cpu_cores {
+        Some(available_cpu_cores) if available_cpu_cores >= minimum_cpu_cores => Ok(()),
+        Some(available_cpu_cores) => Err(format!(
+            "Template '{}' cannot be deployed to this target: selected server '{}' does not meet minimum CPU requirement (required: {} cores, available: {} cores)",
+            template.slug, server_slug, minimum_cpu_cores, available_cpu_cores
+        )),
+        None => Err(format!(
+            "Template '{}' cannot be deployed to this target: selected server '{}' is missing CPU metadata",
+            template.slug, server_slug
+        )),
+    }
+}
+
+async fn validate_template_server_capacity_requirements(
+    template: &models::StackTemplate,
+    requirements: &models::InfrastructureRequirements,
+    provider: &str,
+    cloud_id: Option<i32>,
+    server_slug: Option<&str>,
+    access_token: Option<&str>,
+) -> Result<(), String> {
+    if requirements.min_ram_mb.is_none()
+        && requirements.min_disk_gb.is_none()
+        && requirements.min_cpu_cores.is_none()
+    {
+        return Ok(());
+    }
+
+    if !app_service_catalog::is_supported_cloud_provider(provider) {
+        return Ok(());
+    }
+
+    let server_slug = server_slug.ok_or_else(|| {
+        format!(
+            "Template '{}' cannot be deployed to this target: selected server is required for minimum RAM validation",
+            template.slug
+        )
+    })?;
+
+    let payload = app_service_catalog::fetch_catalog(provider, "servers", cloud_id, access_token)
+        .await
+        .map_err(|err| {
+            format!(
+                "Template '{}' cannot be deployed to this target: failed to load server catalog: {}",
+                template.slug, err
+            )
+        })?;
+
+    let server_capacity = app_service_catalog::resolve_server_capacity(&payload, server_slug)
+        .ok_or_else(|| {
+            format!(
+                "Template '{}' cannot be deployed to this target: selected server '{}' was not found in the provider catalog",
+                template.slug, server_slug
+            )
+        })?;
+
+    if let Some(minimum_ram_mb) = requirements.min_ram_mb {
+        validate_min_ram_requirement(template, server_slug, minimum_ram_mb, &server_capacity)?;
+    }
+
+    if let Some(minimum_disk_gb) = requirements.min_disk_gb {
+        validate_min_disk_requirement(template, server_slug, minimum_disk_gb, &server_capacity)?;
+    }
+
+    if let Some(minimum_cpu_cores) = requirements.min_cpu_cores {
+        validate_min_cpu_requirement(template, server_slug, minimum_cpu_cores, &server_capacity)?;
+    }
+
+    Ok(())
 }
 
 #[tracing::instrument(name = "Deploy for every user", skip_all)]
@@ -250,11 +370,25 @@ pub async fn item(
     };
 
     if let Some(template) = marketplace_template.as_ref() {
-        validate_template_target_requirements(
+        let requirements = parse_template_requirements(template)
+            .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+        validate_template_target_requirements(template, &requirements, &form.cloud.provider, server.os.as_deref())
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+        validate_template_server_capacity_requirements(
             template,
+            &requirements,
             &form.cloud.provider,
-            server.os.as_deref(),
+            if cloud_creds.id != 0 {
+                Some(cloud_creds.id)
+            } else {
+                None
+            },
+            server.server.as_deref(),
+            user.access_token.as_deref(),
         )
+        .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     }
 
@@ -625,8 +759,22 @@ pub async fn saved_item(
     };
 
     if let Some(template) = marketplace_template.as_ref() {
-        validate_template_target_requirements(template, &cloud.provider, server.os.as_deref())
+        let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+        validate_template_target_requirements(template, &requirements, &cloud.provider, server.os.as_deref())
+            .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+        validate_template_server_capacity_requirements(
+            template,
+            &requirements,
+            &cloud.provider,
+            Some(cloud_id),
+            server.server.as_deref(),
+            user.access_token.as_deref(),
+        )
+        .await
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     }
 
     // Build compose only after marketplace compatibility checks so unsupported
@@ -815,4 +963,146 @@ pub async fn saved_item(
                 .ok("Success")
         })
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
+    };
+    use crate::connectors::app_service_catalog::ServerCapacity;
+    use crate::models;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn build_template(slug: &str) -> models::StackTemplate {
+        models::StackTemplate {
+            id: Uuid::new_v4(),
+            creator_user_id: "creator".to_string(),
+            creator_name: None,
+            name: "Test template".to_string(),
+            slug: slug.to_string(),
+            short_description: None,
+            long_description: None,
+            category_code: None,
+            product_id: None,
+            tags: json!([]),
+            tech_stack: json!({}),
+            status: "approved".to_string(),
+            is_configurable: None,
+            view_count: None,
+            deploy_count: None,
+            required_plan_name: None,
+            price: None,
+            billing_cycle: None,
+            currency: None,
+            created_at: None,
+            updated_at: None,
+            approved_at: None,
+            verifications: json!({}),
+            infrastructure_requirements: json!({}),
+        }
+    }
+
+    #[test]
+    fn min_ram_validation_allows_exact_capacity_match() {
+        let template = build_template("exact-match");
+        let server_capacity = ServerCapacity {
+            id: "t3.medium".to_string(),
+            ram_mb: Some(2048),
+            cpu_cores: Some(2),
+            disk_gb: Some(40),
+        };
+
+        assert_eq!(
+            Ok(()),
+            validate_min_ram_requirement(&template, "t3.medium", 2048, &server_capacity)
+        );
+    }
+
+    #[test]
+    fn min_ram_validation_rejects_lower_capacity() {
+        let template = build_template("needs-more-ram");
+        let server_capacity = ServerCapacity {
+            id: "t3.small".to_string(),
+            ram_mb: Some(1024),
+            cpu_cores: Some(2),
+            disk_gb: Some(20),
+        };
+
+        let err = validate_min_ram_requirement(&template, "t3.small", 2048, &server_capacity)
+            .expect_err("lower RAM should be rejected");
+
+        assert!(err.contains("minimum RAM requirement"));
+        assert!(err.contains("2048"));
+        assert!(err.contains("1024"));
+    }
+
+    #[test]
+    fn min_disk_validation_allows_exact_capacity_match() {
+        let template = build_template("disk-exact-match");
+        let server_capacity = ServerCapacity {
+            id: "t3.medium".to_string(),
+            ram_mb: Some(2048),
+            cpu_cores: Some(2),
+            disk_gb: Some(40),
+        };
+
+        assert_eq!(
+            Ok(()),
+            validate_min_disk_requirement(&template, "t3.medium", 40, &server_capacity)
+        );
+    }
+
+    #[test]
+    fn min_disk_validation_rejects_lower_capacity() {
+        let template = build_template("needs-more-disk");
+        let server_capacity = ServerCapacity {
+            id: "t3.small".to_string(),
+            ram_mb: Some(2048),
+            cpu_cores: Some(2),
+            disk_gb: Some(20),
+        };
+
+        let err = validate_min_disk_requirement(&template, "t3.small", 40, &server_capacity)
+            .expect_err("lower disk should be rejected");
+
+        assert!(err.contains("minimum disk requirement"));
+        assert!(err.contains("40"));
+        assert!(err.contains("20"));
+    }
+
+    #[test]
+    fn min_cpu_validation_allows_exact_capacity_match() {
+        let template = build_template("cpu-exact-match");
+        let server_capacity = ServerCapacity {
+            id: "t3.medium".to_string(),
+            ram_mb: Some(4096),
+            cpu_cores: Some(4),
+            disk_gb: Some(40),
+        };
+
+        assert_eq!(
+            Ok(()),
+            validate_min_cpu_requirement(&template, "t3.medium", 4, &server_capacity)
+        );
+    }
+
+    #[test]
+    fn min_cpu_validation_rejects_lower_capacity() {
+        let template = build_template("needs-more-cpu");
+        let server_capacity = ServerCapacity {
+            id: "t3.small".to_string(),
+            ram_mb: Some(4096),
+            cpu_cores: Some(2),
+            disk_gb: Some(80),
+        };
+
+        let err = validate_min_cpu_requirement(&template, "t3.small", 4, &server_capacity)
+            .expect_err("lower CPU should be rejected");
+
+        assert!(err.contains("minimum CPU requirement"));
+        assert!(err.contains("4"));
+        assert!(err.contains("2"));
+    }
 }

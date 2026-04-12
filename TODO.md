@@ -1157,33 +1157,60 @@ To verify `is_official` and `is_verified_publisher` status for each image:
 ## Missing Features Implementation Plan (2026-04)
 
 ### Phase 1 - Marketplace Foundation and Revenue Loop
-- [ ] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
+- [x] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
   - [x] Add `marketplace_vendor_profile` storage plus admin template detail exposure with safe default fallback.
   - [x] Add admin-only partial updates for vendor verification, onboarding, payout linkage, and metadata.
   - [x] Add creator-visible vendor profile status so marketplace sellers can inspect onboarding and payout readiness.
-  - [ ] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
-  - [ ] Persist enough payout metadata to support later auditing, support, and marketplace operations.
-- [ ] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
+  - [x] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
+  - [x] Add a creator onboarding-link bootstrap endpoint that idempotently creates or reuses payout linkage.
+  - [x] Persist auditable onboarding metadata and completion transitions for later real provider integration.
+- [x] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
   - [x] Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
   - [x] Use these fields in marketplace create/read/update flows and webhook payloads.
   - [x] Use `supported_clouds` and `supported_os` in deployment validation so incompatible targets are blocked early.
   - [x] Add a shared backend server-capacity resolver for normalized App Service `/servers` catalog data.
-  - [ ] Enforce numeric capacity requirements (`min_ram_mb`, `min_disk_gb`, `min_cpu_cores`) using the shared capacity resolver.
+  - [x] Enforce `min_ram_mb` during deploy validation using the shared capacity resolver on both deploy entry points.
+  - [x] Extend numeric deploy validation to `min_disk_gb` and `min_cpu_cores`.
 - [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
-  - Send notifications for submit/approve/reject/update-required events.
+  - [x] Normalize `needs_changes` as a real admin review outcome with creator-visible review history and guarded admin routing.
+  - [ ] Send notifications for submit/approve/reject/update-required events.
   - Include actionable review reasons and the next expected developer action.
 
 ### Phase 2 - Reliability and User-Facing Correctness
 - [x] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
   - Convert duplicate-slug failures from generic 500 errors into explicit 409/validation feedback.
   - Keep CLI and UI messaging aligned so the user gets a recoverable error.
+- [ ] **[stacker-agent-alerts]** Add server-side endpoint to receive outbound alerts from Status Panel agents.
+  - Status Panel now sends `POST` webhook with `X-Agent-Id` header when host metrics breach thresholds.
+  - Implement `POST /api/v1/agents/alerts` (or similar) to receive the payload:
+    ```json
+    {
+      "alerts": [{
+        "kind": "high_cpu" | "high_memory" | "high_disk",
+        "severity": "warning" | "critical",
+        "message": "CPU usage at 96.2% (threshold: 95%)",
+        "value": 96.2,
+        "threshold": 95.0,
+        "recovered": false,
+        "timestamp_ms": 1700000000000,
+        "agent_id": "agent-123"
+      }],
+      "agent_id": "agent-123",
+      "timestamp_ms": 1700000000000
+    }
+    ```
+  - Return `2xx` on success, `4xx` on bad request (agent won't retry), `5xx` triggers agent retry (3x, exponential backoff).
+  - Validate `X-Agent-Id` header and match to known agent registration.
+  - Store alerts in DB for history; optionally fan out to notification channels (email/Slack).
+  - Surface active/recent alerts in admin dashboard per-server view.
 - [ ] **[stacker-rollback]** Add version-aware deployment rollback.
   - Allow operators to choose a prior template or deployment version and roll back safely.
   - Persist rollback history and expose the effective version in deployment details.
 
 ### Phase 3 - Team and Integration Expansion
-- [ ] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
-  - Prioritize Bitbucket and Jenkins, then evaluate CircleCI or other demand-driven exporters.
+- [x] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
+  - [x] Add Bitbucket Pipelines export and validate support, including aliases and stale/missing file checks.
+  - [x] Add Jenkinsfile export and validate support using the same `STACKER_TOKEN` convention.
   - Keep export templates aligned with current Stacker project and secret conventions.
 - [ ] **[stacker-team-projects]** Add shared project ownership and team collaboration primitives.
   - Introduce org/team ownership, invitations, seat-aware permissions, and shared deployment visibility.
@@ -1196,5 +1223,5 @@ To verify `is_official` and `is_verified_publisher` status for each image:
 
 ### Delivery Order
 - [ ] Start with `stacker-vendor-payouts`, `stacker-template-requirements`, and `stacker-duplicate-slug-409`.
-- [ ] Follow with `stacker-review-notifications` and `stacker-rollback` once the marketplace data contract is stable.
+- [ ] Follow with `stacker-agent-alerts`, `stacker-review-notifications`, and `stacker-rollback` once the marketplace data contract is stable.
 - [ ] Treat `stacker-team-projects` and `stacker-pipe-execution` as multi-sprint workstreams with cross-project coordination.
