@@ -29,36 +29,32 @@ pub(crate) async fn upsert_app_config_for_deploy(
 
     // Resolve the actual deployment record ID from deployment_hash
     // (deployment_id parameter is actually project_id in the current code)
-    let actual_deployment_id = match crate::db::deployment::fetch_by_deployment_hash(
-        pg_pool,
-        deployment_hash,
-    )
-    .await
-    {
-        Ok(Some(dep)) => {
-            tracing::info!(
-                "[UPSERT_APP_CONFIG] Resolved deployment.id={} from hash={}",
-                dep.id,
-                deployment_hash
-            );
-            Some(dep.id)
-        }
-        Ok(None) => {
-            tracing::warn!(
+    let actual_deployment_id =
+        match crate::db::deployment::fetch_by_deployment_hash(pg_pool, deployment_hash).await {
+            Ok(Some(dep)) => {
+                tracing::info!(
+                    "[UPSERT_APP_CONFIG] Resolved deployment.id={} from hash={}",
+                    dep.id,
+                    deployment_hash
+                );
+                Some(dep.id)
+            }
+            Ok(None) => {
+                tracing::warn!(
                 "[UPSERT_APP_CONFIG] No deployment found for hash={}, deployment_id will be NULL",
                 deployment_hash
             );
-            None
-        }
-        Err(e) => {
-            tracing::warn!(
-                "[UPSERT_APP_CONFIG] Failed to resolve deployment for hash={}: {}",
-                deployment_hash,
-                e
-            );
-            None
-        }
-    };
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[UPSERT_APP_CONFIG] Failed to resolve deployment for hash={}: {}",
+                    deployment_hash,
+                    e
+                );
+                None
+            }
+        };
 
     // Fetch project from DB
     let project = match crate::db::project::fetch(pg_pool, deployment_id).await {

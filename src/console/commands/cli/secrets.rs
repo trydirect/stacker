@@ -79,9 +79,10 @@ fn validate_env_path(p: &str) -> Result<PathBuf, CliError> {
     let path = Path::new(p);
     for component in path.components() {
         if let std::path::Component::ParentDir = component {
-            return Err(CliError::ConfigValidation(
-                format!("Path traversal ('..') is not allowed for --file: {}", p),
-            ));
+            return Err(CliError::ConfigValidation(format!(
+                "Path traversal ('..') is not allowed for --file: {}",
+                p
+            )));
         }
     }
     Ok(PathBuf::from(p))
@@ -96,7 +97,10 @@ fn resolve_env_path(explicit: Option<&str>) -> Result<PathBuf, CliError> {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("env_file:") {
-                let val = trimmed["env_file:".len()..].trim().trim_matches('"').trim_matches('\'');
+                let val = trimmed["env_file:".len()..]
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'');
                 if !val.is_empty() {
                     return validate_env_path(val);
                 }
@@ -135,9 +139,10 @@ impl CallableTrait for SecretsSetCommand {
 
         let valid_key = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
         if !valid_key.is_match(&key) {
-            return Err(Box::new(CliError::ConfigValidation(
-                format!("Invalid key '{}': must match [A-Za-z_][A-Za-z0-9_]*", key),
-            )));
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "Invalid key '{}': must match [A-Za-z_][A-Za-z0-9_]*",
+                key
+            ))));
         }
 
         let env_path = resolve_env_path(self.file.as_deref())?;
@@ -186,9 +191,7 @@ impl CallableTrait for SecretsGetCommand {
         let env_path = resolve_env_path(self.file.as_deref())?;
 
         if !env_path.exists() {
-            return Err(Box::new(CliError::EnvFileNotFound {
-                path: env_path,
-            }));
+            return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
         }
 
         let lines = read_env_lines(&env_path)?;
@@ -286,9 +289,7 @@ impl CallableTrait for SecretsDeleteCommand {
         let env_path = resolve_env_path(self.file.as_deref())?;
 
         if !env_path.exists() {
-            return Err(Box::new(CliError::EnvFileNotFound {
-                path: env_path,
-            }));
+            return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
         }
 
         let lines = read_env_lines(&env_path)?;
@@ -440,7 +441,10 @@ mod tests {
     #[test]
     fn test_resolve_env_path_allows_absolute_path_without_traversal() {
         let result = resolve_env_path(Some("/etc/passwd"));
-        assert!(result.is_ok(), "Absolute paths without traversal are allowed");
+        assert!(
+            result.is_ok(),
+            "Absolute paths without traversal are allowed"
+        );
     }
 
     #[test]
@@ -469,7 +473,10 @@ mod tests {
 
         let perms = std::fs::metadata(&env_path).unwrap().permissions();
         let mode = perms.mode() & 0o777;
-        assert_eq!(mode, 0o600, "Env file containing secrets must have 0o600 permissions");
+        assert_eq!(
+            mode, 0o600,
+            "Env file containing secrets must have 0o600 permissions"
+        );
     }
 
     // ── SECURITY: Key validation ──────────────────────

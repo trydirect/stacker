@@ -37,10 +37,19 @@ impl std::fmt::Debug for Settings {
             .field("auth_url", &self.auth_url)
             .field("user_service_url", &self.user_service_url)
             .field("max_clients_number", &self.max_clients_number)
-            .field("agent_command_poll_timeout_secs", &self.agent_command_poll_timeout_secs)
-            .field("agent_command_poll_interval_secs", &self.agent_command_poll_interval_secs)
+            .field(
+                "agent_command_poll_timeout_secs",
+                &self.agent_command_poll_timeout_secs,
+            )
+            .field(
+                "agent_command_poll_interval_secs",
+                &self.agent_command_poll_interval_secs,
+            )
             .field("casbin_reload_enabled", &self.casbin_reload_enabled)
-            .field("casbin_reload_interval_secs", &self.casbin_reload_interval_secs)
+            .field(
+                "casbin_reload_interval_secs",
+                &self.casbin_reload_interval_secs,
+            )
             .field("amqp", &self.amqp)
             .field("vault", &self.vault)
             .field("connectors", &self.connectors)

@@ -40,53 +40,147 @@ impl SecurityReport {
 
 /// Patterns that indicate hardcoded secrets in environment variables or configs
 const SECRET_PATTERNS: &[(&str, &str)] = &[
-    (r"(?i)(aws_secret_access_key|aws_access_key_id)\s*[:=]\s*[A-Za-z0-9/+=]{20,}", "AWS credentials"),
-    (r"(?i)(api[_-]?key|apikey)\s*[:=]\s*[A-Za-z0-9_\-]{16,}", "API key"),
-    (r"(?i)(secret[_-]?key|secret_token)\s*[:=]\s*[A-Za-z0-9_\-]{16,}", "Secret key/token"),
+    (
+        r"(?i)(aws_secret_access_key|aws_access_key_id)\s*[:=]\s*[A-Za-z0-9/+=]{20,}",
+        "AWS credentials",
+    ),
+    (
+        r"(?i)(api[_-]?key|apikey)\s*[:=]\s*[A-Za-z0-9_\-]{16,}",
+        "API key",
+    ),
+    (
+        r"(?i)(secret[_-]?key|secret_token)\s*[:=]\s*[A-Za-z0-9_\-]{16,}",
+        "Secret key/token",
+    ),
     (r"(?i)bearer\s+[A-Za-z0-9_\-\.]{20,}", "Bearer token"),
-    (r"(?i)(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}", "GitHub token"),
+    (
+        r"(?i)(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}",
+        "GitHub token",
+    ),
     (r"(?i)sk-[A-Za-z0-9]{20,}", "OpenAI/Stripe secret key"),
-    (r"(?i)(-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)", "Private key"),
+    (
+        r"(?i)(-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)",
+        "Private key",
+    ),
     (r"(?i)AKIA[0-9A-Z]{16}", "AWS Access Key ID"),
     (r"(?i)(slack[_-]?token|xox[bpas]-)", "Slack token"),
-    (r"(?i)(database_url|db_url)\s*[:=]\s*\S*:[^${\s]{8,}", "Database URL with credentials"),
+    (
+        r"(?i)(database_url|db_url)\s*[:=]\s*\S*:[^${\s]{8,}",
+        "Database URL with credentials",
+    ),
 ];
 
 /// Patterns for hardcoded credentials (passwords, default creds)
 const CRED_PATTERNS: &[(&str, &str)] = &[
-    (r#"(?i)(password|passwd|pwd)\s*[:=]\s*['"]?(?!(\$\{|\$\(|changeme|CHANGE_ME|your_password|example))[A-Za-z0-9!@#$%^&*]{6,}['"]?"#, "Hardcoded password"),
-    (r#"(?i)(mysql_root_password|postgres_password|mongo_initdb_root_password)\s*[:=]\s*['"]?(?!(\$\{|\$\())[^\s'"$]{4,}"#, "Hardcoded database password"),
-    (r"(?i)root:(?!(\$\{|\$\())[^\s:$]{4,}", "Root password in plain text"),
+    (
+        r#"(?i)(password|passwd|pwd)\s*[:=]\s*['"]?(?!(\$\{|\$\(|changeme|CHANGE_ME|your_password|example))[A-Za-z0-9!@#$%^&*]{6,}['"]?"#,
+        "Hardcoded password",
+    ),
+    (
+        r#"(?i)(mysql_root_password|postgres_password|mongo_initdb_root_password)\s*[:=]\s*['"]?(?!(\$\{|\$\())[^\s'"$]{4,}"#,
+        "Hardcoded database password",
+    ),
+    (
+        r"(?i)root:(?!(\$\{|\$\())[^\s:$]{4,}",
+        "Root password in plain text",
+    ),
 ];
 
 /// Patterns indicating potentially malicious or dangerous configurations
 const MALICIOUS_PATTERNS: &[(&str, &str, &str)] = &[
-    (r"(?i)privileged\s*:\s*true", "critical", "Container running in privileged mode"),
-    (r#"(?i)network_mode\s*:\s*['"]?host"#, "warning", "Container using host network"),
-    (r#"(?i)pid\s*:\s*['"]?host"#, "critical", "Container sharing host PID namespace"),
-    (r#"(?i)ipc\s*:\s*['"]?host"#, "critical", "Container sharing host IPC namespace"),
-    (r"(?i)cap_add\s*:.*SYS_ADMIN", "critical", "Container with SYS_ADMIN capability"),
-    (r"(?i)cap_add\s*:.*SYS_PTRACE", "warning", "Container with SYS_PTRACE capability"),
-    (r"(?i)cap_add\s*:.*ALL", "critical", "Container with ALL capabilities"),
-    (r"(?i)/var/run/docker\.sock", "critical", "Docker socket mounted (container escape risk)"),
-    (r"(?i)volumes\s*:.*:/host", "warning", "Suspicious host filesystem mount"),
-    (r"(?i)volumes\s*:.*:/etc(/|\s|$)", "warning", "Host /etc directory mounted"),
-    (r"(?i)volumes\s*:.*:/root", "critical", "Host /root directory mounted"),
-    (r"(?i)volumes\s*:.*:/proc", "critical", "Host /proc directory mounted"),
-    (r"(?i)volumes\s*:.*:/sys", "critical", "Host /sys directory mounted"),
-    (r"(?i)curl\s+.*\|\s*(sh|bash)", "warning", "Remote script execution via curl pipe"),
-    (r"(?i)wget\s+.*\|\s*(sh|bash)", "warning", "Remote script execution via wget pipe"),
+    (
+        r"(?i)privileged\s*:\s*true",
+        "critical",
+        "Container running in privileged mode",
+    ),
+    (
+        r#"(?i)network_mode\s*:\s*['"]?host"#,
+        "warning",
+        "Container using host network",
+    ),
+    (
+        r#"(?i)pid\s*:\s*['"]?host"#,
+        "critical",
+        "Container sharing host PID namespace",
+    ),
+    (
+        r#"(?i)ipc\s*:\s*['"]?host"#,
+        "critical",
+        "Container sharing host IPC namespace",
+    ),
+    (
+        r"(?i)cap_add\s*:.*SYS_ADMIN",
+        "critical",
+        "Container with SYS_ADMIN capability",
+    ),
+    (
+        r"(?i)cap_add\s*:.*SYS_PTRACE",
+        "warning",
+        "Container with SYS_PTRACE capability",
+    ),
+    (
+        r"(?i)cap_add\s*:.*ALL",
+        "critical",
+        "Container with ALL capabilities",
+    ),
+    (
+        r"(?i)/var/run/docker\.sock",
+        "critical",
+        "Docker socket mounted (container escape risk)",
+    ),
+    (
+        r"(?i)volumes\s*:.*:/host",
+        "warning",
+        "Suspicious host filesystem mount",
+    ),
+    (
+        r"(?i)volumes\s*:.*:/etc(/|\s|$)",
+        "warning",
+        "Host /etc directory mounted",
+    ),
+    (
+        r"(?i)volumes\s*:.*:/root",
+        "critical",
+        "Host /root directory mounted",
+    ),
+    (
+        r"(?i)volumes\s*:.*:/proc",
+        "critical",
+        "Host /proc directory mounted",
+    ),
+    (
+        r"(?i)volumes\s*:.*:/sys",
+        "critical",
+        "Host /sys directory mounted",
+    ),
+    (
+        r"(?i)curl\s+.*\|\s*(sh|bash)",
+        "warning",
+        "Remote script execution via curl pipe",
+    ),
+    (
+        r"(?i)wget\s+.*\|\s*(sh|bash)",
+        "warning",
+        "Remote script execution via wget pipe",
+    ),
 ];
 
 /// Known suspicious Docker images
 #[allow(dead_code)]
 const SUSPICIOUS_IMAGES: &[&str] = &[
-    "alpine:latest",  // not suspicious per se, but discouraged for reproducibility
+    "alpine:latest", // not suspicious per se, but discouraged for reproducibility
 ];
 
 const KNOWN_CRYPTO_MINER_PATTERNS: &[&str] = &[
-    "xmrig", "cpuminer", "cryptonight", "stratum+tcp", "minerd", "hashrate",
-    "monero", "coinhive", "coin-hive",
+    "xmrig",
+    "cpuminer",
+    "cryptonight",
+    "stratum+tcp",
+    "minerd",
+    "hashrate",
+    "monero",
+    "coinhive",
+    "coin-hive",
 ];
 
 /// Docker image namespace/registry prefixes known to publish security-hardened images.
@@ -94,13 +188,13 @@ const KNOWN_CRYPTO_MINER_PATTERNS: &[&str] = &[
 /// RapidFort, and Bitnami all apply automated CVE scanning + minimal-OS hardening.
 /// Docker Official Images have no namespace separator (e.g. "nginx:1.25", "redis:7").
 const KNOWN_HARDENED_SOURCES: &[&str] = &[
-    "cgr.dev/",              // Chainguard hardened/distroless images
-    "gcr.io/distroless/",    // Google Distroless
-    "public.ecr.aws/",       // Amazon ECR Public official images
-    "rapidfort/",            // RapidFort minimal hardened images
-    "bitnami/",              // Bitnami (Broadcom) hardened images
-    "ironbank/",             // DoD Iron Bank hardened images
-    "registry1.dso.mil/",   // DoD Iron Bank registry
+    "cgr.dev/",           // Chainguard hardened/distroless images
+    "gcr.io/distroless/", // Google Distroless
+    "public.ecr.aws/",    // Amazon ECR Public official images
+    "rapidfort/",         // RapidFort minimal hardened images
+    "bitnami/",           // Bitnami (Broadcom) hardened images
+    "ironbank/",          // DoD Iron Bank hardened images
+    "registry1.dso.mil/", // DoD Iron Bank registry
 ];
 
 /// Normalize a JSON-pretty-printed string into a YAML-like format so that
@@ -169,19 +263,29 @@ pub fn validate_stack_security(stack_definition: &Value) -> SecurityReport {
 
     let mut recommendations = Vec::new();
     if !no_secrets.passed {
-        recommendations.push("Replace hardcoded secrets with environment variable references (e.g., ${SECRET_KEY})".to_string());
+        recommendations.push(
+            "Replace hardcoded secrets with environment variable references (e.g., ${SECRET_KEY})"
+                .to_string(),
+        );
     }
     if !no_hardcoded_creds.passed {
-        recommendations.push("Use Docker secrets or environment variable references for passwords".to_string());
+        recommendations.push(
+            "Use Docker secrets or environment variable references for passwords".to_string(),
+        );
     }
     if !valid_docker_syntax.passed {
-        recommendations.push("Fix Docker Compose syntax issues to ensure deployability".to_string());
+        recommendations
+            .push("Fix Docker Compose syntax issues to ensure deployability".to_string());
     }
     if !no_malicious_code.passed {
-        recommendations.push("Review and remove dangerous container configurations (privileged mode, host mounts)".to_string());
+        recommendations.push(
+            "Review and remove dangerous container configurations (privileged mode, host mounts)"
+                .to_string(),
+        );
     }
     if risk_score == 0 {
-        recommendations.push("Automated scan passed. AI review recommended for deeper analysis.".to_string());
+        recommendations
+            .push("Automated scan passed. AI review recommended for deeper analysis.".to_string());
     }
     if !hardened_images.passed {
         recommendations.push("Consider using images from hardened sources (Chainguard, Bitnami, Google Distroless) and pinning all tags to specific versions.".to_string());
@@ -227,7 +331,10 @@ fn check_no_secrets(content: &str) -> SecurityCheckResult {
         message: if findings.is_empty() {
             "No exposed secrets detected".to_string()
         } else {
-            format!("Found {} potential secret(s) in stack definition", findings.len())
+            format!(
+                "Found {} potential secret(s) in stack definition",
+                findings.len()
+            )
         },
         details: findings,
     }
@@ -239,10 +346,7 @@ fn check_no_hardcoded_creds(content: &str) -> SecurityCheckResult {
     for (pattern, description) in CRED_PATTERNS {
         if let Ok(re) = Regex::new(pattern) {
             for mat in re.find_iter(content) {
-                let line = content[..mat.start()]
-                    .lines()
-                    .count()
-                    + 1;
+                let line = content[..mat.start()].lines().count() + 1;
                 findings.push(format!("[WARNING] {} near line {}", description, line));
             }
         }
@@ -272,10 +376,7 @@ fn check_no_hardcoded_creds(content: &str) -> SecurityCheckResult {
         message: if findings.is_empty() {
             "No hardcoded credentials detected".to_string()
         } else {
-            format!(
-                "Found {} potential hardcoded credential(s)",
-                findings.len()
-            )
+            format!("Found {} potential hardcoded credential(s)", findings.len())
         },
         details: findings,
     }
@@ -285,16 +386,16 @@ fn check_valid_docker_syntax(stack_definition: &Value, raw_content: &str) -> Sec
     let mut findings = Vec::new();
 
     // Check if it looks like valid docker-compose structure
-    let has_services = stack_definition.get("services").is_some()
-        || raw_content.contains("services:");
+    let has_services =
+        stack_definition.get("services").is_some() || raw_content.contains("services:");
 
     if !has_services {
-        findings.push("[WARNING] Missing 'services' key — may not be valid Docker Compose".to_string());
+        findings
+            .push("[WARNING] Missing 'services' key — may not be valid Docker Compose".to_string());
     }
 
     // Check for 'version' key (optional in modern compose but common)
-    let has_version = stack_definition.get("version").is_some()
-        || raw_content.contains("version:");
+    let has_version = stack_definition.get("version").is_some() || raw_content.contains("version:");
 
     // Check that services have images or build contexts
     if let Some(services) = stack_definition.get("services") {
@@ -326,7 +427,10 @@ fn check_valid_docker_syntax(stack_definition: &Value, raw_content: &str) -> Sec
         }
     }
 
-    let errors_only: Vec<&String> = findings.iter().filter(|f| f.contains("[WARNING]")).collect();
+    let errors_only: Vec<&String> = findings
+        .iter()
+        .filter(|f| f.contains("[WARNING]"))
+        .collect();
 
     SecurityCheckResult {
         passed: errors_only.is_empty(),
@@ -374,14 +478,20 @@ fn check_no_malicious_code(content: &str) -> SecurityCheckResult {
     // Check for suspicious base64 encoded content (long base64 strings could hide payloads)
     if let Ok(re) = Regex::new(r"[A-Za-z0-9+/]{100,}={0,2}") {
         if re.is_match(content) {
-            findings.push("[WARNING] Long base64-encoded content detected — may contain hidden payload".to_string());
+            findings.push(
+                "[WARNING] Long base64-encoded content detected — may contain hidden payload"
+                    .to_string(),
+            );
         }
     }
 
     // Check for outbound network calls in entrypoints/commands
     if let Ok(re) = Regex::new(r"(?i)(curl|wget|nc|ncat)\s+.*(http|ftp|tcp)") {
         if re.is_match(content) {
-            findings.push("[INFO] Outbound network call detected in command/entrypoint — review if expected".to_string());
+            findings.push(
+                "[INFO] Outbound network call detected in command/entrypoint — review if expected"
+                    .to_string(),
+            );
         }
     }
 
@@ -462,7 +572,10 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
 
             if image.contains("@sha256:") {
                 pinned_count += 1;
-                positives.push(format!("Service '{}': image pinned to digest ({})", name, image));
+                positives.push(format!(
+                    "Service '{}': image pinned to digest ({})",
+                    name, image
+                ));
             } else if image.ends_with(":latest") {
                 findings.push(format!(
                     "[WARNING] Service '{}' uses ':latest' tag — not reproducible and may silently receive unsafe updates ({})",
@@ -479,7 +592,10 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
 
             if is_from_hardened_source(image) {
                 hardened_source_count += 1;
-                positives.push(format!("Service '{}': image from hardened/trusted source ({})", name, image));
+                positives.push(format!(
+                    "Service '{}': image from hardened/trusted source ({})",
+                    name, image
+                ));
             }
         }
 
@@ -488,7 +604,10 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
             let is_root = user == "root" || user == "0" || user.starts_with("0:");
             if !is_root {
                 non_root_count += 1;
-                positives.push(format!("Service '{}': runs as non-root user ({})", name, user));
+                positives.push(format!(
+                    "Service '{}': runs as non-root user ({})",
+                    name, user
+                ));
             } else {
                 findings.push(format!(
                     "[INFO] Service '{}' explicitly runs as root — consider a non-root user",
@@ -500,7 +619,10 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
         // Check for read-only root filesystem
         if service.get("read_only").and_then(|v| v.as_bool()) == Some(true) {
             read_only_count += 1;
-            positives.push(format!("Service '{}': read-only root filesystem enabled", name));
+            positives.push(format!(
+                "Service '{}': read-only root filesystem enabled",
+                name
+            ));
         }
     }
 
@@ -510,7 +632,10 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
     let unpinned_warnings = findings.iter().filter(|f| f.contains("[WARNING]")).count();
     let passed = unpinned_warnings == 0
         && total_images > 0
-        && (hardened_source_count > 0 || non_root_count > 0 || read_only_count > 0 || pinned_count == total_images);
+        && (hardened_source_count > 0
+            || non_root_count > 0
+            || read_only_count > 0
+            || pinned_count == total_images);
 
     let mut details = findings.clone();
     details.extend(positives);
@@ -637,7 +762,11 @@ mod tests {
             }
         });
         let result = check_hardened_images(&definition);
-        assert!(result.passed, "Official images with versioned tags should pass: {}", result.message);
+        assert!(
+            result.passed,
+            "Official images with versioned tags should pass: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -648,7 +777,10 @@ mod tests {
             }
         });
         let result = check_hardened_images(&definition);
-        assert!(!result.passed, "':latest' tag should fail hardened-images check");
+        assert!(
+            !result.passed,
+            "':latest' tag should fail hardened-images check"
+        );
     }
 
     #[test]
@@ -659,7 +791,10 @@ mod tests {
             }
         });
         let result = check_hardened_images(&definition);
-        assert!(!result.passed, "Untagged image should fail hardened-images check");
+        assert!(
+            !result.passed,
+            "Untagged image should fail hardened-images check"
+        );
     }
 
     #[test]
@@ -674,8 +809,13 @@ mod tests {
         // non-root/digest requirement, while still flagging ':latest' as a warning.
         // This test verifies the hardened-source is detected.
         let result = check_hardened_images(&definition);
-        assert!(result.details.iter().any(|d| d.contains("hardened/trusted source")),
-            "Chainguard image should be recognised as hardened source");
+        assert!(
+            result
+                .details
+                .iter()
+                .any(|d| d.contains("hardened/trusted source")),
+            "Chainguard image should be recognised as hardened source"
+        );
     }
 
     #[test]
@@ -689,7 +829,11 @@ mod tests {
             }
         });
         let result = check_hardened_images(&definition);
-        assert!(result.passed, "Versioned image + non-root user should pass: {}", result.message);
+        assert!(
+            result.passed,
+            "Versioned image + non-root user should pass: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -702,8 +846,15 @@ mod tests {
             }
         });
         let result = check_hardened_images(&definition);
-        assert!(result.passed, "Digest-pinned image should pass: {}", result.message);
-        assert!(result.details.iter().any(|d| d.contains("pinned to digest")));
+        assert!(
+            result.passed,
+            "Digest-pinned image should pass: {}",
+            result.message
+        );
+        assert!(result
+            .details
+            .iter()
+            .any(|d| d.contains("pinned to digest")));
     }
 
     #[test]
@@ -720,7 +871,13 @@ mod tests {
             }
         });
         let report = validate_stack_security(&definition);
-        assert!(report.overall_passed, "':latest' tag should NOT block overall_passed");
-        assert!(!report.hardened_images.passed, "':latest' tag should fail hardened_images check");
+        assert!(
+            report.overall_passed,
+            "':latest' tag should NOT block overall_passed"
+        );
+        assert!(
+            !report.hardened_images.passed,
+            "':latest' tag should fail hardened_images check"
+        );
     }
 }

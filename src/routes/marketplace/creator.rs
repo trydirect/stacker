@@ -24,6 +24,7 @@ pub struct CreateTemplateRequest {
     pub price: Option<f64>,
     /// ISO 4217 currency code, default "USD"
     pub currency: Option<String>,
+    pub infrastructure_requirements: Option<serde_json::Value>,
 }
 
 #[tracing::instrument(name = "Create draft template", skip_all)]
@@ -37,18 +38,24 @@ pub async fn create_handler(
 
     let tags = req.tags.unwrap_or(serde_json::json!([]));
     let tech_stack = req.tech_stack.unwrap_or(serde_json::json!({}));
+    let infrastructure_requirements = req
+        .infrastructure_requirements
+        .unwrap_or(serde_json::json!({}));
 
     let creator_name = format!("{} {}", user.first_name, user.last_name);
 
     // Normalize pricing: plan_type "free" forces price to 0
     let billing_cycle = req.plan_type.unwrap_or_else(|| "free".to_string());
-    let price = if billing_cycle == "free" { 0.0 } else { req.price.unwrap_or(0.0) };
+    let price = if billing_cycle == "free" {
+        0.0
+    } else {
+        req.price.unwrap_or(0.0)
+    };
     let currency = req.currency.unwrap_or_else(|| "USD".to_string());
 
-    // Check if template with this slug already exists for this user
     let existing = db::marketplace::get_by_slug_and_user(pg_pool.get_ref(), &req.slug, &user.id)
         .await
-        .ok();
+        .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
 
     let template = if let Some(existing_template) = existing {
         // Update existing template
@@ -62,6 +69,7 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             Some(tags.clone()),
             Some(tech_stack.clone()),
+            Some(infrastructure_requirements.clone()),
             Some(price),
             Some(billing_cycle.as_str()),
             Some(currency.as_str()),
@@ -97,17 +105,23 @@ pub async fn create_handler(
             req.category_code.as_deref(),
             tags,
             tech_stack,
+            infrastructure_requirements,
             price,
             &billing_cycle,
             &currency,
         )
         .await
-        .map_err(|err| {
-            // If error message indicates duplicate slug, return 409 Conflict
-            if err.contains("already in use") {
-                return JsonResponse::<models::StackTemplate>::build().conflict(err);
+        .map_err(|err| match err {
+            db::marketplace::CreateDraftError::DuplicateSlug { slug } => {
+                JsonResponse::<models::StackTemplate>::build().conflict(format!(
+                    "Template slug '{}' is already in use. Please choose a different slug.",
+                    slug
+                ))
             }
-            JsonResponse::<models::StackTemplate>::build().internal_server_error(err)
+            db::marketplace::CreateDraftError::Internal => {
+                JsonResponse::<models::StackTemplate>::build()
+                    .internal_server_error("Internal Server Error")
+            }
         })?
     };
 
@@ -138,6 +152,7 @@ pub struct UpdateTemplateRequest {
     pub category_code: Option<String>,
     pub tags: Option<serde_json::Value>,
     pub tech_stack: Option<serde_json::Value>,
+    pub infrastructure_requirements: Option<serde_json::Value>,
     pub plan_type: Option<String>,
     pub price: Option<f64>,
     pub currency: Option<String>,
@@ -168,6 +183,7 @@ pub async fn update_handler(
     }
 
     let req = body.into_inner();
+    let infrastructure_requirements = req.infrastructure_requirements.clone();
 
     // Normalize pricing: plan_type "free" forces price to 0
     let price = match req.plan_type.as_deref() {
@@ -184,6 +200,7 @@ pub async fn update_handler(
         req.category_code.as_deref(),
         req.tags,
         req.tech_stack,
+        infrastructure_requirements,
         price,
         req.plan_type.as_deref(),
         req.currency.as_deref(),
@@ -317,7 +334,9 @@ pub async fn my_reviews_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
 
     if template.creator_user_id != user.id {
         return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
@@ -327,4 +346,60 @@ pub async fn my_reviews_handler(
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
         .map(|reviews| JsonResponse::build().set_list(reviews).ok("OK"))
+}
+
+#[tracing::instrument(name = "Get my vendor profile status", skip_all)]
+#[get("/{id}/vendor-profile-status")]
+pub async fn vendor_profile_status_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    if template.creator_user_id != user.id {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+    }
+
+    let vendor_profile =
+        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &template.creator_user_id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+            })?
+            .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id));
+
+    let payout_ready = vendor_profile.verification_status == "verified"
+        && vendor_profile.onboarding_status == "completed"
+        && vendor_profile.payouts_enabled
+        && vendor_profile.payout_provider.is_some();
+
+    let result = serde_json::json!({
+        "template_id": template.id,
+        "creator_user_id": template.creator_user_id,
+        "payout_ready": payout_ready,
+        "vendor_profile": {
+            "creator_user_id": vendor_profile.creator_user_id,
+            "verification_status": vendor_profile.verification_status,
+            "onboarding_status": vendor_profile.onboarding_status,
+            "payouts_enabled": vendor_profile.payouts_enabled,
+            "payout_provider": vendor_profile.payout_provider,
+            "metadata": vendor_profile.metadata,
+            "created_at": vendor_profile.created_at,
+            "updated_at": vendor_profile.updated_at
+        }
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("OK"))
 }

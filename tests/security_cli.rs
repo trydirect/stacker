@@ -16,14 +16,10 @@ use reqwest::StatusCode;
 // Helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async fn seed_full_deployment(
-    pool: &sqlx::PgPool,
-    user_id: &str,
-) -> (i32, i32, String) {
+async fn seed_full_deployment(pool: &sqlx::PgPool, user_id: &str) -> (i32, i32, String) {
     let project_id = common::create_test_project(pool, user_id).await;
     let hash = format!("dpl-{}", uuid::Uuid::new_v4());
-    let deployment_id =
-        common::create_test_deployment(pool, user_id, project_id, &hash).await;
+    let deployment_id = common::create_test_deployment(pool, user_id, project_id, &hash).await;
     (project_id, deployment_id, hash)
 }
 
@@ -33,7 +29,9 @@ async fn seed_full_deployment(
 
 #[tokio::test]
 async fn test_cli_list_projects_user_isolation() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     // Seed: User A gets 3, User B gets 1
@@ -52,7 +50,12 @@ async fn test_cli_list_projects_user_isolation() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
     let list = body["list"].as_array().expect("expected list");
-    assert_eq!(list.len(), 3, "User A should see exactly 3 projects, got {}", list.len());
+    assert_eq!(
+        list.len(),
+        3,
+        "User A should see exactly 3 projects, got {}",
+        list.len()
+    );
 
     // User B sees exactly 1
     let resp = client
@@ -64,12 +67,19 @@ async fn test_cli_list_projects_user_isolation() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
     let list = body["list"].as_array().expect("expected list");
-    assert_eq!(list.len(), 1, "User B should see exactly 1 project, got {}", list.len());
+    assert_eq!(
+        list.len(),
+        1,
+        "User B should see exactly 1 project, got {}",
+        list.len()
+    );
 }
 
 #[tokio::test]
 async fn test_cli_list_projects_unauthenticated() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let resp = client
@@ -92,7 +102,9 @@ async fn test_cli_list_projects_unauthenticated() {
 
 #[tokio::test]
 async fn test_cli_list_clouds_user_isolation() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     // Seed: User A has 2 cloud creds, User B has 1
@@ -127,7 +139,9 @@ async fn test_cli_list_clouds_user_isolation() {
 
 #[tokio::test]
 async fn test_cli_get_cloud_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let cloud_id = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-htz", "htz").await;
@@ -153,7 +167,9 @@ async fn test_cli_get_cloud_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_list_servers_user_isolation() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     // Servers need a project FK
@@ -191,13 +207,14 @@ async fn test_cli_list_servers_user_isolation() {
 
 #[tokio::test]
 async fn test_cli_get_server_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let proj_a = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let server_id = common::create_test_server(
-        &app.db_pool, common::USER_A_ID, proj_a, "ready", None,
-    ).await;
+    let server_id =
+        common::create_test_server(&app.db_pool, common::USER_A_ID, proj_a, "ready", None).await;
 
     let resp = client
         .get(format!("{}/server/{}", app.address, server_id))
@@ -219,7 +236,9 @@ async fn test_cli_get_server_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_list_deployments_user_isolation() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_, _, hash_a) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
@@ -254,14 +273,19 @@ async fn test_cli_list_deployments_user_isolation() {
 
 #[tokio::test]
 async fn test_cli_get_deployment_by_hash_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_, _, hash_a) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
 
     // User B tries to fetch User A's deployment by hash
     let resp = client
-        .get(format!("{}/api/v1/deployments/hash/{}", app.address, hash_a))
+        .get(format!(
+            "{}/api/v1/deployments/hash/{}",
+            app.address, hash_a
+        ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -276,7 +300,9 @@ async fn test_cli_get_deployment_by_hash_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_get_deployment_by_id_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_, did_a, _) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
@@ -301,7 +327,9 @@ async fn test_cli_get_deployment_by_id_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_deploy_cross_user_project_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let project_a = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
@@ -332,7 +360,9 @@ async fn test_cli_deploy_cross_user_project_rejected() {
 
 #[tokio::test]
 async fn test_cli_deploy_with_cross_user_cloud_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     // User B's project + User A's cloud credentials
@@ -346,7 +376,10 @@ async fn test_cli_deploy_with_cross_user_cloud_rejected() {
 
     // User B tries to deploy their project using User A's cloud creds
     let resp = client
-        .post(format!("{}/project/{}/deploy/{}", app.address, proj_b, cloud_a))
+        .post(format!(
+            "{}/project/{}/deploy/{}",
+            app.address, proj_b, cloud_a
+        ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .json(&deploy_body)
         .send()
@@ -369,7 +402,9 @@ async fn test_cli_deploy_with_cross_user_cloud_rejected() {
 
 #[tokio::test]
 async fn test_cli_destroy_cross_user_deployment_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_, did_a, _) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
@@ -394,7 +429,9 @@ async fn test_cli_destroy_cross_user_deployment_rejected() {
 
 #[tokio::test]
 async fn test_cli_destroy_own_deployment_allowed() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_, did_a, _) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
@@ -423,7 +460,9 @@ async fn test_cli_destroy_own_deployment_allowed() {
 
 #[tokio::test]
 async fn test_cli_enqueue_command_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_, _, hash_a) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
@@ -458,7 +497,9 @@ async fn test_cli_enqueue_command_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_delete_project_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let proj_a = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
@@ -495,7 +536,9 @@ async fn test_cli_delete_project_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_delete_cloud_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let cloud_a = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-htz", "htz").await;
@@ -520,13 +563,14 @@ async fn test_cli_delete_cloud_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_delete_server_cross_user_rejected() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let proj_a = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let server_a = common::create_test_server(
-        &app.db_pool, common::USER_A_ID, proj_a, "ready", None,
-    ).await;
+    let server_a =
+        common::create_test_server(&app.db_pool, common::USER_A_ID, proj_a, "ready", None).await;
 
     let resp = client
         .delete(format!("{}/server/{}", app.address, server_a))
@@ -548,7 +592,9 @@ async fn test_cli_delete_server_cross_user_rejected() {
 
 #[tokio::test]
 async fn test_cli_endpoints_reject_unauthenticated() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let endpoints = vec![
@@ -568,7 +614,9 @@ async fn test_cli_endpoints_reject_unauthenticated() {
         assert!(
             status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
             "{} {} should reject unauthenticated (got {})",
-            method, url, status
+            method,
+            url,
+            status
         );
     }
 }

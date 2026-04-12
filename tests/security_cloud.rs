@@ -12,7 +12,8 @@ async fn test_list_clouds_only_returns_own() {
     // User A creates 2 clouds, User B creates 1
     let _ca1 = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-htz", "htz").await;
     let _ca2 = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "a-aws", "aws").await;
-    let _cb1 = common::create_test_cloud(&app.db_pool, common::USER_B_ID, "b-do", "digitalocean").await;
+    let _cb1 =
+        common::create_test_cloud(&app.db_pool, common::USER_B_ID, "b-do", "digitalocean").await;
 
     let client = reqwest::Client::new();
 

@@ -89,7 +89,10 @@ impl UserServiceClient {
         bearer_token: &str,
         installation_id: i64,
     ) -> Result<InstallationDetails, ConnectorError> {
-        let url = format!("{}/api/1.0/installations/{}", self.base_url, installation_id);
+        let url = format!(
+            "{}/api/1.0/installations/{}",
+            self.base_url, installation_id
+        );
 
         let response = self
             .http_client

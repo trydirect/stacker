@@ -984,9 +984,9 @@ fn get_command(
             org,
             domain,
             auth_url,
-        } => Box::new(
-            stacker::console::commands::cli::login::LoginCommand::new(org, domain, auth_url),
-        ),
+        } => Box::new(stacker::console::commands::cli::login::LoginCommand::new(
+            org, domain, auth_url,
+        )),
         StackerCommands::Init {
             app_type,
             with_proxy,
@@ -1044,37 +1044,39 @@ fn get_command(
             stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
         ),
         StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
-            ConfigCommands::Validate { file } => Box::new(
-                stacker::console::commands::cli::config::ConfigValidateCommand::new(file),
-            ),
-            ConfigCommands::Show { file } => Box::new(
-                stacker::console::commands::cli::config::ConfigShowCommand::new(file),
-            ),
-            ConfigCommands::Example => Box::new(
-                stacker::console::commands::cli::config::ConfigExampleCommand::new(),
-            ),
+            ConfigCommands::Validate { file } => {
+                Box::new(stacker::console::commands::cli::config::ConfigValidateCommand::new(file))
+            }
+            ConfigCommands::Show { file } => {
+                Box::new(stacker::console::commands::cli::config::ConfigShowCommand::new(file))
+            }
+            ConfigCommands::Example => {
+                Box::new(stacker::console::commands::cli::config::ConfigExampleCommand::new())
+            }
             ConfigCommands::Fix { file, interactive } => Box::new(
                 stacker::console::commands::cli::config::ConfigFixCommand::new(file, interactive),
             ),
-            ConfigCommands::Lock { file } => Box::new(
-                stacker::console::commands::cli::config::ConfigLockCommand::new(file),
-            ),
-            ConfigCommands::Unlock { file } => Box::new(
-                stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
-            ),
+            ConfigCommands::Lock { file } => {
+                Box::new(stacker::console::commands::cli::config::ConfigLockCommand::new(file))
+            }
+            ConfigCommands::Unlock { file } => {
+                Box::new(stacker::console::commands::cli::config::ConfigUnlockCommand::new(file))
+            }
             ConfigCommands::Setup { command } => match command {
                 ConfigSetupCommands::Cloud { file } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
                 ),
                 ConfigSetupCommands::RemotePayload { file, out } => Box::new(
-                    stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(file, out),
+                    stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(
+                        file, out,
+                    ),
                 ),
             },
         },
         StackerCommands::Ai(ai_args) => match ai_args.command {
-            None => Box::new(
-                stacker::console::commands::cli::ai::AiChatCommand::new(ai_args.write),
-            ),
+            None => Box::new(stacker::console::commands::cli::ai::AiChatCommand::new(
+                ai_args.write,
+            )),
             Some(AiCommands::Ask {
                 question,
                 context,
@@ -1086,40 +1088,40 @@ fn get_command(
                     .with_write(ai_args.write || write),
             ),
         },
-        StackerCommands::Proxy {
-            command: proxy_cmd,
-        } => match proxy_cmd {
+        StackerCommands::Proxy { command: proxy_cmd } => match proxy_cmd {
             ProxyCommands::Add {
                 domain,
                 upstream,
                 ssl,
             } => Box::new(
-                stacker::console::commands::cli::proxy::ProxyAddCommand::new(
-                    domain, upstream, ssl,
-                ),
+                stacker::console::commands::cli::proxy::ProxyAddCommand::new(domain, upstream, ssl),
             ),
             ProxyCommands::Detect { json, deployment } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
             ),
         },
         StackerCommands::List { command: list_cmd } => match list_cmd {
-            ListCommands::Projects { json } => Box::new(
-                stacker::console::commands::cli::list::ListProjectsCommand::new(json),
-            ),
-            ListCommands::Deployments { json, project, limit } => Box::new(
+            ListCommands::Projects { json } => {
+                Box::new(stacker::console::commands::cli::list::ListProjectsCommand::new(json))
+            }
+            ListCommands::Deployments {
+                json,
+                project,
+                limit,
+            } => Box::new(
                 stacker::console::commands::cli::list::ListDeploymentsCommand::new(
                     json, project, limit,
                 ),
             ),
-            ListCommands::Servers { json } => Box::new(
-                stacker::console::commands::cli::list::ListServersCommand::new(json),
-            ),
-            ListCommands::SshKeys { json } => Box::new(
-                stacker::console::commands::cli::list::ListSshKeysCommand::new(json),
-            ),
-            ListCommands::Clouds { json } => Box::new(
-                stacker::console::commands::cli::list::ListCloudsCommand::new(json),
-            ),
+            ListCommands::Servers { json } => {
+                Box::new(stacker::console::commands::cli::list::ListServersCommand::new(json))
+            }
+            ListCommands::SshKeys { json } => {
+                Box::new(stacker::console::commands::cli::list::ListSshKeysCommand::new(json))
+            }
+            ListCommands::Clouds { json } => {
+                Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+            }
         },
         StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {
             SshKeyCommands::Generate { server_id, save_to } => Box::new(
@@ -1136,7 +1138,9 @@ fn get_command(
                 private_key,
             } => Box::new(
                 stacker::console::commands::cli::ssh_key::SshKeyUploadCommand::new(
-                    server_id, public_key, private_key,
+                    server_id,
+                    public_key,
+                    private_key,
                 ),
             ),
             SshKeyCommands::Inject {
@@ -1157,12 +1161,18 @@ fn get_command(
             ServiceCommands::Remove { name, file } => Box::new(
                 stacker::console::commands::cli::service::ServiceRemoveCommand::new(name, file),
             ),
-            ServiceCommands::List { online } => Box::new(
-                stacker::console::commands::cli::service::ServiceListCommand::new(online),
-            ),
+            ServiceCommands::List { online } => {
+                Box::new(stacker::console::commands::cli::service::ServiceListCommand::new(online))
+            }
         },
-        StackerCommands::Resolve { confirm, force, deployment } => Box::new(
-            stacker::console::commands::cli::resolve::ResolveCommand::new(confirm, force, deployment),
+        StackerCommands::Resolve {
+            confirm,
+            force,
+            deployment,
+        } => Box::new(
+            stacker::console::commands::cli::resolve::ResolveCommand::new(
+                confirm, force, deployment,
+            ),
         ),
         StackerCommands::Update { channel } => Box::new(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),
@@ -1195,51 +1205,141 @@ fn get_command(
         StackerCommands::Pipe { command: pipe_cmd } => {
             use stacker::console::commands::cli::pipe;
             match pipe_cmd {
-                PipeCommands::Scan { app, protocols, capture_samples, json, deployment } => Box::new(
-                    pipe::PipeScanCommand::new(app, protocols, capture_samples, json, deployment),
-                ),
-                PipeCommands::Create { source, target, manual, json, deployment } => Box::new(
-                    pipe::PipeCreateCommand::new(source, target, manual, json, deployment),
-                ),
-                PipeCommands::List { json, deployment } => Box::new(
-                    pipe::PipeListCommand::new(json, deployment),
-                ),
-                PipeCommands::Activate { pipe_id, trigger, poll_interval, json, deployment } => Box::new(
-                    pipe::PipeActivateCommand::new(pipe_id, trigger, poll_interval, json, deployment),
-                ),
-                PipeCommands::Deactivate { pipe_id, json, deployment } => Box::new(
-                    pipe::PipeDeactivateCommand::new(pipe_id, json, deployment),
-                ),
-                PipeCommands::Trigger { pipe_id, data, json, deployment } => Box::new(
-                    pipe::PipeTriggerCommand::new(pipe_id, data, json, deployment),
-                ),
-                PipeCommands::History { instance_id, limit, json, deployment } => Box::new(
-                    pipe::PipeHistoryCommand::new(instance_id, limit, json, deployment),
-                ),
-                PipeCommands::Replay { execution_id, json, deployment } => Box::new(
-                    pipe::PipeReplayCommand::new(execution_id, json, deployment),
-                ),
+                PipeCommands::Scan {
+                    app,
+                    protocols,
+                    capture_samples,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeScanCommand::new(
+                    app,
+                    protocols,
+                    capture_samples,
+                    json,
+                    deployment,
+                )),
+                PipeCommands::Create {
+                    source,
+                    target,
+                    manual,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeCreateCommand::new(
+                    source, target, manual, json, deployment,
+                )),
+                PipeCommands::List { json, deployment } => {
+                    Box::new(pipe::PipeListCommand::new(json, deployment))
+                }
+                PipeCommands::Activate {
+                    pipe_id,
+                    trigger,
+                    poll_interval,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeActivateCommand::new(
+                    pipe_id,
+                    trigger,
+                    poll_interval,
+                    json,
+                    deployment,
+                )),
+                PipeCommands::Deactivate {
+                    pipe_id,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeDeactivateCommand::new(pipe_id, json, deployment)),
+                PipeCommands::Trigger {
+                    pipe_id,
+                    data,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeTriggerCommand::new(
+                    pipe_id, data, json, deployment,
+                )),
+                PipeCommands::History {
+                    instance_id,
+                    limit,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeHistoryCommand::new(
+                    instance_id,
+                    limit,
+                    json,
+                    deployment,
+                )),
+                PipeCommands::Replay {
+                    execution_id,
+                    json,
+                    deployment,
+                } => Box::new(pipe::PipeReplayCommand::new(execution_id, json, deployment)),
             }
-        },
+        }
         StackerCommands::Agent { command: agent_cmd } => {
             use stacker::console::commands::cli::agent;
             match agent_cmd {
-                AgentCommands::Health { app, system, json, deployment } => Box::new(
-                    agent::AgentHealthCommand::new(app, json, deployment, system),
-                ),
-                AgentCommands::Logs { app, limit, json, deployment } => Box::new(
-                    agent::AgentLogsCommand::new(app, Some(limit), json, deployment),
-                ),
-                AgentCommands::Restart { app, force, json, deployment } => Box::new(
-                    agent::AgentRestartCommand::new(app, force, json, deployment),
-                ),
-                AgentCommands::DeployApp { app, image, force, runtime, json, deployment } => Box::new(
-                    agent::AgentDeployAppCommand::new(app, image, force, runtime, json, deployment),
-                ),
-                AgentCommands::RemoveApp { app, volumes, remove_image, force, json, deployment } => Box::new(
-                    agent::AgentRemoveAppCommand::new(app, volumes, remove_image, force, json, deployment),
-                ),
-                AgentCommands::ConfigureFirewall { action, list, app, public_ports, private_ports, persist, force, json, deployment } => {
+                AgentCommands::Health {
+                    app,
+                    system,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentHealthCommand::new(
+                    app, json, deployment, system,
+                )),
+                AgentCommands::Logs {
+                    app,
+                    limit,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentLogsCommand::new(
+                    app,
+                    Some(limit),
+                    json,
+                    deployment,
+                )),
+                AgentCommands::Restart {
+                    app,
+                    force,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentRestartCommand::new(
+                    app, force, json, deployment,
+                )),
+                AgentCommands::DeployApp {
+                    app,
+                    image,
+                    force,
+                    runtime,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentDeployAppCommand::new(
+                    app, image, force, runtime, json, deployment,
+                )),
+                AgentCommands::RemoveApp {
+                    app,
+                    volumes,
+                    remove_image,
+                    force,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentRemoveAppCommand::new(
+                    app,
+                    volumes,
+                    remove_image,
+                    force,
+                    json,
+                    deployment,
+                )),
+                AgentCommands::ConfigureFirewall {
+                    action,
+                    list,
+                    app,
+                    public_ports,
+                    private_ports,
+                    persist,
+                    force,
+                    json,
+                    deployment,
+                } => {
                     let effective_action = if list { "list".to_string() } else { action };
                     Box::new(agent::AgentConfigureFirewallCommand::new(
                         effective_action,
@@ -1252,31 +1352,50 @@ fn get_command(
                         deployment,
                     ))
                 }
-                AgentCommands::ConfigureProxy { app, domain, port, ssl, action, force, json, deployment } => Box::new(
-                    agent::AgentConfigureProxyCommand::new(app, domain, port, ssl, action, force, json, deployment),
-                ),
+                AgentCommands::ConfigureProxy {
+                    app,
+                    domain,
+                    port,
+                    ssl,
+                    action,
+                    force,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentConfigureProxyCommand::new(
+                    app, domain, port, ssl, action, force, json, deployment,
+                )),
                 AgentCommands::List { command: list_cmd } => match list_cmd {
-                    AgentListCommands::Apps { json, deployment } => Box::new(
-                        agent::AgentListAppsCommand::new(json, deployment),
-                    ),
-                    AgentListCommands::Containers { json, deployment } => Box::new(
-                        agent::AgentListContainersCommand::new(json, deployment),
-                    ),
+                    AgentListCommands::Apps { json, deployment } => {
+                        Box::new(agent::AgentListAppsCommand::new(json, deployment))
+                    }
+                    AgentListCommands::Containers { json, deployment } => {
+                        Box::new(agent::AgentListContainersCommand::new(json, deployment))
+                    }
                 },
-                AgentCommands::Status { json, deployment } => Box::new(
-                    agent::AgentStatusCommand::new(json, deployment),
-                ),
-                AgentCommands::History { json, deployment } => Box::new(
-                    agent::AgentHistoryCommand::new(json, deployment),
-                ),
-                AgentCommands::Exec { command_type, params, timeout, json, deployment } => Box::new(
-                    agent::AgentExecCommand::new(command_type, params, timeout, json, deployment),
-                ),
-                AgentCommands::Install { file, json } => Box::new(
-                    agent::AgentInstallCommand::new(file, json),
-                ),
+                AgentCommands::Status { json, deployment } => {
+                    Box::new(agent::AgentStatusCommand::new(json, deployment))
+                }
+                AgentCommands::History { json, deployment } => {
+                    Box::new(agent::AgentHistoryCommand::new(json, deployment))
+                }
+                AgentCommands::Exec {
+                    command_type,
+                    params,
+                    timeout,
+                    json,
+                    deployment,
+                } => Box::new(agent::AgentExecCommand::new(
+                    command_type,
+                    params,
+                    timeout,
+                    json,
+                    deployment,
+                )),
+                AgentCommands::Install { file, json } => {
+                    Box::new(agent::AgentInstallCommand::new(file, json))
+                }
             }
-        },
+        }
         StackerCommands::Submit {
             file,
             version,
@@ -1284,11 +1403,14 @@ fn get_command(
             category,
             plan_type,
             price,
-        } => Box::new(
-            stacker::console::commands::cli::submit::SubmitCommand::new(
-                file, version, description, category, plan_type, price,
-            ),
-        ),
+        } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
+            file,
+            version,
+            description,
+            category,
+            plan_type,
+            price,
+        )),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {
             MarketplaceCommands::Status { name, json } => Box::new(
                 stacker::console::commands::cli::marketplace::MarketplaceStatusCommand::new(
@@ -1308,7 +1430,12 @@ fn get_command(
                 plan_type,
                 price,
             } => Box::new(stacker::console::commands::cli::submit::SubmitCommand::new(
-                file, version, description, category, plan_type, price,
+                file,
+                version,
+                description,
+                category,
+                plan_type,
+                price,
             )),
         },
         // Completion is handled in main() before this function is called.

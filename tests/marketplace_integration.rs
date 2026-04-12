@@ -44,6 +44,7 @@ async fn test_deployment_free_template_allowed() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // Should allow deployment of free template
@@ -84,6 +85,7 @@ async fn test_deployment_plan_requirement_validated() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // Should allow deployment (mock user has professional plan)
@@ -128,6 +130,7 @@ async fn test_deployment_owned_paid_template_allowed() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
@@ -164,6 +167,10 @@ fn test_webhook_payload_for_template_approval() {
         view_count: Some(100),
         approved_at: Some("2026-02-11T00:00:00Z".to_string()),
         required_plan_name: None,
+        infrastructure_requirements: Some(serde_json::json!({
+            "supported_clouds": ["hetzner"],
+            "min_ram_mb": 2048
+        })),
     };
 
     // Verify payload has all required fields for approval
@@ -171,6 +178,13 @@ fn test_webhook_payload_for_template_approval() {
     assert_eq!(payload.code, Some("ai-agent-pro".to_string()));
     assert_eq!(payload.price, Some(99.99));
     assert!(payload.vendor_user_id.is_some());
+    assert_eq!(
+        payload.infrastructure_requirements,
+        Some(serde_json::json!({
+            "supported_clouds": ["hetzner"],
+            "min_ram_mb": 2048
+        }))
+    );
 
     // Should serialize without errors
     let json = serde_json::to_string(&payload).expect("Should serialize");
@@ -201,10 +215,21 @@ fn test_webhook_payload_for_template_update_price() {
         view_count: None,
         approved_at: None,
         required_plan_name: None,
+        infrastructure_requirements: Some(serde_json::json!({
+            "supported_os": ["ubuntu-22.04"],
+            "min_disk_gb": 20
+        })),
     };
 
     assert_eq!(payload.action, "template_updated");
     assert_eq!(payload.price, Some(129.99));
+    assert_eq!(
+        payload.infrastructure_requirements,
+        Some(serde_json::json!({
+            "supported_os": ["ubuntu-22.04"],
+            "min_disk_gb": 20
+        }))
+    );
 }
 
 /// Test webhook payload for template rejection
@@ -233,6 +258,7 @@ fn test_webhook_payload_for_template_rejection() {
         view_count: None,
         approved_at: None,
         required_plan_name: None,
+        infrastructure_requirements: None,
     };
 
     assert_eq!(payload.action, "template_rejected");
@@ -272,6 +298,7 @@ async fn test_deployment_validation_flow_with_connector() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -304,6 +331,7 @@ async fn test_deployment_validation_flow_with_connector() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -417,6 +445,7 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -449,6 +478,7 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     let result = validator
@@ -486,6 +516,7 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     // The result will depend on whether the validator can verify ownership
@@ -540,6 +571,7 @@ fn test_template_status_values() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
     };
 
     assert_eq!(template.status, "approved");

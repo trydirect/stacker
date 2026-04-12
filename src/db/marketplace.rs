@@ -1,6 +1,16 @@
-use crate::models::{StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion};
+use crate::models::{
+    MarketplaceVendorProfile, StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion,
+};
 use sqlx::PgPool;
 use tracing::Instrument;
+
+pub const SLUG_UNIQUE_CONSTRAINT: &str = "stack_template_slug_key";
+
+#[derive(Debug)]
+pub enum CreateDraftError {
+    DuplicateSlug { slug: String },
+    Internal,
+}
 
 pub async fn list_approved(
     pool: &PgPool,
@@ -32,7 +42,8 @@ pub async fn list_approved(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved'"#,
@@ -96,7 +107,7 @@ pub async fn get_by_slug_and_user(
     pool: &PgPool,
     slug: &str,
     user_id: &str,
-) -> Result<StackTemplate, String> {
+) -> Result<Option<StackTemplate>, String> {
     let query_span =
         tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
 
@@ -124,19 +135,20 @@ pub async fn get_by_slug_and_user(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.creator_user_id = $2"#,
     )
     .bind(slug)
     .bind(user_id)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .instrument(query_span)
     .await
     .map_err(|e| {
-        tracing::debug!("get_by_slug_and_user error: {:?}", e);
-        "Not Found".to_string()
+        tracing::error!("get_by_slug_and_user error: {:?}", e);
+        "Internal Server Error".to_string()
     })
 }
 
@@ -170,7 +182,8 @@ pub async fn get_by_slug_with_latest(
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.status = 'approved'"#,
@@ -239,7 +252,8 @@ pub async fn get_by_id(
             t.price,
             t.billing_cycle,
             t.currency,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.id = $1"#,
@@ -267,10 +281,11 @@ pub async fn create_draft(
     category_code: Option<&str>,
     tags: serde_json::Value,
     tech_stack: serde_json::Value,
+    infrastructure_requirements: serde_json::Value,
     price: f64,
     billing_cycle: &str,
     currency: &str,
-) -> Result<StackTemplate, String> {
+) -> Result<StackTemplate, CreateDraftError> {
     let query_span = tracing::info_span!("marketplace_create_draft", slug = %slug);
 
     let price_f64 = price;
@@ -279,8 +294,8 @@ pub async fn create_draft(
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
-            tags, tech_stack, status, price, billing_cycle, currency
-        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,'draft',$10,$11,$12)
+            tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, currency
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13)
         RETURNING 
             id,
             creator_user_id,
@@ -304,7 +319,8 @@ pub async fn create_draft(
             created_at,
             updated_at,
             approved_at,
-            verifications
+            verifications,
+            infrastructure_requirements
         "#,
     )
     .bind(creator_user_id)
@@ -316,6 +332,7 @@ pub async fn create_draft(
     .bind(category_code)
     .bind(tags)
     .bind(tech_stack)
+    .bind(infrastructure_requirements)
     .bind(price_f64)
     .bind(billing_cycle)
     .bind(currency)
@@ -325,22 +342,17 @@ pub async fn create_draft(
     .map_err(|e| {
         tracing::error!("create_draft error: {:?}", e);
 
-        // Provide user-friendly error messages for common constraint violations
         if let sqlx::Error::Database(db_err) = &e {
-            if let Some(code) = db_err.code() {
-                if code == "23505" {
-                    // Unique constraint violation
-                    if db_err.message().contains("stack_template_slug_key") {
-                        return format!(
-                            "Template slug '{}' is already in use. Please choose a different slug.",
-                            slug
-                        );
-                    }
-                }
+            if db_err.code().as_deref() == Some("23505")
+                && db_err.constraint() == Some(SLUG_UNIQUE_CONSTRAINT)
+            {
+                return CreateDraftError::DuplicateSlug {
+                    slug: slug.to_string(),
+                };
             }
         }
 
-        "Internal Server Error".to_string()
+        CreateDraftError::Internal
     })?;
 
     Ok(rec)
@@ -402,6 +414,7 @@ pub async fn update_metadata(
     category_code: Option<&str>,
     tags: Option<serde_json::Value>,
     tech_stack: Option<serde_json::Value>,
+    infrastructure_requirements: Option<serde_json::Value>,
     price: Option<f64>,
     billing_cycle: Option<&str>,
     currency: Option<&str>,
@@ -425,7 +438,7 @@ pub async fn update_metadata(
         return Err("Template not editable in current status".to_string());
     }
 
-    let res = sqlx::query!(
+    let res = sqlx::query(
         r#"UPDATE stack_template SET 
             name = COALESCE($2, name),
             short_description = COALESCE($3, short_description),
@@ -433,21 +446,23 @@ pub async fn update_metadata(
             category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
             tags = COALESCE($6, tags),
             tech_stack = COALESCE($7, tech_stack),
-            price = COALESCE($8, price),
-            billing_cycle = COALESCE($9, billing_cycle),
-            currency = COALESCE($10, currency)
-        WHERE id = $1::uuid"#,
-        template_id,
-        name,
-        short_description,
-        long_description,
-        category_code,
-        tags,
-        tech_stack,
-        price,
-        billing_cycle,
-        currency
+            infrastructure_requirements = COALESCE($8, infrastructure_requirements),
+            price = COALESCE($9, price),
+            billing_cycle = COALESCE($10, billing_cycle),
+            currency = COALESCE($11, currency)
+        WHERE id = $1::uuid"#
     )
+    .bind(template_id)
+    .bind(name)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags)
+    .bind(tech_stack)
+    .bind(infrastructure_requirements)
+    .bind(price)
+    .bind(billing_cycle)
+    .bind(currency)
     .execute(pool)
     .instrument(query_span)
     .await
@@ -584,7 +599,8 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.creator_user_id = $1
@@ -627,7 +643,8 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.created_at,
             t.updated_at,
             t.approved_at,
-            t.verifications
+            t.verifications,
+            t.infrastructure_requirements
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status IN ('submitted', 'approved')
@@ -718,7 +735,8 @@ pub async fn admin_unapprove(
     reviewer_user_id: &str,
     reason: Option<&str>,
 ) -> Result<bool, String> {
-    let _query_span = tracing::info_span!("marketplace_admin_unapprove", template_id = %template_id);
+    let _query_span =
+        tracing::info_span!("marketplace_admin_unapprove", template_id = %template_id);
 
     let mut tx = pool.begin().await.map_err(|e| {
         tracing::error!("tx begin error: {:?}", e);
@@ -915,6 +933,104 @@ pub async fn list_reviews_by_template(
     .await
     .map_err(|e| {
         tracing::error!("list_reviews_by_template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+pub async fn get_vendor_profile_by_creator(
+    pool: &PgPool,
+    creator_user_id: &str,
+) -> Result<Option<MarketplaceVendorProfile>, String> {
+    let query_span =
+        tracing::info_span!("get_vendor_profile_by_creator", creator_user_id = %creator_user_id);
+
+    sqlx::query_as::<_, MarketplaceVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata,
+            created_at,
+            updated_at
+        FROM marketplace_vendor_profile
+        WHERE creator_user_id = $1"#,
+    )
+    .bind(creator_user_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_vendor_profile_by_creator error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+pub async fn upsert_vendor_profile(
+    pool: &PgPool,
+    creator_user_id: &str,
+    verification_status: Option<&str>,
+    onboarding_status: Option<&str>,
+    payouts_enabled: Option<bool>,
+    payout_provider: Option<&str>,
+    payout_account_ref: Option<&str>,
+    metadata: Option<serde_json::Value>,
+) -> Result<MarketplaceVendorProfile, String> {
+    let query_span =
+        tracing::info_span!("upsert_vendor_profile", creator_user_id = %creator_user_id);
+
+    sqlx::query_as::<_, MarketplaceVendorProfile>(
+        r#"INSERT INTO marketplace_vendor_profile (
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata
+        )
+        VALUES (
+            $1,
+            COALESCE($2, 'unverified'),
+            COALESCE($3, 'not_started'),
+            COALESCE($4, false),
+            $5,
+            $6,
+            COALESCE($7, '{}'::jsonb)
+        )
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            verification_status = COALESCE($2, marketplace_vendor_profile.verification_status),
+            onboarding_status = COALESCE($3, marketplace_vendor_profile.onboarding_status),
+            payouts_enabled = COALESCE($4, marketplace_vendor_profile.payouts_enabled),
+            payout_provider = COALESCE($5, marketplace_vendor_profile.payout_provider),
+            payout_account_ref = COALESCE($6, marketplace_vendor_profile.payout_account_ref),
+            metadata = COALESCE($7, marketplace_vendor_profile.metadata),
+            updated_at = NOW()
+        RETURNING
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata,
+            created_at,
+            updated_at"#,
+    )
+    .bind(creator_user_id)
+    .bind(verification_status)
+    .bind(onboarding_status)
+    .bind(payouts_enabled)
+    .bind(payout_provider)
+    .bind(payout_account_ref)
+    .bind(metadata)
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("upsert_vendor_profile error: {:?}", e);
         "Internal Server Error".to_string()
     })
 }

@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+pub mod app_service_catalog;
 pub mod admin_service;
 pub mod config;
 pub mod dockerhub_service;
@@ -64,3 +65,4 @@ pub use dockerhub_service::{
     DockerHubClient, DockerHubConnector, NamespaceSummary, RepositorySummary, TagSummary,
 };
 pub use user_service::init as init_user_service;
+pub use app_service_catalog::{fetch_catalog as fetch_app_service_catalog, resolve_server_capacity, ServerCapacity};

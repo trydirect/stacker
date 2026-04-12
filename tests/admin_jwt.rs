@@ -31,7 +31,7 @@ async fn admin_templates_accepts_valid_jwt() {
     let token = create_jwt("admin_service", "ops@test.com", Duration::minutes(30));
 
     let response = client
-        .get(format!("{}/admin/templates?status=pending", app.address))
+        .get(format!("{}/api/admin/templates?status=pending", app.address))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -60,7 +60,7 @@ async fn admin_templates_rejects_expired_jwt() {
     let token = create_jwt("admin_service", "ops@test.com", Duration::minutes(-5));
 
     let response = client
-        .get(format!("{}/admin/templates?status=pending", app.address))
+        .get(format!("{}/api/admin/templates?status=pending", app.address))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -85,7 +85,7 @@ async fn admin_templates_requires_admin_role() {
     let token = create_jwt("group_user", "user@test.com", Duration::minutes(10));
 
     let response = client
-        .get(format!("{}/admin/templates?status=pending", app.address))
+        .get(format!("{}/api/admin/templates?status=pending", app.address))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await

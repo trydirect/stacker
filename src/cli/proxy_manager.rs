@@ -53,7 +53,11 @@ impl ContainerRuntime for DockerCliRuntime {
 
     fn list_containers(&self) -> Result<Vec<ContainerInfo>, CliError> {
         let output = std::process::Command::new("docker")
-            .args(["ps", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}"])
+            .args([
+                "ps",
+                "--format",
+                "{{.ID}}|{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}",
+            ])
             .output()
             .map_err(|_| CliError::ContainerRuntimeUnavailable)?;
 
@@ -319,7 +323,8 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliE
             block.push_str(&format!("        proxy_pass http://{};\n", domain.upstream));
             block.push_str("        proxy_set_header Host $host;\n");
             block.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
-            block.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
+            block
+                .push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
             block.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
             block.push_str("    }\n");
             block.push_str("}\n");
@@ -332,7 +337,8 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliE
             block.push_str(&format!("        proxy_pass http://{};\n", domain.upstream));
             block.push_str("        proxy_set_header Host $host;\n");
             block.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
-            block.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
+            block
+                .push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
             block.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
             block.push_str("    }\n");
             block.push_str("}\n");
@@ -443,10 +449,8 @@ mod tests {
 
     #[test]
     fn test_detect_proxy_nginx_from_containers() {
-        let runtime = MockContainerRuntime::available_with(vec![
-            app_container(),
-            nginx_container(),
-        ]);
+        let runtime =
+            MockContainerRuntime::available_with(vec![app_container(), nginx_container()]);
         let detection = detect_proxy(&runtime).unwrap();
         assert_eq!(detection.proxy_type, ProxyType::Nginx);
         assert_eq!(detection.container_name.as_deref(), Some("nginx-proxy"));
@@ -456,10 +460,7 @@ mod tests {
 
     #[test]
     fn test_detect_proxy_npm_from_containers() {
-        let runtime = MockContainerRuntime::available_with(vec![
-            app_container(),
-            npm_container(),
-        ]);
+        let runtime = MockContainerRuntime::available_with(vec![app_container(), npm_container()]);
         let detection = detect_proxy(&runtime).unwrap();
         assert_eq!(detection.proxy_type, ProxyType::NginxProxyManager);
         assert!(detection.ports.contains(&81));
@@ -467,9 +468,7 @@ mod tests {
 
     #[test]
     fn test_detect_proxy_traefik_from_containers() {
-        let runtime = MockContainerRuntime::available_with(vec![
-            traefik_container(),
-        ]);
+        let runtime = MockContainerRuntime::available_with(vec![traefik_container()]);
         let detection = detect_proxy(&runtime).unwrap();
         assert_eq!(detection.proxy_type, ProxyType::Traefik);
         assert_eq!(detection.container_name.as_deref(), Some("traefik"));
@@ -487,10 +486,8 @@ mod tests {
     fn test_detect_npm_takes_priority_over_nginx() {
         // NPM containers contain "nginx" in their image. NPM must be detected
         // first because its signature is checked before plain "nginx".
-        let runtime = MockContainerRuntime::available_with(vec![
-            npm_container(),
-            nginx_container(),
-        ]);
+        let runtime =
+            MockContainerRuntime::available_with(vec![npm_container(), nginx_container()]);
         let detection = detect_proxy(&runtime).unwrap();
         assert_eq!(detection.proxy_type, ProxyType::NginxProxyManager);
     }
@@ -597,7 +594,8 @@ mod tests {
 
     #[test]
     fn test_parse_docker_ps_line() {
-        let line = "abc123|my-nginx|nginx:alpine|0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp|Up 2 hours";
+        let line =
+            "abc123|my-nginx|nginx:alpine|0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp|Up 2 hours";
         let info = parse_docker_ps_line(line);
         assert_eq!(info.id, "abc123");
         assert_eq!(info.name, "my-nginx");
@@ -726,7 +724,10 @@ mod tests {
             upstream: "app:3000".to_string(),
         };
         let result = generate_nginx_server_block(&domain);
-        assert!(result.is_err(), "Domain with special chars must be rejected");
+        assert!(
+            result.is_err(),
+            "Domain with special chars must be rejected"
+        );
     }
 
     #[test]
@@ -737,7 +738,10 @@ mod tests {
             upstream: "app:3000;\n        add_header X-Injected true".to_string(),
         };
         let result = generate_nginx_server_block(&domain);
-        assert!(result.is_err(), "Upstream with special chars must be rejected");
+        assert!(
+            result.is_err(),
+            "Upstream with special chars must be rejected"
+        );
     }
 
     #[test]

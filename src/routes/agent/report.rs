@@ -1,4 +1,7 @@
-use crate::{db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models, models::pipe::PipeExecution};
+use crate::{
+    db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models,
+    models::pipe::PipeExecution,
+};
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -224,7 +227,10 @@ pub async fn report_handler(
             // Persist trigger_pipe results as pipe execution history
             if command.r#type == "trigger_pipe" && status == models::CommandStatus::Completed {
                 if let Some(ref result) = result_payload {
-                    if let Ok(report) = serde_json::from_value::<status_panel::TriggerPipeCommandReport>(result.clone()) {
+                    if let Ok(report) = serde_json::from_value::<
+                        status_panel::TriggerPipeCommandReport,
+                    >(result.clone())
+                    {
                         if let Ok(instance_id) = uuid::Uuid::parse_str(&report.pipe_instance_id) {
                             let execution = PipeExecution::new(
                                 instance_id,
@@ -244,7 +250,9 @@ pub async fn report_handler(
                                 )
                             };
 
-                            if let Err(e) = db::pipe::insert_execution(agent_pool.as_ref(), &execution).await {
+                            if let Err(e) =
+                                db::pipe::insert_execution(agent_pool.as_ref(), &execution).await
+                            {
                                 tracing::warn!(
                                     pipe_instance_id = %report.pipe_instance_id,
                                     "Failed to persist pipe execution: {}",

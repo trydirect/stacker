@@ -98,7 +98,14 @@ deploy:
 
     stacker_cmd()
         .current_dir(dir.path())
-        .args(["deploy", "--target", "local", "--file", "custom.yml", "--dry-run"])
+        .args([
+            "deploy",
+            "--target",
+            "local",
+            "--file",
+            "custom.yml",
+            "--dry-run",
+        ])
         .assert()
         .success();
 }
@@ -127,7 +134,10 @@ deploy:
         .args(["deploy", "--target", "cloud"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("login").or(predicate::str::contains("credential").or(predicate::str::contains("Login"))));
+        .stderr(
+            predicate::str::contains("login")
+                .or(predicate::str::contains("credential").or(predicate::str::contains("Login"))),
+        );
 }
 
 #[test]

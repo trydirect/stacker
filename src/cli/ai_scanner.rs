@@ -488,14 +488,12 @@ pub fn generate_config_with_ai_impl(
 
     // Validate that it's parseable YAML (but don't require it to be a valid StackerConfig
     // yet — the caller will do from_str() and report detailed errors)
-    serde_yaml::from_str::<serde_yaml::Value>(&yaml).map_err(|e| {
-        CliError::AiProviderError {
-            provider: provider.name().to_string(),
-            message: format!(
-                "AI generated invalid YAML: {}. Raw response:\n{}",
-                e, raw_response
-            ),
-        }
+    serde_yaml::from_str::<serde_yaml::Value>(&yaml).map_err(|e| CliError::AiProviderError {
+        provider: provider.name().to_string(),
+        message: format!(
+            "AI generated invalid YAML: {}. Raw response:\n{}",
+            e, raw_response
+        ),
     })?;
 
     Ok(yaml)
@@ -507,19 +505,11 @@ pub fn strip_code_fences(text: &str) -> String {
     let trimmed = text.trim();
 
     // Check for opening fence
-    let without_open = if trimmed.starts_with("```yaml")
-        || trimmed.starts_with("```yml")
-    {
+    let without_open = if trimmed.starts_with("```yaml") || trimmed.starts_with("```yml") {
         // Remove opening fence line
-        trimmed
-            .splitn(2, '\n')
-            .nth(1)
-            .unwrap_or(trimmed)
+        trimmed.splitn(2, '\n').nth(1).unwrap_or(trimmed)
     } else if trimmed.starts_with("```") {
-        trimmed
-            .splitn(2, '\n')
-            .nth(1)
-            .unwrap_or(trimmed)
+        trimmed.splitn(2, '\n').nth(1).unwrap_or(trimmed)
     } else {
         return trimmed.to_string();
     };
@@ -932,7 +922,10 @@ env:
         assert_eq!(config.services.len(), 2);
         assert_eq!(config.services[0].name, "postgres");
         assert_eq!(config.services[1].name, "redis");
-        assert_eq!(config.proxy.proxy_type, crate::cli::config_parser::ProxyType::Nginx);
+        assert_eq!(
+            config.proxy.proxy_type,
+            crate::cli::config_parser::ProxyType::Nginx
+        );
         assert!(config.monitoring.status_panel);
     }
 

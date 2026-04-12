@@ -113,8 +113,7 @@ pub async fn spawn_app_two_users() -> Option<TwoUserTestApp> {
         }
     };
 
-    let app_listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind app port");
+    let app_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind app port");
     let port = app_listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
 
@@ -161,14 +160,12 @@ async fn mock_auth_two_users(req: actix_web::HttpRequest) -> actix_web::Result<i
 }
 
 async fn mock_auth_server_two_users(listener: TcpListener) {
-    HttpServer::new(|| {
-        App::new().service(web::scope("/me").service(mock_auth_two_users))
-    })
-    .listen(listener)
-    .unwrap()
-    .run()
-    .await
-    .unwrap();
+    HttpServer::new(|| App::new().service(web::scope("/me").service(mock_auth_two_users)))
+        .listen(listener)
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -177,14 +174,40 @@ async fn mock_auth_server_two_users(listener: TcpListener) {
 
 /// Insert a minimal cloud credential into the DB and return its id.
 pub async fn create_test_cloud(pool: &PgPool, user_id: &str, name: &str, provider: &str) -> i32 {
+    let cloud_form = forms::CloudForm {
+        user_id: Some(user_id.to_string()),
+        project_id: None,
+        name: Some(name.to_string()),
+        provider: provider.to_string(),
+        cloud_token: Some("test-cloud-token".to_string()),
+        cloud_key: None,
+        cloud_secret: None,
+        save_token: Some(true),
+    };
+
+    let cloud: stacker::models::Cloud = (&cloud_form).into();
     sqlx::query(
-        r#"INSERT INTO cloud (user_id, name, provider, cloud_token, save_token, created_at, updated_at)
-        VALUES ($1, $2, $3, 'test-token-encrypted', true, NOW(), NOW())
+        r#"INSERT INTO cloud (
+            user_id,
+            name,
+            provider,
+            cloud_token,
+            cloud_key,
+            cloud_secret,
+            save_token,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         RETURNING id"#,
     )
-    .bind(user_id)
-    .bind(name)
-    .bind(provider)
+    .bind(cloud.user_id)
+    .bind(cloud.name)
+    .bind(cloud.provider)
+    .bind(cloud.cloud_token)
+    .bind(cloud.cloud_key)
+    .bind(cloud.cloud_secret)
+    .bind(cloud.save_token)
     .fetch_one(pool)
     .await
     .map(|row| {
@@ -202,8 +225,17 @@ pub async fn create_test_deployment(
     deployment_hash: &str,
 ) -> i32 {
     sqlx::query(
-        r#"INSERT INTO deployment (project_id, deployment_hash, user_id, status, runtime, created_at, updated_at)
-        VALUES ($1, $2, $3, 'running', 'runc', NOW(), NOW())
+        r#"INSERT INTO deployment (
+            project_id,
+            deployment_hash,
+            user_id,
+            metadata,
+            status,
+            runtime,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, '{}'::jsonb, 'running', 'runc', NOW(), NOW())
         RETURNING id"#,
     )
     .bind(project_id)
@@ -302,9 +334,14 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     let address = format!("http://127.0.0.1:{}", port);
 
     let agent_pool = AgentPgPool::new(connection_pool.clone());
-    let server = stacker::startup::run(app_listener, connection_pool.clone(), agent_pool, configuration)
-        .await
-        .expect("Failed to bind address.");
+    let server = stacker::startup::run(
+        app_listener,
+        connection_pool.clone(),
+        agent_pool,
+        configuration,
+    )
+    .await
+    .expect("Failed to bind address.");
     let _ = tokio::spawn(server);
 
     Some(TestAppWithVault {
@@ -318,8 +355,8 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
 /// Required because server.project_id has a FK constraint to project(id).
 pub async fn create_test_project(pool: &PgPool, user_id: &str) -> i32 {
     sqlx::query(
-        r#"INSERT INTO project (stack_id, user_id, name, body, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, 'Test Project', '{}', NOW(), NOW())
+        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, NOW(), NOW())
         RETURNING id"#,
     )
     .bind(user_id)

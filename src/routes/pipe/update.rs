@@ -24,9 +24,8 @@ pub async fn update_instance_status_handler(
     let instance_id = path.into_inner();
 
     if !VALID_STATUSES.contains(&body.status.as_str()) {
-        return Err(JsonResponse::<()>::build().bad_request(
-            "Invalid status. Must be one of: draft, active, paused, error",
-        ));
+        return Err(JsonResponse::<()>::build()
+            .bad_request("Invalid status. Must be one of: draft, active, paused, error"));
     }
 
     let instance = db::pipe::get_instance(pg_pool.get_ref(), &instance_id)

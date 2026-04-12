@@ -170,7 +170,10 @@ impl MqManager {
             )
             .await
             .map_err(|err| {
-                let msg = format!("binding queue '{}' to exchange '{}': {:?}", queue_name, exchange_name, err);
+                let msg = format!(
+                    "binding queue '{}' to exchange '{}': {:?}",
+                    queue_name, exchange_name, err
+                );
                 tracing::error!(msg);
                 msg
             })?;

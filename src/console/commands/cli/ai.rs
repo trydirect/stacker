@@ -1,16 +1,18 @@
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::io::{self, Write};
 
 use crate::cli::ai_client::{
-    AiProvider, AiResponse, ChatMessage, ToolCall, ToolDef,
-    all_write_mode_tools, create_provider,
+    all_write_mode_tools, create_provider, AiProvider, AiResponse, ChatMessage, ToolCall, ToolDef,
 };
 use crate::cli::config_parser::{AiConfig, AiProviderType, StackerConfig};
 use crate::cli::error::CliError;
-use crate::cli::service_catalog::{ServiceCatalog, catalog_summary_for_ai};
+use crate::cli::service_catalog::{catalog_summary_for_ai, ServiceCatalog};
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
+const CHAT_MULTILINE_MAX_LINES: usize = 512;
+const CHAT_MULTILINE_SEND_MARKER: &str = "::send";
+const CHAT_MULTILINE_CANCEL_MARKER: &str = "::cancel";
 
 /// Condensed stacker.yml schema reference injected as the AI system prompt
 /// so the model can answer "how do I …" questions with precise YAML examples.
@@ -177,6 +179,86 @@ fn prompt_with_default(prompt: &str, default: &str) -> Result<String, CliError> 
     }
 }
 
+fn read_input_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, CliError> {
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line)?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(line.trim_end_matches(['\n', '\r']).to_string()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ChatReplCommand {
+    Exit,
+    Help,
+    Clear,
+    Paste,
+    Message(String),
+    Empty,
+}
+
+fn parse_chat_repl_command(line: String) -> ChatReplCommand {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return ChatReplCommand::Empty;
+    }
+
+    match trimmed.to_ascii_lowercase().as_str() {
+        "exit" | "quit" | ":q" => ChatReplCommand::Exit,
+        "help" | ":help" | "?" => ChatReplCommand::Help,
+        "clear" | ":clear" => ChatReplCommand::Clear,
+        "paste" | ":paste" | "/paste" => ChatReplCommand::Paste,
+        _ => ChatReplCommand::Message(line),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MultilineInputResult {
+    Submit(String),
+    Cancelled,
+    Eof,
+    LimitExceeded { max_lines: usize },
+}
+
+fn collect_multiline_input<R: BufRead, W: Write>(
+    reader: &mut R,
+    prompt_writer: &mut W,
+) -> Result<MultilineInputResult, CliError> {
+    let mut lines = Vec::new();
+
+    loop {
+        write!(prompt_writer, "\x1b[1;36m…\x1b[0m ")?;
+        prompt_writer.flush()?;
+
+        let Some(line) = read_input_line(reader)? else {
+            return Ok(MultilineInputResult::Eof);
+        };
+
+        let trimmed = line.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            CHAT_MULTILINE_SEND_MARKER => {
+                if lines.is_empty() {
+                    return Ok(MultilineInputResult::Cancelled);
+                }
+
+                return Ok(MultilineInputResult::Submit(lines.join("\n")));
+            }
+            CHAT_MULTILINE_CANCEL_MARKER => return Ok(MultilineInputResult::Cancelled),
+            _ => {}
+        }
+
+        if lines.len() == CHAT_MULTILINE_MAX_LINES {
+            return Ok(MultilineInputResult::LimitExceeded {
+                max_lines: CHAT_MULTILINE_MAX_LINES,
+            });
+        }
+
+        lines.push(line);
+    }
+}
+
 fn configure_ai_interactive(config_path: &str) -> Result<AiConfig, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
@@ -213,7 +295,10 @@ fn configure_ai_interactive(config_path: &str) -> Result<AiConfig, CliError> {
         Some(api_key_input)
     };
 
-    let endpoint_default = current.endpoint.as_deref().unwrap_or("http://localhost:11434");
+    let endpoint_default = current
+        .endpoint
+        .as_deref()
+        .unwrap_or("http://localhost:11434");
     let endpoint_input = prompt_with_default("Endpoint", endpoint_default)?;
     let endpoint = if endpoint_input.trim().is_empty() {
         None
@@ -356,8 +441,12 @@ fn try_extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
     // Try full string first, then scan for the first '{' / '['
     let candidates: Vec<&str> = {
         let mut v = vec![stripped.as_str()];
-        if let Some(idx) = stripped.find('{') { v.push(&stripped[idx..]); }
-        if let Some(idx) = stripped.find('[') { v.push(&stripped[idx..]); }
+        if let Some(idx) = stripped.find('{') {
+            v.push(&stripped[idx..]);
+        }
+        if let Some(idx) = stripped.find('[') {
+            v.push(&stripped[idx..]);
+        }
         v
     };
 
@@ -376,17 +465,17 @@ fn try_extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
 fn parse_tool_calls_from_json(json: &serde_json::Value) -> Vec<ToolCall> {
     // Array of calls
     if let Some(arr) = json.as_array() {
-        let calls: Vec<ToolCall> = arr.iter()
+        let calls: Vec<ToolCall> = arr
+            .iter()
             .flat_map(|v| parse_tool_calls_from_json(v))
             .collect();
-        if !calls.is_empty() { return calls; }
+        if !calls.is_empty() {
+            return calls;
+        }
     }
 
     // {"name": ..., "arguments": {...}}
-    if let (Some(name), Some(args)) = (
-        json["name"].as_str(),
-        json.get("arguments"),
-    ) {
+    if let (Some(name), Some(args)) = (json["name"].as_str(), json.get("arguments")) {
         let arguments = if args.is_object() {
             args.clone()
         } else if let Some(s) = args.as_str() {
@@ -394,18 +483,23 @@ fn parse_tool_calls_from_json(json: &serde_json::Value) -> Vec<ToolCall> {
         } else {
             serde_json::json!({})
         };
-        return vec![ToolCall { id: None, name: name.to_string(), arguments }];
-    }
-
-    // {"tool": ..., "parameters": {...}}
-    if let (Some(name), Some(args)) = (
-        json["tool"].as_str(),
-        json.get("parameters"),
-    ) {
         return vec![ToolCall {
             id: None,
             name: name.to_string(),
-            arguments: if args.is_object() { args.clone() } else { serde_json::json!({}) },
+            arguments,
+        }];
+    }
+
+    // {"tool": ..., "parameters": {...}}
+    if let (Some(name), Some(args)) = (json["tool"].as_str(), json.get("parameters")) {
+        return vec![ToolCall {
+            id: None,
+            name: name.to_string(),
+            arguments: if args.is_object() {
+                args.clone()
+            } else {
+                serde_json::json!({})
+            },
         }];
     }
 
@@ -429,7 +523,7 @@ fn is_write_allowed(path_str: &str) -> bool {
         .trim_start_matches('/')
         .trim_start_matches('\\');
     // Reject any path that tries to escape with "../"
-    if p.contains("../") || p.contains("..\\" ) || p == ".." {
+    if p.contains("../") || p.contains("..\\") || p == ".." {
         return false;
     }
     p == "stacker.yml" || p.starts_with(".stacker/") || p.starts_with(".stacker\\")
@@ -443,16 +537,17 @@ fn run_subprocess(args: &[&str]) -> String {
         Err(e) => return format!("Error: could not resolve binary path: {}", e),
     };
 
-    match std::process::Command::new(&exe)
-        .args(args)
-        .output()
-    {
+    match std::process::Command::new(&exe).args(args).output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             let combined = format!("{}{}", stdout, stderr).trim().to_string();
             if out.status.success() {
-                if combined.is_empty() { "OK (no output)".to_string() } else { combined }
+                if combined.is_empty() {
+                    "OK (no output)".to_string()
+                } else {
+                    combined
+                }
             } else {
                 format!("Exit {}: {}", out.status.code().unwrap_or(-1), combined)
             }
@@ -571,7 +666,11 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
 
         // ── agent CLI tools ────────────────────────────────────────────────
         "agent_health" => {
-            let mut args: Vec<String> = vec!["agent".to_string(), "health".to_string(), "--json".to_string()];
+            let mut args: Vec<String> = vec![
+                "agent".to_string(),
+                "health".to_string(),
+                "--json".to_string(),
+            ];
             if let Some(app) = call.arguments["app"].as_str() {
                 args.push("--app".to_string());
                 args.push(app.to_string());
@@ -584,7 +683,11 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
             run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
         }
         "agent_status" => {
-            let mut args: Vec<String> = vec!["agent".to_string(), "status".to_string(), "--json".to_string()];
+            let mut args: Vec<String> = vec![
+                "agent".to_string(),
+                "status".to_string(),
+                "--json".to_string(),
+            ];
             if let Some(dep) = call.arguments["deployment"].as_str() {
                 args.push("--deployment".to_string());
                 args.push(dep.to_string());
@@ -597,7 +700,12 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
                 Some(a) => a,
                 None => return "Error: missing 'app' argument".to_string(),
             };
-            let mut args: Vec<String> = vec!["agent".to_string(), "logs".to_string(), app.to_string(), "--json".to_string()];
+            let mut args: Vec<String> = vec![
+                "agent".to_string(),
+                "logs".to_string(),
+                app.to_string(),
+                "--json".to_string(),
+            ];
             if let Some(limit) = call.arguments["limit"].as_u64() {
                 args.push("--limit".to_string());
                 args.push(limit.to_string());
@@ -624,7 +732,11 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
             if call.arguments["force_rebuild"].as_bool().unwrap_or(false) {
                 args.push("--force-rebuild".to_string());
             }
-            let label = if dry_run { "stacker deploy --dry-run" } else { "stacker deploy" };
+            let label = if dry_run {
+                "stacker deploy --dry-run"
+            } else {
+                "stacker deploy"
+            };
             eprintln!("  ⚙ running: {}", label);
             run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
         }
@@ -633,7 +745,8 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
                 Some(d) => d,
                 None => return "Error: missing 'domain' argument".to_string(),
             };
-            let mut args: Vec<String> = vec!["proxy".to_string(), "add".to_string(), domain.to_string()];
+            let mut args: Vec<String> =
+                vec!["proxy".to_string(), "add".to_string(), domain.to_string()];
             if let Some(upstream) = call.arguments["upstream"].as_str() {
                 args.push("--upstream".to_string());
                 args.push(upstream.to_string());
@@ -816,7 +929,10 @@ fn run_chat_turn(
                     if iteration + 1 == MAX_TOOL_ITERATIONS {
                         return Err(CliError::AiProviderError {
                             provider: provider.name().to_string(),
-                            message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                            message: format!(
+                                "Reached maximum tool iterations ({})",
+                                MAX_TOOL_ITERATIONS
+                            ),
                         });
                     }
                     continue;
@@ -846,7 +962,10 @@ fn run_chat_turn(
                 if iteration + 1 == MAX_TOOL_ITERATIONS {
                     return Err(CliError::AiProviderError {
                         provider: provider.name().to_string(),
-                        message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                        message: format!(
+                            "Reached maximum tool iterations ({})",
+                            MAX_TOOL_ITERATIONS
+                        ),
                     });
                 }
             }
@@ -910,7 +1029,11 @@ pub fn run_ai_ask_agentic(
                         // strip the JSON before showing narration to user
                         let narration = text
                             .lines()
-                            .filter(|l| !l.trim().starts_with('{') && !l.trim().starts_with('[') && !l.trim().starts_with('`'))
+                            .filter(|l| {
+                                !l.trim().starts_with('{')
+                                    && !l.trim().starts_with('[')
+                                    && !l.trim().starts_with('`')
+                            })
                             .collect::<Vec<_>>()
                             .join("\n");
                         if !narration.trim().is_empty() {
@@ -930,7 +1053,10 @@ pub fn run_ai_ask_agentic(
                     if iteration + 1 == MAX_TOOL_ITERATIONS {
                         return Err(CliError::AiProviderError {
                             provider: provider.name().to_string(),
-                            message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                            message: format!(
+                                "Reached maximum tool iterations ({})",
+                                MAX_TOOL_ITERATIONS
+                            ),
                         });
                     }
                     continue;
@@ -952,10 +1078,7 @@ pub fn run_ai_ask_agentic(
                 // Execute each tool and append results
                 for call in &calls {
                     let result = execute_tool(call, &cwd);
-                    messages.push(ChatMessage::tool_result(
-                        call.id.clone(),
-                        result,
-                    ));
+                    messages.push(ChatMessage::tool_result(call.id.clone(), result));
                 }
 
                 if iteration + 1 == MAX_TOOL_ITERATIONS {
@@ -1039,11 +1162,7 @@ impl CallableTrait for AiAskCommand {
                 println!("{}", response);
             }
         } else {
-            let response = run_ai_ask(
-                &self.question,
-                self.context.as_deref(),
-                provider.as_ref(),
-            )?;
+            let response = run_ai_ask(&self.question, self.context.as_deref(), provider.as_ref())?;
             println!("{}", response);
         }
         Ok(())
@@ -1059,12 +1178,16 @@ const CHAT_HELP: &str = "\
 Commands available in the AI chat session:
   help          Show this message
   clear         Reset conversation history (keeps system context)
+  paste         Enter multiline paste mode
   exit / quit   End the session
   Ctrl-D        End the session
 
 Tips:
   - Ask anything about your stacker.yml, Dockerfile, or deployment.
   - With --write the AI can create/edit files in .stacker/ and stacker.yml.
+  - Run `paste`, then finish with `::send` to submit a multiline prompt.
+  - Use `::cancel` to discard multiline input.
+  - Multiline input is limited to 512 lines per message.
   - Conversation history is kept across turns — the AI remembers context.";
 
 /// `stacker ai [--write]`
@@ -1089,6 +1212,9 @@ impl CallableTrait for AiChatCommand {
         let provider = create_provider(&ai_config)?;
         let model_name = ai_config.model.as_deref().unwrap_or("default");
         let provider_name = provider.name();
+        let stdin = io::stdin();
+        let mut reader = stdin.lock();
+        let mut stdout = io::stdout();
 
         let write_active = self.write && provider.supports_tools();
 
@@ -1097,9 +1223,14 @@ impl CallableTrait for AiChatCommand {
             "Stacker AI  ({provider} · {model}){tools}",
             provider = provider_name,
             model = model_name,
-            tools = if write_active { "  [write mode — .stacker/ + stacker.yml]" } else { "" }
+            tools = if write_active {
+                "  [write mode — .stacker/ + stacker.yml]"
+            } else {
+                ""
+            }
         );
-        eprintln!("Type your question and press Enter.  `help` for tips, `exit` to quit.");
+        eprintln!("Type your question and press Enter. Use `paste` for multiline input.");
+        eprintln!("`help` for tips, `exit` to quit.");
         eprintln!();
 
         // Seed project context into the initial system message
@@ -1111,50 +1242,68 @@ impl CallableTrait for AiChatCommand {
                 "{}\n\n{}\n\n## Current project files\n{}",
                 STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx, ctx
             ),
-            None => format!(
-                "{}\n\n{}",
-                STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx
-            ),
+            None => format!("{}\n\n{}", STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx),
         };
 
         let mut messages: Vec<ChatMessage> = vec![ChatMessage::system(&system)];
 
         loop {
             // Prompt
-            print!("\x1b[1;36m>\x1b[0m ");
-            io::stdout().flush()?;
+            write!(stdout, "\x1b[1;36m>\x1b[0m ")?;
+            stdout.flush()?;
 
             // Read a line (Ctrl-D → EOF → break)
-            let mut line = String::new();
-            let bytes = io::stdin().read_line(&mut line)?;
-            if bytes == 0 {
+            let Some(line) = read_input_line(&mut reader)? else {
                 eprintln!("\nBye!");
                 break;
-            }
+            };
 
-            let input = line.trim();
-            if input.is_empty() {
-                continue;
-            }
-
-            match input.to_lowercase().as_str() {
-                "exit" | "quit" | ":q" => {
+            let user_input = match parse_chat_repl_command(line) {
+                ChatReplCommand::Exit => {
                     eprintln!("Bye!");
                     break;
                 }
-                "help" | ":help" | "?" => {
+                ChatReplCommand::Help => {
                     eprintln!("{}", CHAT_HELP);
                     continue;
                 }
-                "clear" | ":clear" => {
+                ChatReplCommand::Clear => {
                     messages.truncate(1); // keep system message
                     eprintln!("  ↺ conversation cleared");
                     continue;
                 }
-                _ => {}
-            }
+                ChatReplCommand::Paste => {
+                    eprintln!(
+                        "Paste mode — finish with `{}`, cancel with `{}`, max {} lines.",
+                        CHAT_MULTILINE_SEND_MARKER,
+                        CHAT_MULTILINE_CANCEL_MARKER,
+                        CHAT_MULTILINE_MAX_LINES
+                    );
 
-            match run_chat_turn(&mut messages, input, provider.as_ref(), write_active) {
+                    match collect_multiline_input(&mut reader, &mut stdout)? {
+                        MultilineInputResult::Submit(message) => message,
+                        MultilineInputResult::Cancelled => {
+                            eprintln!("  ↺ paste cancelled");
+                            continue;
+                        }
+                        MultilineInputResult::Eof => {
+                            eprintln!("\nBye!");
+                            break;
+                        }
+                        MultilineInputResult::LimitExceeded { max_lines } => {
+                            eprintln!(
+                                "  ✗ paste too large: maximum {} lines per message",
+                                max_lines
+                            );
+                            continue;
+                        }
+                    }
+                }
+                ChatReplCommand::Message(input) => input,
+                ChatReplCommand::Empty => continue,
+            };
+
+            match run_chat_turn(&mut messages, &user_input, provider.as_ref(), write_active) {
                 Ok(reply) => {
                     println!("\n{}\n", reply);
                 }
@@ -1180,12 +1329,16 @@ mod tests {
 
     impl MockProvider {
         fn new(response: &str) -> Self {
-            Self { response: response.to_string() }
+            Self {
+                response: response.to_string(),
+            }
         }
     }
 
     impl AiProvider for MockProvider {
-        fn name(&self) -> &str { "mock" }
+        fn name(&self) -> &str {
+            "mock"
+        }
         fn complete(&self, _prompt: &str, _context: &str) -> Result<String, CliError> {
             Ok(self.response.clone())
         }
@@ -1229,11 +1382,8 @@ mod tests {
         std::fs::write(&ctx_path, "FROM rust:1.75\nCOPY . .").unwrap();
 
         let provider = MockProvider::new("Looks good!");
-        let result = run_ai_ask(
-            "Review this",
-            Some(ctx_path.to_str().unwrap()),
-            &provider,
-        ).unwrap();
+        let result =
+            run_ai_ask("Review this", Some(ctx_path.to_str().unwrap()), &provider).unwrap();
         assert_eq!(result, "Looks good!");
     }
 
@@ -1242,5 +1392,55 @@ mod tests {
         let provider = MockProvider::new("unreachable");
         let result = run_ai_ask("question", Some("/does/not/exist.txt"), &provider);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_chat_repl_command_detects_paste_mode() {
+        assert_eq!(
+            parse_chat_repl_command("  :paste  ".to_string()),
+            ChatReplCommand::Paste
+        );
+    }
+
+    #[test]
+    fn test_collect_multiline_input_submits_joined_message() {
+        let mut reader = std::io::Cursor::new(b"first line\nsecond line\n::send\n");
+        let mut prompt = Vec::new();
+
+        let result = collect_multiline_input(&mut reader, &mut prompt).unwrap();
+        assert_eq!(
+            result,
+            MultilineInputResult::Submit("first line\nsecond line".to_string())
+        );
+        assert!(!prompt.is_empty());
+    }
+
+    #[test]
+    fn test_collect_multiline_input_can_cancel() {
+        let mut reader = std::io::Cursor::new(b"first line\n::cancel\n");
+        let mut prompt = Vec::new();
+
+        let result = collect_multiline_input(&mut reader, &mut prompt).unwrap();
+        assert_eq!(result, MultilineInputResult::Cancelled);
+    }
+
+    #[test]
+    fn test_collect_multiline_input_rejects_more_than_512_lines() {
+        let mut input = String::new();
+        for idx in 0..=CHAT_MULTILINE_MAX_LINES {
+            input.push_str(&format!("line-{idx}\n"));
+        }
+        input.push_str("::send\n");
+
+        let mut reader = std::io::Cursor::new(input.into_bytes());
+        let mut prompt = Vec::new();
+
+        let result = collect_multiline_input(&mut reader, &mut prompt).unwrap();
+        assert_eq!(
+            result,
+            MultilineInputResult::LimitExceeded {
+                max_lines: CHAT_MULTILINE_MAX_LINES,
+            }
+        );
     }
 }

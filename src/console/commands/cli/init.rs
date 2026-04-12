@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 use std::path::{Path, PathBuf};
 
-use crate::cli::ai_client::{AiProvider, create_provider, ollama_complete_streaming};
+use crate::cli::ai_client::{create_provider, ollama_complete_streaming, AiProvider};
 use crate::cli::ai_scanner::{
     build_generation_request, generate_config_with_ai, strip_code_fences,
 };
@@ -147,7 +147,12 @@ pub struct InitCommand {
 }
 
 impl InitCommand {
-    pub fn new(app_type: Option<String>, with_proxy: bool, with_ai: bool, with_cloud: bool) -> Self {
+    pub fn new(
+        app_type: Option<String>,
+        with_proxy: bool,
+        with_ai: bool,
+        with_cloud: bool,
+    ) -> Self {
         Self {
             app_type,
             with_proxy,
@@ -393,10 +398,7 @@ fn generate_config_ai_path(
          \n\
          {}\n",
         ai_config.provider,
-        ai_config
-            .model
-            .as_deref()
-            .unwrap_or("default"),
+        ai_config.model.as_deref().unwrap_or("default"),
         full_config_reference_example(),
     );
 
@@ -566,14 +568,22 @@ fn collect_generation_context(project_dir: &Path, config: &StackerConfig) -> Vec
         }
     ));
 
-    let lockfiles = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock"];
+    let lockfiles = [
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "Cargo.lock",
+    ];
     let found_lockfiles: Vec<&str> = lockfiles
         .iter()
         .copied()
         .filter(|file| project_dir.join(file).exists())
         .collect();
     if !found_lockfiles.is_empty() {
-        context.push(format!("Detected lockfiles: {}", found_lockfiles.join(", ")));
+        context.push(format!(
+            "Detected lockfiles: {}",
+            found_lockfiles.join(", ")
+        ));
     }
 
     context
@@ -635,7 +645,8 @@ fn generate_compose_with_ai(
         context.join("\n\n"), dockerfile_rel
     );
 
-    let system = "You are an expert Docker Compose engineer. Return only valid docker compose YAML.";
+    let system =
+        "You are an expert Docker Compose engineer. Return only valid docker compose YAML.";
     let raw = if ai_config.provider == AiProviderType::Ollama {
         eprintln!("🧠 AI reasoning for compose (streaming)...");
         let response = ollama_complete_streaming(ai_config, &prompt, system)?;
@@ -646,9 +657,8 @@ fn generate_compose_with_ai(
     };
     let compose = strip_code_fences(&raw);
 
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&compose).map_err(|e| {
-        CliError::GeneratorError(format!("AI generated invalid compose YAML: {e}"))
-    })?;
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&compose)
+        .map_err(|e| CliError::GeneratorError(format!("AI generated invalid compose YAML: {e}")))?;
 
     if parsed.get("services").is_none() {
         return Err(CliError::GeneratorError(
@@ -678,7 +688,8 @@ impl CallableTrait for InitCommand {
         if self.with_cloud {
             eprintln!("☁ Running cloud setup wizard...");
             let path_str = config_path.to_string_lossy().to_string();
-            let applied = crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
+            let applied =
+                crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
             for item in applied {
                 eprintln!("  - {}", item);
             }
@@ -695,7 +706,15 @@ impl CallableTrait for InitCommand {
             eprintln!("  AI: enabled ({})", config.ai.provider);
         }
         if !config.services.is_empty() {
-            eprintln!("  Services: {}", config.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "));
+            eprintln!(
+                "  Services: {}",
+                config
+                    .services
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
 
         // Generate .stacker/ directory with Dockerfile and docker-compose.yml
@@ -732,7 +751,8 @@ impl CallableTrait for InitCommand {
             let mut generated = false;
 
             if let Some((ref ai_cfg, ref provider)) = ai_runtime {
-                match generate_dockerfile_with_ai(&project_dir, &config, ai_cfg, provider.as_ref()) {
+                match generate_dockerfile_with_ai(&project_dir, &config, ai_cfg, provider.as_ref())
+                {
                     Ok(dockerfile) => {
                         std::fs::write(&dockerfile_path, dockerfile)?;
                         eprintln!("✓ Generated {}/Dockerfile (AI)", OUTPUT_DIR);
@@ -821,10 +841,7 @@ mod tests {
         fn new(responses: Vec<&str>) -> Self {
             Self {
                 responses: std::sync::Mutex::new(
-                    responses
-                        .into_iter()
-                        .map(|s| s.to_string())
-                        .collect(),
+                    responses.into_iter().map(|s| s.to_string()).collect(),
                 ),
             }
         }
@@ -972,7 +989,12 @@ mod tests {
 
     #[test]
     fn test_resolve_ai_config_explicit_provider() {
-        let config = resolve_ai_config(Some("anthropic"), Some("claude-sonnet-4-20250514"), Some("sk-ant-test")).unwrap();
+        let config = resolve_ai_config(
+            Some("anthropic"),
+            Some("claude-sonnet-4-20250514"),
+            Some("sk-ant-test"),
+        )
+        .unwrap();
         assert_eq!(config.provider, AiProviderType::Anthropic);
         assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-20250514"));
         assert_eq!(config.api_key.as_deref(), Some("sk-ant-test"));
@@ -1038,12 +1060,18 @@ mod tests {
     #[test]
     fn test_parse_ai_provider_all_valid() {
         assert_eq!(parse_ai_provider("openai").unwrap(), AiProviderType::Openai);
-        assert_eq!(parse_ai_provider("anthropic").unwrap(), AiProviderType::Anthropic);
+        assert_eq!(
+            parse_ai_provider("anthropic").unwrap(),
+            AiProviderType::Anthropic
+        );
         assert_eq!(parse_ai_provider("ollama").unwrap(), AiProviderType::Ollama);
         assert_eq!(parse_ai_provider("custom").unwrap(), AiProviderType::Custom);
         // Case insensitive
         assert_eq!(parse_ai_provider("OpenAI").unwrap(), AiProviderType::Openai);
-        assert_eq!(parse_ai_provider("ANTHROPIC").unwrap(), AiProviderType::Anthropic);
+        assert_eq!(
+            parse_ai_provider("ANTHROPIC").unwrap(),
+            AiProviderType::Anthropic
+        );
     }
 
     #[test]
@@ -1053,8 +1081,13 @@ mod tests {
         // Use an explicit provider that will fail connection (port 1 is unreachable)
         // This avoids hitting a real running Ollama instance
         let result = generate_config_full(
-            dir.path(), None, false, true,
-            Some("custom"), None, Some("fake-key"),
+            dir.path(),
+            None,
+            false,
+            true,
+            Some("custom"),
+            None,
+            Some("fake-key"),
         );
         assert!(result.is_ok());
 
@@ -1086,7 +1119,8 @@ mod tests {
             ..AiConfig::default()
         };
 
-        let dockerfile = generate_dockerfile_with_ai(dir.path(), &config, &ai_cfg, &provider).unwrap();
+        let dockerfile =
+            generate_dockerfile_with_ai(dir.path(), &config, &ai_cfg, &provider).unwrap();
         assert!(dockerfile.contains("FROM node:20-alpine"));
         assert!(!dockerfile.contains("```"));
     }

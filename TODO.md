@@ -722,7 +722,7 @@ Stacker responsibilities:
 ## Tasks
 
 ### Bugfix: Return clear duplicate slug error
-- [ ] When `stack_template.slug` violates uniqueness (code 23505), return 409/400 with a descriptive message (e.g., "slug already exists") instead of 500 so clients (blog/stack-builder) can surface a user-friendly error.
+- [x] When `stack_template.slug` violates uniqueness (code 23505), return 409/400 with a descriptive message (e.g., "slug already exists") instead of 500 so clients (blog/stack-builder) can surface a user-friendly error.
 
 ### 1. Create User Service Connector
 **File**: `app/<stacker-module>/connectors/user_service_connector.py` (in Stacker repo)
@@ -1153,3 +1153,48 @@ To verify `is_official` and `is_verified_publisher` status for each image:
    - Parse CVE list, severity counts
    - Store results in `stack_template_review.security_checklist["cve_scan"]`
    - Auto-set `verifications.vulnerability_scanned = true` when scan passes (no HIGH/CRITICAL CVEs)
+
+## Missing Features Implementation Plan (2026-04)
+
+### Phase 1 - Marketplace Foundation and Revenue Loop
+- [ ] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
+  - [x] Add `marketplace_vendor_profile` storage plus admin template detail exposure with safe default fallback.
+  - [x] Add admin-only partial updates for vendor verification, onboarding, payout linkage, and metadata.
+  - [x] Add creator-visible vendor profile status so marketplace sellers can inspect onboarding and payout readiness.
+  - [ ] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
+  - [ ] Persist enough payout metadata to support later auditing, support, and marketplace operations.
+- [ ] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
+  - [x] Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
+  - [x] Use these fields in marketplace create/read/update flows and webhook payloads.
+  - [x] Use `supported_clouds` and `supported_os` in deployment validation so incompatible targets are blocked early.
+  - [x] Add a shared backend server-capacity resolver for normalized App Service `/servers` catalog data.
+  - [ ] Enforce numeric capacity requirements (`min_ram_mb`, `min_disk_gb`, `min_cpu_cores`) using the shared capacity resolver.
+- [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
+  - Send notifications for submit/approve/reject/update-required events.
+  - Include actionable review reasons and the next expected developer action.
+
+### Phase 2 - Reliability and User-Facing Correctness
+- [x] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
+  - Convert duplicate-slug failures from generic 500 errors into explicit 409/validation feedback.
+  - Keep CLI and UI messaging aligned so the user gets a recoverable error.
+- [ ] **[stacker-rollback]** Add version-aware deployment rollback.
+  - Allow operators to choose a prior template or deployment version and roll back safely.
+  - Persist rollback history and expose the effective version in deployment details.
+
+### Phase 3 - Team and Integration Expansion
+- [ ] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
+  - Prioritize Bitbucket and Jenkins, then evaluate CircleCI or other demand-driven exporters.
+  - Keep export templates aligned with current Stacker project and secret conventions.
+- [ ] **[stacker-team-projects]** Add shared project ownership and team collaboration primitives.
+  - Introduce org/team ownership, invitations, seat-aware permissions, and shared deployment visibility.
+  - Define how ownership flows through marketplace, deployments, and future billing.
+
+### Phase 4 - Control Plane Completion
+- [ ] **[stacker-pipe-execution]** Finish pipe execution end-to-end across Stacker and Status Panel.
+  - Ensure the server, queueing layer, and agent all support the same pipe command set.
+  - Coordinate command provenance, reporting, and error surfaces with Status Panel.
+
+### Delivery Order
+- [ ] Start with `stacker-vendor-payouts`, `stacker-template-requirements`, and `stacker-duplicate-slug-409`.
+- [ ] Follow with `stacker-review-notifications` and `stacker-rollback` once the marketplace data contract is stable.
+- [ ] Treat `stacker-team-projects` and `stacker-pipe-execution` as multi-sprint workstreams with cross-project coordination.

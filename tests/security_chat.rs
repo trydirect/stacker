@@ -122,7 +122,10 @@ async fn test_update_chat_rejects_other_user() {
     let messages = body["item"]["messages"]
         .as_array()
         .expect("messages should be an array");
-    assert_eq!(messages[0]["content"], "hello", "User A's chat must remain unchanged");
+    assert_eq!(
+        messages[0]["content"], "hello",
+        "User A's chat must remain unchanged"
+    );
 }
 
 #[tokio::test]

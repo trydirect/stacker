@@ -1,67 +1,12 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::connectors::fetch_app_service_catalog;
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
 use crate::models;
 use serde::Deserialize;
-
-fn app_service_base_url() -> String {
-    std::env::var("APP_SERVICE_URL").unwrap_or_else(|_| "http://app:4200".to_string())
-}
-
-fn is_supported_cloud_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "do" | "htz" | "lo" | "scw" | "aws" | "gc" | "vu" | "ovh" | "upc" | "ali"
-    )
-}
-
-async fn fetch_app_service_catalog(
-    context: &ToolContext,
-    provider: &str,
-    resource: &str,
-    cloud_id: Option<i32>,
-) -> Result<Value, String> {
-    if !is_supported_cloud_provider(provider) {
-        return Err(
-            "Unsupported provider. Use one of: do, htz, lo, scw, aws, gc, vu, ovh, upc, ali"
-                .to_string(),
-        );
-    }
-
-    let base_url = app_service_base_url().trim_end_matches('/').to_string();
-    let mut url = format!("{}/{}/{}", base_url, provider, resource);
-
-    if let Some(cloud_id) = cloud_id {
-        url.push_str(&format!("?cloud_id={}", cloud_id));
-    }
-
-    let token = context.user.access_token.as_deref().unwrap_or("");
-    let client = reqwest::Client::new();
-    let mut request = client.get(&url);
-
-    if !token.is_empty() {
-        request = request.header("Authorization", format!("Bearer {}", token));
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("Failed to call App Service: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("App Service error {}: {}", status, body));
-    }
-
-    response
-        .json::<Value>()
-        .await
-        .map_err(|e| format!("Failed to parse App Service response: {}", e))
-}
 
 /// List user's cloud credentials
 pub struct ListCloudsTool;
@@ -327,10 +272,10 @@ impl ToolHandler for ListCloudRegionsTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let payload = fetch_app_service_catalog(
-            context,
             &params.provider.to_lowercase(),
             "regions",
             params.cloud_id,
+            context.user.access_token.as_deref(),
         )
         .await?;
 
@@ -342,8 +287,7 @@ impl ToolHandler for ListCloudRegionsTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "list_cloud_regions".to_string(),
-            description: "List available regions from App Service for a cloud provider"
-                .to_string(),
+            description: "List available regions from App Service for a cloud provider".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -380,10 +324,10 @@ impl ToolHandler for ListCloudServerSizesTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let payload = fetch_app_service_catalog(
-            context,
             &params.provider.to_lowercase(),
             "servers",
             params.cloud_id,
+            context.user.access_token.as_deref(),
         )
         .await?;
 
@@ -433,10 +377,10 @@ impl ToolHandler for ListCloudImagesTool {
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let payload = fetch_app_service_catalog(
-            context,
             &params.provider.to_lowercase(),
             "images",
             params.cloud_id,
+            context.user.access_token.as_deref(),
         )
         .await?;
 
