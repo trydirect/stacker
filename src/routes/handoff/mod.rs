@@ -39,7 +39,14 @@ pub async fn mint_handler(
         .next();
 
     let expires_at = Utc::now() + Duration::minutes(HANDOFF_TTL_MINUTES);
-    let payload = build_payload(&http_request, user.as_ref(), &project, &deployment, server.as_ref(), expires_at);
+    let payload = build_payload(
+        &http_request,
+        user.as_ref(),
+        &project,
+        &deployment,
+        server.as_ref(),
+        expires_at,
+    );
     let token = handoff_store.insert(payload);
     let base_url = resolve_public_base_url(&http_request);
     let link = DeploymentHandoffLink {
@@ -91,8 +98,8 @@ async fn resolve_owned_deployment(
         ));
     };
 
-    let deployment = deployment
-        .ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
+    let deployment =
+        deployment.ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
     if deployment.user_id.as_deref() != Some(user_id) {
         return Err(JsonResponse::<String>::not_found("Deployment not found"));
     }
@@ -174,13 +181,16 @@ fn build_payload(
                 deployment_hash: deployment.deployment_hash.clone(),
             })
         }),
-        credentials: user.access_token.clone().map(|access_token| DeploymentHandoffCredentials {
-            access_token,
-            token_type: "Bearer".to_string(),
-            expires_at,
-            email: Some(user.email.clone()),
-            server_url: Some(base_url),
-        }),
+        credentials: user
+            .access_token
+            .clone()
+            .map(|access_token| DeploymentHandoffCredentials {
+                access_token,
+                token_type: "Bearer".to_string(),
+                expires_at,
+                email: Some(user.email.clone()),
+                server_url: Some(base_url),
+            }),
     }
 }
 
@@ -204,7 +214,10 @@ fn render_stacker_yml(
         format!("  identity: {}", quote_yaml(&project.name)),
         "deploy:".to_string(),
         format!("  target: {}", quote_yaml(&target)),
-        format!("  deployment_hash: {}", quote_yaml(&deployment.deployment_hash)),
+        format!(
+            "  deployment_hash: {}",
+            quote_yaml(&deployment.deployment_hash)
+        ),
     ];
 
     if let Some(srv) = server {

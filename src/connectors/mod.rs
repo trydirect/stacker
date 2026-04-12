@@ -38,8 +38,8 @@
 //! }
 //! ```
 
-pub mod app_service_catalog;
 pub mod admin_service;
+pub mod app_service_catalog;
 pub mod config;
 pub mod dockerhub_service;
 pub mod errors;
@@ -60,9 +60,11 @@ pub use user_service::{
 };
 
 // Re-export init functions for convenient access
+pub use app_service_catalog::{
+    fetch_catalog as fetch_app_service_catalog, resolve_server_capacity, ServerCapacity,
+};
 pub use dockerhub_service::init as init_dockerhub;
 pub use dockerhub_service::{
     DockerHubClient, DockerHubConnector, NamespaceSummary, RepositorySummary, TagSummary,
 };
 pub use user_service::init as init_user_service;
-pub use app_service_catalog::{fetch_catalog as fetch_app_service_catalog, resolve_server_capacity, ServerCapacity};

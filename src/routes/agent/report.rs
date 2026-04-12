@@ -235,40 +235,103 @@ pub async fn report_handler(
             }
 
             // Persist trigger_pipe results as pipe execution history
-            if command.r#type == "trigger_pipe" && status == models::CommandStatus::Completed {
+            if command.r#type == "trigger_pipe" {
                 if let Some(ref result) = result_payload {
                     if let Ok(report) = serde_json::from_value::<
                         status_panel::TriggerPipeCommandReport,
                     >(result.clone())
                     {
                         if let Ok(instance_id) = uuid::Uuid::parse_str(&report.pipe_instance_id) {
-                            let execution_actor = payload
+                            let created_by = payload
                                 .executed_by
                                 .clone()
                                 .unwrap_or_else(|| agent.id.to_string());
-                            let execution = PipeExecution::new(
-                                instance_id,
-                                payload.deployment_hash.clone(),
-                                report.trigger_type.clone(),
-                                execution_actor,
-                            );
-                            let execution = if report.success {
-                                execution.complete_success(
-                                    report.source_data.unwrap_or(json!(null)),
-                                    report.mapped_data.unwrap_or(json!(null)),
-                                    report.target_response.unwrap_or(json!(null)),
+
+                            let normalized_status =
+                                if report.success { "success" } else { "failed" };
+                            let source_data = report.source_data.as_ref();
+                            let mapped_data = report.mapped_data.as_ref();
+                            let target_response = report.target_response.as_ref();
+                            let error = report.error.as_deref().or(Some("Unknown error"));
+
+                            let persisted = if report.trigger_type == "replay" {
+                                match db::pipe::find_pending_replay_execution(
+                                    agent_pool.as_ref(),
+                                    &instance_id,
+                                    &payload.deployment_hash,
                                 )
+                                .await
+                                {
+                                    Ok(Some(existing)) => {
+                                        db::pipe::update_execution_result(
+                                            agent_pool.as_ref(),
+                                            &existing.id,
+                                            normalized_status,
+                                            source_data,
+                                            mapped_data,
+                                            target_response,
+                                            if report.success { None } else { error },
+                                            None,
+                                        )
+                                        .await
+                                    }
+                                    Ok(None) => {
+                                        let execution = PipeExecution::new(
+                                            instance_id,
+                                            payload.deployment_hash.clone(),
+                                            report.trigger_type.clone(),
+                                            created_by.clone(),
+                                        );
+                                        let execution = if report.success {
+                                            execution.complete_success(
+                                                report.source_data.clone().unwrap_or(json!(null)),
+                                                report.mapped_data.clone().unwrap_or(json!(null)),
+                                                report
+                                                    .target_response
+                                                    .clone()
+                                                    .unwrap_or(json!(null)),
+                                            )
+                                        } else {
+                                            execution.complete_failure(
+                                                report
+                                                    .error
+                                                    .clone()
+                                                    .unwrap_or_else(|| "Unknown error".to_string()),
+                                            )
+                                        };
+                                        db::pipe::insert_execution(agent_pool.as_ref(), &execution)
+                                            .await
+                                    }
+                                    Err(e) => Err(e),
+                                }
                             } else {
-                                execution.complete_failure(
-                                    report.error.unwrap_or_else(|| "Unknown error".to_string()),
-                                )
+                                let execution = PipeExecution::new(
+                                    instance_id,
+                                    payload.deployment_hash.clone(),
+                                    report.trigger_type.clone(),
+                                    created_by,
+                                );
+                                let execution = if report.success {
+                                    execution.complete_success(
+                                        report.source_data.clone().unwrap_or(json!(null)),
+                                        report.mapped_data.clone().unwrap_or(json!(null)),
+                                        report.target_response.clone().unwrap_or(json!(null)),
+                                    )
+                                } else {
+                                    execution.complete_failure(
+                                        report
+                                            .error
+                                            .clone()
+                                            .unwrap_or_else(|| "Unknown error".to_string()),
+                                    )
+                                };
+                                db::pipe::insert_execution(agent_pool.as_ref(), &execution).await
                             };
 
-                            if let Err(e) =
-                                db::pipe::insert_execution(agent_pool.as_ref(), &execution).await
-                            {
+                            if let Err(e) = persisted {
                                 tracing::warn!(
                                     pipe_instance_id = %report.pipe_instance_id,
+                                    trigger_type = %report.trigger_type,
                                     "Failed to persist pipe execution: {}",
                                     e
                                 );

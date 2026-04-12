@@ -73,12 +73,18 @@ impl AiPipeSuggest {
     ) -> Result<Vec<PipeSuggestion>, CliError> {
         let prompt = self.build_prompt(source_app, target_app, source_endpoints, target_endpoints);
 
-        let response = self.provider.complete(PIPE_SUGGEST_SYSTEM_PROMPT, &prompt)?;
+        let response = self
+            .provider
+            .complete(PIPE_SUGGEST_SYSTEM_PROMPT, &prompt)?;
 
         match self.parse_response(&response) {
             Some(mut suggestions) => {
                 // Sort by confidence descending
-                suggestions.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+                suggestions.sort_by(|a, b| {
+                    b.confidence
+                        .partial_cmp(&a.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 Ok(suggestions)
             }
             None => {
@@ -133,7 +139,10 @@ fn parse_endpoint_info(val: &serde_json::Value) -> Option<EndpointInfo> {
     Some(EndpointInfo {
         method: val.get("method")?.as_str()?.to_string(),
         path: val.get("path")?.as_str()?.to_string(),
-        description: val.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()),
+        description: val
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string()),
         fields: None,
     })
 }
@@ -240,7 +249,9 @@ mod tests {
     fn test_suggest_error_propagation() {
         struct FailingProvider;
         impl AiProvider for FailingProvider {
-            fn name(&self) -> &str { "failing" }
+            fn name(&self) -> &str {
+                "failing"
+            }
             fn complete(&self, _: &str, _: &str) -> Result<String, CliError> {
                 Err(CliError::AiProviderError {
                     provider: "failing".to_string(),

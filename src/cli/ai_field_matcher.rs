@@ -86,7 +86,10 @@ impl AiFieldMatcher {
         prompt
     }
 
-    fn parse_response(&self, response: &str) -> Option<(HashMap<String, (String, f32)>, Vec<TransformSuggestion>)> {
+    fn parse_response(
+        &self,
+        response: &str,
+    ) -> Option<(HashMap<String, (String, f32)>, Vec<TransformSuggestion>)> {
         // Try to extract JSON from the response (may be wrapped in markdown code blocks)
         let json_str = extract_json_block(response);
         let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
@@ -136,8 +139,15 @@ impl FieldMatcher for AiFieldMatcher {
         let response = match self.provider.complete(FIELD_MATCH_SYSTEM_PROMPT, &prompt) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("  ⚠ AI field matching failed ({}), falling back to deterministic", e);
-                return DeterministicFieldMatcher.match_fields(src_fields, tgt_fields, source_sample);
+                eprintln!(
+                    "  ⚠ AI field matching failed ({}), falling back to deterministic",
+                    e
+                );
+                return DeterministicFieldMatcher.match_fields(
+                    src_fields,
+                    tgt_fields,
+                    source_sample,
+                );
             }
         };
 
@@ -147,10 +157,7 @@ impl FieldMatcher for AiFieldMatcher {
                 let mut confidence = HashMap::new();
 
                 for (target, (source, conf)) in &field_mappings {
-                    mapping.insert(
-                        target.clone(),
-                        serde_json::Value::String(source.clone()),
-                    );
+                    mapping.insert(target.clone(), serde_json::Value::String(source.clone()));
                     confidence.insert(target.clone(), *conf);
                 }
 
@@ -228,7 +235,11 @@ mod tests {
         );
         let matcher = AiFieldMatcher::from_provider(Box::new(mock), "test-model".to_string());
 
-        let src = vec!["user_email".to_string(), "display_name".to_string(), "id".to_string()];
+        let src = vec![
+            "user_email".to_string(),
+            "display_name".to_string(),
+            "id".to_string(),
+        ];
         let tgt = vec!["email".to_string(), "name".to_string()];
         let result = matcher.match_fields(&src, &tgt, None);
 
@@ -247,7 +258,11 @@ mod tests {
         );
         let matcher = AiFieldMatcher::from_provider(Box::new(mock), "test-model".to_string());
 
-        let src = vec!["mail".to_string(), "first_name".to_string(), "last_name".to_string()];
+        let src = vec![
+            "mail".to_string(),
+            "first_name".to_string(),
+            "last_name".to_string(),
+        ];
         let tgt = vec!["email".to_string(), "full_name".to_string()];
         let result = matcher.match_fields(&src, &tgt, None);
 
@@ -291,7 +306,9 @@ mod tests {
     fn test_ai_field_match_fallback_on_provider_error() {
         struct FailingProvider;
         impl AiProvider for FailingProvider {
-            fn name(&self) -> &str { "failing" }
+            fn name(&self) -> &str {
+                "failing"
+            }
             fn complete(&self, _: &str, _: &str) -> Result<String, CliError> {
                 Err(CliError::AiProviderError {
                     provider: "failing".to_string(),

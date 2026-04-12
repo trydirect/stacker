@@ -1041,9 +1041,9 @@ fn get_command(
             .with_force_new(force_new)
             .with_runtime(runtime),
         ),
-        StackerCommands::Connect { handoff } => Box::new(
-            stacker::console::commands::cli::connect::ConnectCommand::new(handoff),
-        ),
+        StackerCommands::Connect { handoff } => {
+            Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
+        }
         StackerCommands::Logs {
             service,
             follow,

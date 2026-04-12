@@ -1,5 +1,6 @@
 use crate::models::{
-    MarketplaceVendorProfile, StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion,
+    MarketplaceVendorProfile, StackCategory, StackTemplate, StackTemplateReview,
+    StackTemplateVersion,
 };
 use chrono::Utc;
 use serde_json::{Map, Value};
@@ -452,7 +453,7 @@ pub async fn update_metadata(
             price = COALESCE($9, price),
             billing_cycle = COALESCE($10, billing_cycle),
             currency = COALESCE($11, currency)
-        WHERE id = $1::uuid"#
+        WHERE id = $1::uuid"#,
     )
     .bind(template_id)
     .bind(name)
@@ -1111,11 +1112,17 @@ pub async fn ensure_vendor_onboarding_link(
         .as_ref()
         .map(|profile| profile.verification_status.as_str())
         .unwrap_or("unverified");
-    let onboarding_status = match existing.as_ref().map(|profile| profile.onboarding_status.as_str()) {
+    let onboarding_status = match existing
+        .as_ref()
+        .map(|profile| profile.onboarding_status.as_str())
+    {
         Some("not_started") | None => "in_progress",
         Some(status) => status,
     };
-    let payouts_enabled = existing.as_ref().map(|profile| profile.payouts_enabled).unwrap_or(false);
+    let payouts_enabled = existing
+        .as_ref()
+        .map(|profile| profile.payouts_enabled)
+        .unwrap_or(false);
     let payout_provider = existing
         .as_ref()
         .and_then(|profile| profile.payout_provider.as_deref())

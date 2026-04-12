@@ -48,7 +48,10 @@ async fn creator_onboarding_complete_marks_in_progress_profile_completed() {
         .expect("completion response should be valid JSON");
 
     assert_eq!(true, body["item"]["completion_recorded"]);
-    assert_eq!("completed", body["item"]["vendor_profile"]["onboarding_status"]);
+    assert_eq!(
+        "completed",
+        body["item"]["vendor_profile"]["onboarding_status"]
+    );
     assert_eq!(false, body["item"]["payout_ready"]);
 
     let row = sqlx::query(
@@ -108,7 +111,10 @@ async fn creator_onboarding_complete_is_idempotent_after_completion() {
         .expect("completion response should be valid JSON");
 
     assert_eq!(false, body["item"]["completion_recorded"]);
-    assert_eq!("completed", body["item"]["vendor_profile"]["onboarding_status"]);
+    assert_eq!(
+        "completed",
+        body["item"]["vendor_profile"]["onboarding_status"]
+    );
 }
 
 #[tokio::test]

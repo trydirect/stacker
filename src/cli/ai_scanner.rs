@@ -231,21 +231,25 @@ fn discover_local_pipe_hints(
         .map(|c| c.to_lowercase())
         .unwrap_or_default();
 
-    let mut push_hint = |target: &str, kind: &str, confidence: PipeHintConfidence, evidence: Vec<String>| {
-        if evidence.is_empty() {
-            return;
-        }
-        hints.push(PipeHint {
-            source: project_name.to_string(),
-            target: target.to_string(),
-            kind: kind.to_string(),
-            confidence,
-            evidence,
-        });
-    };
+    let mut push_hint =
+        |target: &str, kind: &str, confidence: PipeHintConfidence, evidence: Vec<String>| {
+            if evidence.is_empty() {
+                return;
+            }
+            hints.push(PipeHint {
+                source: project_name.to_string(),
+                target: target.to_string(),
+                kind: kind.to_string(),
+                confidence,
+                evidence,
+            });
+        };
 
     let mut webhook_evidence = Vec::new();
-    if package_json.contains("webhook") || requirements.contains("webhook") || pyproject.contains("webhook") {
+    if package_json.contains("webhook")
+        || requirements.contains("webhook")
+        || pyproject.contains("webhook")
+    {
         webhook_evidence.push("webhook-related dependency detected".to_string());
     }
     if lower_env_keys.iter().any(|k| k.contains("webhook")) {
@@ -258,29 +262,50 @@ fn discover_local_pipe_hints(
         webhook_evidence.push("env keys reference Discord integration".to_string());
     }
     if !webhook_evidence.is_empty() {
-        push_hint("external-webhook", "webhook", PipeHintConfidence::Medium, webhook_evidence);
+        push_hint(
+            "external-webhook",
+            "webhook",
+            PipeHintConfidence::Medium,
+            webhook_evidence,
+        );
     }
 
     let mut postgres_evidence = Vec::new();
     if compose.contains("postgres") {
         postgres_evidence.push("compose references postgres".to_string());
     }
-    if lower_env_keys.iter().any(|k| k == "database_url" || k.contains("postgres")) {
+    if lower_env_keys
+        .iter()
+        .any(|k| k == "database_url" || k.contains("postgres"))
+    {
         postgres_evidence.push("env keys reference postgres/database".to_string());
     }
     if !postgres_evidence.is_empty() {
-        push_hint("postgres", "database", PipeHintConfidence::High, postgres_evidence);
+        push_hint(
+            "postgres",
+            "database",
+            PipeHintConfidence::High,
+            postgres_evidence,
+        );
     }
 
     let mut redis_evidence = Vec::new();
     if compose.contains("redis") {
         redis_evidence.push("compose references redis".to_string());
     }
-    if lower_env_keys.iter().any(|k| k == "redis_url" || k.contains("redis")) {
+    if lower_env_keys
+        .iter()
+        .any(|k| k == "redis_url" || k.contains("redis"))
+    {
         redis_evidence.push("env keys reference redis".to_string());
     }
     if !redis_evidence.is_empty() {
-        push_hint("redis", "cache-or-queue", PipeHintConfidence::High, redis_evidence);
+        push_hint(
+            "redis",
+            "cache-or-queue",
+            PipeHintConfidence::High,
+            redis_evidence,
+        );
     }
 
     let mut qdrant_evidence = Vec::new();
@@ -291,34 +316,63 @@ fn discover_local_pipe_hints(
         qdrant_evidence.push("env keys reference qdrant".to_string());
     }
     if !qdrant_evidence.is_empty() {
-        push_hint("qdrant", "vector-store", PipeHintConfidence::High, qdrant_evidence);
+        push_hint(
+            "qdrant",
+            "vector-store",
+            PipeHintConfidence::High,
+            qdrant_evidence,
+        );
     }
 
     let mut llm_evidence = Vec::new();
-    if package_json.contains("openai") || requirements.contains("openai") || pyproject.contains("openai") {
+    if package_json.contains("openai")
+        || requirements.contains("openai")
+        || pyproject.contains("openai")
+    {
         llm_evidence.push("OpenAI dependency detected".to_string());
     }
-    if package_json.contains("anthropic") || requirements.contains("anthropic") || pyproject.contains("anthropic") {
+    if package_json.contains("anthropic")
+        || requirements.contains("anthropic")
+        || pyproject.contains("anthropic")
+    {
         llm_evidence.push("Anthropic dependency detected".to_string());
     }
     if compose.contains("ollama") || lower_env_keys.iter().any(|k| k.contains("ollama")) {
         llm_evidence.push("local Ollama usage detected".to_string());
     }
     if !llm_evidence.is_empty() {
-        push_hint("llm-provider", "ai-provider", PipeHintConfidence::Medium, llm_evidence);
+        push_hint(
+            "llm-provider",
+            "ai-provider",
+            PipeHintConfidence::Medium,
+            llm_evidence,
+        );
     }
 
     let mut frontend_api_evidence = Vec::new();
     let looks_like_frontend = detected_app_type == "node"
-        && root_files.iter().any(|f| f == "next.config.js" || f == "next.config.mjs" || f == "vite.config.ts" || f == "vite.config.js");
+        && root_files.iter().any(|f| {
+            f == "next.config.js"
+                || f == "next.config.mjs"
+                || f == "vite.config.ts"
+                || f == "vite.config.js"
+        });
     if looks_like_frontend {
         frontend_api_evidence.push("frontend framework config detected".to_string());
     }
-    if lower_env_keys.iter().any(|k| k.contains("api_url") || k.contains("api_base") || k.contains("backend_url")) {
+    if lower_env_keys
+        .iter()
+        .any(|k| k.contains("api_url") || k.contains("api_base") || k.contains("backend_url"))
+    {
         frontend_api_evidence.push("env keys reference backend/api URL".to_string());
     }
     if !frontend_api_evidence.is_empty() {
-        push_hint("backend-api", "http-api", PipeHintConfidence::Medium, frontend_api_evidence);
+        push_hint(
+            "backend-api",
+            "http-api",
+            PipeHintConfidence::Medium,
+            frontend_api_evidence,
+        );
     }
 
     hints
@@ -664,7 +718,8 @@ mod tests {
         let mut file_contents = HashMap::new();
         file_contents.insert(
             "docker-compose.yml".to_string(),
-            "services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n".to_string(),
+            "services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n"
+                .to_string(),
         );
 
         let hints = discover_local_pipe_hints(
@@ -675,8 +730,12 @@ mod tests {
             &["DATABASE_URL".to_string(), "REDIS_URL".to_string()],
         );
 
-        assert!(hints.iter().any(|h| h.target == "postgres" && h.kind == "database"));
-        assert!(hints.iter().any(|h| h.target == "redis" && h.kind == "cache-or-queue"));
+        assert!(hints
+            .iter()
+            .any(|h| h.target == "postgres" && h.kind == "database"));
+        assert!(hints
+            .iter()
+            .any(|h| h.target == "redis" && h.kind == "cache-or-queue"));
     }
 
     #[test]
@@ -689,7 +748,9 @@ mod tests {
             &["NEXT_PUBLIC_API_URL".to_string()],
         );
 
-        assert!(hints.iter().any(|h| h.target == "backend-api" && h.kind == "http-api"));
+        assert!(hints
+            .iter()
+            .any(|h| h.target == "backend-api" && h.kind == "http-api"));
     }
 
     // ── build_generation_prompt ─────────────────────

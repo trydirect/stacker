@@ -12,8 +12,7 @@ use uuid;
 
 const ALLOWED_VENDOR_VERIFICATION_STATUSES: &[&str] =
     &["unverified", "pending", "verified", "rejected"];
-const ALLOWED_VENDOR_ONBOARDING_STATUSES: &[&str] =
-    &["not_started", "in_progress", "completed"];
+const ALLOWED_VENDOR_ONBOARDING_STATUSES: &[&str] = &["not_started", "in_progress", "completed"];
 
 #[tracing::instrument(name = "List submitted templates (admin)", skip_all)]
 #[get("")]
@@ -54,13 +53,15 @@ pub async fn detail_handler(
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
-    let vendor_profile =
-        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &template.creator_user_id)
-            .await
-            .map_err(|err| {
-                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
-            })?
-            .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id));
+    let vendor_profile = db::marketplace::get_vendor_profile_by_creator(
+        pg_pool.get_ref(),
+        &template.creator_user_id,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+    .unwrap_or_else(|| {
+        models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id)
+    });
 
     let detail = serde_json::json!({
         "template": template,
@@ -247,10 +248,8 @@ pub async fn needs_changes_handler(
         })?;
 
     if template.status != "submitted" && template.status != "under_review" {
-        return Err(
-            JsonResponse::<serde_json::Value>::build()
-                .bad_request("Template cannot be marked as needs_changes from its current status")
-        );
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("Template cannot be marked as needs_changes from its current status"));
     }
 
     let updated = db::marketplace::admin_decide(
@@ -349,10 +348,7 @@ pub async fn unapprove_handler(
                 );
 
                 if let Err(e) = sender
-                    .send_template_unpublished(
-                        &template_clone,
-                        &template_clone.creator_user_id,
-                    )
+                    .send_template_unpublished(&template_clone, &template_clone.creator_user_id)
                     .instrument(span)
                     .await
                 {
@@ -534,12 +530,14 @@ fn validate_vendor_status(
 ) -> Result<(), actix_web::Error> {
     if let Some(value) = value {
         if !allowed.contains(&value) {
-            return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                "Invalid {} '{}'. Allowed values: {}",
-                field_name,
-                value,
-                allowed.join(", ")
-            )));
+            return Err(
+                JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                    "Invalid {} '{}'. Allowed values: {}",
+                    field_name,
+                    value,
+                    allowed.join(", ")
+                )),
+            );
         }
     }
 
@@ -566,9 +564,8 @@ pub async fn update_vendor_profile_handler(
         && req.payout_account_ref.is_none()
         && req.metadata.is_none()
     {
-        return Err(
-            JsonResponse::<serde_json::Value>::build().bad_request("No vendor profile fields provided")
-        );
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("No vendor profile fields provided"));
     }
 
     validate_vendor_status(
@@ -584,9 +581,8 @@ pub async fn update_vendor_profile_handler(
 
     if let Some(metadata) = req.metadata.as_ref() {
         if !metadata.is_object() {
-            return Err(
-                JsonResponse::<serde_json::Value>::build().bad_request("metadata must be a JSON object")
-            );
+            return Err(JsonResponse::<serde_json::Value>::build()
+                .bad_request("metadata must be a JSON object"));
         }
     }
 

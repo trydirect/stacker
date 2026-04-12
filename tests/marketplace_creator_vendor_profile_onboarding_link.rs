@@ -107,7 +107,10 @@ async fn creator_onboarding_link_reuses_existing_linkage() {
         body["item"]["vendor_profile"]["onboarding_status"]
     );
     assert_eq!("mock", body["item"]["vendor_profile"]["payout_provider"]);
-    assert_eq!(None, body["item"]["vendor_profile"].get("payout_account_ref"));
+    assert_eq!(
+        None,
+        body["item"]["vendor_profile"].get("payout_account_ref")
+    );
 
     let row = sqlx::query(
         r#"SELECT onboarding_status, payout_provider, payout_account_ref, metadata

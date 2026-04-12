@@ -1,5 +1,5 @@
-use crate::db;
 use crate::connectors::{MarketplaceWebhookSender, WebhookSenderConfig};
+use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, put, web, Responder, Result};
@@ -279,9 +279,7 @@ pub async fn submit_handler(
     if submitted {
         let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
             .await
-            .map_err(|err| {
-                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
-            })?
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
             .ok_or_else(|| {
                 JsonResponse::<serde_json::Value>::build().not_found("Template not found")
             })?;
@@ -374,7 +372,9 @@ pub async fn resubmit_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
 
     let template_clone = template.clone();
     tokio::spawn(async move {
@@ -472,13 +472,15 @@ pub async fn vendor_profile_status_handler(
         return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
     }
 
-    let vendor_profile =
-        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &template.creator_user_id)
-            .await
-            .map_err(|err| {
-                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
-            })?
-            .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id));
+    let vendor_profile = db::marketplace::get_vendor_profile_by_creator(
+        pg_pool.get_ref(),
+        &template.creator_user_id,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+    .unwrap_or_else(|| {
+        models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id)
+    });
 
     let result = build_vendor_profile_status_item(
         &template.creator_user_id,
@@ -499,10 +501,11 @@ pub async fn self_vendor_profile_handler(
 ) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
     let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
 
-    let vendor_profile = db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &user.id)
-        .await
-        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&user.id));
+    let vendor_profile =
+        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &user.id)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+            .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&user.id));
 
     let result = build_vendor_profile_status_item(&user.id, None, vendor_profile);
 
@@ -545,21 +548,16 @@ pub async fn complete_onboarding_handler(
 ) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
     let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
 
-    let completion = db::marketplace::complete_vendor_onboarding(
-        pg_pool.get_ref(),
-        &user.id,
-        "creator_api",
-    )
-    .await
-    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let completion =
+        db::marketplace::complete_vendor_onboarding(pg_pool.get_ref(), &user.id, "creator_api")
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     let (vendor_profile, completion_recorded) = match completion {
         Some(result) => result,
         None => {
-            return Err(
-                JsonResponse::<serde_json::Value>::build()
-                    .conflict("Onboarding link must exist before completion")
-            )
+            return Err(JsonResponse::<serde_json::Value>::build()
+                .conflict("Onboarding link must exist before completion"))
         }
     };
 
