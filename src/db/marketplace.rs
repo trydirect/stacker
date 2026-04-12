@@ -702,7 +702,7 @@ pub async fn admin_decide(
     } else if decision == "rejected" {
         "rejected"
     } else {
-        "under_review"
+        "needs_changes"
     };
     let should_set_approved = decision == "approved";
 
