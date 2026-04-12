@@ -1155,7 +1155,17 @@ fn build_trigger_pipe_request(
     TriggerPipeCommandRequest::new_manual(
         pipe.id.clone(),
         input_data,
+        Some(pipe.source_container.clone()),
+        template
+            .and_then(|tmpl| tmpl.source_endpoint["path"].as_str())
+            .unwrap_or("/")
+            .to_string(),
+        template
+            .and_then(|tmpl| tmpl.source_endpoint["method"].as_str())
+            .unwrap_or("GET")
+            .to_string(),
         pipe.target_url.clone(),
+        pipe.target_container.clone(),
         target_endpoint,
         target_method,
         Some(field_mapping),
@@ -1460,7 +1470,7 @@ mod tests {
             template_id: Some("tmpl-123".to_string()),
             deployment_hash: "dep-123".to_string(),
             source_container: "source".to_string(),
-            target_container: None,
+            target_container: Some("target-app".to_string()),
             target_url: Some("https://hooks.example.com".to_string()),
             field_mapping_override: Some(json!({ "email": "$.user.email" })),
             config_override: None,
@@ -1496,10 +1506,14 @@ mod tests {
         );
 
         assert_eq!(request.pipe_instance_id, "pipe-123");
+        assert_eq!(request.source_container.as_deref(), Some("source"));
+        assert_eq!(request.source_endpoint, "/source");
+        assert_eq!(request.source_method, "GET");
         assert_eq!(
             request.target_url.as_deref(),
             Some("https://hooks.example.com")
         );
+        assert_eq!(request.target_container.as_deref(), Some("target-app"));
         assert_eq!(request.target_endpoint, "/webhook/pipe");
         assert_eq!(request.target_method, "POST");
         assert_eq!(

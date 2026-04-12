@@ -54,7 +54,17 @@ fn build_replay_trigger_request(
     TriggerPipeCommandRequest::new_manual(
         instance.id.to_string(),
         input_data,
+        Some(instance.source_container.clone()),
+        template
+            .and_then(|tmpl| tmpl.source_endpoint["path"].as_str())
+            .unwrap_or("/")
+            .to_string(),
+        template
+            .and_then(|tmpl| tmpl.source_endpoint["method"].as_str())
+            .unwrap_or("GET")
+            .to_string(),
         instance.target_url.clone(),
+        instance.target_container.clone(),
         target_endpoint,
         target_method,
         Some(field_mapping),

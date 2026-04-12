@@ -973,9 +973,21 @@ pub struct TriggerPipeCommandRequest {
     /// Optional input data to feed into the pipe (overrides source fetch)
     #[serde(default)]
     pub input_data: Option<serde_json::Value>,
+    /// Internal source container for source fetch when input_data is absent
+    #[serde(default)]
+    pub source_container: Option<String>,
+    /// Source endpoint path for source fetch when input_data is absent
+    #[serde(default = "default_target_endpoint")]
+    pub source_endpoint: String,
+    /// Source HTTP method for source fetch when input_data is absent
+    #[serde(default = "default_source_method")]
+    pub source_method: String,
     /// External target URL for manual execution
     #[serde(default)]
     pub target_url: Option<String>,
+    /// Internal target container for manual execution
+    #[serde(default)]
+    pub target_container: Option<String>,
     /// Target endpoint path appended to target_url
     #[serde(default = "default_target_endpoint")]
     pub target_endpoint: String,
@@ -998,7 +1010,11 @@ impl TriggerPipeCommandRequest {
     pub fn new_manual(
         pipe_instance_id: String,
         input_data: Option<serde_json::Value>,
+        source_container: Option<String>,
+        source_endpoint: String,
+        source_method: String,
         target_url: Option<String>,
+        target_container: Option<String>,
         target_endpoint: String,
         target_method: String,
         field_mapping: Option<serde_json::Value>,
@@ -1007,7 +1023,11 @@ impl TriggerPipeCommandRequest {
         Self {
             pipe_instance_id,
             input_data,
+            source_container,
+            source_endpoint,
+            source_method,
             target_url,
+            target_container,
             target_endpoint,
             target_method,
             field_mapping,
@@ -1561,10 +1581,56 @@ mod tests {
 
         let params = result.expect("validated trigger_pipe payload");
         assert_eq!(params["target_url"], "https://example.com");
+        assert_eq!(params["target_container"], Value::Null);
         assert_eq!(params["target_endpoint"], "/webhook/pipe");
         assert_eq!(params["target_method"], "POST");
         assert_eq!(params["field_mapping"], json!({ "email": "$.user.email" }));
         assert_eq!(params["trigger_type"], "manual");
+    }
+
+    #[test]
+    fn trigger_pipe_preserves_internal_target_params() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "input_data": { "user": { "email": "dev@try.direct" } },
+                "target_container": "target-app",
+                "target_endpoint": "/webhook/pipe",
+                "target_method": "POST",
+                "field_mapping": { "email": "$.user.email" },
+                "trigger_type": "manual"
+            })),
+        )
+        .expect("trigger_pipe parameters should validate");
+
+        let params = result.expect("validated trigger_pipe payload");
+        assert_eq!(params["target_container"], "target-app");
+        assert_eq!(params["target_endpoint"], "/webhook/pipe");
+        assert_eq!(params["target_method"], "POST");
+    }
+
+    #[test]
+    fn trigger_pipe_preserves_source_fetch_params() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "source_container": "source-app",
+                "source_endpoint": "/source/data",
+                "source_method": "GET",
+                "target_container": "target-app",
+                "target_endpoint": "/webhook/pipe",
+                "target_method": "POST"
+            })),
+        )
+        .expect("trigger_pipe parameters should validate");
+
+        let params = result.expect("validated trigger_pipe payload");
+        assert_eq!(params["source_container"], "source-app");
+        assert_eq!(params["source_endpoint"], "/source/data");
+        assert_eq!(params["source_method"], "GET");
+        assert_eq!(params["target_container"], "target-app");
     }
 
     #[test]
