@@ -35,8 +35,8 @@ pub struct DeploymentHandoffDeployment {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct DeploymentHandoffServerContext {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffServer {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,41 +47,85 @@ pub struct DeploymentHandoffServerContext {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct DeploymentHandoffCloudContext {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<i32>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffCloud {
+    pub id: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct DeploymentHandoffAgentContext {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffAgent {
+    pub base_url: String,
+    pub deployment_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffCredentials {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deployment_hash: Option<String>,
+    pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub connected: Option<bool>,
+    pub server_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffPayload {
+    pub version: u32,
+    pub expires_at: DateTime<Utc>,
+    pub project: DeploymentHandoffProject,
+    pub deployment: DeploymentHandoffDeployment,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<DeploymentHandoffServer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<DeploymentHandoffCloud>,
+    pub lockfile: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stacker_yml: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<DeploymentHandoffAgent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<DeploymentHandoffCredentials>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentHandoffLink {
+    pub token: String,
     pub url: String,
-    pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
 
 impl DeploymentHandoffLink {
-    pub fn new(url: String, issued_at: DateTime<Utc>, expires_at: DateTime<Utc>) -> Self {
-        Self {
-            url,
-            issued_at,
-            expires_at,
-        }
+    pub fn is_expired(&self) -> bool {
+        self.is_expired_at(Utc::now())
     }
 
-    pub fn is_expired_at(&self, reference_time: DateTime<Utc>) -> bool {
-        reference_time >= self.expires_at
+    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+        now >= self.expires_at
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DeploymentHandoffMintRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffMintResponse {
+    pub token: String,
+    pub url: String,
+    pub command: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeploymentHandoffResolveRequest {
+    pub token: String,
 }

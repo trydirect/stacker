@@ -6,6 +6,7 @@ use crate::helpers::AgentPgPool;
 use crate::mcp;
 use crate::middleware;
 use crate::routes;
+use crate::services::InMemoryHandoffStore;
 use actix_cors::Cors;
 use actix_web::middleware::Compress;
 use actix_web::{dev::Server, error, http, web, App, HttpServer};
@@ -57,6 +58,7 @@ pub async fn run(
 
     let health_metrics = Arc::new(HealthMetrics::new(1000));
     let health_metrics = web::Data::new(health_metrics);
+    let handoff_store = web::Data::new(Arc::new(InMemoryHandoffStore::new()));
 
     // Initialize external service connectors (plugin pattern)
     // Connector handles category sync on startup
@@ -103,6 +105,7 @@ pub async fn run(
             .wrap(Compress::default())
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
+            .app_data(handoff_store.clone())
             .app_data(oauth_http_client.clone())
             .app_data(oauth_cache.clone())
             .service(
@@ -235,6 +238,11 @@ pub async fn run(
                             .service(routes::deployment::status_handler)
                             .service(routes::deployment::status_by_project_handler)
                             .service(routes::deployment::force_complete_handler),
+                    )
+                    .service(
+                        web::scope("/v1/handoff")
+                            .service(routes::handoff::mint_handler)
+                            .service(routes::handoff::resolve_handler),
                     )
                     .service(
                         web::scope("/v1/commands")

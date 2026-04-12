@@ -12,7 +12,7 @@ fn test_connect_help_shows_handoff_usage() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("stacker connect")
-                .and(predicate::str::contains("handoff"))
+            predicate::str::contains("connect --handoff")
+                .and(predicate::str::contains("Handoff token"))
         );
 }

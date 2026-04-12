@@ -140,6 +140,12 @@ enum StackerCommands {
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
     },
+    /// Attach this directory to an existing deployment from the dashboard
+    Connect {
+        /// Handoff token or full handoff URL copied from the dashboard
+        #[arg(long, value_name = "TOKEN_OR_URL")]
+        handoff: String,
+    },
     /// Show container logs
     Logs {
         #[arg(long)]
@@ -378,6 +384,9 @@ fn get_command(
                 )
                 .with_remote_overrides(project, key, server)
                 .with_key_id(key_id),
+            )),
+            StackerCommands::Connect { handoff } => Ok(Box::new(
+                stacker::console::commands::cli::connect::ConnectCommand::new(handoff),
             )),
             StackerCommands::Logs {
                 service,

@@ -9,6 +9,7 @@
 //! All endpoints require `Authorization: Bearer <token>` from `stacker login`.
 
 use crate::cli::error::CliError;
+use crate::handoff::{DeploymentHandoffPayload, DeploymentHandoffResolveRequest};
 use serde::{Deserialize, Serialize};
 
 /// Default Stacker server base URL (distinct from the User Service auth URL).
@@ -330,6 +331,48 @@ impl StackerClient {
             token: token.to_string(),
             http,
         }
+    }
+
+    pub async fn resolve_handoff(
+        base_url: &str,
+        token: &str,
+    ) -> Result<DeploymentHandoffPayload, CliError> {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+        let url = format!("{}/api/v1/handoff/resolve", base_url.trim_end_matches('/'));
+        let resp = http
+            .post(&url)
+            .json(&DeploymentHandoffResolveRequest {
+                token: token.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker handoff resolve failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<DeploymentHandoffPayload> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "Stacker handoff response did not include payload".to_string(),
+        })
     }
 
     // ── Projects ─────────────────────────────────────

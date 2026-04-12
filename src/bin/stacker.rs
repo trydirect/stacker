@@ -130,6 +130,12 @@ enum StackerCommands {
         #[arg(long, value_name = "RUNTIME", default_value = "runc")]
         runtime: String,
     },
+    /// Attach this directory to an existing deployment from the dashboard
+    Connect {
+        /// Handoff token or full handoff URL copied from the dashboard
+        #[arg(long, value_name = "TOKEN_OR_URL")]
+        handoff: String,
+    },
     /// Submit current stack to the marketplace for review
     Submit {
         /// Path to stacker.yml (default: ./stacker.yml)
@@ -1028,6 +1034,9 @@ fn get_command(
             .with_lock(lock)
             .with_force_new(force_new)
             .with_runtime(runtime),
+        ),
+        StackerCommands::Connect { handoff } => Box::new(
+            stacker::console::commands::cli::connect::ConnectCommand::new(handoff),
         ),
         StackerCommands::Logs {
             service,

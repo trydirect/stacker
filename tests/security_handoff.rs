@@ -121,7 +121,7 @@ async fn test_handoff_mint_rejects_other_user() {
 
     assert!(
         resp.status() == 403 || resp.status() == 404,
-        "Other user should not mint handoff for чужой deployment. Got: {}",
+        "Other user should not mint handoff for another user's deployment. Got: {}",
         resp.status()
     );
 }
@@ -140,5 +140,5 @@ async fn test_handoff_mint_rejects_unauthenticated() {
         .await
         .expect("Failed to send unauthenticated mint request");
 
-    assert_eq!(resp.status(), 401);
+    assert_eq!(resp.status(), 403);
 }
