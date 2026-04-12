@@ -347,3 +347,59 @@ pub async fn my_reviews_handler(
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
         .map(|reviews| JsonResponse::build().set_list(reviews).ok("OK"))
 }
+
+#[tracing::instrument(name = "Get my vendor profile status", skip_all)]
+#[get("/{id}/vendor-profile-status")]
+pub async fn vendor_profile_status_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    if template.creator_user_id != user.id {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+    }
+
+    let vendor_profile =
+        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &template.creator_user_id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+            })?
+            .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id));
+
+    let payout_ready = vendor_profile.verification_status == "verified"
+        && vendor_profile.onboarding_status == "completed"
+        && vendor_profile.payouts_enabled
+        && vendor_profile.payout_provider.is_some();
+
+    let result = serde_json::json!({
+        "template_id": template.id,
+        "creator_user_id": template.creator_user_id,
+        "payout_ready": payout_ready,
+        "vendor_profile": {
+            "creator_user_id": vendor_profile.creator_user_id,
+            "verification_status": vendor_profile.verification_status,
+            "onboarding_status": vendor_profile.onboarding_status,
+            "payouts_enabled": vendor_profile.payouts_enabled,
+            "payout_provider": vendor_profile.payout_provider,
+            "metadata": vendor_profile.metadata,
+            "created_at": vendor_profile.created_at,
+            "updated_at": vendor_profile.updated_at
+        }
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("OK"))
+}

@@ -442,6 +442,7 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            infrastructure_requirements: None,
         };
 
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
@@ -477,6 +478,7 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            infrastructure_requirements: None,
         };
 
         let json = serde_json::to_string(&payload).expect("Failed to serialize");
@@ -508,6 +510,7 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            infrastructure_requirements: None,
         };
 
         assert_eq!(payload.action, "template_approved");
@@ -539,6 +542,7 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            infrastructure_requirements: None,
         };
 
         assert_eq!(payload.action, "template_updated");
@@ -570,6 +574,7 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            infrastructure_requirements: None,
         };
 
         assert_eq!(payload.action, "template_approved");
@@ -665,6 +670,7 @@ mod tests {
             view_count: Some(1337),
             approved_at: Some("2026-02-11T10:00:00Z".to_string()),
             required_plan_name: Some("starter".to_string()),
+            infrastructure_requirements: None,
         };
 
         // Verify all fields are accessible
@@ -698,6 +704,7 @@ mod tests {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            infrastructure_requirements: None,
         };
 
         // Should serialize without errors even with all optional fields as None

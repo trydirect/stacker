@@ -76,9 +76,38 @@ pub struct StackTemplateReview {
     pub reviewed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct MarketplaceVendorProfile {
+    pub creator_user_id: String,
+    pub verification_status: String,
+    pub onboarding_status: String,
+    pub payouts_enabled: bool,
+    pub payout_provider: Option<String>,
+    pub payout_account_ref: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl MarketplaceVendorProfile {
+    pub fn default_for_creator(creator_user_id: &str) -> Self {
+        Self {
+            creator_user_id: creator_user_id.to_string(),
+            verification_status: "unverified".to_string(),
+            onboarding_status: "not_started".to_string(),
+            payouts_enabled: false,
+            payout_provider: None,
+            payout_account_ref: None,
+            metadata: serde_json::json!({}),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::InfrastructureRequirements;
+    use super::{InfrastructureRequirements, MarketplaceVendorProfile};
 
     #[test]
     fn infrastructure_requirements_default_is_empty() {
@@ -119,5 +148,16 @@ mod tests {
         assert_eq!(Some(512), requirements.min_ram_mb);
         assert_eq!(None, requirements.min_disk_gb);
         assert_eq!(None, requirements.min_cpu_cores);
+    }
+
+    #[test]
+    fn marketplace_vendor_profile_default_for_creator_is_safe() {
+        let profile = MarketplaceVendorProfile::default_for_creator("creator-1");
+
+        assert_eq!("creator-1", profile.creator_user_id);
+        assert_eq!("unverified", profile.verification_status);
+        assert_eq!("not_started", profile.onboarding_status);
+        assert!(!profile.payouts_enabled);
+        assert_eq!(serde_json::json!({}), profile.metadata);
     }
 }

@@ -1148,13 +1148,17 @@ To verify `is_official` and `is_verified_publisher` status for each image:
 
 ### Phase 1 - Marketplace Foundation and Revenue Loop
 - [ ] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
-  - Add vendor verification states, onboarding flow, and payout account linkage.
-  - Persist enough payout metadata to support auditing, support, and marketplace operations.
+  - [x] Add `marketplace_vendor_profile` storage plus admin template detail exposure with safe default fallback.
+  - [x] Add admin-only partial updates for vendor verification, onboarding, payout linkage, and metadata.
+  - [x] Add creator-visible vendor profile status so marketplace sellers can inspect onboarding and payout readiness.
+  - [ ] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
+  - [ ] Persist enough payout metadata to support later auditing, support, and marketplace operations.
 - [ ] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
   - [x] Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
   - [x] Use these fields in marketplace create/read/update flows and webhook payloads.
   - [x] Use `supported_clouds` and `supported_os` in deployment validation so incompatible targets are blocked early.
-  - [ ] Enforce numeric capacity requirements (`min_ram_mb`, `min_disk_gb`, `min_cpu_cores`) once deploy-time target metadata is normalized.
+  - [x] Add a shared backend server-capacity resolver for normalized App Service `/servers` catalog data.
+  - [ ] Enforce numeric capacity requirements (`min_ram_mb`, `min_disk_gb`, `min_cpu_cores`) using the shared capacity resolver.
 - [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
   - Send notifications for submit/approve/reject/update-required events.
   - Include actionable review reasons and the next expected developer action.

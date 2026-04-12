@@ -10,6 +10,11 @@ use std::sync::Arc;
 use tracing::Instrument;
 use uuid;
 
+const ALLOWED_VENDOR_VERIFICATION_STATUSES: &[&str] =
+    &["unverified", "pending", "verified", "rejected"];
+const ALLOWED_VENDOR_ONBOARDING_STATUSES: &[&str] =
+    &["not_started", "in_progress", "completed"];
+
 #[tracing::instrument(name = "List submitted templates (admin)", skip_all)]
 #[get("")]
 pub async fn list_submitted_handler(
@@ -49,10 +54,19 @@ pub async fn detail_handler(
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
+    let vendor_profile =
+        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &template.creator_user_id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+            })?
+            .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id));
+
     let detail = serde_json::json!({
         "template": template,
         "versions": versions,
         "reviews": reviews,
+        "vendor_profile": vendor_profile,
     });
 
     Ok(JsonResponse::<serde_json::Value>::build()
@@ -391,6 +405,102 @@ pub async fn pricing_handler(
     } else {
         Err(JsonResponse::<serde_json::Value>::build().not_found("Template not found"))
     }
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct AdminVendorProfileRequest {
+    pub verification_status: Option<String>,
+    pub onboarding_status: Option<String>,
+    pub payouts_enabled: Option<bool>,
+    pub payout_provider: Option<String>,
+    pub payout_account_ref: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+fn validate_vendor_status(
+    field_name: &str,
+    value: Option<&str>,
+    allowed: &[&str],
+) -> Result<(), actix_web::Error> {
+    if let Some(value) = value {
+        if !allowed.contains(&value) {
+            return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Invalid {} '{}'. Allowed values: {}",
+                field_name,
+                value,
+                allowed.join(", ")
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(name = "Admin update vendor profile", skip_all)]
+#[patch("/{id}/vendor-profile")]
+pub async fn update_vendor_profile_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminVendorProfileRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let req = body.into_inner();
+
+    if req.verification_status.is_none()
+        && req.onboarding_status.is_none()
+        && req.payouts_enabled.is_none()
+        && req.payout_provider.is_none()
+        && req.payout_account_ref.is_none()
+        && req.metadata.is_none()
+    {
+        return Err(
+            JsonResponse::<serde_json::Value>::build().bad_request("No vendor profile fields provided")
+        );
+    }
+
+    validate_vendor_status(
+        "verification_status",
+        req.verification_status.as_deref(),
+        ALLOWED_VENDOR_VERIFICATION_STATUSES,
+    )?;
+    validate_vendor_status(
+        "onboarding_status",
+        req.onboarding_status.as_deref(),
+        ALLOWED_VENDOR_ONBOARDING_STATUSES,
+    )?;
+
+    if let Some(metadata) = req.metadata.as_ref() {
+        if !metadata.is_object() {
+            return Err(
+                JsonResponse::<serde_json::Value>::build().bad_request("metadata must be a JSON object")
+            );
+        }
+    }
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    db::marketplace::upsert_vendor_profile(
+        pg_pool.get_ref(),
+        &template.creator_user_id,
+        req.verification_status.as_deref(),
+        req.onboarding_status.as_deref(),
+        req.payouts_enabled,
+        req.payout_provider.as_deref(),
+        req.payout_account_ref.as_deref(),
+        req.metadata,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }
 
 /// Request body for PATCH /{id}/verifications.

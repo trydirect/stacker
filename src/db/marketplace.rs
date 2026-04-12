@@ -1,4 +1,6 @@
-use crate::models::{StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion};
+use crate::models::{
+    MarketplaceVendorProfile, StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion,
+};
 use sqlx::PgPool;
 use tracing::Instrument;
 
@@ -931,6 +933,104 @@ pub async fn list_reviews_by_template(
     .await
     .map_err(|e| {
         tracing::error!("list_reviews_by_template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+pub async fn get_vendor_profile_by_creator(
+    pool: &PgPool,
+    creator_user_id: &str,
+) -> Result<Option<MarketplaceVendorProfile>, String> {
+    let query_span =
+        tracing::info_span!("get_vendor_profile_by_creator", creator_user_id = %creator_user_id);
+
+    sqlx::query_as::<_, MarketplaceVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata,
+            created_at,
+            updated_at
+        FROM marketplace_vendor_profile
+        WHERE creator_user_id = $1"#,
+    )
+    .bind(creator_user_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_vendor_profile_by_creator error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+pub async fn upsert_vendor_profile(
+    pool: &PgPool,
+    creator_user_id: &str,
+    verification_status: Option<&str>,
+    onboarding_status: Option<&str>,
+    payouts_enabled: Option<bool>,
+    payout_provider: Option<&str>,
+    payout_account_ref: Option<&str>,
+    metadata: Option<serde_json::Value>,
+) -> Result<MarketplaceVendorProfile, String> {
+    let query_span =
+        tracing::info_span!("upsert_vendor_profile", creator_user_id = %creator_user_id);
+
+    sqlx::query_as::<_, MarketplaceVendorProfile>(
+        r#"INSERT INTO marketplace_vendor_profile (
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata
+        )
+        VALUES (
+            $1,
+            COALESCE($2, 'unverified'),
+            COALESCE($3, 'not_started'),
+            COALESCE($4, false),
+            $5,
+            $6,
+            COALESCE($7, '{}'::jsonb)
+        )
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            verification_status = COALESCE($2, marketplace_vendor_profile.verification_status),
+            onboarding_status = COALESCE($3, marketplace_vendor_profile.onboarding_status),
+            payouts_enabled = COALESCE($4, marketplace_vendor_profile.payouts_enabled),
+            payout_provider = COALESCE($5, marketplace_vendor_profile.payout_provider),
+            payout_account_ref = COALESCE($6, marketplace_vendor_profile.payout_account_ref),
+            metadata = COALESCE($7, marketplace_vendor_profile.metadata),
+            updated_at = NOW()
+        RETURNING
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata,
+            created_at,
+            updated_at"#,
+    )
+    .bind(creator_user_id)
+    .bind(verification_status)
+    .bind(onboarding_status)
+    .bind(payouts_enabled)
+    .bind(payout_provider)
+    .bind(payout_account_ref)
+    .bind(metadata)
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("upsert_vendor_profile error: {:?}", e);
         "Internal Server Error".to_string()
     })
 }

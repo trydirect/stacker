@@ -191,16 +191,19 @@ pub async fn run(
             .service(
                 web::scope("/api")
                     .service(crate::routes::marketplace::categories::list_handler)
-                    .service(
-                        web::scope("/templates")
-                            .service(crate::routes::marketplace::public::list_handler)
-                            .service(crate::routes::marketplace::creator::mine_handler)
-                            .service(crate::routes::marketplace::creator::my_reviews_handler)
-                            .service(crate::routes::marketplace::creator::create_handler)
-                            .service(crate::routes::marketplace::creator::update_handler)
-                            .service(crate::routes::marketplace::creator::submit_handler)
-                            .service(crate::routes::marketplace::creator::resubmit_handler)
-                            .service(crate::routes::marketplace::public::detail_handler),
+                             .service(
+                                 web::scope("/templates")
+                                     .service(crate::routes::marketplace::public::list_handler)
+                                     .service(crate::routes::marketplace::creator::mine_handler)
+                                     .service(crate::routes::marketplace::creator::my_reviews_handler)
+                                     .service(
+                                         crate::routes::marketplace::creator::vendor_profile_status_handler,
+                                     )
+                                     .service(crate::routes::marketplace::creator::create_handler)
+                                     .service(crate::routes::marketplace::creator::update_handler)
+                                     .service(crate::routes::marketplace::creator::submit_handler)
+                                     .service(crate::routes::marketplace::creator::resubmit_handler)
+                                     .service(crate::routes::marketplace::public::detail_handler),
                     )
                     .service(
                         web::scope("/v1/agent")
@@ -259,12 +262,13 @@ pub async fn run(
                                     .service(crate::routes::marketplace::admin::unapprove_handler)
                                     .service(crate::routes::marketplace::admin::security_scan_handler)
                                     .service(crate::routes::marketplace::admin::pricing_handler)
-                                    .service(crate::routes::marketplace::admin::update_verifications_handler),
-                            )
-                            .service(
-                                web::scope("/marketplace")
-                                    .service(crate::routes::marketplace::admin::list_plans_handler),
-                            ),
+                                    .service(crate::routes::marketplace::admin::update_verifications_handler)
+                                    .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
+                             )
+                             .service(
+                                 web::scope("/marketplace")
+                                     .service(crate::routes::marketplace::admin::list_plans_handler),
+                             ),
                     ),
             )
             .service(
