@@ -525,7 +525,7 @@ enum SecretsCommands {
 enum CiCommands {
     /// Export a CI/CD pipeline configuration file
     Export {
-        /// Platform: github, gitlab
+        /// Platform: github, gitlab, bitbucket, jenkins
         #[arg(long)]
         platform: String,
         /// Path to stacker.yml (default: ./stacker.yml)
@@ -534,7 +534,7 @@ enum CiCommands {
     },
     /// Validate that the CI/CD pipeline is in sync with stacker.yml
     Validate {
-        /// Platform: github, gitlab
+        /// Platform: github, gitlab, bitbucket, jenkins
         #[arg(long)]
         platform: String,
     },

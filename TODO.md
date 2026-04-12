@@ -1147,18 +1147,20 @@ To verify `is_official` and `is_verified_publisher` status for each image:
 ## Missing Features Implementation Plan (2026-04)
 
 ### Phase 1 - Marketplace Foundation and Revenue Loop
-- [ ] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
+- [x] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
   - [x] Add `marketplace_vendor_profile` storage plus admin template detail exposure with safe default fallback.
   - [x] Add admin-only partial updates for vendor verification, onboarding, payout linkage, and metadata.
   - [x] Add creator-visible vendor profile status so marketplace sellers can inspect onboarding and payout readiness.
-  - [ ] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
-  - [ ] Persist enough payout metadata to support later auditing, support, and marketplace operations.
-- [ ] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
+  - [x] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
+  - [x] Add a creator onboarding-link bootstrap endpoint that idempotently creates or reuses payout linkage.
+  - [x] Persist auditable onboarding metadata and completion transitions for later real provider integration.
+- [x] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
   - [x] Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
   - [x] Use these fields in marketplace create/read/update flows and webhook payloads.
   - [x] Use `supported_clouds` and `supported_os` in deployment validation so incompatible targets are blocked early.
   - [x] Add a shared backend server-capacity resolver for normalized App Service `/servers` catalog data.
-  - [ ] Enforce numeric capacity requirements (`min_ram_mb`, `min_disk_gb`, `min_cpu_cores`) using the shared capacity resolver.
+  - [x] Enforce `min_ram_mb` during deploy validation using the shared capacity resolver on both deploy entry points.
+  - [x] Extend numeric deploy validation to `min_disk_gb` and `min_cpu_cores`.
 - [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
   - Send notifications for submit/approve/reject/update-required events.
   - Include actionable review reasons and the next expected developer action.
@@ -1172,8 +1174,9 @@ To verify `is_official` and `is_verified_publisher` status for each image:
   - Persist rollback history and expose the effective version in deployment details.
 
 ### Phase 3 - Team and Integration Expansion
-- [ ] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
-  - Prioritize Bitbucket and Jenkins, then evaluate CircleCI or other demand-driven exporters.
+- [x] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
+  - [x] Add Bitbucket Pipelines export and validate support, including aliases and stale/missing file checks.
+  - [x] Add Jenkinsfile export and validate support using the same `STACKER_TOKEN` convention.
   - Keep export templates aligned with current Stacker project and secret conventions.
 - [ ] **[stacker-team-projects]** Add shared project ownership and team collaboration primitives.
   - Introduce org/team ownership, invitations, seat-aware permissions, and shared deployment visibility.

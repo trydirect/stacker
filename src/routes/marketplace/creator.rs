@@ -6,6 +6,38 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid;
 
+fn build_vendor_profile_status_item(
+    creator_user_id: &str,
+    template_id: Option<uuid::Uuid>,
+    vendor_profile: models::MarketplaceVendorProfile,
+) -> serde_json::Value {
+    let payout_ready = vendor_profile.verification_status == "verified"
+        && vendor_profile.onboarding_status == "completed"
+        && vendor_profile.payouts_enabled
+        && vendor_profile.payout_provider.is_some();
+
+    let mut item = serde_json::json!({
+        "creator_user_id": creator_user_id,
+        "payout_ready": payout_ready,
+        "vendor_profile": {
+            "creator_user_id": vendor_profile.creator_user_id,
+            "verification_status": vendor_profile.verification_status,
+            "onboarding_status": vendor_profile.onboarding_status,
+            "payouts_enabled": vendor_profile.payouts_enabled,
+            "payout_provider": vendor_profile.payout_provider,
+            "metadata": vendor_profile.metadata,
+            "created_at": vendor_profile.created_at,
+            "updated_at": vendor_profile.updated_at
+        }
+    });
+
+    if let Some(template_id) = template_id {
+        item["template_id"] = serde_json::Value::String(template_id.to_string());
+    }
+
+    item
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateTemplateRequest {
     pub name: String,
@@ -378,26 +410,91 @@ pub async fn vendor_profile_status_handler(
             })?
             .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id));
 
-    let payout_ready = vendor_profile.verification_status == "verified"
-        && vendor_profile.onboarding_status == "completed"
-        && vendor_profile.payouts_enabled
-        && vendor_profile.payout_provider.is_some();
+    let result = build_vendor_profile_status_item(
+        &template.creator_user_id,
+        Some(template.id),
+        vendor_profile,
+    );
 
-    let result = serde_json::json!({
-        "template_id": template.id,
-        "creator_user_id": template.creator_user_id,
-        "payout_ready": payout_ready,
-        "vendor_profile": {
-            "creator_user_id": vendor_profile.creator_user_id,
-            "verification_status": vendor_profile.verification_status,
-            "onboarding_status": vendor_profile.onboarding_status,
-            "payouts_enabled": vendor_profile.payouts_enabled,
-            "payout_provider": vendor_profile.payout_provider,
-            "metadata": vendor_profile.metadata,
-            "created_at": vendor_profile.created_at,
-            "updated_at": vendor_profile.updated_at
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("OK"))
+}
+
+#[tracing::instrument(name = "Get my self vendor profile", skip_all)]
+#[get("/mine/vendor-profile")]
+pub async fn self_vendor_profile_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+
+    let vendor_profile = db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .unwrap_or_else(|| models::MarketplaceVendorProfile::default_for_creator(&user.id));
+
+    let result = build_vendor_profile_status_item(&user.id, None, vendor_profile);
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("OK"))
+}
+
+#[tracing::instrument(name = "Create my vendor onboarding link", skip_all)]
+#[post("/mine/vendor-profile/onboarding-link")]
+pub async fn create_onboarding_link_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+
+    let generated_account_ref = format!("acct_mock_{}", uuid::Uuid::new_v4().simple());
+    let (vendor_profile, linkage_created) = db::marketplace::ensure_vendor_onboarding_link(
+        pg_pool.get_ref(),
+        &user.id,
+        "mock",
+        &generated_account_ref,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let mut result = build_vendor_profile_status_item(&user.id, None, vendor_profile);
+    result["linkage_created"] = serde_json::Value::Bool(linkage_created);
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(result)
+        .ok("OK"))
+}
+
+#[tracing::instrument(name = "Complete my vendor onboarding", skip_all)]
+#[post("/mine/vendor-profile/onboarding-complete")]
+pub async fn complete_onboarding_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+
+    let completion = db::marketplace::complete_vendor_onboarding(
+        pg_pool.get_ref(),
+        &user.id,
+        "creator_api",
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    let (vendor_profile, completion_recorded) = match completion {
+        Some(result) => result,
+        None => {
+            return Err(
+                JsonResponse::<serde_json::Value>::build()
+                    .conflict("Onboarding link must exist before completion")
+            )
         }
-    });
+    };
+
+    let mut result = build_vendor_profile_status_item(&user.id, None, vendor_profile);
+    result["completion_recorded"] = serde_json::Value::Bool(completion_recorded);
 
     Ok(JsonResponse::<serde_json::Value>::build()
         .set_item(result)

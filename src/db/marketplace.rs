@@ -1,6 +1,8 @@
 use crate::models::{
     MarketplaceVendorProfile, StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion,
 };
+use chrono::Utc;
+use serde_json::{Map, Value};
 use sqlx::PgPool;
 use tracing::Instrument;
 
@@ -1033,6 +1035,152 @@ pub async fn upsert_vendor_profile(
         tracing::error!("upsert_vendor_profile error: {:?}", e);
         "Internal Server Error".to_string()
     })
+}
+
+fn metadata_object(metadata: &Value) -> Map<String, Value> {
+    match metadata {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    }
+}
+
+fn onboarding_object(metadata: &Value) -> Map<String, Value> {
+    metadata
+        .get("onboarding")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn merge_onboarding_link_metadata(metadata: &Value) -> Value {
+    let now = Utc::now().to_rfc3339();
+    let mut root = metadata_object(metadata);
+    let mut onboarding = onboarding_object(metadata);
+
+    if !onboarding.contains_key("started_at") {
+        onboarding.insert("started_at".to_string(), Value::String(now.clone()));
+    }
+
+    let request_count = onboarding
+        .get("link_request_count")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        + 1;
+
+    onboarding.insert(
+        "last_link_requested_at".to_string(),
+        Value::String(now.clone()),
+    );
+    onboarding.insert(
+        "link_request_count".to_string(),
+        Value::Number(request_count.into()),
+    );
+
+    root.insert("onboarding".to_string(), Value::Object(onboarding));
+    Value::Object(root)
+}
+
+fn merge_onboarding_completion_metadata(metadata: &Value, source: &str) -> Value {
+    let now = Utc::now().to_rfc3339();
+    let mut root = metadata_object(metadata);
+    let mut onboarding = onboarding_object(metadata);
+
+    onboarding.insert("completed_at".to_string(), Value::String(now));
+    onboarding.insert(
+        "completion_source".to_string(),
+        Value::String(source.to_string()),
+    );
+
+    root.insert("onboarding".to_string(), Value::Object(onboarding));
+    Value::Object(root)
+}
+
+pub async fn ensure_vendor_onboarding_link(
+    pool: &PgPool,
+    creator_user_id: &str,
+    payout_provider: &str,
+    generated_account_ref: &str,
+) -> Result<(MarketplaceVendorProfile, bool), String> {
+    let existing = get_vendor_profile_by_creator(pool, creator_user_id).await?;
+    let linkage_created = existing
+        .as_ref()
+        .map(|profile| profile.payout_provider.is_none() || profile.payout_account_ref.is_none())
+        .unwrap_or(true);
+
+    let verification_status = existing
+        .as_ref()
+        .map(|profile| profile.verification_status.as_str())
+        .unwrap_or("unverified");
+    let onboarding_status = match existing.as_ref().map(|profile| profile.onboarding_status.as_str()) {
+        Some("not_started") | None => "in_progress",
+        Some(status) => status,
+    };
+    let payouts_enabled = existing.as_ref().map(|profile| profile.payouts_enabled).unwrap_or(false);
+    let payout_provider = existing
+        .as_ref()
+        .and_then(|profile| profile.payout_provider.as_deref())
+        .unwrap_or(payout_provider);
+    let payout_account_ref = existing
+        .as_ref()
+        .and_then(|profile| profile.payout_account_ref.as_deref())
+        .unwrap_or(generated_account_ref);
+    let existing_metadata = existing
+        .as_ref()
+        .map(|profile| profile.metadata.clone())
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let metadata = merge_onboarding_link_metadata(&existing_metadata);
+
+    let profile = upsert_vendor_profile(
+        pool,
+        creator_user_id,
+        Some(verification_status),
+        Some(onboarding_status),
+        Some(payouts_enabled),
+        Some(payout_provider),
+        Some(payout_account_ref),
+        Some(metadata),
+    )
+    .await?;
+
+    Ok((profile, linkage_created))
+}
+
+pub async fn complete_vendor_onboarding(
+    pool: &PgPool,
+    creator_user_id: &str,
+    source: &str,
+) -> Result<Option<(MarketplaceVendorProfile, bool)>, String> {
+    let existing = match get_vendor_profile_by_creator(pool, creator_user_id).await? {
+        Some(profile) => profile,
+        None => return Ok(None),
+    };
+
+    if existing.payout_provider.is_none() || existing.payout_account_ref.is_none() {
+        return Ok(None);
+    }
+
+    if existing.onboarding_status == "not_started" {
+        return Ok(None);
+    }
+
+    if existing.onboarding_status == "completed" {
+        return Ok(Some((existing, false)));
+    }
+
+    let metadata = merge_onboarding_completion_metadata(&existing.metadata, source);
+    let profile = upsert_vendor_profile(
+        pool,
+        creator_user_id,
+        Some(&existing.verification_status),
+        Some("completed"),
+        Some(existing.payouts_enabled),
+        existing.payout_provider.as_deref(),
+        existing.payout_account_ref.as_deref(),
+        Some(metadata),
+    )
+    .await?;
+
+    Ok(Some((profile, true)))
 }
 
 /// Save a security scan result as a review record with security_checklist populated

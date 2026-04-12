@@ -195,6 +195,15 @@ pub async fn run(
                                  web::scope("/templates")
                                      .service(crate::routes::marketplace::public::list_handler)
                                      .service(crate::routes::marketplace::creator::mine_handler)
+                                     .service(
+                                         crate::routes::marketplace::creator::self_vendor_profile_handler,
+                                     )
+                                     .service(
+                                         crate::routes::marketplace::creator::create_onboarding_link_handler,
+                                     )
+                                     .service(
+                                         crate::routes::marketplace::creator::complete_onboarding_handler,
+                                     )
                                      .service(crate::routes::marketplace::creator::my_reviews_handler)
                                      .service(
                                          crate::routes::marketplace::creator::vendor_profile_status_handler,
