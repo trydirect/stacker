@@ -13,6 +13,28 @@ async fn seed_deployment(pool: &sqlx::PgPool, user_id: &str) -> (i32, i32, Strin
     (project_id, deployment_id, hash)
 }
 
+async fn set_deployment_version_metadata(
+    pool: &sqlx::PgPool,
+    deployment_id: i32,
+    effective_version: &str,
+    source_template_id: &str,
+) {
+    sqlx::query(
+        r#"UPDATE deployment
+           SET metadata = jsonb_build_object(
+               'effective_version', $2::text,
+               'source_template_id', $3::text
+           )
+           WHERE id = $1"#,
+    )
+    .bind(deployment_id)
+    .bind(effective_version)
+    .bind(source_template_id)
+    .execute(pool)
+    .await
+    .expect("Failed to set deployment version metadata");
+}
+
 // ── List ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -141,7 +163,14 @@ async fn test_owner_can_access_own_deployment() {
     };
     let client = reqwest::Client::new();
 
-    let (_pid, did, hash) = seed_deployment(&app.db_pool, common::USER_A_ID).await;
+    let (pid, did, hash) = seed_deployment(&app.db_pool, common::USER_A_ID).await;
+    set_deployment_version_metadata(
+        &app.db_pool,
+        did,
+        "2.4.1",
+        "11111111-1111-1111-1111-111111111111",
+    )
+    .await;
 
     // By ID
     let resp = client
@@ -153,6 +182,11 @@ async fn test_owner_can_access_own_deployment() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["item"]["deployment_hash"].as_str().unwrap(), hash);
+    assert_eq!(body["item"]["effective_version"].as_str(), Some("2.4.1"));
+    assert_eq!(
+        body["item"]["source_template_id"].as_str(),
+        Some("11111111-1111-1111-1111-111111111111")
+    );
 
     // By hash
     let resp = client
@@ -162,4 +196,20 @@ async fn test_owner_can_access_own_deployment() {
         .await
         .expect("request failed");
     assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["item"]["effective_version"].as_str(), Some("2.4.1"));
+
+    // By project
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/project/{}",
+            app.address, pid
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["item"]["effective_version"].as_str(), Some("2.4.1"));
 }

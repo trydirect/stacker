@@ -182,7 +182,12 @@ pub struct DeploymentStatusInfo {
     pub deployment_hash: String,
     pub status: String,
     /// Human-readable status/error message from the deployment pipeline.
+    #[serde(default)]
     pub status_message: Option<String>,
+    #[serde(default)]
+    pub effective_version: Option<String>,
+    #[serde(default)]
+    pub source_template_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2737,6 +2742,28 @@ mod tests {
 
         let form = build_deploy_form(&config);
         assert_eq!(form["stack"]["stack_code"], "optimumcode");
+    }
+
+    #[test]
+    fn test_deployment_status_info_deserializes_optional_version_fields() {
+        let parsed: DeploymentStatusInfo = serde_json::from_value(serde_json::json!({
+            "id": 12,
+            "project_id": 33,
+            "deployment_hash": "deployment_123",
+            "status": "completed",
+            "status_message": "done",
+            "effective_version": "2.4.1",
+            "source_template_id": "11111111-1111-1111-1111-111111111111",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:05:00Z"
+        }))
+        .expect("deployment status info should deserialize");
+
+        assert_eq!(parsed.effective_version.as_deref(), Some("2.4.1"));
+        assert_eq!(
+            parsed.source_template_id.as_deref(),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
     }
 
     #[test]

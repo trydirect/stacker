@@ -168,6 +168,12 @@ impl ListDeploymentsCommand {
     }
 }
 
+fn deployment_version_display(info: &stacker_client::DeploymentStatusInfo) -> String {
+    info.effective_version
+        .clone()
+        .unwrap_or_else(|| "-".to_string())
+}
+
 impl CallableTrait for ListDeploymentsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
@@ -199,18 +205,19 @@ impl CallableTrait for ListDeploymentsCommand {
                 println!("{}", serde_json::to_string_pretty(&deployments)?);
             } else {
                 println!(
-                    "{:<6} {:<10} {:<10} {:<47} {:<12}",
-                    "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
+                    "{:<6} {:<10} {:<10} {:<14} {:<47} {:<12}",
+                    "ID", "PROJECT", "STATUS", "VERSION", "DEPLOYMENT HASH", "CREATED"
                 );
-                println!("{}", "─".repeat(90));
+                println!("{}", "─".repeat(106));
 
                 for d in &deployments {
                     println!(
-                        "{:<6} {:<10} {} {:<8} {:<47} {:<12}",
+                        "{:<6} {:<10} {} {:<8} {:<14} {:<47} {:<12}",
                         d.id,
                         d.project_id,
                         progress::status_icon(&d.status),
                         truncate(&d.status, 7),
+                        truncate(&deployment_version_display(d), 12),
                         &d.deployment_hash,
                         truncate(&d.created_at, 10),
                     );
@@ -221,6 +228,45 @@ impl CallableTrait for ListDeploymentsCommand {
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_version_display_prefers_effective_version() {
+        let info = stacker_client::DeploymentStatusInfo {
+            id: 1,
+            project_id: 2,
+            deployment_hash: "deployment-123".to_string(),
+            status: "completed".to_string(),
+            status_message: None,
+            effective_version: Some("2.4.1".to_string()),
+            source_template_id: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        assert_eq!(deployment_version_display(&info), "2.4.1");
+    }
+
+    #[test]
+    fn deployment_version_display_uses_placeholder_for_legacy_rows() {
+        let info = stacker_client::DeploymentStatusInfo {
+            id: 1,
+            project_id: 2,
+            deployment_hash: "deployment-123".to_string(),
+            status: "completed".to_string(),
+            status_message: None,
+            effective_version: None,
+            source_template_id: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        assert_eq!(deployment_version_display(&info), "-");
     }
 }
 

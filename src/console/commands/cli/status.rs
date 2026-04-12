@@ -114,6 +114,12 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
     }
     println!("  Project ID:      {}", info.project_id);
     println!("  Deployment hash: {}", info.deployment_hash);
+    if let Some(ref version) = info.effective_version {
+        println!("  Version:         {}", version);
+    }
+    if let Some(ref template_id) = info.source_template_id {
+        println!("  Template ID:     {}", template_id);
+    }
     println!("  Created:         {}", info.created_at);
     println!("  Updated:         {}", info.updated_at);
 

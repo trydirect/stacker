@@ -16,6 +16,10 @@ pub struct DeploymentStatusResponse {
     /// Human-readable status/error message from the deployment pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_template_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -33,6 +37,16 @@ impl From<models::Deployment> for DeploymentStatusResponse {
             .get("status_message")
             .and_then(|v| v.as_str())
             .map(String::from);
+        let effective_version = d
+            .metadata
+            .get("effective_version")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let source_template_id = d
+            .metadata
+            .get("source_template_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         Self {
             id: d.id,
@@ -40,6 +54,8 @@ impl From<models::Deployment> for DeploymentStatusResponse {
             deployment_hash: d.deployment_hash,
             status: d.status,
             status_message,
+            effective_version,
+            source_template_id,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
@@ -206,5 +222,46 @@ mod tests {
         assert_eq!(resp.project_id, 42);
         assert_eq!(resp.deployment_hash, "deployment_abc");
         assert_eq!(resp.status, "in_progress");
+    }
+
+    #[test]
+    fn deployment_to_status_response_includes_version_fields_when_present() {
+        let mut d = models::Deployment::new(
+            42,
+            Some("user123".to_string()),
+            "deployment_abc".to_string(),
+            "completed".to_string(),
+            "runc".to_string(),
+            serde_json::json!({
+                "effective_version": "2.4.1",
+                "source_template_id": "11111111-1111-1111-1111-111111111111"
+            }),
+        );
+        d.id = 5;
+
+        let resp: DeploymentStatusResponse = d.into();
+
+        assert_eq!(resp.effective_version.as_deref(), Some("2.4.1"));
+        assert_eq!(
+            resp.source_template_id.as_deref(),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
+    }
+
+    #[test]
+    fn deployment_to_status_response_omits_version_fields_for_legacy_rows() {
+        let d = models::Deployment::new(
+            42,
+            Some("user123".to_string()),
+            "deployment_legacy".to_string(),
+            "completed".to_string(),
+            "runc".to_string(),
+            serde_json::json!({}),
+        );
+
+        let resp: DeploymentStatusResponse = d.into();
+
+        assert!(resp.effective_version.is_none());
+        assert!(resp.source_template_id.is_none());
     }
 }

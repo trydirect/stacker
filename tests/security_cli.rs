@@ -23,6 +23,28 @@ async fn seed_full_deployment(pool: &sqlx::PgPool, user_id: &str) -> (i32, i32, 
     (project_id, deployment_id, hash)
 }
 
+async fn set_deployment_version_metadata(
+    pool: &sqlx::PgPool,
+    deployment_id: i32,
+    effective_version: &str,
+    source_template_id: &str,
+) {
+    sqlx::query(
+        r#"UPDATE deployment
+           SET metadata = jsonb_build_object(
+               'effective_version', $2::text,
+               'source_template_id', $3::text
+           )
+           WHERE id = $1"#,
+    )
+    .bind(deployment_id)
+    .bind(effective_version)
+    .bind(source_template_id)
+    .execute(pool)
+    .await
+    .expect("Failed to set deployment version metadata");
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // stacker list projects — GET /project
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -241,8 +263,15 @@ async fn test_cli_list_deployments_user_isolation() {
     };
     let client = reqwest::Client::new();
 
-    let (_, _, hash_a) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
+    let (_, did_a, hash_a) = seed_full_deployment(&app.db_pool, common::USER_A_ID).await;
     let (_, _, hash_b) = seed_full_deployment(&app.db_pool, common::USER_B_ID).await;
+    set_deployment_version_metadata(
+        &app.db_pool,
+        did_a,
+        "2.4.1",
+        "11111111-1111-1111-1111-111111111111",
+    )
+    .await;
 
     // User A sees only their own
     let resp = client
@@ -256,6 +285,11 @@ async fn test_cli_list_deployments_user_isolation() {
     let list = body["list"].as_array().expect("expected list");
     assert_eq!(list.len(), 1, "User A should see exactly 1 deployment");
     assert_eq!(list[0]["deployment_hash"].as_str().unwrap(), hash_a);
+    assert_eq!(list[0]["effective_version"].as_str(), Some("2.4.1"));
+    assert_eq!(
+        list[0]["source_template_id"].as_str(),
+        Some("11111111-1111-1111-1111-111111111111")
+    );
 
     // User B sees only their own
     let resp = client

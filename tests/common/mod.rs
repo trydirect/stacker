@@ -269,6 +269,8 @@ pub async fn create_test_client(pool: &PgPool, user_id: &str) -> i32 {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Original infrastructure
+// Keep this module recompiling when new migrations are added so test databases
+// are always created with the latest Casbin and schema changes.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::Error> {

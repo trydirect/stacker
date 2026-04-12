@@ -9,11 +9,276 @@ use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
+use serde::Deserialize;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
+
+#[derive(Debug, Deserialize)]
+pub struct RollbackRequest {
+    pub version: String,
+}
+
+fn build_deployment_metadata(project: &models::Project) -> serde_json::Value {
+    let mut metadata = match project.metadata.clone() {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+
+    if let Some(version) = project.template_version.as_ref() {
+        metadata.insert(
+            "effective_version".to_string(),
+            serde_json::Value::String(version.clone()),
+        );
+    }
+
+    if let Some(template_id) = project.source_template_id {
+        metadata.insert(
+            "source_template_id".to_string(),
+            serde_json::Value::String(template_id.to_string()),
+        );
+    }
+
+    serde_json::Value::Object(metadata)
+}
+
+fn build_rollback_project_metadata(
+    project: &models::Project,
+    rollback_form: &forms::project::ProjectForm,
+    target_version: &str,
+) -> Result<serde_json::Value, String> {
+    let mut metadata = match serde_json::to_value(rollback_form).map_err(|err| err.to_string())? {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+
+    if let Some(current_version) = project.template_version.as_ref() {
+        metadata.insert(
+            "rollback_from_version".to_string(),
+            serde_json::Value::String(current_version.clone()),
+        );
+    }
+    metadata.insert(
+        "rollback_target_version".to_string(),
+        serde_json::Value::String(target_version.to_string()),
+    );
+
+    Ok(serde_json::Value::Object(metadata))
+}
+
+fn build_rollback_deploy_form(
+    user_id: &str,
+    project_id: i32,
+    stack_code: &str,
+    server: models::Server,
+    cloud: Option<models::Cloud>,
+) -> forms::project::Deploy {
+    let server_form: forms::ServerForm = server.into();
+    let mut cloud_form = cloud.map(Into::into).unwrap_or_else(|| forms::CloudForm {
+        provider: "own".to_string(),
+        ..Default::default()
+    });
+    cloud_form.user_id = Some(user_id.to_string());
+    cloud_form.project_id = Some(project_id);
+
+    forms::project::Deploy {
+        stack: forms::project::Stack {
+            stack_code: Some(stack_code.to_string()),
+            vars: Some(vec![]),
+            integrated_features: Some(vec![]),
+            extended_features: Some(vec![]),
+            subscriptions: Some(vec![]),
+            form_app: Some(vec![]),
+        },
+        server: server_form,
+        cloud: cloud_form,
+        registry: None,
+    }
+}
+
+async fn execute_deployment(
+    user: &web::ReqData<Arc<models::User>>,
+    pg_pool: &Data<PgPool>,
+    mq_manager: &Data<MqManager>,
+    install_service: &Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: &Data<VaultClient>,
+    project: models::Project,
+    cloud_creds: models::Cloud,
+    server: models::Server,
+    stack: forms::project::Stack,
+    registry: Option<forms::project::RegistryForm>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<models::Project>>> {
+    let id = project.id;
+    let dc = DcBuilder::new(project);
+    let fc = dc
+        .build()
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+    let mut new_public_key: Option<String> = None;
+    let mut captured_private_key: Option<String> = None;
+    let server = if server.key_status != "active" {
+        match VaultClient::generate_ssh_keypair() {
+            Ok((public_key, private_key)) => {
+                match vault_client
+                    .get_ref()
+                    .store_ssh_key(&user.id, server.id, &public_key, &private_key)
+                    .await
+                {
+                    Ok(vault_path) => {
+                        tracing::info!(
+                            "Auto-generated SSH key for server {} (vault_key_path: {})",
+                            server.id,
+                            vault_path
+                        );
+                        new_public_key = Some(public_key);
+                        captured_private_key = Some(private_key);
+                        db::server::update_ssh_key_status(
+                            pg_pool.get_ref(),
+                            server.id,
+                            Some(vault_path),
+                            "active",
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to update SSH key status: {}", e);
+                            server
+                        })
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to store auto-generated SSH key in Vault for server {}: {}",
+                            server.id,
+                            e
+                        );
+                        server
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to auto-generate SSH keypair for server {}: {}",
+                    server.id,
+                    e
+                );
+                server
+            }
+        }
+    } else {
+        match vault_client
+            .get_ref()
+            .fetch_ssh_public_key(&user.id, server.id)
+            .await
+        {
+            Ok(pk) => {
+                tracing::info!(
+                    "Fetched existing public key from Vault for server {}",
+                    server.id
+                );
+                new_public_key = Some(pk);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch public key from Vault for server {}: {}",
+                    server.id,
+                    e
+                );
+            }
+        }
+        server
+    };
+
+    let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
+    if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
+        tracing::error!(
+            "Cannot deploy to existing server {} (IP: {:?}): SSH key is not available. \
+             vault_key_path is None and key generation failed.",
+            server.id,
+            server.srv_ip,
+        );
+        return Err(JsonResponse::<models::Project>::build().bad_request(
+            "SSH key is not available for this server. \
+             Please generate an SSH key first with `stacker ssh-key generate` \
+             or re-add your server with SSH credentials.",
+        ));
+    }
+
+    let json_request = build_deployment_metadata(&dc.project);
+    let deployment_hash = format!("deployment_{}", Uuid::new_v4());
+    let deployment = models::Deployment::new(
+        dc.project.id,
+        Some(user.id.clone()),
+        deployment_hash.clone(),
+        String::from("pending"),
+        "runc".to_string(),
+        json_request,
+    );
+
+    let saved_deployment = db::deployment::insert(pg_pool.get_ref(), deployment)
+        .await
+        .map_err(|_| {
+            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
+        })?;
+
+    let deployment_id = saved_deployment.id;
+
+    let new_private_key = if server.vault_key_path.is_some() {
+        if let Some(pk) = captured_private_key {
+            Some(pk)
+        } else {
+            match vault_client
+                .get_ref()
+                .fetch_ssh_key(&user.id, server.id)
+                .await
+            {
+                Ok(pk) => {
+                    tracing::info!(
+                        "Fetched SSH private key from Vault for server {}",
+                        server.id
+                    );
+                    Some(pk)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch SSH private key from Vault for server {}: {}",
+                        server.id,
+                        e
+                    );
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    install_service
+        .deploy(
+            user.id.clone(),
+            user.email.clone(),
+            id,
+            deployment_id,
+            deployment_hash,
+            &dc.project,
+            cloud_creds,
+            server,
+            &stack,
+            registry,
+            fc,
+            mq_manager.get_ref(),
+            new_public_key,
+            new_private_key,
+        )
+        .await
+        .map(|project_id| {
+            JsonResponse::<models::Project>::build()
+                .set_id(project_id)
+                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
+                .ok("Success")
+        })
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+}
 
 fn parse_template_requirements(
     template: &models::StackTemplate,
@@ -502,7 +767,7 @@ pub async fn item(
     }
 
     // Store deployment attempts into deployment table in db
-    let json_request = dc.project.metadata.clone();
+    let json_request = build_deployment_metadata(&dc.project);
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,
@@ -581,6 +846,167 @@ pub async fn item(
                 .ok("Success")
         })
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+}
+
+#[tracing::instrument(name = "Rollback marketplace project deployment", skip_all)]
+#[post("/{id}/rollback")]
+pub async fn rollback(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    request: web::Json<RollbackRequest>,
+    pg_pool: Data<PgPool>,
+    mq_manager: Data<MqManager>,
+    _sets: Data<Settings>,
+    _user_service: Data<Arc<dyn UserServiceConnector>>,
+    install_service: Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: Data<VaultClient>,
+) -> Result<impl Responder> {
+    let id = path.0;
+    let requested_version = request.version.trim();
+    if requested_version.is_empty() {
+        return Err(
+            JsonResponse::<models::Project>::build().bad_request("Rollback version is required")
+        );
+    }
+
+    let project = db::project::fetch(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .and_then(|project| match project {
+            Some(project) if project.user_id != user.id => {
+                Err(JsonResponse::<models::Project>::build().not_found("not found"))
+            }
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+        })?;
+
+    let template_id = project.source_template_id.ok_or_else(|| {
+        JsonResponse::<models::Project>::build()
+            .bad_request("Rollback is only supported for marketplace projects")
+    })?;
+
+    if project.template_version.as_deref() == Some(requested_version) {
+        return Err(
+            JsonResponse::<models::Project>::build().bad_request(format!(
+                "Project is already using marketplace version '{}'",
+                requested_version
+            )),
+        );
+    }
+
+    let target_version = db::marketplace::list_versions_by_template(pg_pool.get_ref(), template_id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        .into_iter()
+        .find(|version| version.version == requested_version)
+        .ok_or_else(|| {
+            JsonResponse::<models::Project>::build().bad_request(format!(
+                "Unknown rollback version '{}' for marketplace template {}",
+                requested_version, template_id
+            ))
+        })?;
+
+    let servers = db::server::fetch_by_project(pg_pool.get_ref(), project.id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    if servers.len() != 1 {
+        return Err(JsonResponse::<models::Project>::build()
+            .bad_request("Rollback currently requires a single server attached to the project"));
+    }
+    let server = servers
+        .into_iter()
+        .next()
+        .expect("single server checked above");
+
+    let rollback_form: forms::project::ProjectForm =
+        serde_json::from_value(target_version.stack_definition.clone()).map_err(|err| {
+            JsonResponse::<models::Project>::build().bad_request(format!(
+                "Rollback target version has invalid stack definition: {err}"
+            ))
+        })?;
+    if !rollback_form.validate().is_ok() {
+        let errors = rollback_form.validate().unwrap_err().to_string();
+        return Err(JsonResponse::<models::Project>::build()
+            .bad_request(format!("Rollback target version is invalid: {errors}")));
+    }
+
+    let rollback_stack_definition = target_version.stack_definition.clone();
+    let mut rollback_project = project.clone();
+    rollback_project.metadata =
+        build_rollback_project_metadata(&project, &rollback_form, requested_version)
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    rollback_project.request_json = rollback_stack_definition;
+    rollback_project.template_version = Some(requested_version.to_string());
+
+    let cloud = match server.cloud_id {
+        Some(cloud_id) => db::cloud::fetch(pg_pool.get_ref(), cloud_id)
+            .await
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+            .ok_or_else(|| {
+                JsonResponse::<models::Project>::build()
+                    .bad_request("Rollback target cloud credentials were not found")
+            })?,
+        None => models::Cloud {
+            user_id: user.id.clone(),
+            provider: "own".to_string(),
+            ..Default::default()
+        },
+    };
+
+    let rollback_deploy_form = build_rollback_deploy_form(
+        &user.id,
+        project.id,
+        &rollback_form.custom.custom_stack_code,
+        server.clone(),
+        Some(cloud.clone()),
+    );
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<models::Project>::build()
+                .bad_request("Marketplace template for rollback was not found")
+        })?;
+    let requirements = parse_template_requirements(&template)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    validate_template_target_requirements(
+        &template,
+        &requirements,
+        &cloud.provider,
+        server.os.as_deref(),
+    )
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    validate_template_server_capacity_requirements(
+        &template,
+        &requirements,
+        &cloud.provider,
+        if cloud.id != 0 { Some(cloud.id) } else { None },
+        server.server.as_deref(),
+        user.access_token.as_deref(),
+    )
+    .await
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+    let response = execute_deployment(
+        &user,
+        &pg_pool,
+        &mq_manager,
+        &install_service,
+        &vault_client,
+        rollback_project.clone(),
+        cloud,
+        server,
+        rollback_deploy_form.stack,
+        rollback_deploy_form.registry,
+    )
+    .await?;
+
+    db::project::update(pg_pool.get_ref(), rollback_project)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+    Ok(response)
 }
 #[tracing::instrument(name = "Deploy, when cloud token is saved", skip_all)]
 #[post("/{id}/deploy/{cloud_id}")]
@@ -892,7 +1318,7 @@ pub async fn saved_item(
     }
 
     // Store deployment attempts into deployment table in db
-    let json_request = dc.project.metadata.clone();
+    let json_request = build_deployment_metadata(&dc.project);
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,
@@ -978,10 +1404,11 @@ pub async fn saved_item(
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
+        build_deployment_metadata, build_rollback_deploy_form, validate_min_cpu_requirement,
+        validate_min_disk_requirement, validate_min_ram_requirement,
     };
-    use crate::connectors::app_service_catalog::ServerCapacity;
     use crate::models;
+    use crate::{connectors::app_service_catalog::ServerCapacity, models};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -1012,6 +1439,25 @@ mod tests {
             verifications: json!({}),
             infrastructure_requirements: json!({}),
         }
+    }
+
+    #[test]
+    fn rollback_deploy_form_uses_template_stack_code_without_renaming_project() {
+        let form = build_rollback_deploy_form(
+            "user-1",
+            42,
+            "template-stack-code",
+            models::Server::default(),
+            None,
+        );
+
+        assert_eq!(
+            form.stack.stack_code,
+            Some("template-stack-code".to_string())
+        );
+        assert_eq!(form.cloud.project_id, Some(42));
+        assert_eq!(form.cloud.user_id, Some("user-1".to_string()));
+        assert_eq!(form.cloud.provider, "own");
     }
 
     #[test]
@@ -1114,5 +1560,51 @@ mod tests {
         assert!(err.contains("minimum CPU requirement"));
         assert!(err.contains("4"));
         assert!(err.contains("2"));
+    }
+
+    #[test]
+    fn build_deployment_metadata_includes_effective_version_and_source_template_id() {
+        let template_id = Uuid::new_v4();
+        let project = models::Project {
+            id: 10,
+            stack_id: Uuid::new_v4(),
+            user_id: "user-1".to_string(),
+            name: "Rollback Ready".to_string(),
+            metadata: json!({ "apps": ["nginx"] }),
+            request_json: json!({}),
+            created_at: Default::default(),
+            updated_at: Default::default(),
+            source_template_id: Some(template_id),
+            template_version: Some("2.4.1".to_string()),
+        };
+
+        let metadata = build_deployment_metadata(&project);
+
+        assert_eq!(metadata["apps"], json!(["nginx"]));
+        assert_eq!(metadata["effective_version"], "2.4.1");
+        assert_eq!(metadata["source_template_id"], template_id.to_string());
+    }
+
+    #[test]
+    fn build_deployment_metadata_falls_back_to_object_when_project_metadata_is_not_object() {
+        let template_id = Uuid::new_v4();
+        let project = models::Project {
+            id: 11,
+            stack_id: Uuid::new_v4(),
+            user_id: "user-1".to_string(),
+            name: "Legacy".to_string(),
+            metadata: json!(["legacy"]),
+            request_json: json!({}),
+            created_at: Default::default(),
+            updated_at: Default::default(),
+            source_template_id: Some(template_id),
+            template_version: Some("1.0.0".to_string()),
+        };
+
+        let metadata = build_deployment_metadata(&project);
+
+        assert_eq!(metadata["effective_version"], "1.0.0");
+        assert_eq!(metadata["source_template_id"], template_id.to_string());
+        assert!(metadata.get("apps").is_none());
     }
 }
