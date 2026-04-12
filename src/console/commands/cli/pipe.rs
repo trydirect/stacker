@@ -8,6 +8,7 @@
 //! ```
 
 use crate::cli::error::CliError;
+use crate::cli::field_matcher::{DeterministicFieldMatcher, FieldMatcher};
 use crate::cli::fmt;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
@@ -363,6 +364,8 @@ pub struct PipeCreateCommand {
     pub source: String,
     pub target: String,
     pub manual: bool,
+    pub ai: bool,
+    pub no_ai: bool,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -372,6 +375,8 @@ impl PipeCreateCommand {
         source: String,
         target: String,
         manual: bool,
+        ai: bool,
+        no_ai: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -379,6 +384,8 @@ impl PipeCreateCommand {
             source,
             target,
             manual,
+            ai,
+            no_ai,
             json,
             deployment,
         }
@@ -550,17 +557,28 @@ impl CallableTrait for PipeCreateCommand {
             target_ops[target_idx];
 
         // Step 5: Build field mapping (smart matching with sample data)
-        let field_mapping = if !self.manual && !src_fields.is_empty() && !tgt_fields.is_empty() {
-            println!("\n  Auto-matching fields (source → target):");
-            let mapping = smart_field_match(src_fields, tgt_fields, src_sample.as_ref());
+        let (field_mapping, match_result) = if !self.manual && !src_fields.is_empty() && !tgt_fields.is_empty() {
+            let matcher = select_field_matcher(self.ai, self.no_ai);
+            let result = matcher.match_fields(src_fields, tgt_fields, src_sample.as_ref());
+            let mode_label = match result.mode {
+                crate::cli::field_matcher::MatchingMode::Ai => "AI",
+                crate::cli::field_matcher::MatchingMode::Deterministic => "deterministic",
+            };
+            println!("\n  Auto-matching fields ({} mode, source → target):", mode_label);
 
-            let matched: Vec<String> = mapping
+            let matched: Vec<String> = result
+                .mapping
                 .as_object()
                 .map(|m| {
                     m.iter()
                         .map(|(k, v)| {
                             let src = v.as_str().unwrap_or("?");
-                            format!("    {} ← {} ✓", k, src)
+                            let conf = result.confidence.get(k).copied().unwrap_or(1.0);
+                            if conf < 1.0 {
+                                format!("    {} ← {} (confidence: {:.0}%) ✓", k, src, conf * 100.0)
+                            } else {
+                                format!("    {} ← {} ✓", k, src)
+                            }
                         })
                         .collect()
                 })
@@ -570,8 +588,17 @@ impl CallableTrait for PipeCreateCommand {
                 println!("{}", line);
             }
 
+            // Show transformation suggestions from AI
+            for suggestion in &result.suggestions {
+                println!(
+                    "    💡 {}: {} — {}",
+                    suggestion.target_field, suggestion.expression, suggestion.description
+                );
+            }
+
             // Show unmatched target fields
-            let matched_keys: Vec<&str> = mapping
+            let matched_keys: Vec<&str> = result
+                .mapping
                 .as_object()
                 .map(|m| m.keys().map(|k| k.as_str()).collect())
                 .unwrap_or_default();
@@ -592,20 +619,20 @@ impl CallableTrait for PipeCreateCommand {
             }
 
             if matched_keys.is_empty() {
-                // No auto-matches — create pass-through
                 println!("    No auto-matches found. Creating pass-through mapping.");
                 let mut pass = serde_json::Map::new();
                 for sf in src_fields {
                     pass.insert(sf.clone(), serde_json::Value::String(format!("$.{}", sf)));
                 }
-                serde_json::Value::Object(pass)
+                (serde_json::Value::Object(pass), Some(result))
             } else {
-                mapping
+                let mapping = result.mapping.clone();
+                (mapping, Some(result))
             }
         } else {
             // Manual mode or no fields discovered
             println!("\n  No field auto-matching available. Creating identity mapping.");
-            serde_json::json!({})
+            (serde_json::json!({}), None)
         };
 
         // Step 6: Ask for pipe name
@@ -615,7 +642,31 @@ impl CallableTrait for PipeCreateCommand {
             .default(default_name)
             .interact_text()?;
 
-        // Step 7: Create template via API
+        // Step 7: Create template via API — include matching metadata in config
+        let mut config = serde_json::json!({"retry_count": 3});
+        if let Some(ref result) = match_result {
+            config["matching_mode"] = serde_json::Value::String(result.mode.to_string());
+            if !result.confidence.is_empty() {
+                let conf_map: serde_json::Map<String, serde_json::Value> = result
+                    .confidence
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+                    .collect();
+                config["field_confidence"] = serde_json::Value::Object(conf_map);
+            }
+            if !result.suggestions.is_empty() {
+                config["transformations"] = serde_json::json!(
+                    result.suggestions.iter().map(|s| {
+                        serde_json::json!({
+                            "target": s.target_field,
+                            "expr": s.expression,
+                            "description": s.description,
+                        })
+                    }).collect::<Vec<_>>()
+                );
+            }
+        }
+
         let template_request = CreatePipeTemplateApiRequest {
             name: pipe_name.clone(),
             description: Some(format!(
@@ -634,7 +685,7 @@ impl CallableTrait for PipeCreateCommand {
             }),
             target_external_url: None,
             field_mapping: field_mapping.clone(),
-            config: Some(serde_json::json!({"retry_count": 3})),
+            config: Some(config),
             is_public: Some(false),
         };
 
@@ -776,139 +827,61 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-/// Common semantic aliases for field name matching.
-/// Maps target field name patterns to source field name patterns.
-const FIELD_ALIASES: &[(&[&str], &[&str])] = &[
-    (
-        &["email", "user_email", "mail", "email_address"],
-        &["email", "user_email", "mail", "email_address"],
-    ),
-    (
-        &["name", "display_name", "full_name", "username"],
-        &["name", "display_name", "full_name", "username"],
-    ),
-    (
-        &["first_name", "fname", "given_name"],
-        &["first_name", "fname", "given_name"],
-    ),
-    (
-        &["last_name", "lname", "family_name", "surname"],
-        &["last_name", "lname", "family_name", "surname"],
-    ),
-    (
-        &["phone", "phone_number", "tel", "telephone"],
-        &["phone", "phone_number", "tel", "telephone"],
-    ),
-    (
-        &["address", "street", "street_address"],
-        &["address", "street", "street_address"],
-    ),
-    (&["city", "town"], &["city", "town"]),
-    (&["country", "country_code"], &["country", "country_code"]),
-    (
-        &["title", "subject", "heading"],
-        &["title", "subject", "heading"],
-    ),
-    (
-        &["body", "content", "text", "description", "message"],
-        &["body", "content", "text", "description", "message"],
-    ),
-    (
-        &["url", "link", "href", "website"],
-        &["url", "link", "href", "website"],
-    ),
-    (&["id", "identifier"], &["id", "identifier"]),
-    (
-        &["created_at", "created", "date_created"],
-        &["created_at", "created", "date_created"],
-    ),
-    (
-        &["updated_at", "updated", "date_updated", "modified"],
-        &["updated_at", "updated", "date_updated", "modified"],
-    ),
-];
+/// Select the appropriate field matcher based on CLI flags and stacker.yml config.
+///
+/// Priority:
+/// 1. `--ai` flag → AI matcher (error if AI not configured)
+/// 2. `--no-ai` flag → deterministic matcher
+/// 3. Neither flag → check `stacker.yml` ai.enabled; if true → AI, else → deterministic
+fn select_field_matcher(force_ai: bool, force_no_ai: bool) -> Box<dyn FieldMatcher> {
+    if force_no_ai {
+        return Box::new(DeterministicFieldMatcher);
+    }
 
-/// Smart field matching: exact name → case-insensitive → semantic aliases → type-aware.
-fn smart_field_match(
-    src_fields: &[String],
-    tgt_fields: &[String],
-    source_sample: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    let mut mapping = serde_json::Map::new();
-
-    for tgt_field in tgt_fields {
-        // 1. Exact name match
-        if src_fields.contains(tgt_field) {
-            mapping.insert(
-                tgt_field.clone(),
-                serde_json::Value::String(format!("$.{}", tgt_field)),
-            );
-            continue;
+    let use_ai = if force_ai {
+        true
+    } else {
+        // Try to read stacker.yml to check ai.enabled
+        let project_dir = std::env::current_dir().unwrap_or_default();
+        let config_path = project_dir.join("stacker.yml");
+        if config_path.exists() {
+            crate::cli::config_parser::StackerConfig::from_file(&config_path)
+                .map(|c| c.ai.enabled)
+                .unwrap_or(false)
+        } else {
+            false
         }
+    };
 
-        // 2. Case-insensitive match
-        let tgt_lower = tgt_field.to_ascii_lowercase();
-        if let Some(src) = src_fields
-            .iter()
-            .find(|s| s.to_ascii_lowercase() == tgt_lower)
-        {
-            mapping.insert(
-                tgt_field.clone(),
-                serde_json::Value::String(format!("$.{}", src)),
-            );
-            continue;
-        }
+    if use_ai {
+        // Try to create AI matcher; fall back to deterministic on failure
+        let project_dir = std::env::current_dir().unwrap_or_default();
+        let config_path = project_dir.join("stacker.yml");
+        let ai_config = config_path
+            .exists()
+            .then(|| {
+                crate::cli::config_parser::StackerConfig::from_file(&config_path)
+                    .ok()
+                    .map(|c| c.ai)
+            })
+            .flatten();
 
-        // 3. Semantic alias match
-        let mut found_alias = false;
-        for (group_a, group_b) in FIELD_ALIASES {
-            if group_a.iter().any(|a| a.eq_ignore_ascii_case(tgt_field)) {
-                // Target matches this alias group — find a source field in the same group
-                if let Some(src) = src_fields
-                    .iter()
-                    .find(|sf| group_b.iter().any(|b| b.eq_ignore_ascii_case(sf)))
-                {
-                    mapping.insert(
-                        tgt_field.clone(),
-                        serde_json::Value::String(format!("$.{}", src)),
-                    );
-                    found_alias = true;
-                    break;
-                }
-            }
-        }
-        if found_alias {
-            continue;
-        }
-
-        // 4. Type-aware match using sample data (if available)
-        if let Some(sample) = source_sample {
-            if let Some(obj) = sample.as_object() {
-                // Find a source field with the same JSON type that hasn't been mapped yet
-                let mapped_sources: Vec<&str> = mapping
-                    .values()
-                    .filter_map(|v| v.as_str())
-                    .filter_map(|s| s.strip_prefix("$."))
-                    .collect();
-
-                // Try to match by suffix (e.g., target "user_id" matches source "author_id")
-                let tgt_suffix = tgt_field.rsplit('_').next().unwrap_or(tgt_field);
-                if let Some(src) = src_fields.iter().find(|sf| {
-                    !mapped_sources.contains(&sf.as_str())
-                        && sf.ends_with(tgt_suffix)
-                        && sf.as_str() != tgt_field.as_str()
-                        && obj.contains_key(sf.as_str())
-                }) {
-                    mapping.insert(
-                        tgt_field.clone(),
-                        serde_json::Value::String(format!("$.{}", src)),
+        if let Some(config) = ai_config {
+            match crate::cli::ai_field_matcher::AiFieldMatcher::new(&config) {
+                Ok(matcher) => return Box::new(matcher),
+                Err(e) => {
+                    eprintln!(
+                        "  ⚠ AI matcher unavailable ({}), falling back to deterministic",
+                        e
                     );
                 }
             }
+        } else if force_ai {
+            eprintln!("  ⚠ --ai flag set but no ai: config in stacker.yml, falling back to deterministic");
         }
     }
 
-    serde_json::Value::Object(mapping)
+    Box::new(DeterministicFieldMatcher)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1329,59 +1302,66 @@ impl CallableTrait for PipeReplayCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::field_matcher::{DeterministicFieldMatcher, FieldMatcher};
     use serde_json::json;
 
     #[test]
     fn test_smart_field_match_exact() {
+        let matcher = DeterministicFieldMatcher;
         let src = vec!["email".to_string(), "name".to_string(), "id".to_string()];
         let tgt = vec!["email".to_string(), "name".to_string()];
-        let result = smart_field_match(&src, &tgt, None);
-        let map = result.as_object().unwrap();
+        let result = matcher.match_fields(&src, &tgt, None);
+        let map = result.mapping.as_object().unwrap();
         assert_eq!(map["email"], "$.email");
         assert_eq!(map["name"], "$.name");
     }
 
     #[test]
     fn test_smart_field_match_case_insensitive() {
+        let matcher = DeterministicFieldMatcher;
         let src = vec!["Email".to_string(), "UserName".to_string()];
         let tgt = vec!["email".to_string(), "username".to_string()];
-        let result = smart_field_match(&src, &tgt, None);
-        let map = result.as_object().unwrap();
+        let result = matcher.match_fields(&src, &tgt, None);
+        let map = result.mapping.as_object().unwrap();
         assert_eq!(map["email"], "$.Email");
         assert_eq!(map["username"], "$.UserName");
     }
 
     #[test]
     fn test_smart_field_match_semantic_aliases() {
+        let matcher = DeterministicFieldMatcher;
         let src = vec!["user_email".to_string(), "display_name".to_string()];
         let tgt = vec!["email".to_string(), "name".to_string()];
-        let result = smart_field_match(&src, &tgt, None);
-        let map = result.as_object().unwrap();
+        let result = matcher.match_fields(&src, &tgt, None);
+        let map = result.mapping.as_object().unwrap();
         assert_eq!(map["email"], "$.user_email");
         assert_eq!(map["name"], "$.display_name");
     }
 
     #[test]
     fn test_smart_field_match_type_aware_suffix() {
+        let matcher = DeterministicFieldMatcher;
         let src = vec!["author_id".to_string(), "post_id".to_string()];
         let tgt = vec!["user_id".to_string()];
         let sample = json!({"author_id": 42, "post_id": 1});
-        let result = smart_field_match(&src, &tgt, Some(&sample));
-        let map = result.as_object().unwrap();
+        let result = matcher.match_fields(&src, &tgt, Some(&sample));
+        let map = result.mapping.as_object().unwrap();
         assert_eq!(map["user_id"], "$.author_id");
     }
 
     #[test]
     fn test_smart_field_match_no_matches() {
+        let matcher = DeterministicFieldMatcher;
         let src = vec!["foo".to_string()];
         let tgt = vec!["bar".to_string()];
-        let result = smart_field_match(&src, &tgt, None);
-        let map = result.as_object().unwrap();
+        let result = matcher.match_fields(&src, &tgt, None);
+        let map = result.mapping.as_object().unwrap();
         assert!(map.is_empty());
     }
 
     #[test]
     fn test_smart_field_match_mixed_strategies() {
+        let matcher = DeterministicFieldMatcher;
         let src = vec![
             "email".to_string(),
             "display_name".to_string(),
@@ -1393,8 +1373,8 @@ mod tests {
             "phone".to_string(),
             "unknown".to_string(),
         ];
-        let result = smart_field_match(&src, &tgt, None);
-        let map = result.as_object().unwrap();
+        let result = matcher.match_fields(&src, &tgt, None);
+        let map = result.mapping.as_object().unwrap();
         assert_eq!(map.len(), 3);
         assert_eq!(map["email"], "$.email");
         assert_eq!(map["name"], "$.display_name");

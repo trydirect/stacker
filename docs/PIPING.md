@@ -307,3 +307,68 @@ Agent reports result: {success, source_data, mapped_data, target_response}
 Server persists result in pipe_executions table
 Server increments trigger_count (and error_count if failed)
 ```
+
+## AI-Assisted Matching
+
+Stacker supports two field matching modes when creating pipes:
+
+### Deterministic Mode (default)
+The original 4-layer matching algorithm:
+1. **Exact match** — identical field names
+2. **Case-insensitive** — `Email` matches `email`
+3. **Semantic aliases** — `mail` matches `email` (from built-in alias groups)
+4. **Type-aware suffix** — `user_email` matches `email` (strips common prefixes)
+
+Always available, works offline, returns confidence=1.0 for all matches.
+
+### AI Mode
+Uses the configured LLM provider (OpenAI, Anthropic, or Ollama) for semantic matching:
+- Understands field semantics beyond string patterns (e.g., `wp_author_contact` → `subscriber_email`)
+- Returns per-field confidence scores (0.0–1.0)
+- Suggests field transformations (e.g., `concat($.first_name, ' ', $.last_name)` → `full_name`)
+- Proposes which pipe connections make sense between two apps
+- Falls back to deterministic matching if AI call fails
+
+### Mode Selection
+
+| Condition | Mode Used |
+|-----------|-----------|
+| `--no-ai` flag | Deterministic |
+| `--ai` flag | AI (error if not configured) |
+| `ai.enabled=true` in `stacker.yml` | AI |
+| No AI config | Deterministic |
+| `--manual` flag | No auto-matching (manual selection only) |
+
+### CLI Flags
+
+```bash
+# Use AI matching (requires ai: section in stacker.yml)
+stacker pipe create wordpress slack --ai
+
+# Force deterministic matching even if AI is configured
+stacker pipe create wordpress slack --no-ai
+
+# Skip auto-matching entirely
+stacker pipe create wordpress slack --manual
+```
+
+### Configuration
+
+AI matching uses the same `ai:` section in `stacker.yml` as other AI features:
+
+```yaml
+ai:
+  enabled: true
+  provider: openai    # openai | anthropic | ollama
+  model: gpt-4o
+  api_key: sk-...
+  # endpoint: http://localhost:11434  # for Ollama
+```
+
+When AI mode is active during pipe creation:
+1. Both apps are scanned for endpoints (unchanged)
+2. AI suggests which endpoint pairs to connect (ranked by confidence)
+3. User selects from AI suggestions or picks manually
+4. AI matches fields between selected endpoints with confidence scores
+5. User confirms or edits the mapping
+6. Matching metadata (mode, model, confidence, transformations) is stored in the template config

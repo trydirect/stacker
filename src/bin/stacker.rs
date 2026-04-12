@@ -571,9 +571,15 @@ enum PipeCommands {
         source: String,
         /// Target app code
         target: String,
-        /// Skip AI matching, manual selection only
+        /// Skip all auto-matching, manual selection only
         #[arg(long)]
         manual: bool,
+        /// Force AI-powered field matching (requires ai: config in stacker.yml)
+        #[arg(long, conflicts_with = "no_ai")]
+        ai: bool,
+        /// Force deterministic field matching (disable AI even if configured)
+        #[arg(long, conflicts_with = "ai")]
+        no_ai: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1231,10 +1237,12 @@ fn get_command(
                     source,
                     target,
                     manual,
+                    ai,
+                    no_ai,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeCreateCommand::new(
-                    source, target, manual, json, deployment,
+                    source, target, manual, ai, no_ai, json, deployment,
                 )),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))

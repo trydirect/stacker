@@ -98,11 +98,11 @@ async fn test_agent_command_flow() {
         serde_json::to_string_pretty(&register_result).unwrap()
     );
 
-    let agent_id = register_result["item"]["agent_id"]
+    let agent_id = register_result["data"]["item"]["agent_id"]
         .as_str()
         .expect("Missing agent_id")
         .to_string();
-    let agent_token = register_result["item"]["agent_token"]
+    let agent_token = register_result["data"]["item"]["agent_token"]
         .as_str()
         .expect("Missing agent_token")
         .to_string();
@@ -209,6 +209,7 @@ async fn test_agent_command_flow() {
         "command_id": command_id,
         "deployment_hash": deployment_hash,
         "status": "completed",
+        "executed_by": "compose_agent",
         "started_at": Utc::now(),
         "completed_at": Utc::now(),
         "result": {
@@ -248,8 +249,21 @@ async fn test_agent_command_flow() {
         serde_json::to_string_pretty(&report_result).unwrap()
     );
 
-    // Verify command was marked as completed
-    // (Would need to add a GET command endpoint to verify, but check the response for now)
+    let stored_metadata: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT metadata FROM commands WHERE command_id = $1")
+            .bind(&command_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch command metadata");
+
+    assert_eq!(
+        stored_metadata
+            .as_ref()
+            .and_then(|value| value.get("executed_by"))
+            .and_then(|value| value.as_str()),
+        Some("compose_agent")
+    );
+
     println!("\n=== Test Completed Successfully ===");
 }
 

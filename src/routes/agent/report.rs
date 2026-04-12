@@ -14,6 +14,8 @@ pub struct CommandCompletedEvent {
     pub deployment_hash: String,
     pub command_type: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executed_by: Option<String>,
     pub has_result: bool,
     pub has_error: bool,
     pub agent_id: uuid::Uuid,
@@ -34,6 +36,8 @@ pub struct CommandReportRequest {
     #[allow(dead_code)]
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub completed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub executed_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -143,13 +147,19 @@ pub async fn report_handler(
         result_payload = Some(json!({ "status": payload.status.clone() }));
     }
 
+    let metadata_patch = payload
+        .executed_by
+        .as_ref()
+        .map(|executed_by| json!({ "executed_by": executed_by }));
+
     // Update command in database with result
-    match db::command::update_result(
+    match db::command::update_result_with_metadata(
         agent_pool.as_ref(),
         &payload.command_id,
         &status,
         result_payload.clone(),
         error_payload.clone(),
+        metadata_patch.clone(),
     )
     .await
     {
@@ -284,6 +294,7 @@ pub async fn report_handler(
                 "has_result": result_payload.is_some(),
                 "has_error": error_payload.is_some(),
                 "reported_status": payload.status,
+                "executed_by": payload.executed_by,
             }));
 
             let _ = db::agent::log_audit(agent_pool.as_ref(), audit_log).await;
@@ -294,6 +305,7 @@ pub async fn report_handler(
                 deployment_hash: payload.deployment_hash.clone(),
                 command_type: command.r#type.clone(),
                 status: status.to_string(),
+                executed_by: payload.executed_by.clone(),
                 has_result: result_payload.is_some(),
                 has_error: error_payload.is_some(),
                 agent_id: agent.id,
