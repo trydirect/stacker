@@ -3,7 +3,9 @@ use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::{StackerClient, DEFAULT_STACKER_URL};
 use crate::console::commands::CallableTrait;
-use crate::handoff::{DeploymentHandoffCredentials, DeploymentHandoffPayload, DeploymentHandoffProject};
+use crate::handoff::{
+    DeploymentHandoffCredentials, DeploymentHandoffPayload, DeploymentHandoffProject,
+};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
@@ -26,7 +28,9 @@ impl CallableTrait for ConnectCommand {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+            })?;
         let payload = rt.block_on(StackerClient::resolve_handoff(&base_url, &token))?;
 
         hydrate_project_dir(std::env::current_dir()?.as_path(), &payload)?;
@@ -83,7 +87,10 @@ fn extract_handoff_token(input: &str) -> Result<String, CliError> {
     Ok(trimmed.to_string())
 }
 
-fn hydrate_project_dir(project_dir: &Path, payload: &DeploymentHandoffPayload) -> Result<(), CliError> {
+fn hydrate_project_dir(
+    project_dir: &Path,
+    payload: &DeploymentHandoffPayload,
+) -> Result<(), CliError> {
     let lock: DeploymentLock = serde_json::from_value(payload.lockfile.clone()).map_err(|e| {
         CliError::ConfigValidation(format!("Invalid deployment lock in handoff payload: {}", e))
     })?;
@@ -91,10 +98,9 @@ fn hydrate_project_dir(project_dir: &Path, payload: &DeploymentHandoffPayload) -
 
     let stacker_yml_path = project_dir.join(DEFAULT_STACKER_YML);
     if !stacker_yml_path.exists() {
-        let contents = payload
-            .stacker_yml
-            .clone()
-            .unwrap_or_else(|| render_default_stacker_yml(&payload.project, &payload.deployment.hash));
+        let contents = payload.stacker_yml.clone().unwrap_or_else(|| {
+            render_default_stacker_yml(&payload.project, &payload.deployment.hash)
+        });
         std::fs::write(&stacker_yml_path, contents).map_err(CliError::Io)?;
     }
 

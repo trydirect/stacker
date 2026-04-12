@@ -4,6 +4,7 @@ use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, ProjectApp};
 use actix_web::{get, web, Responder, Result};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Default)]
 pub struct SnapshotResponse {
@@ -15,11 +16,13 @@ pub struct SnapshotResponse {
 
 #[derive(Debug, Serialize, Default)]
 pub struct AgentSnapshot {
+    pub id: Option<Uuid>,
     pub version: Option<String>,
     pub capabilities: Option<serde_json::Value>,
     pub system_info: Option<serde_json::Value>,
     pub status: Option<String>,
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+    pub deployment_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -164,11 +167,13 @@ pub async fn snapshot_handler(
             None => "offline".to_string(), // Never had a heartbeat
         };
         AgentSnapshot {
+            id: Some(a.id),
             version: a.version,
             capabilities: a.capabilities,
             system_info: a.system_info,
             status: Some(effective_status),
             last_heartbeat: a.last_heartbeat,
+            deployment_hash: Some(a.deployment_hash),
         }
     });
     tracing::debug!("[SNAPSHOT HANDLER] Agent Snapshot : {:?}", agent_snapshot);

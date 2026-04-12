@@ -1,24 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Shared server/CLI contract for resuming management of an existing deployment.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeploymentHandoffPayload {
-    pub version: String,
-    pub expires_at: DateTime<Utc>,
-    pub project: DeploymentHandoffProject,
-    pub deployment: DeploymentHandoffDeployment,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub server: Option<DeploymentHandoffServerContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloud: Option<DeploymentHandoffCloudContext>,
-    pub lockfile: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stacker_yml: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent: Option<DeploymentHandoffAgentContext>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentHandoffProject {
     pub id: i32,
