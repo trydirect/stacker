@@ -1,9 +1,11 @@
 use crate::db;
+use crate::connectors::{MarketplaceWebhookSender, WebhookSenderConfig};
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
+use tracing::Instrument;
 use uuid;
 
 fn build_vendor_profile_status_item(
@@ -275,6 +277,43 @@ pub async fn submit_handler(
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     if submitted {
+        let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+            })?
+            .ok_or_else(|| {
+                JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+            })?;
+
+        let template_clone = template.clone();
+        tokio::spawn(async move {
+            match WebhookSenderConfig::from_env() {
+                Ok(config) => {
+                    let sender = MarketplaceWebhookSender::new(config);
+                    let span = tracing::info_span!(
+                        "send_submit_webhook",
+                        template_id = %template_clone.id
+                    );
+
+                    if let Err(e) = sender
+                        .send_template_submitted(
+                            &template_clone,
+                            &template_clone.creator_user_id,
+                            template_clone.category_code.clone(),
+                        )
+                        .instrument(span)
+                        .await
+                    {
+                        tracing::warn!("Failed to send template submitted webhook: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Webhook sender config not available: {}", e);
+                }
+            }
+        });
+
         Ok(JsonResponse::<serde_json::Value>::build().ok("Submitted"))
     } else {
         Err(JsonResponse::<serde_json::Value>::build().bad_request("Invalid status"))
@@ -330,6 +369,37 @@ pub async fn resubmit_handler(
         "template_id": id,
         "version": version,
         "status": "submitted"
+    });
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+
+    let template_clone = template.clone();
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span =
+                    tracing::info_span!("send_resubmit_webhook", template_id = %template_clone.id);
+
+                if let Err(e) = sender
+                    .send_template_submitted(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        template_clone.category_code.clone(),
+                    )
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send template resubmitted webhook: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+            }
+        }
     });
 
     Ok(JsonResponse::<serde_json::Value>::build()

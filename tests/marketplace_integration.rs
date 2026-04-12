@@ -167,6 +167,9 @@ fn test_webhook_payload_for_template_approval() {
         view_count: Some(100),
         approved_at: Some("2026-02-11T00:00:00Z".to_string()),
         required_plan_name: None,
+        review_reason: None,
+        next_action_hint: None,
+        vendor_email: None,
         infrastructure_requirements: Some(serde_json::json!({
             "supported_clouds": ["hetzner"],
             "min_ram_mb": 2048
@@ -215,6 +218,9 @@ fn test_webhook_payload_for_template_update_price() {
         view_count: None,
         approved_at: None,
         required_plan_name: None,
+        review_reason: None,
+        next_action_hint: None,
+        vendor_email: None,
         infrastructure_requirements: Some(serde_json::json!({
             "supported_os": ["ubuntu-22.04"],
             "min_disk_gb": 20
@@ -258,6 +264,9 @@ fn test_webhook_payload_for_template_rejection() {
         view_count: None,
         approved_at: None,
         required_plan_name: None,
+        review_reason: None,
+        next_action_hint: None,
+        vendor_email: None,
         infrastructure_requirements: None,
     };
 
@@ -265,6 +274,49 @@ fn test_webhook_payload_for_template_rejection() {
     // Rejection payload should be minimal
     assert!(payload.code.is_none());
     assert!(payload.price.is_none());
+}
+
+/// Test webhook payload for template update-required notification.
+#[test]
+fn test_webhook_payload_for_template_needs_changes() {
+    let template_id = Uuid::new_v4().to_string();
+
+    let payload = MarketplaceWebhookPayload {
+        action: "template_needs_changes".to_string(),
+        stack_template_id: template_id.clone(),
+        external_id: template_id,
+        code: Some("ai-agent-stack-pro".to_string()),
+        name: Some("AI Agent Stack Pro".to_string()),
+        description: Some("Advanced AI agent stack".to_string()),
+        price: Some(99.99),
+        billing_cycle: Some("one_time".to_string()),
+        currency: Some("USD".to_string()),
+        vendor_user_id: Some("456".to_string()),
+        vendor_name: Some("Vendor Example".to_string()),
+        category: Some("AI Agents".to_string()),
+        tags: Some(serde_json::json!(["ai", "agents"])),
+        long_description: Some("Long description".to_string()),
+        tech_stack: Some(serde_json::json!({"apps": ["n8n"]})),
+        creator_name: Some("Vendor Example".to_string()),
+        deploy_count: Some(10),
+        view_count: Some(25),
+        approved_at: None,
+        required_plan_name: None,
+        review_reason: Some("Please document bare metal prerequisites.".to_string()),
+        next_action_hint: Some(
+            "Update the template based on the review feedback and resubmit it for review."
+                .to_string(),
+        ),
+        vendor_email: None,
+        infrastructure_requirements: Some(serde_json::json!({"min_ram_mb": 2048})),
+    };
+
+    assert_eq!(payload.action, "template_needs_changes");
+    assert_eq!(
+        payload.review_reason,
+        Some("Please document bare metal prerequisites.".to_string())
+    );
+    assert_eq!(payload.vendor_user_id, Some("456".to_string()));
 }
 
 /// Test complete deployment validation flow with connector

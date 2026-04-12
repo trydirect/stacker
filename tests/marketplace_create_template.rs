@@ -2,6 +2,9 @@ mod common;
 
 use reqwest::{Client, Response, StatusCode};
 use serde_json::{json, Value};
+use std::sync::{Mutex, OnceLock};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn create_template(
     client: &Client,
@@ -47,6 +50,34 @@ async fn list_my_templates(client: &Client, address: &str, token: &str) -> Value
         .json()
         .await
         .expect("Templates response should be valid JSON")
+}
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[tokio::test]
@@ -244,4 +275,71 @@ async fn update_template_persists_infrastructure_requirements() {
         }),
         template["infrastructure_requirements"]
     );
+}
+
+#[tokio::test]
+async fn submit_template_sends_template_submitted_webhook() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+    let _user_service_base_url = EnvGuard::set("USER_SERVICE_BASE_URL", &mock_user_service.uri());
+    let _stacker_service_token = EnvGuard::set("STACKER_SERVICE_TOKEN", "stacker-test-token");
+
+    Mock::given(method("POST"))
+        .and(path("/marketplace/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "message": "ok",
+            "product_id": null
+        })))
+        .mount(&mock_user_service)
+        .await;
+
+    let create_response = create_template(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        "Submit Notification Template",
+        "submit-notification-template",
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id");
+
+    let submit_response = client
+        .post(format!("{}/api/templates/{}/submit", app.address, template_id))
+        .bearer_auth("test-bearer-token")
+        .send()
+        .await
+        .expect("Failed to submit template for review");
+    assert_eq!(StatusCode::OK, submit_response.status());
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let requests = mock_user_service
+        .received_requests()
+        .await
+        .expect("Should capture webhook request");
+    let webhook_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/marketplace/sync")
+        .expect("Submit should send marketplace webhook");
+    let payload: Value =
+        serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
+
+    assert_eq!("template_submitted", payload["action"]);
+    assert_eq!(template_id, payload["stack_template_id"]);
+    assert_eq!("submit-notification-template", payload["code"]);
 }

@@ -133,7 +133,7 @@ pub async fn approve_handler(
                     tracing::info_span!("send_approval_webhook", template_id = %template_clone.id);
 
                 if let Err(e) = sender
-                    .send_template_approved(
+                    .send_template_published(
                         &template_clone,
                         &template_clone.creator_user_id,
                         template_clone.category_code.clone(),
@@ -181,18 +181,35 @@ pub async fn reject_handler(
         return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
     }
 
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch template for rejection webhook: {:?}", err);
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+        })?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
     // Send webhook asynchronously (non-blocking)
     // Don't fail the rejection if webhook send fails - template is already rejected
-    let template_id = id.to_string();
+    let template_clone = template.clone();
+    let review_reason = req.reason.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
                 let sender = MarketplaceWebhookSender::new(config);
-                let span =
-                    tracing::info_span!("send_rejection_webhook", template_id = %template_id);
+                let span = tracing::info_span!(
+                    "send_rejection_webhook",
+                    template_id = %template_clone.id
+                );
 
                 if let Err(e) = sender
-                    .send_template_rejected(&template_id)
+                    .send_template_review_rejected(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        review_reason.as_deref(),
+                    )
                     .instrument(span)
                     .await
                 {
@@ -250,6 +267,36 @@ pub async fn needs_changes_handler(
         return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
     }
 
+    let template_clone = template.clone();
+    let review_reason = req.reason.clone();
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span = tracing::info_span!(
+                    "send_needs_changes_webhook",
+                    template_id = %template_clone.id
+                );
+
+                if let Err(e) = sender
+                    .send_template_needs_changes(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        review_reason.as_deref(),
+                        "Update the template based on the review feedback and resubmit it for review.",
+                    )
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send template needs-changes webhook: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+            }
+        }
+    });
+
     Ok(JsonResponse::<serde_json::Value>::build().ok("Needs changes requested"))
 }
 
@@ -280,17 +327,32 @@ pub async fn unapprove_handler(
             .bad_request("Template is not approved or not found"));
     }
 
-    // Send webhook to remove from marketplace (same as rejection - deactivates product)
-    let template_id = id.to_string();
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch template for unpublish webhook: {:?}", err);
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+        })?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    // Send webhook to unpublish from marketplace while preserving subscription state
+    let template_clone = template.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
                 let sender = MarketplaceWebhookSender::new(config);
-                let span =
-                    tracing::info_span!("send_unapproval_webhook", template_id = %template_id);
+                let span = tracing::info_span!(
+                    "send_unapproval_webhook",
+                    template_id = %template_clone.id
+                );
 
                 if let Err(e) = sender
-                    .send_template_rejected(&template_id)
+                    .send_template_unpublished(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                    )
                     .instrument(span)
                     .await
                 {
