@@ -265,14 +265,17 @@ pub async fn run(
                                     .service(
                                         crate::routes::marketplace::admin::list_submitted_handler,
                                     )
-                                    .service(crate::routes::marketplace::admin::detail_handler)
-                                    .service(crate::routes::marketplace::admin::approve_handler)
-                                    .service(crate::routes::marketplace::admin::reject_handler)
-                                    .service(crate::routes::marketplace::admin::unapprove_handler)
-                                    .service(crate::routes::marketplace::admin::security_scan_handler)
-                                    .service(crate::routes::marketplace::admin::pricing_handler)
-                                    .service(crate::routes::marketplace::admin::update_verifications_handler)
-                                    .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
+                                     .service(crate::routes::marketplace::admin::detail_handler)
+                                     .service(crate::routes::marketplace::admin::approve_handler)
+                                     .service(crate::routes::marketplace::admin::reject_handler)
+                                     .service(
+                                         crate::routes::marketplace::admin::needs_changes_handler,
+                                     )
+                                     .service(crate::routes::marketplace::admin::unapprove_handler)
+                                     .service(crate::routes::marketplace::admin::security_scan_handler)
+                                     .service(crate::routes::marketplace::admin::pricing_handler)
+                                     .service(crate::routes::marketplace::admin::update_verifications_handler)
+                                     .service(crate::routes::marketplace::admin::update_vendor_profile_handler),
                              )
                              .service(
                                  web::scope("/marketplace")
