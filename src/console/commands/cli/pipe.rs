@@ -180,6 +180,7 @@ fn print_command_result(info: &AgentCommandInfo, json_output: bool) {
 pub struct PipeScanCommand {
     pub app: String,
     pub protocols: Vec<String>,
+    pub capture_samples: bool,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -188,12 +189,14 @@ impl PipeScanCommand {
     pub fn new(
         app: String,
         protocols: Vec<String>,
+        capture_samples: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
         Self {
             app,
             protocols,
+            capture_samples,
             json,
             deployment,
         }
@@ -216,6 +219,7 @@ impl CallableTrait for PipeScanCommand {
             container: None,
             protocols,
             probe_timeout: 5,
+            capture_samples: self.capture_samples,
         };
 
         let request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
@@ -308,6 +312,16 @@ fn print_scan_result(info: &AgentCommandInfo) {
                     if !fields.is_empty() {
                         println!("           fields: [{}]", fields);
                     }
+                    if let Some(sample) = op.get("sample_response") {
+                        if !sample.is_null() {
+                            let sample_str = serde_json::to_string(sample).unwrap_or_default();
+                            if sample_str.len() > 120 {
+                                println!("           sample: {}...", &sample_str[..117]);
+                            } else {
+                                println!("           sample: {}", sample_str);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -371,8 +385,11 @@ impl PipeCreateCommand {
     }
 }
 
-/// Extract operations from a probe result as a flat list of (method, path, summary, fields).
-fn extract_operations(info: &AgentCommandInfo) -> Vec<(String, String, String, Vec<String>)> {
+/// Extract operations from a probe result as a flat list of
+/// (method, path, summary, fields, sample_response).
+fn extract_operations(
+    info: &AgentCommandInfo,
+) -> Vec<(String, String, String, Vec<String>, Option<serde_json::Value>)> {
     let mut ops = Vec::new();
     if let Some(ref result) = info.result {
         if let Some(endpoints) = result["endpoints"].as_array() {
@@ -395,7 +412,10 @@ fn extract_operations(info: &AgentCommandInfo) -> Vec<(String, String, String, V
                                     .collect()
                             })
                             .unwrap_or_default();
-                        ops.push((method, path, summary, fields));
+                        let sample = op.get("sample_response")
+                            .filter(|v| !v.is_null())
+                            .cloned();
+                        ops.push((method, path, summary, fields, sample));
                     }
                 }
             }
@@ -424,6 +444,7 @@ impl CallableTrait for PipeCreateCommand {
                 "rest".to_string(),
             ],
             probe_timeout: 5,
+            capture_samples: true,
         };
 
         let source_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
@@ -442,6 +463,7 @@ impl CallableTrait for PipeCreateCommand {
             container: None,
             protocols: vec!["openapi".to_string(), "rest".to_string()],
             probe_timeout: 5,
+            capture_samples: true,
         };
 
         let target_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
@@ -482,7 +504,7 @@ impl CallableTrait for PipeCreateCommand {
         // Step 3: Let user select source endpoint
         let source_labels: Vec<String> = source_ops
             .iter()
-            .map(|(m, p, s, _)| {
+            .map(|(m, p, s, _, _)| {
                 if s.is_empty() {
                     format!("{:>6} {}", m, p)
                 } else {
@@ -497,12 +519,12 @@ impl CallableTrait for PipeCreateCommand {
             .default(0)
             .interact()?;
 
-        let (ref src_method, ref src_path, _, ref src_fields) = source_ops[source_idx];
+        let (ref src_method, ref src_path, _, ref src_fields, ref src_sample) = source_ops[source_idx];
 
         // Step 4: Let user select target endpoint
         let target_labels: Vec<String> = target_ops
             .iter()
-            .map(|(m, p, s, _)| {
+            .map(|(m, p, s, _, _)| {
                 if s.is_empty() {
                     format!("{:>6} {}", m, p)
                 } else {
@@ -517,46 +539,57 @@ impl CallableTrait for PipeCreateCommand {
             .default(0)
             .interact()?;
 
-        let (ref tgt_method, ref tgt_path, _, ref tgt_fields) = target_ops[target_idx];
+        let (ref tgt_method, ref tgt_path, _, ref tgt_fields, ref _tgt_sample) = target_ops[target_idx];
 
-        // Step 5: Build field mapping
+        // Step 5: Build field mapping (smart matching with sample data)
         let field_mapping = if !self.manual && !src_fields.is_empty() && !tgt_fields.is_empty() {
-            // Auto-suggest mapping by matching field names
             println!("\n  Auto-matching fields (source → target):");
-            let mut mapping = serde_json::Map::new();
-            for tgt_field in tgt_fields {
-                // Direct name match
-                if src_fields.contains(tgt_field) {
-                    println!("    {} → {} ✓", tgt_field, tgt_field);
-                    mapping.insert(
-                        tgt_field.clone(),
-                        serde_json::Value::String(format!("$.{}", tgt_field)),
-                    );
-                }
+            let mapping = smart_field_match(src_fields, tgt_fields, src_sample.as_ref());
+
+            let matched: Vec<String> = mapping
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| {
+                            let src = v.as_str().unwrap_or("?");
+                            format!("    {} ← {} ✓", k, src)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            for line in &matched {
+                println!("{}", line);
             }
 
             // Show unmatched target fields
+            let matched_keys: Vec<&str> = mapping
+                .as_object()
+                .map(|m| m.keys().map(|k| k.as_str()).collect())
+                .unwrap_or_default();
             let unmatched: Vec<&String> = tgt_fields
                 .iter()
-                .filter(|f| !mapping.contains_key(*f))
+                .filter(|f| !matched_keys.contains(&f.as_str()))
                 .collect();
             if !unmatched.is_empty() {
                 println!("    Unmatched target fields: {}", unmatched.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
                 println!("    (You can edit the field mapping later via the API)");
             }
 
-            if mapping.is_empty() {
+            if matched_keys.is_empty() {
                 // No auto-matches — create pass-through
                 println!("    No auto-matches found. Creating pass-through mapping.");
+                let mut pass = serde_json::Map::new();
                 for sf in src_fields {
-                    mapping.insert(
+                    pass.insert(
                         sf.clone(),
                         serde_json::Value::String(format!("$.{}", sf)),
                     );
                 }
+                serde_json::Value::Object(pass)
+            } else {
+                mapping
             }
-
-            serde_json::Value::Object(mapping)
         } else {
             // Manual mode or no fields discovered
             println!("\n  No field auto-matching available. Creating identity mapping.");
@@ -726,6 +759,104 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         format!("{}…", &s[..max - 1])
     }
+}
+
+/// Common semantic aliases for field name matching.
+/// Maps target field name patterns to source field name patterns.
+const FIELD_ALIASES: &[(&[&str], &[&str])] = &[
+    (&["email", "user_email", "mail", "email_address"], &["email", "user_email", "mail", "email_address"]),
+    (&["name", "display_name", "full_name", "username"], &["name", "display_name", "full_name", "username"]),
+    (&["first_name", "fname", "given_name"], &["first_name", "fname", "given_name"]),
+    (&["last_name", "lname", "family_name", "surname"], &["last_name", "lname", "family_name", "surname"]),
+    (&["phone", "phone_number", "tel", "telephone"], &["phone", "phone_number", "tel", "telephone"]),
+    (&["address", "street", "street_address"], &["address", "street", "street_address"]),
+    (&["city", "town"], &["city", "town"]),
+    (&["country", "country_code"], &["country", "country_code"]),
+    (&["title", "subject", "heading"], &["title", "subject", "heading"]),
+    (&["body", "content", "text", "description", "message"], &["body", "content", "text", "description", "message"]),
+    (&["url", "link", "href", "website"], &["url", "link", "href", "website"]),
+    (&["id", "identifier"], &["id", "identifier"]),
+    (&["created_at", "created", "date_created"], &["created_at", "created", "date_created"]),
+    (&["updated_at", "updated", "date_updated", "modified"], &["updated_at", "updated", "date_updated", "modified"]),
+];
+
+/// Smart field matching: exact name → case-insensitive → semantic aliases → type-aware.
+fn smart_field_match(
+    src_fields: &[String],
+    tgt_fields: &[String],
+    source_sample: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut mapping = serde_json::Map::new();
+
+    for tgt_field in tgt_fields {
+        // 1. Exact name match
+        if src_fields.contains(tgt_field) {
+            mapping.insert(
+                tgt_field.clone(),
+                serde_json::Value::String(format!("$.{}", tgt_field)),
+            );
+            continue;
+        }
+
+        // 2. Case-insensitive match
+        let tgt_lower = tgt_field.to_ascii_lowercase();
+        if let Some(src) = src_fields.iter().find(|s| s.to_ascii_lowercase() == tgt_lower) {
+            mapping.insert(
+                tgt_field.clone(),
+                serde_json::Value::String(format!("$.{}", src)),
+            );
+            continue;
+        }
+
+        // 3. Semantic alias match
+        let mut found_alias = false;
+        for (group_a, group_b) in FIELD_ALIASES {
+            if group_a.iter().any(|a| a.eq_ignore_ascii_case(tgt_field)) {
+                // Target matches this alias group — find a source field in the same group
+                if let Some(src) = src_fields.iter().find(|sf| {
+                    group_b.iter().any(|b| b.eq_ignore_ascii_case(sf))
+                }) {
+                    mapping.insert(
+                        tgt_field.clone(),
+                        serde_json::Value::String(format!("$.{}", src)),
+                    );
+                    found_alias = true;
+                    break;
+                }
+            }
+        }
+        if found_alias {
+            continue;
+        }
+
+        // 4. Type-aware match using sample data (if available)
+        if let Some(sample) = source_sample {
+            if let Some(obj) = sample.as_object() {
+                // Find a source field with the same JSON type that hasn't been mapped yet
+                let mapped_sources: Vec<&str> = mapping
+                    .values()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| s.strip_prefix("$."))
+                    .collect();
+
+                // Try to match by suffix (e.g., target "user_id" matches source "author_id")
+                let tgt_suffix = tgt_field.rsplit('_').next().unwrap_or(tgt_field);
+                if let Some(src) = src_fields.iter().find(|sf| {
+                    !mapped_sources.contains(&sf.as_str())
+                        && sf.ends_with(tgt_suffix)
+                        && sf.as_str() != tgt_field.as_str()
+                        && obj.contains_key(sf.as_str())
+                }) {
+                    mapping.insert(
+                        tgt_field.clone(),
+                        serde_json::Value::String(format!("$.{}", src)),
+                    );
+                }
+            }
+        }
+    }
+
+    serde_json::Value::Object(mapping)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -946,5 +1077,207 @@ impl CallableTrait for PipeTriggerCommand {
         }
 
         Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe history — show execution history
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct PipeHistoryCommand {
+    pub instance_id: String,
+    pub limit: i64,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeHistoryCommand {
+    pub fn new(instance_id: String, limit: i64, json: bool, deployment: Option<String>) -> Self {
+        Self { instance_id, limit, json, deployment }
+    }
+}
+
+impl CallableTrait for PipeHistoryCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("pipe history")?;
+        let _hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let pb = progress::spinner("Fetching execution history...");
+        let executions = ctx.block_on(
+            ctx.client.list_pipe_executions(&self.instance_id, self.limit, 0)
+        ).map_err(|e| {
+            progress::finish_error(&pb, "Failed to fetch history");
+            e
+        })?;
+        progress::finish_success(&pb, &format!("{} execution(s) found", executions.len()));
+
+        if executions.is_empty() {
+            println!("No executions recorded for pipe instance '{}'.", self.instance_id);
+            println!("Use 'stacker pipe trigger {}' to execute the pipe.", self.instance_id);
+            return Ok(());
+        }
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&executions)?);
+            return Ok(());
+        }
+
+        println!(
+            "\n{:<38} {:<10} {:<10} {:>10} {:<22} {}",
+            "EXECUTION ID", "TRIGGER", "STATUS", "DURATION", "STARTED", "ERROR"
+        );
+        println!("{}", "─".repeat(110));
+
+        for exec in &executions {
+            let status_icon = match exec.status.as_str() {
+                "success" => "✓ success",
+                "failed" => "✗ failed",
+                "running" => "⟳ running",
+                _ => &exec.status,
+            };
+            let duration = exec.duration_ms
+                .map(|ms| format!("{}ms", ms))
+                .unwrap_or_else(|| "-".to_string());
+            let error = exec.error.as_deref().unwrap_or("");
+
+            println!(
+                "{:<38} {:<10} {:<10} {:>10} {:<22} {}",
+                &exec.id,
+                truncate_str(&exec.trigger_type, 9),
+                status_icon,
+                duration,
+                truncate_str(&exec.started_at, 21),
+                truncate_str(error, 30),
+            );
+        }
+
+        println!("\n{} execution(s) shown.", executions.len());
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// stacker pipe replay — replay a previous execution
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct PipeReplayCommand {
+    pub execution_id: String,
+    pub json: bool,
+    pub deployment: Option<String>,
+}
+
+impl PipeReplayCommand {
+    pub fn new(execution_id: String, json: bool, deployment: Option<String>) -> Self {
+        Self { execution_id, json, deployment }
+    }
+}
+
+impl CallableTrait for PipeReplayCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("pipe replay")?;
+        let _hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        let pb = progress::spinner(&format!("Replaying execution {}...", &self.execution_id));
+        let replay = ctx.block_on(
+            ctx.client.replay_pipe_execution(&self.execution_id)
+        ).map_err(|e| {
+            progress::finish_error(&pb, "Replay failed");
+            e
+        })?;
+        progress::finish_success(&pb, "Replay initiated");
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&replay)?);
+            return Ok(());
+        }
+
+        println!("\n  Replay execution: {}", replay.execution_id);
+        println!("  Replaying from:   {}", replay.replay_of);
+        if let Some(ref cmd_id) = replay.command_id {
+            println!("  Command ID:       {}", cmd_id);
+            println!("\n  Replay enqueued. Use 'stacker pipe history' to check results.");
+        } else {
+            println!("  Status:           {}", replay.status);
+            println!("  (command not enqueued — check server logs)");
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_smart_field_match_exact() {
+        let src = vec!["email".to_string(), "name".to_string(), "id".to_string()];
+        let tgt = vec!["email".to_string(), "name".to_string()];
+        let result = smart_field_match(&src, &tgt, None);
+        let map = result.as_object().unwrap();
+        assert_eq!(map["email"], "$.email");
+        assert_eq!(map["name"], "$.name");
+    }
+
+    #[test]
+    fn test_smart_field_match_case_insensitive() {
+        let src = vec!["Email".to_string(), "UserName".to_string()];
+        let tgt = vec!["email".to_string(), "username".to_string()];
+        let result = smart_field_match(&src, &tgt, None);
+        let map = result.as_object().unwrap();
+        assert_eq!(map["email"], "$.Email");
+        assert_eq!(map["username"], "$.UserName");
+    }
+
+    #[test]
+    fn test_smart_field_match_semantic_aliases() {
+        let src = vec!["user_email".to_string(), "display_name".to_string()];
+        let tgt = vec!["email".to_string(), "name".to_string()];
+        let result = smart_field_match(&src, &tgt, None);
+        let map = result.as_object().unwrap();
+        assert_eq!(map["email"], "$.user_email");
+        assert_eq!(map["name"], "$.display_name");
+    }
+
+    #[test]
+    fn test_smart_field_match_type_aware_suffix() {
+        let src = vec!["author_id".to_string(), "post_id".to_string()];
+        let tgt = vec!["user_id".to_string()];
+        let sample = json!({"author_id": 42, "post_id": 1});
+        let result = smart_field_match(&src, &tgt, Some(&sample));
+        let map = result.as_object().unwrap();
+        assert_eq!(map["user_id"], "$.author_id");
+    }
+
+    #[test]
+    fn test_smart_field_match_no_matches() {
+        let src = vec!["foo".to_string()];
+        let tgt = vec!["bar".to_string()];
+        let result = smart_field_match(&src, &tgt, None);
+        let map = result.as_object().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_smart_field_match_mixed_strategies() {
+        let src = vec![
+            "email".to_string(),
+            "display_name".to_string(),
+            "Phone".to_string(),
+        ];
+        let tgt = vec![
+            "email".to_string(),
+            "name".to_string(),
+            "phone".to_string(),
+            "unknown".to_string(),
+        ];
+        let result = smart_field_match(&src, &tgt, None);
+        let map = result.as_object().unwrap();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map["email"], "$.email");
+        assert_eq!(map["name"], "$.display_name");
+        assert_eq!(map["phone"], "$.Phone");
+        assert!(!map.contains_key("unknown"));
     }
 }

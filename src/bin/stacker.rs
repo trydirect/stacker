@@ -549,6 +549,9 @@ enum PipeCommands {
         /// Protocols to probe (default: openapi,rest)
         #[arg(long, value_delimiter = ',')]
         protocols: Vec<String>,
+        /// Capture sample responses from discovered endpoints
+        #[arg(long)]
+        capture_samples: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -616,6 +619,31 @@ enum PipeCommands {
         /// Optional JSON input data to feed into the pipe
         #[arg(long)]
         data: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Show execution history for a pipe instance
+    History {
+        /// Pipe instance ID (UUID)
+        instance_id: String,
+        /// Maximum number of executions to show
+        #[arg(long, default_value = "20")]
+        limit: i64,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Replay a previous pipe execution using its original input data
+    Replay {
+        /// Execution ID (UUID) to replay
+        execution_id: String,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1167,8 +1195,8 @@ fn get_command(
         StackerCommands::Pipe { command: pipe_cmd } => {
             use stacker::console::commands::cli::pipe;
             match pipe_cmd {
-                PipeCommands::Scan { app, protocols, json, deployment } => Box::new(
-                    pipe::PipeScanCommand::new(app, protocols, json, deployment),
+                PipeCommands::Scan { app, protocols, capture_samples, json, deployment } => Box::new(
+                    pipe::PipeScanCommand::new(app, protocols, capture_samples, json, deployment),
                 ),
                 PipeCommands::Create { source, target, manual, json, deployment } => Box::new(
                     pipe::PipeCreateCommand::new(source, target, manual, json, deployment),
@@ -1184,6 +1212,12 @@ fn get_command(
                 ),
                 PipeCommands::Trigger { pipe_id, data, json, deployment } => Box::new(
                     pipe::PipeTriggerCommand::new(pipe_id, data, json, deployment),
+                ),
+                PipeCommands::History { instance_id, limit, json, deployment } => Box::new(
+                    pipe::PipeHistoryCommand::new(instance_id, limit, json, deployment),
+                ),
+                PipeCommands::Replay { execution_id, json, deployment } => Box::new(
+                    pipe::PipeReplayCommand::new(execution_id, json, deployment),
                 ),
             }
         },

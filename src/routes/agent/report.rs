@@ -1,4 +1,4 @@
-use crate::{db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models};
+use crate::{db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models, models::pipe::PipeExecution};
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -216,6 +216,48 @@ pub async fn report_handler(
                                     "Failed to fetch deployment for project_app cleanup"
                                 );
                             }
+                        }
+                    }
+                }
+            }
+
+            // Persist trigger_pipe results as pipe execution history
+            if command.r#type == "trigger_pipe" && status == models::CommandStatus::Completed {
+                if let Some(ref result) = result_payload {
+                    if let Ok(report) = serde_json::from_value::<status_panel::TriggerPipeCommandReport>(result.clone()) {
+                        if let Ok(instance_id) = uuid::Uuid::parse_str(&report.pipe_instance_id) {
+                            let execution = PipeExecution::new(
+                                instance_id,
+                                payload.deployment_hash.clone(),
+                                report.trigger_type.clone(),
+                                agent.id.to_string(),
+                            );
+                            let execution = if report.success {
+                                execution.complete_success(
+                                    report.source_data.unwrap_or(json!(null)),
+                                    report.mapped_data.unwrap_or(json!(null)),
+                                    report.target_response.unwrap_or(json!(null)),
+                                )
+                            } else {
+                                execution.complete_failure(
+                                    report.error.unwrap_or_else(|| "Unknown error".to_string()),
+                                )
+                            };
+
+                            if let Err(e) = db::pipe::insert_execution(agent_pool.as_ref(), &execution).await {
+                                tracing::warn!(
+                                    pipe_instance_id = %report.pipe_instance_id,
+                                    "Failed to persist pipe execution: {}",
+                                    e
+                                );
+                            }
+
+                            let _ = db::pipe::increment_trigger_count(
+                                agent_pool.as_ref(),
+                                &instance_id,
+                                report.success,
+                            )
+                            .await;
                         }
                     }
                 }
