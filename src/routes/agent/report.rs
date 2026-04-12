@@ -242,11 +242,15 @@ pub async fn report_handler(
                     >(result.clone())
                     {
                         if let Ok(instance_id) = uuid::Uuid::parse_str(&report.pipe_instance_id) {
+                            let execution_actor = payload
+                                .executed_by
+                                .clone()
+                                .unwrap_or_else(|| agent.id.to_string());
                             let execution = PipeExecution::new(
                                 instance_id,
                                 payload.deployment_hash.clone(),
                                 report.trigger_type.clone(),
-                                agent.id.to_string(),
+                                execution_actor,
                             );
                             let execution = if report.success {
                                 execution.complete_success(

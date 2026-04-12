@@ -3,6 +3,8 @@ mod common;
 use chrono::Utc;
 use serde_json::json;
 use std::time::Duration;
+use stacker::db;
+use stacker::models::{Command, CommandPriority};
 
 /// Test the complete agent/command flow:
 /// 1. Create a deployment
@@ -265,6 +267,241 @@ async fn test_agent_command_flow() {
     );
 
     println!("\n=== Test Completed Successfully ===");
+}
+
+#[tokio::test]
+async fn test_trigger_pipe_report_persists_execution_history() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = reqwest::Client::new();
+
+    let deployment_hash = format!("test_pipe_deployment_{}", uuid::Uuid::new_v4());
+
+    sqlx::query(
+        "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NOW(), NOW())",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind("test_pipe_project")
+    .bind("test_user_id")
+    .bind(serde_json::json!({}))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to create project");
+
+    let project_id: i32 =
+        sqlx::query_scalar("SELECT id FROM project WHERE name = 'test_pipe_project' LIMIT 1")
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to get project ID");
+
+    sqlx::query(
+        "INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())"
+    )
+    .bind(project_id)
+    .bind(&deployment_hash)
+    .bind(Some("test_user_id"))
+    .bind(serde_json::json!({}))
+    .bind("pending")
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to create deployment");
+
+    let pipe_instance_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO pipe_instances (
+            id, template_id, deployment_hash, source_container, target_container, target_url,
+            field_mapping_override, config_override, status, last_triggered_at, trigger_count,
+            error_count, created_by, created_at, updated_at
+        ) VALUES (
+            $1, NULL, $2, $3, NULL, NULL, NULL, NULL, $4, NULL, 0, 0, $5, NOW(), NOW()
+        )",
+    )
+    .bind(pipe_instance_id)
+    .bind(&deployment_hash)
+    .bind("source-service")
+    .bind("active")
+    .bind("test_user_id")
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to create pipe instance");
+
+    let register_payload = json!({
+        "deployment_hash": deployment_hash,
+        "agent_version": "1.0.0",
+        "capabilities": ["docker", "compose", "pipes"],
+        "system_info": {
+            "os": "linux",
+            "arch": "x86_64",
+            "memory_gb": 8
+        }
+    });
+
+    let register_response = client
+        .post(&format!("{}/api/v1/agent/register", &app.address))
+        .json(&register_payload)
+        .send()
+        .await
+        .expect("Failed to register agent");
+
+    let register_result: serde_json::Value = register_response
+        .json()
+        .await
+        .expect("Failed to parse register response");
+
+    let agent_id = register_result["data"]["item"]["agent_id"]
+        .as_str()
+        .expect("Missing agent_id")
+        .to_string();
+    let agent_token = register_result["data"]["item"]["agent_token"]
+        .as_str()
+        .expect("Missing agent_token")
+        .to_string();
+
+    let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
+    let command = Command::new(
+        command_id.clone(),
+        deployment_hash.clone(),
+        "trigger_pipe".to_string(),
+        "test_user_id".to_string(),
+    )
+    .with_priority(CommandPriority::Normal)
+    .with_parameters(json!({
+        "pipe_instance_id": pipe_instance_id.to_string(),
+        "input_data": {
+            "invoice_id": "inv-1"
+        }
+    }));
+
+    let saved_command = db::command::insert(&app.db_pool, &command)
+        .await
+        .expect("Failed to save trigger_pipe command");
+    db::command::add_to_queue(
+        &app.db_pool,
+        &saved_command.command_id,
+        &saved_command.deployment_hash,
+        &CommandPriority::Normal,
+    )
+    .await
+    .expect("Failed to queue trigger_pipe command");
+
+    let wait_response = client
+        .get(&format!(
+            "{}/api/v1/agent/commands/wait/{}",
+            &app.address, deployment_hash
+        ))
+        .header("X-Agent-Id", &agent_id)
+        .header("Authorization", format!("Bearer {}", agent_token))
+        .timeout(Duration::from_secs(35))
+        .send()
+        .await
+        .expect("Failed to poll for commands");
+
+    let wait_result: serde_json::Value = wait_response
+        .json()
+        .await
+        .expect("Failed to parse wait response");
+
+    assert_eq!(wait_result["item"]["command_id"].as_str(), Some(command_id.as_str()));
+    assert_eq!(wait_result["item"]["type"].as_str(), Some("trigger_pipe"));
+    assert_eq!(
+        wait_result["item"]["parameters"]["pipe_instance_id"].as_str(),
+        Some(pipe_instance_id.to_string().as_str())
+    );
+
+    let report_payload = json!({
+        "command_id": command_id,
+        "deployment_hash": deployment_hash,
+        "status": "completed",
+        "executed_by": "compose_agent",
+        "started_at": Utc::now(),
+        "completed_at": Utc::now(),
+        "result": {
+            "type": "trigger_pipe",
+            "deployment_hash": deployment_hash,
+            "pipe_instance_id": pipe_instance_id.to_string(),
+            "success": true,
+            "source_data": { "invoice_id": "inv-1" },
+            "mapped_data": { "customer_id": "cust-1" },
+            "target_response": { "queued": true },
+            "triggered_at": Utc::now(),
+            "trigger_type": "manual"
+        }
+    });
+
+    let report_response = client
+        .post(&format!("{}/api/v1/agent/commands/report", &app.address))
+        .header("X-Agent-Id", &agent_id)
+        .header("Authorization", format!("Bearer {}", agent_token))
+        .json(&report_payload)
+        .send()
+        .await
+        .expect("Failed to report trigger_pipe command");
+
+    assert!(
+        report_response.status().is_success(),
+        "trigger_pipe report failed: {}",
+        report_response.text().await.unwrap_or_default()
+    );
+
+    let stored_metadata: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT metadata FROM commands WHERE command_id = $1")
+            .bind(&command_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch command metadata");
+
+    assert_eq!(
+        stored_metadata
+            .as_ref()
+            .and_then(|value| value.get("executed_by"))
+            .and_then(|value| value.as_str()),
+        Some("compose_agent")
+    );
+
+    let execution_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pipe_executions WHERE pipe_instance_id = $1")
+            .bind(pipe_instance_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to count pipe executions");
+    assert_eq!(execution_count, 1);
+
+    let execution_row: (String, String, String, serde_json::Value, serde_json::Value, serde_json::Value) =
+        sqlx::query_as(
+            "SELECT status, trigger_type, created_by, source_data, mapped_data, target_response
+             FROM pipe_executions
+             WHERE pipe_instance_id = $1
+             ORDER BY started_at DESC
+             LIMIT 1",
+        )
+        .bind(pipe_instance_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch pipe execution row");
+
+    assert_eq!(execution_row.0, "success");
+    assert_eq!(execution_row.1, "manual");
+    assert_eq!(execution_row.2, "compose_agent");
+    assert_eq!(execution_row.3, json!({ "invoice_id": "inv-1" }));
+    assert_eq!(execution_row.4, json!({ "customer_id": "cust-1" }));
+    assert_eq!(execution_row.5, json!({ "queued": true }));
+
+    let instance_row: (i64, i64, Option<chrono::DateTime<Utc>>) =
+        sqlx::query_as(
+            "SELECT trigger_count, error_count, last_triggered_at FROM pipe_instances WHERE id = $1",
+        )
+        .bind(pipe_instance_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch pipe instance counters");
+
+    assert_eq!(instance_row.0, 1);
+    assert_eq!(instance_row.1, 0);
+    assert!(instance_row.2.is_some());
 }
 
 /// Test agent heartbeat mechanism

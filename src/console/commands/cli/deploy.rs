@@ -1789,13 +1789,54 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
 mod tests {
     use super::*;
     use crate::cli::install_runner::CommandOutput;
-    use std::sync::Mutex;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
 
     /// Mock executor that records commands and returns configurable output.
     struct MockExecutor {
         calls: Mutex<Vec<(String, Vec<String>)>>,
         output: CommandOutput,
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    fn with_empty_credentials_home<T>(f: impl FnOnce() -> T) -> T {
+        let _lock = env_lock().lock().unwrap();
+        let config_home = TempDir::new().unwrap();
+        let _guard = EnvVarGuard::set_path("XDG_CONFIG_HOME", config_home.path());
+        f()
     }
 
     impl MockExecutor {
@@ -1991,28 +2032,30 @@ mod tests {
 
     #[test]
     fn test_deploy_cloud_requires_login() {
-        let dir = setup_local_project(&[("stacker.yml", &cloud_config_yaml())]);
-        let executor = MockExecutor::success();
+        with_empty_credentials_home(|| {
+            let dir = setup_local_project(&[("stacker.yml", &cloud_config_yaml())]);
+            let executor = MockExecutor::success();
 
-        let result = run_deploy(
-            dir.path(),
-            None,
-            None,
-            true,
-            false,
-            false,
-            &executor,
-            &RemoteDeployOverrides::default(),
-            "runc",
-        );
-        assert!(result.is_err());
+            let result = run_deploy(
+                dir.path(),
+                None,
+                None,
+                true,
+                false,
+                false,
+                &executor,
+                &RemoteDeployOverrides::default(),
+                "runc",
+            );
+            assert!(result.is_err());
 
-        let err = format!("{}", result.unwrap_err());
-        assert!(
-            err.contains("Login required") || err.contains("login"),
-            "Expected login error, got: {}",
-            err
-        );
+            let err = format!("{}", result.unwrap_err());
+            assert!(
+                err.contains("Login required") || err.contains("login"),
+                "Expected login error, got: {}",
+                err
+            );
+        });
     }
 
     #[test]
