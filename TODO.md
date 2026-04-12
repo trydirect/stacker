@@ -1162,13 +1162,37 @@ To verify `is_official` and `is_verified_publisher` status for each image:
   - [x] Enforce `min_ram_mb` during deploy validation using the shared capacity resolver on both deploy entry points.
   - [x] Extend numeric deploy validation to `min_disk_gb` and `min_cpu_cores`.
 - [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
-  - Send notifications for submit/approve/reject/update-required events.
+  - [x] Normalize `needs_changes` as a real admin review outcome with creator-visible review history and guarded admin routing.
+  - [ ] Send notifications for submit/approve/reject/update-required events.
   - Include actionable review reasons and the next expected developer action.
 
 ### Phase 2 - Reliability and User-Facing Correctness
 - [x] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
   - Convert duplicate-slug failures from generic 500 errors into explicit 409/validation feedback.
   - Keep CLI and UI messaging aligned so the user gets a recoverable error.
+- [ ] **[stacker-agent-alerts]** Add server-side endpoint to receive outbound alerts from Status Panel agents.
+  - Status Panel now sends `POST` webhook with `X-Agent-Id` header when host metrics breach thresholds.
+  - Implement `POST /api/v1/agents/alerts` (or similar) to receive the payload:
+    ```json
+    {
+      "alerts": [{
+        "kind": "high_cpu" | "high_memory" | "high_disk",
+        "severity": "warning" | "critical",
+        "message": "CPU usage at 96.2% (threshold: 95%)",
+        "value": 96.2,
+        "threshold": 95.0,
+        "recovered": false,
+        "timestamp_ms": 1700000000000,
+        "agent_id": "agent-123"
+      }],
+      "agent_id": "agent-123",
+      "timestamp_ms": 1700000000000
+    }
+    ```
+  - Return `2xx` on success, `4xx` on bad request (agent won't retry), `5xx` triggers agent retry (3x, exponential backoff).
+  - Validate `X-Agent-Id` header and match to known agent registration.
+  - Store alerts in DB for history; optionally fan out to notification channels (email/Slack).
+  - Surface active/recent alerts in admin dashboard per-server view.
 - [ ] **[stacker-rollback]** Add version-aware deployment rollback.
   - Allow operators to choose a prior template or deployment version and roll back safely.
   - Persist rollback history and expose the effective version in deployment details.
@@ -1189,5 +1213,5 @@ To verify `is_official` and `is_verified_publisher` status for each image:
 
 ### Delivery Order
 - [ ] Start with `stacker-vendor-payouts`, `stacker-template-requirements`, and `stacker-duplicate-slug-409`.
-- [ ] Follow with `stacker-review-notifications` and `stacker-rollback` once the marketplace data contract is stable.
+- [ ] Follow with `stacker-agent-alerts`, `stacker-review-notifications`, and `stacker-rollback` once the marketplace data contract is stable.
 - [ ] Treat `stacker-team-projects` and `stacker-pipe-execution` as multi-sprint workstreams with cross-project coordination.
