@@ -78,6 +78,8 @@ All notable changes to this project will be documented in this file.
 - `GET /api/v1/marketplace/download/{purchase_token}` — serves stack archive
 - `POST /api/v1/marketplace/agents/register` — agent self-registration endpoint
 
+## [0.2.6] — 2026-03-11
+
 ### Added — Firewall (iptables) Management
 
 - New MCP tools for configuring iptables firewall rules on remote servers:
@@ -471,4 +473,3 @@ stacker init --with-ai  # no Ollama running → template fallback
 
 ### Fixed
 - Status panel command updates query uses explicit bindings to avoid SQLx type inference errors.
-
