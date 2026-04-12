@@ -363,6 +363,67 @@ impl MarketplaceWebhookSender {
         self.send_webhook(&payload).instrument(span).await
     }
 
+    /// Send template submitted webhook to User Service.
+    /// Notifies the creator that their stack entered marketplace review.
+    pub async fn send_template_submitted(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+        category_code: Option<String>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_submitted_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_submitted".to_string(),
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: category_code,
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
     /// Send template update-required webhook to User Service.
     pub async fn send_template_needs_changes(
         &self,
@@ -424,6 +485,70 @@ impl MarketplaceWebhookSender {
         self.send_webhook(&payload).instrument(span).await
     }
 
+    /// Send template review-rejected webhook to User Service.
+    /// This notifies the creator without invoking marketplace removal behavior.
+    pub async fn send_template_review_rejected(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+        review_reason: Option<&str>,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_review_rejected_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_review_rejected".to_string(),
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: template.category_code.clone(),
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
+            review_reason: review_reason.map(str::to_string),
+            next_action_hint: Some(
+                "Review the feedback, update the stack, and submit a new revision when it is ready."
+                    .to_string(),
+            ),
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
     /// Send template rejected webhook to User Service
     /// Deactivates product in User Service
     pub async fn send_template_rejected(
@@ -457,6 +582,66 @@ impl MarketplaceWebhookSender {
             view_count: None,
             approved_at: None,
             required_plan_name: None,
+            review_reason: None,
+            next_action_hint: None,
+            vendor_email: None,
+        };
+
+        self.send_webhook(&payload).instrument(span).await
+    }
+
+    /// Send template unpublished webhook to User Service.
+    /// This deactivates the marketplace listing but preserves the subscription record.
+    pub async fn send_template_unpublished(
+        &self,
+        template: &models::marketplace::StackTemplate,
+        vendor_id: &str,
+    ) -> Result<WebhookResponse, ConnectorError> {
+        let span = tracing::info_span!(
+            "send_template_unpublished_webhook",
+            template_id = %template.id,
+            vendor_id = vendor_id
+        );
+
+        let payload = MarketplaceWebhookPayload {
+            action: "template_unpublished".to_string(),
+            stack_template_id: template.id.to_string(),
+            external_id: template.id.to_string(),
+            code: Some(template.slug.clone()),
+            name: Some(template.name.clone()),
+            description: template
+                .short_description
+                .clone()
+                .or_else(|| template.long_description.clone()),
+            price: template.price,
+            billing_cycle: template.billing_cycle.clone(),
+            currency: template.currency.clone(),
+            vendor_user_id: Some(vendor_id.to_string()),
+            vendor_name: template.creator_name.clone(),
+            category: template.category_code.clone(),
+            tags: if let serde_json::Value::Array(_) = template.tags {
+                Some(template.tags.clone())
+            } else {
+                None
+            },
+            long_description: template.long_description.clone(),
+            tech_stack: if template.tech_stack != serde_json::json!({}) {
+                Some(template.tech_stack.clone())
+            } else {
+                None
+            },
+            infrastructure_requirements: if template.infrastructure_requirements
+                != serde_json::json!({})
+            {
+                Some(template.infrastructure_requirements.clone())
+            } else {
+                None
+            },
+            creator_name: template.creator_name.clone(),
+            deploy_count: template.deploy_count,
+            view_count: template.view_count,
+            approved_at: template.approved_at.map(|dt| dt.to_rfc3339()),
+            required_plan_name: template.required_plan_name.clone(),
             review_reason: None,
             next_action_hint: None,
             vendor_email: None,

@@ -2,6 +2,7 @@ mod common;
 
 use reqwest::{Client, Response, StatusCode};
 use serde_json::{json, Value};
+use std::sync::{Mutex, OnceLock};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -72,6 +73,11 @@ impl Drop for EnvGuard {
             std::env::remove_var(self.key);
         }
     }
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[tokio::test]
@@ -273,6 +279,7 @@ async fn update_template_persists_infrastructure_requirements() {
 
 #[tokio::test]
 async fn submit_template_sends_template_submitted_webhook() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,

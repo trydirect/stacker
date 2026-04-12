@@ -4,6 +4,7 @@ use chrono::{Duration, Utc};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sqlx::Row;
+use std::sync::{Mutex, OnceLock};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -73,6 +74,11 @@ impl Drop for EnvGuard {
             std::env::remove_var(self.key);
         }
     }
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[tokio::test]
@@ -180,6 +186,7 @@ async fn admin_cannot_mark_approved_template_as_needs_changes() {
 
 #[tokio::test]
 async fn admin_approval_sends_template_published_webhook() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
@@ -240,4 +247,135 @@ async fn admin_approval_sends_template_published_webhook() {
     assert_eq!("template_published", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
     assert_eq!("published-webhook-template", payload["code"]);
+}
+
+#[tokio::test]
+async fn admin_rejection_sends_template_review_rejected_webhook() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+    let _user_service_base_url = EnvGuard::set("USER_SERVICE_BASE_URL", &mock_user_service.uri());
+    let _stacker_service_token = EnvGuard::set("STACKER_SERVICE_TOKEN", "stacker-test-token");
+
+    Mock::given(method("POST"))
+        .and(path("/marketplace/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "message": "ok",
+            "product_id": null
+        })))
+        .mount(&mock_user_service)
+        .await;
+
+    let template_id = insert_template(
+        &app.db_pool,
+        common::USER_A_ID,
+        "review-rejected-template",
+        "submitted",
+    )
+    .await;
+
+    let admin_response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/admin/templates/{}/reject",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .json(&json!({
+            "decision": "rejected",
+            "reason": "The submission does not meet marketplace quality standards yet."
+        }))
+        .send()
+        .await
+        .expect("Failed to send admin rejection request");
+
+    assert_eq!(StatusCode::OK, admin_response.status());
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let requests = mock_user_service
+        .received_requests()
+        .await
+        .expect("Should capture webhook request");
+    let webhook_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/marketplace/sync")
+        .expect("Rejection should send marketplace webhook");
+    let payload: Value =
+        serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
+
+    assert_eq!("template_review_rejected", payload["action"]);
+    assert_eq!(template_id, payload["stack_template_id"]);
+    assert_eq!(
+        "The submission does not meet marketplace quality standards yet.",
+        payload["review_reason"]
+    );
+}
+
+#[tokio::test]
+async fn admin_unapprove_sends_template_unpublished_webhook() {
+    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let mock_user_service = MockServer::start().await;
+    let _url_server_user = EnvGuard::set("URL_SERVER_USER", &mock_user_service.uri());
+    let _user_service_url = EnvGuard::set("USER_SERVICE_URL", &mock_user_service.uri());
+    let _user_service_base_url = EnvGuard::set("USER_SERVICE_BASE_URL", &mock_user_service.uri());
+    let _stacker_service_token = EnvGuard::set("STACKER_SERVICE_TOKEN", "stacker-test-token");
+
+    Mock::given(method("POST"))
+        .and(path("/marketplace/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "message": "ok",
+            "product_id": null
+        })))
+        .mount(&mock_user_service)
+        .await;
+
+    let template_id = insert_template(
+        &app.db_pool,
+        common::USER_A_ID,
+        "unpublished-template",
+        "approved",
+    )
+    .await;
+
+    let admin_response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/admin/templates/{}/unapprove",
+            app.address, template_id
+        ))
+        .header("Authorization", format!("Bearer {}", create_admin_jwt()))
+        .json(&json!({
+            "reason": "Temporarily hidden from the marketplace."
+        }))
+        .send()
+        .await
+        .expect("Failed to send admin unapprove request");
+
+    assert_eq!(StatusCode::OK, admin_response.status());
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let requests = mock_user_service
+        .received_requests()
+        .await
+        .expect("Should capture webhook request");
+    let webhook_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/marketplace/sync")
+        .expect("Unapprove should send marketplace webhook");
+    let payload: Value =
+        serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
+
+    assert_eq!("template_unpublished", payload["action"]);
+    assert_eq!(template_id, payload["stack_template_id"]);
 }
