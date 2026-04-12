@@ -2,6 +2,7 @@ pub mod agent;
 pub mod ai;
 pub mod ci;
 pub mod config;
+pub mod connect;
 pub mod deploy;
 pub mod destroy;
 pub mod init;

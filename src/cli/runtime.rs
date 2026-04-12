@@ -29,7 +29,10 @@ impl CliRuntime {
     pub fn new(feature: &str) -> Result<Self, CliError> {
         let cred_manager = CredentialsManager::<FileCredentialStore>::with_default_store();
         let creds = cred_manager.require_valid_token(feature)?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL;
+        let base_url = creds
+            .server_url
+            .as_deref()
+            .unwrap_or(stacker_client::DEFAULT_STACKER_URL);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

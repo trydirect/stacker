@@ -3,6 +3,7 @@ pub mod client;
 pub(crate) mod command;
 pub(crate) mod deployment;
 pub(crate) mod dockerhub;
+pub(crate) mod handoff;
 pub mod health_checks;
 pub(crate) mod rating;
 pub(crate) mod test;
