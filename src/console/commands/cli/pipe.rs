@@ -14,9 +14,10 @@ use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{
     AgentCommandInfo, AgentEnqueueRequest, CreatePipeInstanceApiRequest,
-    CreatePipeTemplateApiRequest,
+    CreatePipeTemplateApiRequest, PipeInstanceInfo, PipeTemplateInfo,
 };
 use crate::console::commands::CallableTrait;
+use crate::forms::status_panel::TriggerPipeCommandRequest;
 
 /// Default poll timeout for pipe probe commands (seconds).
 const PROBE_TIMEOUT_SECS: u64 = 90;
@@ -1122,6 +1123,46 @@ impl PipeTriggerCommand {
     }
 }
 
+fn build_trigger_pipe_request(
+    pipe: &PipeInstanceInfo,
+    template: Option<&PipeTemplateInfo>,
+    input_data: Option<serde_json::Value>,
+) -> TriggerPipeCommandRequest {
+    let (target_endpoint, target_method, field_mapping) = if let Some(tmpl) = template {
+        (
+            tmpl.target_endpoint["path"]
+                .as_str()
+                .unwrap_or("/")
+                .to_string(),
+            tmpl.target_endpoint["method"]
+                .as_str()
+                .unwrap_or("POST")
+                .to_string(),
+            pipe.field_mapping_override
+                .clone()
+                .unwrap_or(tmpl.field_mapping.clone()),
+        )
+    } else {
+        (
+            "/".to_string(),
+            "POST".to_string(),
+            pipe.field_mapping_override
+                .clone()
+                .unwrap_or(serde_json::json!({})),
+        )
+    };
+
+    TriggerPipeCommandRequest::new_manual(
+        pipe.id.clone(),
+        input_data,
+        pipe.target_url.clone(),
+        target_endpoint,
+        target_method,
+        Some(field_mapping),
+        "manual".to_string(),
+    )
+}
+
 impl CallableTrait for PipeTriggerCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe trigger")?;
@@ -1136,10 +1177,30 @@ impl CallableTrait for PipeTriggerCommand {
             None => None,
         };
 
-        let params = serde_json::json!({
-            "pipe_instance_id": self.pipe_id,
-            "input_data": input_data,
-        });
+        let pb = progress::spinner("Fetching pipe details...");
+        let pipe = ctx
+            .block_on(ctx.client.get_pipe_instance(&self.pipe_id))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Failed");
+                e
+            })?
+            .ok_or_else(|| {
+                CliError::ConfigValidation(format!("Pipe instance '{}' not found", self.pipe_id))
+            })?;
+        progress::finish_success(&pb, "Pipe found");
+
+        let template = if let Some(ref tid) = pipe.template_id {
+            let templates = ctx.block_on(ctx.client.list_pipe_templates(None, None))?;
+            templates.into_iter().find(|tmpl| &tmpl.id == tid)
+        } else {
+            None
+        };
+
+        let params = serde_json::to_value(build_trigger_pipe_request(
+            &pipe,
+            template.as_ref(),
+            input_data,
+        ))?;
 
         let request = AgentEnqueueRequest::new(&hash, "trigger_pipe").with_raw_parameters(params);
 
@@ -1390,5 +1451,61 @@ mod tests {
         assert_eq!(map["name"], "$.display_name");
         assert_eq!(map["phone"], "$.Phone");
         assert!(!map.contains_key("unknown"));
+    }
+
+    #[test]
+    fn build_trigger_pipe_request_uses_external_target_details() {
+        let pipe = PipeInstanceInfo {
+            id: "pipe-123".to_string(),
+            template_id: Some("tmpl-123".to_string()),
+            deployment_hash: "dep-123".to_string(),
+            source_container: "source".to_string(),
+            target_container: None,
+            target_url: Some("https://hooks.example.com".to_string()),
+            field_mapping_override: Some(json!({ "email": "$.user.email" })),
+            config_override: None,
+            status: "active".to_string(),
+            last_triggered_at: None,
+            trigger_count: 0,
+            error_count: 0,
+            created_by: "test-user".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let template = PipeTemplateInfo {
+            id: "tmpl-123".to_string(),
+            name: "crm-webhook".to_string(),
+            description: None,
+            source_app_type: "source".to_string(),
+            source_endpoint: json!({ "path": "/source", "method": "GET" }),
+            target_app_type: "target".to_string(),
+            target_endpoint: json!({ "path": "/webhook/pipe", "method": "POST" }),
+            target_external_url: Some("https://hooks.example.com".to_string()),
+            field_mapping: json!({ "ignored": "$.ignored" }),
+            config: None,
+            is_public: Some(false),
+            created_by: "test-user".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let request = build_trigger_pipe_request(
+            &pipe,
+            Some(&template),
+            Some(json!({ "user": { "email": "dev@try.direct" } })),
+        );
+
+        assert_eq!(request.pipe_instance_id, "pipe-123");
+        assert_eq!(
+            request.target_url.as_deref(),
+            Some("https://hooks.example.com")
+        );
+        assert_eq!(request.target_endpoint, "/webhook/pipe");
+        assert_eq!(request.target_method, "POST");
+        assert_eq!(
+            request.field_mapping,
+            Some(json!({ "email": "$.user.email" }))
+        );
+        assert_eq!(request.trigger_type, "manual");
     }
 }

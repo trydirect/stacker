@@ -973,6 +973,47 @@ pub struct TriggerPipeCommandRequest {
     /// Optional input data to feed into the pipe (overrides source fetch)
     #[serde(default)]
     pub input_data: Option<serde_json::Value>,
+    /// External target URL for manual execution
+    #[serde(default)]
+    pub target_url: Option<String>,
+    /// Target endpoint path appended to target_url
+    #[serde(default = "default_target_endpoint")]
+    pub target_endpoint: String,
+    /// HTTP method for target delivery
+    #[serde(default = "default_target_method")]
+    pub target_method: String,
+    /// Optional field mapping to apply before delivery
+    #[serde(default)]
+    pub field_mapping: Option<serde_json::Value>,
+    /// Trigger type associated with the execution
+    #[serde(default = "default_trigger_type_manual")]
+    pub trigger_type: String,
+}
+
+fn default_target_endpoint() -> String {
+    "/".to_string()
+}
+
+impl TriggerPipeCommandRequest {
+    pub fn new_manual(
+        pipe_instance_id: String,
+        input_data: Option<serde_json::Value>,
+        target_url: Option<String>,
+        target_endpoint: String,
+        target_method: String,
+        field_mapping: Option<serde_json::Value>,
+        trigger_type: String,
+    ) -> Self {
+        Self {
+            pipe_instance_id,
+            input_data,
+            target_url,
+            target_endpoint,
+            target_method,
+            field_mapping,
+            trigger_type,
+        }
+    }
 }
 
 /// Result of a pipe activation
@@ -1503,6 +1544,30 @@ mod tests {
     }
 
     #[test]
+    fn trigger_pipe_preserves_external_target_params() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "input_data": { "user": { "email": "dev@try.direct" } },
+                "target_url": "https://example.com",
+                "target_endpoint": "/webhook/pipe",
+                "target_method": "POST",
+                "field_mapping": { "email": "$.user.email" },
+                "trigger_type": "manual"
+            })),
+        )
+        .expect("trigger_pipe parameters should validate");
+
+        let params = result.expect("validated trigger_pipe payload");
+        assert_eq!(params["target_url"], "https://example.com");
+        assert_eq!(params["target_endpoint"], "/webhook/pipe");
+        assert_eq!(params["target_method"], "POST");
+        assert_eq!(params["field_mapping"], json!({ "email": "$.user.email" }));
+        assert_eq!(params["trigger_type"], "manual");
+    }
+
+    #[test]
     fn deactivate_pipe_accepts_valid_params() {
         let result = validate_command_parameters(
             "deactivate_pipe",
@@ -1631,7 +1696,6 @@ mod tests {
         assert_eq!(payload["trigger_type"], "webhook");
     }
 
-    #[test]
     #[test]
     fn trigger_pipe_result_rejects_invalid_trigger_type() {
         let result = validate_command_result(

@@ -1,4 +1,5 @@
 use crate::db;
+use crate::forms::status_panel::TriggerPipeCommandRequest;
 use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::pipe::PipeExecution;
 use crate::models::{Command, CommandPriority, User};
@@ -17,6 +18,48 @@ pub struct PaginationQuery {
 
 fn default_limit() -> i64 {
     20
+}
+
+fn build_replay_trigger_request(
+    instance: &crate::models::pipe::PipeInstance,
+    template: Option<&crate::models::pipe::PipeTemplate>,
+    input_data: Option<serde_json::Value>,
+) -> TriggerPipeCommandRequest {
+    let (target_endpoint, target_method, field_mapping) = if let Some(tmpl) = template {
+        (
+            tmpl.target_endpoint["path"]
+                .as_str()
+                .unwrap_or("/")
+                .to_string(),
+            tmpl.target_endpoint["method"]
+                .as_str()
+                .unwrap_or("POST")
+                .to_string(),
+            instance
+                .field_mapping_override
+                .clone()
+                .unwrap_or(tmpl.field_mapping.clone()),
+        )
+    } else {
+        (
+            "/".to_string(),
+            "POST".to_string(),
+            instance
+                .field_mapping_override
+                .clone()
+                .unwrap_or(serde_json::json!({})),
+        )
+    };
+
+    TriggerPipeCommandRequest::new_manual(
+        instance.id.to_string(),
+        input_data,
+        instance.target_url.clone(),
+        target_endpoint,
+        target_method,
+        Some(field_mapping),
+        "replay".to_string(),
+    )
 }
 
 /// List executions for a pipe instance (paginated, newest first)
@@ -174,11 +217,21 @@ pub async fn replay_execution_handler(
             JsonResponse::internal_server_error(err)
         })?;
 
+    let template = if let Some(template_id) = instance.template_id {
+        db::pipe::get_template(pg_pool.get_ref(), &template_id)
+            .await
+            .map_err(|err| JsonResponse::internal_server_error(err))?
+    } else {
+        None
+    };
+
     // Enqueue trigger_pipe command with original source_data as input_data
-    let trigger_params = serde_json::json!({
-        "pipe_instance_id": original.pipe_instance_id.to_string(),
-        "input_data": original.source_data,
-    });
+    let trigger_params = serde_json::to_value(build_replay_trigger_request(
+        &instance,
+        template.as_ref(),
+        original.source_data.clone(),
+    ))
+    .map_err(|err| JsonResponse::internal_server_error(err.to_string()))?;
 
     let command_id_str = format!("cmd_{}", uuid::Uuid::new_v4());
     let command = Command::new(
