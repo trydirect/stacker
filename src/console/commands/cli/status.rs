@@ -372,7 +372,10 @@ fn is_remote_deployment(project_dir: &Path) -> bool {
     };
 
     // Remote if target is Cloud/Server, or if remote orchestrator is configured
-    if matches!(config.deploy.target, DeployTarget::Cloud | DeployTarget::Server) {
+    if matches!(
+        config.deploy.target,
+        DeployTarget::Cloud | DeployTarget::Server
+    ) {
         return true;
     }
 
@@ -410,10 +413,10 @@ impl CallableTrait for StatusCommand {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(test)]
-    mod tests {
+mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
     use crate::cli::deployment_lock::DeploymentLock;
+    use chrono::{Duration, Utc};
 
     #[test]
     fn test_status_local_constructs_query() {

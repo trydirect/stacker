@@ -13,6 +13,7 @@ pub mod marketplace;
 pub mod pipe;
 pub mod proxy;
 pub mod resolve;
+pub mod rollback;
 pub mod secrets;
 pub mod service;
 pub mod ssh_key;

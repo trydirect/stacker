@@ -1154,6 +1154,43 @@ impl StackerClient {
             })
     }
 
+    /// Request rollback of a project to a known marketplace version.
+    pub async fn rollback_project(
+        &self,
+        project_id: i32,
+        version: &str,
+    ) -> Result<DeployResponse, CliError> {
+        let url = format!("{}/project/{}/rollback", self.base_url, project_id);
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "version": version }))
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker server rollback failed ({}): {}", status, body),
+            });
+        }
+
+        resp.json::<DeployResponse>()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid rollback response from Stacker server: {}", e),
+            })
+    }
+
     // ── Deployment status ────────────────────────────
 
     /// Fetch deployment status by deployment ID.

@@ -171,6 +171,13 @@ enum StackerCommands {
         #[arg(long, short = 'y')]
         confirm: bool,
     },
+    /// Roll back a marketplace deployment to a prior template version
+    Rollback {
+        #[arg(long, value_name = "VERSION")]
+        version: String,
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
     /// Configuration management
     Config {
         #[command(subcommand)]
@@ -403,6 +410,9 @@ fn get_command(
             )),
             StackerCommands::Destroy { volumes, confirm } => Ok(Box::new(
                 stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
+            )),
+            StackerCommands::Rollback { version, confirm } => Ok(Box::new(
+                stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
             )),
             StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
                 StackerConfigCommands::Validate { file } => Ok(Box::new(
