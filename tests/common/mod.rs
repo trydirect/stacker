@@ -318,6 +318,9 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     configuration.vault.token = "test-vault-token".to_string();
     configuration.vault.api_prefix = "v1".to_string();
     configuration.vault.ssh_key_path_prefix = Some("users".to_string());
+    configuration.connectors.install_service = Some(stacker::connectors::InstallServiceConfig {
+        enabled: false,
+    });
 
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
 

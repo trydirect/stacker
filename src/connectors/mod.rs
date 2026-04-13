@@ -49,7 +49,9 @@ pub mod user_service;
 pub use admin_service::{
     extract_bearer_token, parse_jwt_claims, user_from_jwt_claims, validate_jwt_expiration,
 };
-pub use config::{ConnectorConfig, EventsConfig, PaymentServiceConfig, UserServiceConfig};
+pub use config::{
+    ConnectorConfig, EventsConfig, InstallServiceConfig, PaymentServiceConfig, UserServiceConfig,
+};
 pub use errors::ConnectorError;
 pub use install_service::{InstallServiceClient, InstallServiceConnector};
 pub use user_service::{
@@ -67,4 +69,5 @@ pub use dockerhub_service::init as init_dockerhub;
 pub use dockerhub_service::{
     DockerHubClient, DockerHubConnector, NamespaceSummary, RepositorySummary, TagSummary,
 };
+pub use install_service::init as init_install_service;
 pub use user_service::init as init_user_service;

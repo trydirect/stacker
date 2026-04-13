@@ -9,6 +9,7 @@ use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
 use actix_web::{post, web, web::Data, Responder, Result};
+use serde::Deserialize;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -194,6 +195,196 @@ async fn validate_template_server_capacity_requirements(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RollbackRequest {
+    pub version: String,
+}
+
+fn build_rollback_project_payload(
+    stack_definition: serde_json::Value,
+) -> Result<(serde_json::Value, String), String> {
+    let form: forms::project::ProjectForm = serde_json::from_value(stack_definition.clone())
+        .map_err(|err| format!("Invalid marketplace template definition: {}", err))?;
+    let stack_code = form.custom.custom_stack_code.clone();
+    let metadata = serde_json::to_value(form)
+        .map_err(|err| format!("Failed to normalize marketplace template definition: {}", err))?;
+    Ok((metadata, stack_code))
+}
+
+fn build_rollback_deploy_form(template_stack_code: String) -> forms::project::Deploy {
+    forms::project::Deploy {
+        stack: forms::project::Stack {
+            stack_code: Some(template_stack_code),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+async fn execute_deployment(
+    user: &models::User,
+    project: models::Project,
+    form: &forms::project::Deploy,
+    pg_pool: &PgPool,
+    mq_manager: &MqManager,
+    install_service: &Arc<dyn InstallServiceConnector>,
+    vault_client: &VaultClient,
+    cloud: models::Cloud,
+    server: models::Server,
+) -> Result<(i32, i32)> {
+    let id = project.id;
+    let dc = DcBuilder::new(project);
+    let fc = dc
+        .build()
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+    let mut new_public_key: Option<String> = None;
+    let mut captured_private_key: Option<String> = None;
+    let server = if server.key_status != "active" {
+        match VaultClient::generate_ssh_keypair() {
+            Ok((public_key, private_key)) => {
+                match vault_client
+                    .store_ssh_key(&user.id, server.id, &public_key, &private_key)
+                    .await
+                {
+                    Ok(vault_path) => {
+                        tracing::info!(
+                            "Auto-generated SSH key for server {} (vault_key_path: {})",
+                            server.id,
+                            vault_path
+                        );
+                        new_public_key = Some(public_key);
+                        captured_private_key = Some(private_key);
+                        db::server::update_ssh_key_status(
+                            pg_pool,
+                            server.id,
+                            Some(vault_path),
+                            "active",
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to update SSH key status: {}", e);
+                            server
+                        })
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to store auto-generated SSH key in Vault for server {}: {}",
+                            server.id,
+                            e
+                        );
+                        server
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to auto-generate SSH keypair for server {}: {}",
+                    server.id,
+                    e
+                );
+                server
+            }
+        }
+    } else {
+        match vault_client.fetch_ssh_public_key(&user.id, server.id).await {
+            Ok(pk) => {
+                tracing::info!("Fetched existing public key from Vault for server {}", server.id);
+                new_public_key = Some(pk);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch public key from Vault for server {}: {}",
+                    server.id,
+                    e
+                );
+            }
+        }
+        server
+    };
+
+    let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
+    if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
+        tracing::error!(
+            "Cannot deploy to existing server {} (IP: {:?}): SSH key is not available. \
+             vault_key_path is None and key generation failed.",
+            server.id,
+            server.srv_ip,
+        );
+        return Err(JsonResponse::<models::Project>::build().bad_request(
+            "SSH key is not available for this server. \
+             Please generate an SSH key first with `stacker ssh-key generate` \
+             or re-add your server with SSH credentials.",
+        ));
+    }
+
+    let json_request = dc.project.metadata.clone();
+    let deployment_hash = format!("deployment_{}", Uuid::new_v4());
+    let deployment = models::Deployment::new(
+        dc.project.id,
+        Some(user.id.clone()),
+        deployment_hash.clone(),
+        String::from("pending"),
+        "runc".to_string(),
+        json_request,
+    );
+
+    let saved_deployment = db::deployment::insert(pg_pool, deployment)
+        .await
+        .map_err(|_| {
+            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
+        })?;
+
+    let deployment_id = saved_deployment.id;
+
+    let new_private_key = if server.vault_key_path.is_some() {
+        if let Some(pk) = captured_private_key {
+            Some(pk)
+        } else {
+            match vault_client.fetch_ssh_key(&user.id, server.id).await {
+                Ok(pk) => {
+                    tracing::info!(
+                        "Fetched SSH private key from Vault for server {}",
+                        server.id
+                    );
+                    Some(pk)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch SSH private key from Vault for server {}: {}",
+                        server.id,
+                        e
+                    );
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    install_service
+        .deploy(
+            user.id.clone(),
+            user.email.clone(),
+            id,
+            deployment_id,
+            deployment_hash,
+            &dc.project,
+            cloud,
+            server,
+            &form.stack,
+            form.registry.clone(),
+            fc,
+            mq_manager,
+            new_public_key,
+            new_private_key,
+        )
+        .await
+        .map(|project_id| (project_id, deployment_id))
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
 }
 
 #[tracing::instrument(name = "Deploy for every user", skip_all)]
@@ -397,190 +588,23 @@ pub async fn item(
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     }
 
-    // Build compose only after marketplace compatibility checks so unsupported
-    // targets fail with a client error before we do deeper deployment work.
-    let dc = DcBuilder::new(project);
-    let fc = dc
-        .build()
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    let (project_id, deployment_id) = execute_deployment(
+        user.as_ref(),
+        project,
+        &form,
+        pg_pool.get_ref(),
+        mq_manager.get_ref(),
+        install_service.get_ref(),
+        vault_client.get_ref(),
+        cloud_creds,
+        server,
+    )
+    .await?;
 
-    // Ensure every deploy payload carries the Stacker public key so the Install
-    // Service can inject it into authorized_keys on the remote server.
-    // - If the server has no active key yet: generate one, store in Vault, capture public key.
-    // - If the key is already active: fetch the public key from Vault.
-    let mut new_public_key: Option<String> = None;
-    let mut captured_private_key: Option<String> = None;
-    let server = if server.key_status != "active" {
-        match VaultClient::generate_ssh_keypair() {
-            Ok((public_key, private_key)) => {
-                match vault_client
-                    .get_ref()
-                    .store_ssh_key(&user.id, server.id, &public_key, &private_key)
-                    .await
-                {
-                    Ok(vault_path) => {
-                        tracing::info!(
-                            "Auto-generated SSH key for server {} (vault_key_path: {})",
-                            server.id,
-                            vault_path
-                        );
-                        new_public_key = Some(public_key);
-                        captured_private_key = Some(private_key);
-                        db::server::update_ssh_key_status(
-                            pg_pool.get_ref(),
-                            server.id,
-                            Some(vault_path),
-                            "active",
-                        )
-                        .await
-                        .unwrap_or_else(|e| {
-                            tracing::warn!("Failed to update SSH key status: {}", e);
-                            server
-                        })
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to store auto-generated SSH key in Vault for server {}: {}",
-                            server.id,
-                            e
-                        );
-                        server
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to auto-generate SSH keypair for server {}: {}",
-                    server.id,
-                    e
-                );
-                server
-            }
-        }
-    } else {
-        // Key already in Vault — fetch the public key so the Install Service can
-        // append it to authorized_keys on every deploy (idempotent on the remote side).
-        match vault_client
-            .get_ref()
-            .fetch_ssh_public_key(&user.id, server.id)
-            .await
-        {
-            Ok(pk) => {
-                tracing::info!(
-                    "Fetched existing public key from Vault for server {}",
-                    server.id
-                );
-                new_public_key = Some(pk);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch public key from Vault for server {}: {}",
-                    server.id,
-                    e
-                );
-            }
-        }
-        server
-    };
-
-    // For "own" flow (existing server with IP), SSH access is required.
-    // If we couldn't set up the SSH key, fail early instead of letting the
-    // Install Service crash when it cannot find the key.
-    let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
-    if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
-        tracing::error!(
-            "Cannot deploy to existing server {} (IP: {:?}): SSH key is not available. \
-             vault_key_path is None and key generation failed.",
-            server.id,
-            server.srv_ip,
-        );
-        return Err(JsonResponse::<models::Project>::build().bad_request(
-            "SSH key is not available for this server. \
-             Please generate an SSH key first with `stacker ssh-key generate` \
-             or re-add your server with SSH credentials.",
-        ));
-    }
-
-    // Store deployment attempts into deployment table in db
-    let json_request = dc.project.metadata.clone();
-    let deployment_hash = format!("deployment_{}", Uuid::new_v4());
-    let deployment = models::Deployment::new(
-        dc.project.id,
-        Some(user.id.clone()),
-        deployment_hash.clone(),
-        String::from("pending"),
-        "runc".to_string(),
-        json_request,
-    );
-
-    let saved_deployment = db::deployment::insert(pg_pool.get_ref(), deployment)
-        .await
-        .map_err(|_| {
-            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
-        })?;
-
-    let deployment_id = saved_deployment.id;
-
-    // For "own" flow, fetch the SSH private key from Vault so the Install Service
-    // can SSH into the server directly without relying on Redis-cached file paths.
-    let new_private_key = if server.vault_key_path.is_some() {
-        // For newly generated keys, use the in-memory value to avoid an extra Vault round-trip.
-        // For existing servers (re-deployment), fetch from Vault.
-        if let Some(pk) = captured_private_key {
-            Some(pk)
-        } else {
-            match vault_client
-                .get_ref()
-                .fetch_ssh_key(&user.id, server.id)
-                .await
-            {
-                Ok(pk) => {
-                    tracing::info!(
-                        "Fetched SSH private key from Vault for server {}",
-                        server.id
-                    );
-                    Some(pk)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch SSH private key from Vault for server {}: {}",
-                        server.id,
-                        e
-                    );
-                    None
-                }
-            }
-        }
-    } else {
-        None
-    };
-
-    // Delegate to install service connector
-    install_service
-        .deploy(
-            user.id.clone(),
-            user.email.clone(),
-            id,
-            deployment_id,
-            deployment_hash,
-            &dc.project,
-            cloud_creds,
-            server,
-            &form.stack,
-            form.registry.clone(),
-            fc,
-            mq_manager.get_ref(),
-            new_public_key,
-            new_private_key,
-        )
-        .await
-        .map(|project_id| {
-            JsonResponse::<models::Project>::build()
-                .set_id(project_id)
-                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
-                .ok("Success")
-        })
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+    Ok(JsonResponse::<models::Project>::build()
+        .set_id(project_id)
+        .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
+        .ok("Success"))
 }
 #[tracing::instrument(name = "Deploy, when cloud token is saved", skip_all)]
 #[post("/{id}/deploy/{cloud_id}")]
@@ -787,192 +811,134 @@ pub async fn saved_item(
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     }
 
-    // Build compose only after marketplace compatibility checks so unsupported
-    // targets fail with a client error before we do deeper deployment work.
-    let dc = DcBuilder::new(project);
-    let fc = dc
-        .build()
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    let (project_id, deployment_id) = execute_deployment(
+        user.as_ref(),
+        project,
+        &form,
+        pg_pool.get_ref(),
+        mq_manager.get_ref(),
+        install_service.get_ref(),
+        vault_client.get_ref(),
+        cloud,
+        server,
+    )
+    .await?;
 
-    // Ensure every deploy payload carries the Stacker public key so the Install
-    // Service can inject it into authorized_keys on the remote server.
-    // - If the server has no active key yet: generate one, store in Vault, capture public key.
-    // - If the key is already active: fetch the public key from Vault.
-    let mut new_public_key: Option<String> = None;
-    let mut captured_private_key: Option<String> = None;
-    let server = if server.key_status != "active" {
-        match VaultClient::generate_ssh_keypair() {
-            Ok((public_key, private_key)) => {
-                match vault_client
-                    .get_ref()
-                    .store_ssh_key(&user.id, server.id, &public_key, &private_key)
-                    .await
-                {
-                    Ok(vault_path) => {
-                        tracing::info!(
-                            "Auto-generated SSH key for server {} (vault_key_path: {})",
-                            server.id,
-                            vault_path
-                        );
-                        new_public_key = Some(public_key);
-                        captured_private_key = Some(private_key);
-                        db::server::update_ssh_key_status(
-                            pg_pool.get_ref(),
-                            server.id,
-                            Some(vault_path),
-                            "active",
-                        )
-                        .await
-                        .unwrap_or_else(|e| {
-                            tracing::warn!("Failed to update SSH key status: {}", e);
-                            server
-                        })
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to store auto-generated SSH key in Vault for server {}: {}",
-                            server.id,
-                            e
-                        );
-                        server
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to auto-generate SSH keypair for server {}: {}",
-                    server.id,
-                    e
-                );
-                server
-            }
-        }
-    } else {
-        // Key already in Vault — fetch the public key so the Install Service can
-        // append it to authorized_keys on every deploy (idempotent on the remote side).
-        match vault_client
-            .get_ref()
-            .fetch_ssh_public_key(&user.id, server.id)
-            .await
-        {
-            Ok(pk) => {
-                tracing::info!(
-                    "Fetched existing public key from Vault for server {}",
-                    server.id
-                );
-                new_public_key = Some(pk);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch public key from Vault for server {}: {}",
-                    server.id,
-                    e
-                );
-            }
-        }
-        server
-    };
+    Ok(JsonResponse::<models::Project>::build()
+        .set_id(project_id)
+        .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
+        .ok("Success"))
+}
 
-    // For "own" flow (existing server with IP), SSH access is required.
-    // If we couldn't set up the SSH key, fail early instead of letting the
-    // Install Service crash when it cannot find the key.
-    let has_existing_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.is_empty());
-    if has_existing_ip && new_public_key.is_none() && server.vault_key_path.is_none() {
-        tracing::error!(
-            "Cannot deploy to existing server {} (IP: {:?}): SSH key is not available. \
-             vault_key_path is None and key generation failed.",
-            server.id,
-            server.srv_ip,
-        );
-        return Err(JsonResponse::<models::Project>::build().bad_request(
-            "SSH key is not available for this server. \
-             Please generate an SSH key first with `stacker ssh-key generate` \
-             or re-add your server with SSH credentials.",
-        ));
-    }
+#[tracing::instrument(name = "Rollback marketplace deployment", skip_all)]
+#[post("/{id}/rollback")]
+pub async fn rollback(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    request: web::Json<RollbackRequest>,
+    pg_pool: Data<PgPool>,
+    mq_manager: Data<MqManager>,
+    install_service: Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: Data<VaultClient>,
+) -> Result<impl Responder> {
+    let id = path.0;
 
-    // Store deployment attempts into deployment table in db
-    let json_request = dc.project.metadata.clone();
-    let deployment_hash = format!("deployment_{}", Uuid::new_v4());
-    let deployment = models::Deployment::new(
-        dc.project.id,
-        Some(user.id.clone()),
-        deployment_hash.clone(),
-        String::from("pending"),
-        "runc".to_string(),
-        json_request,
-    );
-
-    let result = db::deployment::insert(pg_pool.get_ref(), deployment)
+    let mut project = db::project::fetch(pg_pool.get_ref(), id)
         .await
-        .map_err(|_| {
-            JsonResponse::<models::Project>::build().internal_server_error("Internal Server Error")
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .and_then(|project| match project {
+            Some(project) if project.user_id != user.id => {
+                Err(JsonResponse::<models::Project>::build().not_found("Project not found"))
+            }
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("Project not found")),
         })?;
 
-    let deployment_id = result.id;
-
-    tracing::debug!("Save deployment result: {:?}", result);
-
-    // For "own" flow, fetch the SSH private key from Vault so the Install Service
-    // can SSH into the server directly without relying on Redis-cached file paths.
-    let new_private_key = if server.vault_key_path.is_some() {
-        // For newly generated keys, use the in-memory value to avoid an extra Vault round-trip.
-        // For existing servers (re-deployment), fetch from Vault.
-        if let Some(pk) = captured_private_key {
-            Some(pk)
-        } else {
-            match vault_client
-                .get_ref()
-                .fetch_ssh_key(&user.id, server.id)
-                .await
-            {
-                Ok(pk) => {
-                    tracing::info!(
-                        "Fetched SSH private key from Vault for server {}",
-                        server.id
-                    );
-                    Some(pk)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch SSH private key from Vault for server {}: {}",
-                        server.id,
-                        e
-                    );
-                    None
-                }
-            }
-        }
-    } else {
-        None
-    };
-
-    // Delegate to install service connector (determines own vs tfa routing)
-    install_service
-        .deploy(
-            user.id.clone(),
-            user.email.clone(),
-            id,
-            deployment_id,
-            deployment_hash,
-            &dc.project,
-            cloud,
-            server,
-            &form.stack,
-            form.registry.clone(),
-            fc,
-            mq_manager.get_ref(),
-            new_public_key,
-            new_private_key,
-        )
+    let template_id = project.source_template_id.ok_or_else(|| {
+        JsonResponse::<models::Project>::build()
+            .bad_request("Rollback is only available for marketplace projects")
+    })?;
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
         .await
-        .map(|project_id| {
-            JsonResponse::<models::Project>::build()
-                .set_id(project_id)
-                .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
-                .ok("Success")
-        })
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<models::Project>::build().not_found("Template not found"))?;
+
+    let target_version = db::marketplace::list_versions_by_template(pg_pool.get_ref(), template_id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        .into_iter()
+        .find(|version| version.version == request.version)
+        .ok_or_else(|| {
+            JsonResponse::<models::Project>::build().bad_request(format!(
+                "Marketplace template version '{}' was not found",
+                request.version
+            ))
+        })?;
+
+    let servers = db::server::fetch_by_project(pg_pool.get_ref(), project.id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    if servers.len() != 1 {
+        return Err(JsonResponse::<models::Project>::build().bad_request(
+            "Rollback currently supports exactly one attached server",
+        ));
+    }
+    let server = servers.into_iter().next().expect("server count checked");
+    let cloud_id = server.cloud_id.ok_or_else(|| {
+        JsonResponse::<models::Project>::build().bad_request(
+            "Rollback requires a saved cloud configuration on the attached server",
+        )
+    })?;
+    let cloud = db::cloud::fetch(pg_pool.get_ref(), cloud_id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<models::Project>::build().not_found("No cloud configured"))?;
+
+    let requirements = parse_template_requirements(&template)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    validate_template_target_requirements(&template, &requirements, &cloud.provider, server.os.as_deref())
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    validate_template_server_capacity_requirements(
+        &template,
+        &requirements,
+        &cloud.provider,
+        Some(cloud_id),
+        server.server.as_deref(),
+        user.access_token.as_deref(),
+    )
+    .await
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+    let (metadata, template_stack_code) =
+        build_rollback_project_payload(target_version.stack_definition.clone())
+            .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    let deploy_form = build_rollback_deploy_form(template_stack_code);
+
+    project.metadata = metadata;
+    project.request_json = target_version.stack_definition;
+    project.template_version = Some(target_version.version.clone());
+
+    let (project_id, deployment_id) = execute_deployment(
+        user.as_ref(),
+        project.clone(),
+        &deploy_form,
+        pg_pool.get_ref(),
+        mq_manager.get_ref(),
+        install_service.get_ref(),
+        vault_client.get_ref(),
+        cloud,
+        server,
+    )
+    .await?;
+
+    db::project::update(pg_pool.get_ref(), project)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::<models::Project>::build()
+        .set_id(project_id)
+        .set_meta(serde_json::json!({ "deployment_id": deployment_id }))
+        .ok("Success"))
 }
 
 #[cfg(test)]

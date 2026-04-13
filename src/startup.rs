@@ -65,8 +65,7 @@ pub async fn run(
     let user_service_connector =
         connectors::init_user_service(&settings.connectors, api_pool.clone());
     let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
-    let install_service_connector: web::Data<Arc<dyn connectors::InstallServiceConnector>> =
-        web::Data::new(Arc::new(connectors::InstallServiceClient));
+    let install_service_connector = connectors::init_install_service(&settings.connectors);
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;
@@ -137,6 +136,7 @@ pub async fn run(
                 web::scope("/project")
                     .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::deploy::saved_item)
+                    .service(crate::routes::project::deploy::rollback)
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::get::list)
                     .service(crate::routes::project::get::item)

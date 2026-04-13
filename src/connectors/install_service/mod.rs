@@ -8,11 +8,11 @@ use crate::models;
 use async_trait::async_trait;
 
 pub mod client;
-#[cfg(test)]
+pub mod init;
 pub mod mock;
 
 pub use client::InstallServiceClient;
-#[cfg(test)]
+pub use init::init;
 pub use mock::MockInstallServiceConnector;
 
 #[async_trait]
