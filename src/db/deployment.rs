@@ -1,5 +1,6 @@
 use crate::models;
 use sqlx::PgPool;
+use sqlx::Row;
 use tracing::Instrument;
 
 pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Deployment>, String> {
@@ -227,6 +228,49 @@ pub async fn fetch_by_user_and_project(
             "Failed to fetch deployments by user_id/project_id: {:?}",
             err
         );
+        "Could not fetch deployments".to_string()
+    })
+}
+
+pub async fn fetch_by_project(
+    pool: &PgPool,
+    project_id: i32,
+    limit: i64,
+) -> Result<Vec<models::Deployment>, String> {
+    tracing::debug!("Fetch deployments by project_id: {}", project_id);
+    sqlx::query(
+        r#"
+        SELECT id, project_id, deployment_hash, user_id, deleted, status, runtime, metadata,
+               last_seen_at, created_at, updated_at
+        FROM deployment
+        WHERE project_id = $1 AND deleted = false
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(project_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|row| models::Deployment {
+                id: row.get("id"),
+                project_id: row.get("project_id"),
+                deployment_hash: row.get("deployment_hash"),
+                user_id: row.get("user_id"),
+                deleted: row.get("deleted"),
+                status: row.get("status"),
+                runtime: row.get("runtime"),
+                metadata: row.get("metadata"),
+                last_seen_at: row.get("last_seen_at"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect()
+    })
+    .map_err(|err| {
+        tracing::error!("Failed to fetch deployments by project_id: {:?}", err);
         "Could not fetch deployments".to_string()
     })
 }

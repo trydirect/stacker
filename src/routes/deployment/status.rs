@@ -6,6 +6,21 @@ use std::sync::Arc;
 
 use crate::{db, helpers::JsonResponse, models};
 
+async fn can_view_project_deployments(
+    pool: &PgPool,
+    user_id: &str,
+    project_id: i32,
+) -> Result<bool, String> {
+    let project = db::project::fetch(pool, project_id).await?;
+    match project {
+        Some(project) if project.user_id == user_id => Ok(true),
+        Some(_) => Ok(db::project_member::fetch(pool, project_id, user_id)
+            .await?
+            .is_some()),
+        None => Ok(false),
+    }
+}
+
 /// Public-facing deployment status response (hides internal metadata).
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct DeploymentStatusResponse {
@@ -130,11 +145,39 @@ pub async fn list_handler(
 ) -> Result<impl Responder> {
     let limit = query.limit.unwrap_or(50).max(1).min(500);
     let deployments = if let Some(project_id) = query.project_id {
-        db::deployment::fetch_by_user_and_project(pg_pool.get_ref(), &user.id, project_id, limit)
+        if !can_view_project_deployments(pg_pool.get_ref(), &user.id, project_id)
             .await
             .map_err(|err| {
                 JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
             })?
+        {
+            return Err(
+                JsonResponse::<DeploymentStatusResponse>::build().not_found("Project not found")
+            );
+        }
+
+        let project = db::project::fetch(pg_pool.get_ref(), project_id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
+            })?
+            .ok_or_else(|| {
+                JsonResponse::<DeploymentStatusResponse>::build().not_found("Project not found")
+            })?;
+
+        if project.user_id == user.id {
+            db::deployment::fetch_by_user_and_project(pg_pool.get_ref(), &user.id, project_id, limit)
+                .await
+                .map_err(|err| {
+                    JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
+                })?
+        } else {
+            db::deployment::fetch_by_project(pg_pool.get_ref(), project_id, limit)
+                .await
+                .map_err(|err| {
+                    JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
+                })?
+        }
     } else {
         db::deployment::fetch_by_user(pg_pool.get_ref(), &user.id, limit)
             .await
@@ -174,7 +217,14 @@ pub async fn status_by_project_handler(
 
     match deployment {
         Some(d) => {
-            if d.user_id.as_deref() != Some(&user.id) {
+            if d.user_id.as_deref() != Some(&user.id)
+                && !db::project_member::fetch(pg_pool.get_ref(), project_id, &user.id)
+                    .await
+                    .map_err(|err| {
+                        JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
+                    })?
+                    .is_some()
+            {
                 return Err(JsonResponse::<DeploymentStatusResponse>::build()
                     .not_found("No deployment found for this project"));
             }

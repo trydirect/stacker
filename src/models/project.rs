@@ -162,6 +162,14 @@ pub struct Project {
     pub template_version: Option<String>, // marketplace template version
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SharedProjectSummary {
+    pub id: i32,
+    pub name: String,
+    pub role: String,
+    pub shared_at: DateTime<Utc>,
+}
+
 impl Project {
     pub fn new(user_id: String, name: String, metadata: Value, request_json: Value) -> Self {
         Self {
