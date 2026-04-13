@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, ProxyType, StackerConfig};
-use crate::cli::credentials::CredentialsManager;
+use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
@@ -218,8 +218,15 @@ fn resolve_project_name(config: &StackerConfig) -> String {
         .unwrap_or_else(|| config.name.clone())
 }
 
-/// Query cloud deployment status from the Stacker server, optionally watching.
-fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
+    creds
+        .server_url
+        .clone()
+        .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string())
+}
+
+/// Query remote deployment status from the Stacker server, optionally watching.
+fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Load stacker.yml to find project name
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
@@ -240,7 +247,7 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
     let cred_manager = CredentialsManager::with_default_store();
     let creds = cred_manager.require_valid_token("deployment status")?;
 
-    let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+    let base_url = resolve_stacker_base_url(&creds);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -341,8 +348,14 @@ fn run_cloud_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::E
     })
 }
 
-/// Detect whether the project is configured for cloud (remote) deployment.
-fn is_cloud_deployment(project_dir: &Path) -> bool {
+/// Detect whether the project is configured for a remote (cloud/server) deployment.
+fn is_remote_deployment(project_dir: &Path) -> bool {
+    if let Ok(Some(lock)) = crate::cli::deployment_lock::DeploymentLock::load(project_dir) {
+        if lock.deployment_id.is_some() || lock.target != "local" {
+            return true;
+        }
+    }
+
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     if !config_path.exists() {
         return false;
@@ -358,8 +371,8 @@ fn is_cloud_deployment(project_dir: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Cloud if target is Cloud, or if remote orchestrator is configured
-    if config.deploy.target == DeployTarget::Cloud {
+    // Remote if target is Cloud/Server, or if remote orchestrator is configured
+    if matches!(config.deploy.target, DeployTarget::Cloud | DeployTarget::Server) {
         return true;
     }
 
@@ -376,9 +389,9 @@ impl CallableTrait for StatusCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
 
-        if is_cloud_deployment(&project_dir) {
-            // Cloud deployment — query Stacker server
-            run_cloud_status(self.json, self.watch)?;
+        if is_remote_deployment(&project_dir) {
+            // Remote deployment — query Stacker server
+            run_remote_status(self.json, self.watch)?;
         } else {
             // Local deployment — docker compose ps
             let executor = ShellExecutor;
@@ -397,8 +410,10 @@ impl CallableTrait for StatusCommand {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(test)]
-mod tests {
+    mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
+    use crate::cli::deployment_lock::DeploymentLock;
 
     #[test]
     fn test_status_local_constructs_query() {
@@ -446,8 +461,60 @@ mod tests {
     }
 
     #[test]
-    fn test_is_cloud_deployment_no_config() {
+    fn test_is_remote_deployment_no_config() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert!(!is_cloud_deployment(dir.path()));
+        assert!(!is_remote_deployment(dir.path()));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_server_target_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: demo\ndeploy:\n  target: server\n  server:\n    host: 203.0.113.10\n    user: root\n    port: 22\n",
+        )
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_hydrated_lock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        DeploymentLock {
+            target: "cloud".to_string(),
+            server_ip: Some("203.0.113.10".to_string()),
+            ssh_user: Some("root".to_string()),
+            ssh_port: Some(22),
+            server_name: Some("demo".to_string()),
+            deployment_id: Some(42),
+            project_id: Some(7),
+            cloud_id: Some(9),
+            project_name: Some("demo".to_string()),
+            deployed_at: Utc::now().to_rfc3339(),
+        }
+        .save(dir.path())
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
+    }
+
+    #[test]
+    fn test_resolve_stacker_base_url_prefers_hydrated_server_url() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: Utc::now() + Duration::minutes(10),
+            email: None,
+            server_url: Some("https://custom.stacker.example".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_stacker_base_url(&creds),
+            "https://custom.stacker.example"
+        );
     }
 }

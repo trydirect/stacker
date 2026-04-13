@@ -413,6 +413,8 @@ fn print_logs_result(app_code: &str, info: &AgentCommandInfo, multi: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::deployment_lock::DeploymentLock;
+    use chrono::Utc;
 
     #[test]
     fn test_logs_constructs_compose_command() {
@@ -466,5 +468,26 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("No deployment found") || err.contains("deploy"));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_hydrated_handoff_lock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        DeploymentLock {
+            target: "cloud".to_string(),
+            server_ip: Some("203.0.113.10".to_string()),
+            ssh_user: Some("root".to_string()),
+            ssh_port: Some(22),
+            server_name: Some("demo".to_string()),
+            deployment_id: Some(42),
+            project_id: Some(7),
+            cloud_id: Some(9),
+            project_name: Some("demo".to_string()),
+            deployed_at: Utc::now().to_rfc3339(),
+        }
+        .save(dir.path())
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
     }
 }
