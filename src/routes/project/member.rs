@@ -42,9 +42,8 @@ pub async fn add(
     let _project = fetch_owned_project(pg_pool.get_ref(), project_id, &user.id).await?;
 
     if payload.role != "viewer" {
-        return Err(
-            JsonResponse::<models::ProjectMember>::build().bad_request("Only viewer role is supported")
-        );
+        return Err(JsonResponse::<models::ProjectMember>::build()
+            .bad_request("Only viewer role is supported"));
     }
 
     let member = db::project_member::upsert(

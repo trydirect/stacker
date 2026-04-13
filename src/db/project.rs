@@ -190,9 +190,7 @@ pub async fn update(
 
     fetch(pool, project.id)
         .await
-        .and_then(|result| {
-            result.ok_or_else(|| "Project not found after update".to_string())
-        })
+        .and_then(|result| result.ok_or_else(|| "Project not found after update".to_string()))
         .map(|saved| {
             tracing::info!("Project {} has been saved to database", project.id);
             project.updated_at = saved.updated_at;

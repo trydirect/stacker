@@ -49,12 +49,21 @@ pub fn legacy_target_name(installation: &InstallationDetails) -> String {
         .clone()
         .or_else(|| installation.stack_code.clone())
         .or_else(|| installation.deployment_hash.clone())
-        .or_else(|| installation.id.map(|id| format!("legacy-installation-{}", id)))
+        .or_else(|| {
+            installation
+                .id
+                .map(|id| format!("legacy-installation-{}", id))
+        })
         .unwrap_or_else(|| "legacy-installation".to_string())
 }
 
 pub fn infer_legacy_target(installation: &InstallationDetails) -> String {
-    if installation.cloud.as_ref().map(|value| !value.trim().is_empty()).unwrap_or(false) {
+    if installation
+        .cloud
+        .as_ref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
         "cloud".to_string()
     } else if installation
         .server_ip
@@ -141,8 +150,9 @@ pub async fn resolve_owned_deployment_for_handoff(
         return Ok(OwnedDeployment::Legacy(installation));
     }
 
-    let deployment_hash = deployment_hash
-        .ok_or_else(|| JsonResponse::<String>::bad_request("deployment_id or deployment_hash is required"))?;
+    let deployment_hash = deployment_hash.ok_or_else(|| {
+        JsonResponse::<String>::bad_request("deployment_id or deployment_hash is required")
+    })?;
     resolve_owned_deployment_by_hash(pg_pool, settings, user, deployment_hash).await
 }
 

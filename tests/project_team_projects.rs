@@ -11,7 +11,12 @@ async fn seed_project_and_deployment(pool: &sqlx::PgPool, user_id: &str) -> (i32
     (project_id, deployment_id, hash)
 }
 
-async fn share_project(app_address: &str, project_id: i32, actor_token: &str, member_user_id: &str) -> reqwest::Response {
+async fn share_project(
+    app_address: &str,
+    project_id: i32,
+    actor_token: &str,
+    member_user_id: &str,
+) -> reqwest::Response {
     reqwest::Client::new()
         .post(format!("{}/project/{}/members", app_address, project_id))
         .header("Authorization", format!("Bearer {}", actor_token))
@@ -33,7 +38,11 @@ async fn list_shared_projects(app_address: &str, token: &str) -> reqwest::Respon
         .expect("shared project list request failed")
 }
 
-async fn list_project_members(app_address: &str, project_id: i32, token: &str) -> reqwest::Response {
+async fn list_project_members(
+    app_address: &str,
+    project_id: i32,
+    token: &str,
+) -> reqwest::Response {
     reqwest::Client::new()
         .get(format!("{}/project/{}/members", app_address, project_id))
         .header("Authorization", format!("Bearer {}", token))
@@ -89,7 +98,13 @@ async fn owner_can_share_project_with_viewer_by_user_id() {
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
 
-    let response = share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = response.json().await.expect("json response");
@@ -105,7 +120,13 @@ async fn non_owner_cannot_share_project() {
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
 
-    let response = share_project(&app.address, project_id, common::USER_B_TOKEN, common::USER_A_ID).await;
+    let response = share_project(
+        &app.address,
+        project_id,
+        common::USER_B_TOKEN,
+        common::USER_A_ID,
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
@@ -118,12 +139,20 @@ async fn viewer_can_get_shared_project_latest_deployment() {
 
     let (project_id, _deployment_id, deployment_hash) =
         seed_project_and_deployment(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = reqwest::Client::new()
-        .get(format!("{}/api/v1/deployments/project/{}", app.address, project_id))
+        .get(format!(
+            "{}/api/v1/deployments/project/{}",
+            app.address, project_id
+        ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -145,8 +174,13 @@ async fn viewer_can_list_shared_project_deployments_with_project_filter() {
 
     let (project_id, _deployment_id, deployment_hash) =
         seed_project_and_deployment(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = reqwest::Client::new()
@@ -163,7 +197,10 @@ async fn viewer_can_list_shared_project_deployments_with_project_filter() {
     let body: serde_json::Value = response.json().await.expect("json response");
     let list = body["list"].as_array().expect("list should be array");
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0]["deployment_hash"].as_str(), Some(deployment_hash.as_str()));
+    assert_eq!(
+        list[0]["deployment_hash"].as_str(),
+        Some(deployment_hash.as_str())
+    );
 }
 
 #[tokio::test]
@@ -173,8 +210,13 @@ async fn viewer_cannot_get_raw_project_payload() {
     };
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = reqwest::Client::new()
@@ -194,8 +236,13 @@ async fn viewer_can_list_projects_shared_with_them() {
     };
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = list_shared_projects(&app.address, common::USER_B_TOKEN).await;
@@ -224,8 +271,13 @@ async fn shared_projects_list_excludes_sensitive_fields() {
         json!({"secret_request": "also-hidden"}),
     )
     .await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = list_shared_projects(&app.address, common::USER_B_TOKEN).await;
@@ -288,8 +340,13 @@ async fn shared_project_does_not_change_existing_project_list_contract() {
     };
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = reqwest::Client::new()
@@ -312,8 +369,13 @@ async fn owner_can_list_project_members() {
     };
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = list_project_members(&app.address, project_id, common::USER_A_TOKEN).await;
@@ -333,8 +395,13 @@ async fn non_owner_cannot_list_project_members() {
     };
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
     let response = list_project_members(&app.address, project_id, common::USER_B_TOKEN).await;
@@ -349,13 +416,22 @@ async fn owner_can_remove_project_member() {
     };
 
     let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
-    let response =
-        remove_project_member(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID)
-            .await;
+    let response = remove_project_member(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
@@ -374,13 +450,22 @@ async fn removed_viewer_loses_shared_project_access() {
 
     let (project_id, _deployment_id, _deployment_hash) =
         seed_project_and_deployment(&app.db_pool, common::USER_A_ID).await;
-    let share_response =
-        share_project(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID).await;
+    let share_response = share_project(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(share_response.status(), StatusCode::OK);
 
-    let remove_response =
-        remove_project_member(&app.address, project_id, common::USER_A_TOKEN, common::USER_B_ID)
-            .await;
+    let remove_response = remove_project_member(
+        &app.address,
+        project_id,
+        common::USER_A_TOKEN,
+        common::USER_B_ID,
+    )
+    .await;
     assert_eq!(remove_response.status(), StatusCode::NO_CONTENT);
 
     let shared_projects_response = list_shared_projects(&app.address, common::USER_B_TOKEN).await;
@@ -395,7 +480,10 @@ async fn removed_viewer_loses_shared_project_access() {
     assert!(shared_projects.is_empty());
 
     let deployment_response = reqwest::Client::new()
-        .get(format!("{}/api/v1/deployments/project/{}", app.address, project_id))
+        .get(format!(
+            "{}/api/v1/deployments/project/{}",
+            app.address, project_id
+        ))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await

@@ -282,7 +282,10 @@ async fn test_owner_can_enqueue_and_list_commands_for_legacy_installation_hash()
         .await
         .expect("Failed to list legacy commands");
 
-    assert!(list.status().is_success(), "Owner should list legacy commands");
+    assert!(
+        list.status().is_success(),
+        "Owner should list legacy commands"
+    );
     let body: serde_json::Value = list.json().await.expect("List response should be json");
     let commands = body["list"].as_array().expect("Expected list field");
     assert_eq!(commands.len(), 1);

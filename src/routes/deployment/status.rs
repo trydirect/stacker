@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::{configuration::Settings, db, helpers::JsonResponse, models};
 use crate::routes::legacy_installations::{resolve_owned_deployment_by_hash, OwnedDeployment};
+use crate::{configuration::Settings, db, helpers::JsonResponse, models};
 
 async fn can_view_project_deployments(
     pool: &PgPool,
@@ -75,8 +75,13 @@ pub async fn status_by_hash_handler(
 ) -> Result<impl Responder> {
     let hash = path.into_inner();
 
-    match resolve_owned_deployment_by_hash(pg_pool.get_ref(), settings.get_ref(), user.as_ref(), &hash)
-        .await?
+    match resolve_owned_deployment_by_hash(
+        pg_pool.get_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &hash,
+    )
+    .await?
     {
         OwnedDeployment::Native(deployment) => {
             let resp: DeploymentStatusResponse = deployment.into();
@@ -182,11 +187,16 @@ pub async fn list_handler(
             })?;
 
         if project.user_id == user.id {
-            db::deployment::fetch_by_user_and_project(pg_pool.get_ref(), &user.id, project_id, limit)
-                .await
-                .map_err(|err| {
-                    JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-                })?
+            db::deployment::fetch_by_user_and_project(
+                pg_pool.get_ref(),
+                &user.id,
+                project_id,
+                limit,
+            )
+            .await
+            .map_err(|err| {
+                JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
+            })?
         } else {
             db::deployment::fetch_by_project(pg_pool.get_ref(), project_id, limit)
                 .await

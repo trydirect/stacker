@@ -1,5 +1,5 @@
-use crate::db;
 use crate::configuration::Settings;
+use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::User;
 use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;

@@ -1,5 +1,5 @@
-use crate::db;
 use crate::configuration::Settings;
+use crate::db;
 use crate::forms::status_panel;
 use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, CommandPriority, User};

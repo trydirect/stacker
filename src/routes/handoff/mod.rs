@@ -3,9 +3,9 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::configuration::Settings;
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::stacker_client::DEFAULT_STACKER_URL;
+use crate::configuration::Settings;
 use crate::db;
 use crate::handoff::{
     DeploymentHandoffAgent, DeploymentHandoffCloud, DeploymentHandoffCredentials,
@@ -209,7 +209,10 @@ fn build_legacy_payload(
         server_ip: server_ip.clone(),
         ssh_user: server_ip.as_ref().map(|_| "root".to_string()),
         ssh_port: server_ip.as_ref().map(|_| 22),
-        server_name: installation.domain.clone().or_else(|| installation.stack_code.clone()),
+        server_name: installation
+            .domain
+            .clone()
+            .or_else(|| installation.stack_code.clone()),
         deployment_id: None,
         project_id: None,
         cloud_id: None,
@@ -240,16 +243,22 @@ fn build_legacy_payload(
                 .unwrap_or_else(|| "unknown".to_string()),
         },
         server: server_ip.clone().map(|ip| DeploymentHandoffServer {
-            ip,
+            ip: Some(ip),
             ssh_user: Some("root".to_string()),
             ssh_port: Some(22),
-            name: installation.domain.clone().or_else(|| installation.stack_code.clone()),
+            name: installation
+                .domain
+                .clone()
+                .or_else(|| installation.stack_code.clone()),
         }),
-        cloud: installation.cloud.as_ref().map(|provider| DeploymentHandoffCloud {
-            id: 0,
-            provider: Some(provider.clone()),
-            region: None,
-        }),
+        cloud: installation
+            .cloud
+            .as_ref()
+            .map(|provider| DeploymentHandoffCloud {
+                id: 0,
+                provider: Some(provider.clone()),
+                region: None,
+            }),
         lockfile,
         stacker_yml: Some(render_legacy_stacker_yml(
             &project_name,

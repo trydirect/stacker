@@ -10,7 +10,7 @@ pub mod marketplace;
 pub mod pipe;
 pub mod product;
 pub mod project;
-pub mod project_member;
 pub mod project_app;
+pub mod project_member;
 pub mod rating;
 pub(crate) mod server;

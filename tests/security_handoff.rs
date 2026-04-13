@@ -185,7 +185,11 @@ async fn test_owner_can_mint_handoff_for_legacy_installation() {
         .await
         .expect("Failed to mint handoff");
 
-    assert_eq!(mint.status(), 200, "Mint should succeed for legacy installation");
+    assert_eq!(
+        mint.status(),
+        200,
+        "Mint should succeed for legacy installation"
+    );
     let minted: serde_json::Value = mint.json().await.expect("Mint response must be json");
     let command = minted["item"]["command"]
         .as_str()
