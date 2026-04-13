@@ -138,6 +138,8 @@ pub async fn run(
                     .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::deploy::rollback)
                     .service(crate::routes::project::member::add)
+                    .service(crate::routes::project::member::list)
+                    .service(crate::routes::project::member::delete)
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::get::list)
                     .service(crate::routes::project::get::shared_list)

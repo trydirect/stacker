@@ -139,6 +139,35 @@ fn validate_min_cpu_requirement(
     }
 }
 
+fn project_locked_cloud_provider(project: &models::Project) -> Option<&str> {
+    project
+        .request_json
+        .get("custom")
+        .and_then(|custom| custom.get("locked_cloud_provider"))
+        .and_then(|provider| provider.as_str())
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+}
+
+fn validate_project_locked_cloud_provider(
+    project: &models::Project,
+    provider: &str,
+) -> Result<(), String> {
+    let provider = provider.trim();
+    let Some(locked_provider) = project_locked_cloud_provider(project) else {
+        return Ok(());
+    };
+
+    if locked_provider.eq_ignore_ascii_case(provider) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "This project is locked to cloud provider '{}'. Deploying with '{}' is not allowed.",
+        locked_provider, provider
+    ))
+}
+
 async fn validate_template_server_capacity_requirements(
     template: &models::StackTemplate,
     requirements: &models::InfrastructureRequirements,
@@ -208,8 +237,12 @@ fn build_rollback_project_payload(
     let form: forms::project::ProjectForm = serde_json::from_value(stack_definition.clone())
         .map_err(|err| format!("Invalid marketplace template definition: {}", err))?;
     let stack_code = form.custom.custom_stack_code.clone();
-    let metadata = serde_json::to_value(form)
-        .map_err(|err| format!("Failed to normalize marketplace template definition: {}", err))?;
+    let metadata = serde_json::to_value(form).map_err(|err| {
+        format!(
+            "Failed to normalize marketplace template definition: {}",
+            err
+        )
+    })?;
     Ok((metadata, stack_code))
 }
 
@@ -291,7 +324,10 @@ async fn execute_deployment(
     } else {
         match vault_client.fetch_ssh_public_key(&user.id, server.id).await {
             Ok(pk) => {
-                tracing::info!("Fetched existing public key from Vault for server {}", server.id);
+                tracing::info!(
+                    "Fetched existing public key from Vault for server {}",
+                    server.id
+                );
                 new_public_key = Some(pk);
             }
             Err(e) => {
@@ -402,6 +438,7 @@ pub async fn item(
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("User {} is deploying project: {}", user.id, id);
+    form.cloud.provider = form.cloud.provider.trim().to_string();
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
@@ -419,6 +456,9 @@ pub async fn item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+
+    validate_project_locked_cloud_provider(&project, &form.cloud.provider)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
         let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
@@ -610,7 +650,7 @@ pub async fn item(
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
-    form: web::Json<forms::project::Deploy>,
+    mut form: web::Json<forms::project::Deploy>,
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
@@ -628,14 +668,6 @@ pub async fn saved_item(
         id,
         cloud_id
     );
-
-    if !form.validate().is_ok() {
-        let errors = form.validate().unwrap_err().to_string();
-        let err_msg = format!("Invalid form data received {:?}", &errors);
-        tracing::debug!(err_msg);
-
-        return Err(JsonResponse::<models::Project>::build().form_error(errors));
-    }
 
     // Validate project
     let project = db::project::fetch(pg_pool.get_ref(), id)
@@ -699,6 +731,19 @@ pub async fn saved_item(
             return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
         }
     };
+
+    validate_project_locked_cloud_provider(&project, &cloud.provider)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+    form.cloud.provider = cloud.provider.trim().to_string();
+
+    if !form.validate().is_ok() {
+        let errors = form.validate().unwrap_err().to_string();
+        let err_msg = format!("Invalid form data received {:?}", &errors);
+        tracing::debug!(err_msg);
+
+        return Err(JsonResponse::<models::Project>::build().form_error(errors));
+    }
 
     // Validate that saved cloud credentials can be decrypted before proceeding.
     // When SECURITY_KEY changed or encryption is corrupted, decode() silently
@@ -879,15 +924,13 @@ pub async fn rollback(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
     if servers.len() != 1 {
-        return Err(JsonResponse::<models::Project>::build().bad_request(
-            "Rollback currently supports exactly one attached server",
-        ));
+        return Err(JsonResponse::<models::Project>::build()
+            .bad_request("Rollback currently supports exactly one attached server"));
     }
     let server = servers.into_iter().next().expect("server count checked");
     let cloud_id = server.cloud_id.ok_or_else(|| {
-        JsonResponse::<models::Project>::build().bad_request(
-            "Rollback requires a saved cloud configuration on the attached server",
-        )
+        JsonResponse::<models::Project>::build()
+            .bad_request("Rollback requires a saved cloud configuration on the attached server")
     })?;
     let cloud = db::cloud::fetch(pg_pool.get_ref(), cloud_id)
         .await
@@ -896,8 +939,13 @@ pub async fn rollback(
 
     let requirements = parse_template_requirements(&template)
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
-    validate_template_target_requirements(&template, &requirements, &cloud.provider, server.os.as_deref())
-        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    validate_template_target_requirements(
+        &template,
+        &requirements,
+        &cloud.provider,
+        server.os.as_deref(),
+    )
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     validate_template_server_capacity_requirements(
         &template,
         &requirements,

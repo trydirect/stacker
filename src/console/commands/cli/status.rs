@@ -260,6 +260,64 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
     rt.block_on(async {
         let client = StackerClient::new(&base_url, &creds.access_token);
 
+        if let Some(deployment_hash) = config.deploy.deployment_hash.as_ref() {
+            if !deployment_hash.trim().is_empty() {
+                let ctx = StatusContext {
+                    server: None,
+                    config: Some(&config),
+                };
+                if !watch {
+                    let status = client.get_deployment_by_hash(deployment_hash).await?;
+                    match status {
+                        Some(info) => {
+                            print_deployment_status_rich(&info, json, &ctx);
+                            return Ok(());
+                        }
+                        None => {
+                            eprintln!("No deployment found for hash '{}'", deployment_hash);
+                            return Ok(());
+                        }
+                    }
+                }
+
+                eprintln!("Watching deployment status for hash '{}'...\n", deployment_hash);
+                let poll_interval = std::time::Duration::from_secs(5);
+                let mut last_status = String::new();
+                let mut last_message: Option<String> = None;
+
+                loop {
+                    let status = client.get_deployment_by_hash(deployment_hash).await?;
+
+                    match status {
+                        Some(info) => {
+                            let status_changed = info.status != last_status;
+                            let message_changed = info.status_message != last_message;
+                            if status_changed || message_changed {
+                                print_deployment_status_rich(&info, json, &ctx);
+                                last_status = info.status.clone();
+                                last_message = info.status_message.clone();
+                            }
+
+                            if is_terminal(&info.status) {
+                                if !json {
+                                    eprintln!("\nDeployment reached terminal status: {}", info.status);
+                                }
+                                return Ok(());
+                            }
+                        }
+                        None => {
+                            if last_status.is_empty() {
+                                eprintln!("No deployment found yet. Waiting...");
+                                last_status = "<none>".to_string();
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(poll_interval).await;
+                }
+            }
+        }
+
         // Resolve project ID by name
         let project = client.find_project_by_name(&project_name).await?;
         let project = project.ok_or_else(|| CliError::DeployFailed {

@@ -373,6 +373,9 @@ pub struct DeployConfig {
     pub compose_file: Option<PathBuf>,
 
     #[serde(default)]
+    pub deployment_hash: Option<String>,
+
+    #[serde(default)]
     pub cloud: Option<CloudConfig>,
 
     #[serde(default)]
@@ -1022,6 +1025,7 @@ impl ConfigBuilder {
             deploy: DeployConfig {
                 target: self.deploy_target.unwrap_or_default(),
                 compose_file: None,
+                deployment_hash: None,
                 cloud: self.cloud,
                 server: self.server,
                 registry: self.registry,

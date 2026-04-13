@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::{db, helpers::JsonResponse, models};
+use crate::{configuration::Settings, db, helpers::JsonResponse, models};
+use crate::routes::legacy_installations::{resolve_owned_deployment_by_hash, OwnedDeployment};
 
 async fn can_view_project_deployments(
     pool: &PgPool,
@@ -70,30 +71,45 @@ pub async fn status_by_hash_handler(
     path: web::Path<String>,
     user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     let hash = path.into_inner();
 
-    let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &hash)
-        .await
-        .map_err(|err| {
-            JsonResponse::<DeploymentStatusResponse>::build().internal_server_error(err)
-        })?;
-
-    match deployment {
-        Some(d) => {
-            if d.user_id.as_deref() != Some(&user.id) {
-                return Err(JsonResponse::<DeploymentStatusResponse>::build()
-                    .not_found("Deployment not found"));
-            }
-            let resp: DeploymentStatusResponse = d.into();
+    match resolve_owned_deployment_by_hash(pg_pool.get_ref(), settings.get_ref(), user.as_ref(), &hash)
+        .await?
+    {
+        OwnedDeployment::Native(deployment) => {
+            let resp: DeploymentStatusResponse = deployment.into();
             Ok(JsonResponse::build()
                 .set_item(resp)
                 .ok("Deployment status fetched"))
         }
-        None => {
-            Err(JsonResponse::<DeploymentStatusResponse>::build().not_found("Deployment not found"))
+        OwnedDeployment::Legacy(installation) => {
+            let resp = DeploymentStatusResponse {
+                id: installation
+                    .id
+                    .and_then(|value| i32::try_from(value).ok())
+                    .unwrap_or_default(),
+                project_id: 0,
+                deployment_hash: installation.deployment_hash.unwrap_or(hash),
+                status: installation.status.unwrap_or_else(|| "unknown".to_string()),
+                status_message: installation.domain,
+                created_at: parse_legacy_timestamp(installation.created_at.as_deref()),
+                updated_at: parse_legacy_timestamp(installation.updated_at.as_deref()),
+            };
+
+            Ok(JsonResponse::build()
+                .set_item(resp)
+                .ok("Deployment status fetched"))
         }
     }
+}
+
+fn parse_legacy_timestamp(value: Option<&str>) -> DateTime<Utc> {
+    value
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|parsed| parsed.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now)
 }
 
 /// `GET /api/v1/deployments/{id}`
