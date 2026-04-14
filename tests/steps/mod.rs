@@ -1,5 +1,6 @@
 pub mod common;
 pub mod health;
+pub mod project;
 
 use cucumber::World;
 use sqlx::PgPool;
@@ -27,15 +28,27 @@ pub struct StepWorld {
     pub response_json: Option<serde_json::Value>,
 }
 
+/// Shared test app singleton — avoids spawning a new server per scenario.
+static APP_INIT: std::sync::OnceLock<Option<(String, PgPool)>> = std::sync::OnceLock::new();
+static APP_INIT_ASYNC: tokio::sync::OnceCell<Option<(String, PgPool)>> =
+    tokio::sync::OnceCell::const_new();
+
+async fn get_shared_app() -> &'static Option<(String, PgPool)> {
+    APP_INIT_ASYNC
+        .get_or_init(|| async { common::spawn_bdd_app().await.map(|a| (a.address, a.db_pool)) })
+        .await
+}
+
 impl StepWorld {
     async fn new() -> Self {
-        let app = common::spawn_bdd_app()
-            .await
+        let shared = get_shared_app().await;
+        let (base_url, db_pool) = shared
+            .as_ref()
             .expect("BDD: Failed to start test server (is PostgreSQL running?)");
 
         Self {
-            base_url: app.address,
-            db_pool: Some(app.db_pool),
+            base_url: base_url.clone(),
+            db_pool: Some(db_pool.clone()),
             client: reqwest::Client::new(),
             status_code: None,
             response_body: None,
