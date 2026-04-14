@@ -106,6 +106,8 @@ assert_cmd = "2.0"
 predicates = "3.0"
 mockito = "1"
 cucumber = "0.22"
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
 
 [[test]]
 name = "bdd"

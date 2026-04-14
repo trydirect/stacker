@@ -4,6 +4,7 @@ pub mod common;
 pub mod deployment;
 pub mod health;
 pub mod marketplace;
+pub mod mcp;
 pub mod pipe;
 pub mod project;
 pub mod supporting;
@@ -32,6 +33,30 @@ pub struct StepWorld {
     pub stored_ids: HashMap<String, String>,
     /// Last JSON response parsed
     pub response_json: Option<serde_json::Value>,
+    /// MCP WebSocket response (last JSON-RPC response received)
+    pub mcp_response: Option<serde_json::Value>,
+    /// Whether the MCP WebSocket connection is open
+    pub mcp_connected: bool,
+    /// Active MCP WebSocket connection
+    pub mcp_ws: McpWs,
+}
+
+/// Wrapper for WebSocket stream that implements Debug
+pub struct McpWs(
+    pub  Option<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+);
+
+impl std::fmt::Debug for McpWs {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match &self.0 {
+            Some(_) => f.write_str("McpWs(connected)"),
+            None => f.write_str("McpWs(none)"),
+        }
+    }
 }
 
 /// Shared test app singleton — avoids spawning a new server per scenario.
@@ -61,6 +86,9 @@ impl StepWorld {
             auth_token: "user-a-token".to_string(),
             stored_ids: HashMap::new(),
             response_json: None,
+            mcp_response: None,
+            mcp_connected: false,
+            mcp_ws: McpWs(None),
         }
     }
 
