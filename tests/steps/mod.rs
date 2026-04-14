@@ -3,8 +3,10 @@ pub mod cloud_server;
 pub mod common;
 pub mod deployment;
 pub mod health;
+pub mod marketplace;
 pub mod pipe;
 pub mod project;
+pub mod supporting;
 
 use cucumber::World;
 use sqlx::PgPool;
@@ -112,6 +114,26 @@ impl StepWorld {
             .send()
             .await
             .expect("PUT request failed");
+
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        self.status_code = Some(status);
+        self.response_body = Some(body.clone());
+        self.response_json = serde_json::from_str(&body).ok();
+        (status, body)
+    }
+
+    /// Make a PATCH request with JSON body
+    pub async fn patch(&mut self, path: &str, body: &serde_json::Value) -> (u16, String) {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(body)
+            .send()
+            .await
+            .expect("PATCH request failed");
 
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();

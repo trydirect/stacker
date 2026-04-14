@@ -28,6 +28,9 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     // Unique database per BDD run
     configuration.database.database_name = format!("bdd_{}", uuid::Uuid::new_v4());
 
+    // Increase client limit for BDD tests (multiple scenarios create clients)
+    configuration.max_clients_number = 100;
+
     let connection_pool = match configure_database(&configuration.database).await {
         Ok(pool) => pool,
         Err(err) => {
@@ -83,16 +86,22 @@ async fn mock_auth(req: actix_web::HttpRequest) -> actix_web::Result<impl Respon
         .unwrap_or("");
 
     let is_user_b = auth_header.contains("user-b");
+    let is_admin = auth_header.contains("admin");
 
     let mut user = forms::user::User::default();
     if is_user_b {
         user.id = USER_B_ID.to_string();
         user.email = USER_B_EMAIL.to_string();
+        user.role = "group_user".to_string();
+    } else if is_admin {
+        user.id = USER_A_ID.to_string();
+        user.email = USER_A_EMAIL.to_string();
+        user.role = "group_admin".to_string();
     } else {
         user.id = USER_A_ID.to_string();
         user.email = USER_A_EMAIL.to_string();
+        user.role = "group_user".to_string();
     }
-    user.role = "group_user".to_string();
     user.email_confirmed = true;
 
     Ok(web::Json(forms::user::UserForm { user }))
