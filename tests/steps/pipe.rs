@@ -5,7 +5,7 @@ use super::StepWorld;
 
 // ─── Deployment helper ───────────────────────────────────────────
 
-#[given(regex = r#"^I have a test deployment with hash "(.+)"$"#)]
+#[given(regex = r#"^I have a test deployment with hash "([^"]+)"$"#)]
 async fn given_test_deployment(world: &mut StepWorld, deployment_hash: String) {
     let pool = world.db_pool.as_ref().expect("no db_pool");
     let proj_name = format!("proj-{}", &deployment_hash);
@@ -35,7 +35,7 @@ async fn given_test_deployment(world: &mut StepWorld, deployment_hash: String) {
     };
 
     // Insert deployment if not exists
-    let _deploy_id = sqlx::query_scalar::<_, i32>(
+    let deploy_id = sqlx::query_scalar::<_, i32>(
         r#"INSERT INTO deployment (project_id, deployment_hash, user_id, metadata, status, created_at, updated_at)
            VALUES ($1, $2, $3, '{}'::json, 'running', NOW(), NOW())
            ON CONFLICT (deployment_hash) DO UPDATE SET updated_at = NOW()
@@ -51,6 +51,12 @@ async fn given_test_deployment(world: &mut StepWorld, deployment_hash: String) {
     world
         .stored_ids
         .insert("deployment_hash".to_string(), deployment_hash);
+    world
+        .stored_ids
+        .insert("deployment_id".to_string(), deploy_id.to_string());
+    world
+        .stored_ids
+        .insert("deployment_project_id".to_string(), project_id.to_string());
 }
 
 // ─── Pipe Template steps ─────────────────────────────────────────

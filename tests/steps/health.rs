@@ -69,3 +69,23 @@ async fn check_empty_body(world: &mut StepWorld) {
     let body = world.response_body.as_deref().unwrap_or("");
     assert!(body.is_empty(), "Expected empty body, got: {}", body);
 }
+
+#[then(regex = r#"^the response JSON at "(.+)" should not be empty$"#)]
+async fn check_json_at_path_not_empty(world: &mut StepWorld, path: String) {
+    let json = world
+        .response_json
+        .as_ref()
+        .expect("No JSON response available");
+    let value = json
+        .pointer(&path)
+        .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
+    match value {
+        serde_json::Value::String(s) => {
+            assert!(!s.is_empty(), "Expected non-empty string at '{}', got empty", path);
+        }
+        serde_json::Value::Null => {
+            panic!("Expected non-empty value at '{}', got null", path);
+        }
+        _ => {} // non-null, non-string is fine
+    }
+}

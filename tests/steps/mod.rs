@@ -1,4 +1,7 @@
+pub mod agent;
+pub mod cloud_server;
 pub mod common;
+pub mod deployment;
 pub mod health;
 pub mod pipe;
 pub mod project;
