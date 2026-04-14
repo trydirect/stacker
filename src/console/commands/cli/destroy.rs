@@ -3,10 +3,9 @@ use std::path::Path;
 use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, ShellExecutor};
+use crate::cli::local_compose::resolve_local_compose_path;
 use crate::console::commands::CallableTrait;
 
-/// Output directory for generated artifacts.
-const OUTPUT_DIR: &str = ".stacker";
 #[allow(dead_code)]
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -54,13 +53,12 @@ pub fn run_destroy(
         ));
     }
 
-    let compose_path = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
-
-    if !compose_path.exists() {
-        return Err(CliError::ConfigValidation(
-            "No deployment found. Nothing to destroy.".to_string(),
-        ));
-    }
+    let compose_path = resolve_local_compose_path(project_dir).map_err(|err| match err {
+        CliError::ConfigValidation(_) => {
+            CliError::ConfigValidation("No deployment found. Nothing to destroy.".to_string())
+        }
+        other => other,
+    })?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
     let args = build_destroy_args(&compose_str, volumes);
@@ -130,7 +128,7 @@ mod tests {
 
     fn setup_with_compose() -> tempfile::TempDir {
         let dir = tempfile::TempDir::new().unwrap();
-        let stacker_dir = dir.path().join(OUTPUT_DIR);
+        let stacker_dir = dir.path().join(".stacker");
         std::fs::create_dir_all(&stacker_dir).unwrap();
         std::fs::write(stacker_dir.join("docker-compose.yml"), "version: '3.8'\n").unwrap();
         dir
@@ -175,5 +173,33 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("No deployment found") || err.contains("Nothing to destroy"));
+    }
+
+    #[test]
+    fn test_destroy_uses_configured_compose_file_for_local_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("docker/local")).unwrap();
+        std::fs::write(
+            dir.path().join("docker/local/compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: demo\ndeploy:\n  target: local\n  compose_file: docker/local/compose.yml\n",
+        )
+        .unwrap();
+
+        let executor = MockExecutor::new();
+        run_destroy(dir.path(), false, true, &executor).unwrap();
+
+        let calls = executor.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1[2],
+            dir.path()
+                .join("docker/local/compose.yml")
+                .to_string_lossy()
+        );
     }
 }

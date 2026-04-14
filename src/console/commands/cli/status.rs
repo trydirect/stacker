@@ -4,11 +4,10 @@ use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, ProxyType, Stac
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
+use crate::cli::local_compose::resolve_local_compose_path;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
 use crate::console::commands::CallableTrait;
 
-/// Output directory for generated artifacts.
-const OUTPUT_DIR: &str = ".stacker";
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// `stacker status [--json] [--watch]`
@@ -53,13 +52,7 @@ pub fn run_status(
     json: bool,
     executor: &dyn CommandExecutor,
 ) -> Result<CommandOutput, CliError> {
-    let compose_path = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
-
-    if !compose_path.exists() {
-        return Err(CliError::ConfigValidation(
-            "No deployment found. Run 'stacker deploy' first.".to_string(),
-        ));
-    }
+    let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
     let args = build_status_args(&compose_str, json);
@@ -449,6 +442,55 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("No deployment found"));
+    }
+
+    #[test]
+    fn test_status_uses_configured_compose_file_for_local_target() {
+        struct MockExec {
+            calls: std::sync::Mutex<Vec<Vec<String>>>,
+        }
+
+        impl CommandExecutor for MockExec {
+            fn execute(&self, _p: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|arg| arg.to_string()).collect());
+                Ok(CommandOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("docker/local")).unwrap();
+        std::fs::write(
+            dir.path().join("docker/local/compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: demo\ndeploy:\n  target: local\n  compose_file: docker/local/compose.yml\n",
+        )
+        .unwrap();
+
+        let executor = MockExec {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+
+        run_status(dir.path(), false, &executor).unwrap();
+
+        let calls = executor.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0][2],
+            dir.path()
+                .join("docker/local/compose.yml")
+                .to_string_lossy()
+        );
     }
 
     #[test]
