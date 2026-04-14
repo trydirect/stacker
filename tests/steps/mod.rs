@@ -1,5 +1,6 @@
 pub mod common;
 pub mod health;
+pub mod pipe;
 pub mod project;
 
 use cucumber::World;
