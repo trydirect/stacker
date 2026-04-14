@@ -105,3 +105,8 @@ wiremock = "0.5.22"
 assert_cmd = "2.0"
 predicates = "3.0"
 mockito = "1"
+cucumber = "0.22"
+
+[[test]]
+name = "bdd"
+harness = false
