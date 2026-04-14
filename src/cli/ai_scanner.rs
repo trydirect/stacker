@@ -613,6 +613,13 @@ mod tests {
         fn list_dir(&self, _path: &Path) -> Result<Vec<String>, std::io::Error> {
             Ok(self.files.clone())
         }
+
+        fn read_to_string(&self, _path: &Path) -> Result<String, std::io::Error> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "read_to_string not used in ai_scanner tests",
+            ))
+        }
     }
 
     // ── Mock AI provider ────────────────────────────

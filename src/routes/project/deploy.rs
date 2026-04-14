@@ -208,8 +208,12 @@ fn build_rollback_project_payload(
     let form: forms::project::ProjectForm = serde_json::from_value(stack_definition.clone())
         .map_err(|err| format!("Invalid marketplace template definition: {}", err))?;
     let stack_code = form.custom.custom_stack_code.clone();
-    let metadata = serde_json::to_value(form)
-        .map_err(|err| format!("Failed to normalize marketplace template definition: {}", err))?;
+    let metadata = serde_json::to_value(form).map_err(|err| {
+        format!(
+            "Failed to normalize marketplace template definition: {}",
+            err
+        )
+    })?;
     Ok((metadata, stack_code))
 }
 
@@ -291,7 +295,10 @@ async fn execute_deployment(
     } else {
         match vault_client.fetch_ssh_public_key(&user.id, server.id).await {
             Ok(pk) => {
-                tracing::info!("Fetched existing public key from Vault for server {}", server.id);
+                tracing::info!(
+                    "Fetched existing public key from Vault for server {}",
+                    server.id
+                );
                 new_public_key = Some(pk);
             }
             Err(e) => {
@@ -879,15 +886,13 @@ pub async fn rollback(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
     if servers.len() != 1 {
-        return Err(JsonResponse::<models::Project>::build().bad_request(
-            "Rollback currently supports exactly one attached server",
-        ));
+        return Err(JsonResponse::<models::Project>::build()
+            .bad_request("Rollback currently supports exactly one attached server"));
     }
     let server = servers.into_iter().next().expect("server count checked");
     let cloud_id = server.cloud_id.ok_or_else(|| {
-        JsonResponse::<models::Project>::build().bad_request(
-            "Rollback requires a saved cloud configuration on the attached server",
-        )
+        JsonResponse::<models::Project>::build()
+            .bad_request("Rollback requires a saved cloud configuration on the attached server")
     })?;
     let cloud = db::cloud::fetch(pg_pool.get_ref(), cloud_id)
         .await
@@ -896,8 +901,13 @@ pub async fn rollback(
 
     let requirements = parse_template_requirements(&template)
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
-    validate_template_target_requirements(&template, &requirements, &cloud.provider, server.os.as_deref())
-        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    validate_template_target_requirements(
+        &template,
+        &requirements,
+        &cloud.provider,
+        server.os.as_deref(),
+    )
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     validate_template_server_capacity_requirements(
         &template,
         &requirements,

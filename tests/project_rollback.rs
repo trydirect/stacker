@@ -170,9 +170,24 @@ async fn rollback_rejects_projects_with_multiple_servers() {
     )
     .await;
 
-    let cloud_id = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "saved-aws", "aws").await;
-    let server_a = common::create_test_server(&app.db_pool, common::USER_A_ID, project_id, "active", Some("secret/users/test_user_id/ssh_keys/1")).await;
-    let server_b = common::create_test_server(&app.db_pool, common::USER_A_ID, project_id, "active", Some("secret/users/test_user_id/ssh_keys/2")).await;
+    let cloud_id =
+        common::create_test_cloud(&app.db_pool, common::USER_A_ID, "saved-aws", "aws").await;
+    let server_a = common::create_test_server(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    let server_b = common::create_test_server(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/2"),
+    )
+    .await;
 
     sqlx::query("UPDATE server SET cloud_id = $1 WHERE id = ANY($2)")
         .bind(cloud_id)
@@ -233,7 +248,13 @@ async fn rollback_succeeds_for_single_server_marketplace_project() {
 
     let current_payload = project_payload("current-template");
     let target_payload = project_payload("target-template");
-    let template_id = insert_template_with_version(&app.db_pool, common::USER_A_ID, "1.0.0", current_payload.clone()).await;
+    let template_id = insert_template_with_version(
+        &app.db_pool,
+        common::USER_A_ID,
+        "1.0.0",
+        current_payload.clone(),
+    )
+    .await;
     sqlx::query(
         r#"INSERT INTO stack_template_version (
             template_id,
@@ -259,7 +280,8 @@ async fn rollback_succeeds_for_single_server_marketplace_project() {
         current_payload,
     )
     .await;
-    let cloud_id = common::create_test_cloud(&app.db_pool, common::USER_A_ID, "saved-aws", "aws").await;
+    let cloud_id =
+        common::create_test_cloud(&app.db_pool, common::USER_A_ID, "saved-aws", "aws").await;
     let server_id = common::create_test_server(
         &app.db_pool,
         common::USER_A_ID,
@@ -306,11 +328,17 @@ async fn rollback_succeeds_for_single_server_marketplace_project() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let project_row = sqlx::query("SELECT name, template_version, metadata FROM project WHERE id = $1")
-        .bind(project_id)
-        .fetch_one(&app.db_pool)
-        .await
-        .expect("Failed to fetch updated project");
+    let project_row =
+        sqlx::query("SELECT name, template_version, metadata FROM project WHERE id = $1")
+            .bind(project_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch updated project");
     assert_eq!(project_row.get::<String, _>("name"), "user-project-name");
-    assert_eq!(project_row.get::<Option<String>, _>("template_version").as_deref(), Some("0.9.0"));
+    assert_eq!(
+        project_row
+            .get::<Option<String>, _>("template_version")
+            .as_deref(),
+        Some("0.9.0")
+    );
 }

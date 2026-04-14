@@ -9,7 +9,7 @@ use crate::cli::config_parser::{
     AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
     StackerConfig,
 };
-use crate::cli::credentials::CredentialsManager;
+use crate::cli::credentials::{CredentialStore, CredentialsManager, StoredCredentials};
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::generator::compose::ComposeDefinition;
@@ -897,6 +897,33 @@ pub fn run_deploy(
     remote_overrides: &RemoteDeployOverrides,
     runtime: &str,
 ) -> Result<DeployResult, CliError> {
+    let cred_manager = CredentialsManager::with_default_store();
+    run_deploy_with_credentials_manager(
+        project_dir,
+        config_file,
+        target_override,
+        dry_run,
+        force_rebuild,
+        force_new,
+        executor,
+        remote_overrides,
+        runtime,
+        &cred_manager,
+    )
+}
+
+fn run_deploy_with_credentials_manager<S: CredentialStore>(
+    project_dir: &Path,
+    config_file: Option<&str>,
+    target_override: Option<&str>,
+    dry_run: bool,
+    force_rebuild: bool,
+    force_new: bool,
+    executor: &dyn CommandExecutor,
+    remote_overrides: &RemoteDeployOverrides,
+    runtime: &str,
+    cred_manager: &CredentialsManager<S>,
+) -> Result<DeployResult, CliError> {
     // 1. Load config
     let config_path = match config_file {
         Some(f) => project_dir.join(f),
@@ -1014,8 +1041,7 @@ pub fn run_deploy(
     }
 
     // 3. Cloud/server prerequisites — verify login and keep credentials for later use.
-    let cloud_creds = if deploy_target == DeployTarget::Cloud {
-        let cred_manager = CredentialsManager::with_default_store();
+    let cloud_creds: Option<StoredCredentials> = if deploy_target == DeployTarget::Cloud {
         Some(cred_manager.require_valid_token("cloud deploy")?)
     } else {
         None
@@ -1788,55 +1814,15 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::credentials::FileCredentialStore;
     use crate::cli::install_runner::CommandOutput;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     /// Mock executor that records commands and returns configurable output.
     struct MockExecutor {
         calls: Mutex<Vec<(String, Vec<String>)>>,
         output: CommandOutput,
-    }
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
-            let previous = std::env::var_os(key);
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe {
-                    std::env::set_var(self.key, value);
-                },
-                None => unsafe {
-                    std::env::remove_var(self.key);
-                },
-            }
-        }
-    }
-
-    fn with_empty_credentials_home<T>(f: impl FnOnce() -> T) -> T {
-        let _lock = env_lock().lock().unwrap();
-        let config_home = TempDir::new().unwrap();
-        let _guard = EnvVarGuard::set_path("XDG_CONFIG_HOME", config_home.path());
-        f()
     }
 
     impl MockExecutor {
@@ -2032,30 +2018,31 @@ mod tests {
 
     #[test]
     fn test_deploy_cloud_requires_login() {
-        with_empty_credentials_home(|| {
-            let dir = setup_local_project(&[("stacker.yml", &cloud_config_yaml())]);
-            let executor = MockExecutor::success();
+        let dir = setup_local_project(&[("stacker.yml", &cloud_config_yaml())]);
+        let executor = MockExecutor::success();
+        let store = FileCredentialStore::new(dir.path().join("credentials.json"));
+        let cred_manager = CredentialsManager::new(store);
 
-            let result = run_deploy(
-                dir.path(),
-                None,
-                None,
-                true,
-                false,
-                false,
-                &executor,
-                &RemoteDeployOverrides::default(),
-                "runc",
-            );
-            assert!(result.is_err());
+        let result = run_deploy_with_credentials_manager(
+            dir.path(),
+            None,
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            &cred_manager,
+        );
+        assert!(result.is_err());
 
-            let err = format!("{}", result.unwrap_err());
-            assert!(
-                err.contains("Login required") || err.contains("login"),
-                "Expected login error, got: {}",
-                err
-            );
-        });
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("Login required") || err.contains("login"),
+            "Expected login error, got: {}",
+            err
+        );
     }
 
     #[test]

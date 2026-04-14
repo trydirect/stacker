@@ -815,7 +815,7 @@ ai:
 
 ## Auto-Detection
 
-When you run `stacker init` without specifying `--app-type`, Stacker scans your project directory and looks for these marker files:
+When you run `stacker init` without specifying `--app-type`, Stacker scans the workspace and looks for these marker files:
 
 | Files Found | Detected Type |
 |-------------|---------------|
@@ -826,7 +826,18 @@ When you run `stacker init` without specifying `--app-type`, Stacker scans your 
 | `composer.json` | `php` |
 | `index.html`, `*.html` | `static` |
 
-Detection priority is top-to-bottom. If none of these files are found, it defaults to `static`.
+Detection priority is top-to-bottom. If none of these files are found, it defaults to `custom`.
+
+For monorepo-style projects, `stacker init` now:
+
+- Recursively scans nested directories for app candidates with marker files and/or Dockerfiles
+- Detects aggregate Docker Compose stacks, including `include:` chains
+- Selects one primary app for the generated `app:` section
+- Reuses a detected aggregate compose file by setting `deploy.compose_file`
+- Imports image-backed compose sidecars into the generated `services:` list
+
+Build-only compose services are still reported in the generated file comments, but they are not
+imported into `services:` because the current schema requires an explicit `image`.
 
 ---
 
