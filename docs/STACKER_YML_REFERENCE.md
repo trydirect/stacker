@@ -835,6 +835,7 @@ For monorepo-style projects, `stacker init` now:
 - Selects one primary app for the generated `app:` section
 - Reuses a detected aggregate compose file by setting `deploy.compose_file`
 - Imports image-backed compose sidecars into the generated `services:` list
+- Emits warning comments when scan data suggests a required local bootstrap asset or generator is missing
 
 Build-only compose services are still reported in the generated file comments, but they are not
 imported into `services:` because the current schema requires an explicit `image`.

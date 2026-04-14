@@ -486,7 +486,12 @@ fn generate_config_template_path(
     let yaml = serde_yaml::to_string(&config)
         .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
 
-    let scan_summary = render_scan_summary(&workspace_detection, primary_app, &project_name);
+    let scan_summary = render_scan_summary(
+        project_dir,
+        &workspace_detection,
+        primary_app,
+        &project_name,
+    );
 
     // Write with a header comment
     let content = format!(
@@ -537,6 +542,7 @@ fn choose_primary_app(workspace_detection: &WorkspaceDetection) -> Option<&Disco
 }
 
 fn render_scan_summary(
+    project_dir: &Path,
     workspace_detection: &WorkspaceDetection,
     primary_app: Option<&DiscoveredApp>,
     project_name: &str,
@@ -585,11 +591,110 @@ fn render_scan_summary(
         }
     }
 
+    for warning in infer_bootstrap_warnings(project_dir, workspace_detection) {
+        lines.push(format!("# WARNING: {}", warning));
+    }
+
     if lines.is_empty() {
         String::new()
     } else {
         format!("{}\n", lines.join("\n"))
     }
+}
+
+fn infer_bootstrap_warnings(
+    project_dir: &Path,
+    workspace_detection: &WorkspaceDetection,
+) -> Vec<String> {
+    let Some(compose_file) = &workspace_detection.recommended_compose_file else {
+        return Vec::new();
+    };
+    let Some(stack) = workspace_detection
+        .compose_stacks
+        .iter()
+        .find(|stack| &stack.path == compose_file)
+    else {
+        return Vec::new();
+    };
+
+    workspace_detection
+        .apps
+        .iter()
+        .filter_map(|app| {
+            let service = stack
+                .detected_services
+                .iter()
+                .find(|service| service.name == app.name)?;
+            if !service_uses_properties_volume(service) {
+                return None;
+            }
+
+            let app_dir = project_dir.join(&app.path);
+            let private_key = app_dir.join("properties/private.pem");
+            let public_key = app_dir.join("properties/public.pem");
+            if private_key.exists() || public_key.exists() {
+                return None;
+            }
+
+            if !tree_contains_any(
+                &app_dir,
+                &["properties/private.pem", "properties/public.pem"],
+                6,
+            ) {
+                return None;
+            }
+
+            Some(format!(
+                "{} mounts /app/properties but scan did not find a checked-in keypair or generator service. The app source references properties/private.pem and properties/public.pem, so bootstrap that volume before local deploy.",
+                app.path.display()
+            ))
+        })
+        .collect()
+}
+
+fn service_uses_properties_volume(service: &DetectedComposeService) -> bool {
+    service.volumes.iter().any(|volume| {
+        volume.contains(":/app/properties")
+            || volume.ends_with(":/properties")
+            || volume == "/app/properties"
+            || volume.ends_with("/app/properties")
+    })
+}
+
+fn tree_contains_any(base: &Path, needles: &[&str], max_depth: usize) -> bool {
+    if max_depth == 0 {
+        return false;
+    }
+
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if tree_contains_any(&path, needles, max_depth - 1) {
+                return true;
+            }
+            continue;
+        }
+
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !matches!(extension, "rs" | "md" | "toml" | "yml" | "yaml") {
+            continue;
+        }
+
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if needles.iter().any(|needle| contents.contains(needle)) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn importable_compose_services(
@@ -607,30 +712,20 @@ fn importable_compose_services(
         return Vec::new();
     };
 
-    let app_service_names: std::collections::HashSet<&str> = workspace_detection
-        .apps
-        .iter()
-        .map(|app| app.name.as_str())
-        .collect();
     let primary_app_name = primary_app.map(|app| app.name.as_str());
 
     stack
         .detected_services
         .iter()
-        .filter_map(|service| {
-            compose_service_to_definition(service, &app_service_names, primary_app_name)
-        })
+        .filter_map(|service| compose_service_to_definition(service, primary_app_name))
         .collect()
 }
 
 fn compose_service_to_definition(
     service: &DetectedComposeService,
-    app_service_names: &std::collections::HashSet<&str>,
     primary_app_name: Option<&str>,
 ) -> Option<ServiceDefinition> {
-    if primary_app_name == Some(service.name.as_str())
-        || app_service_names.contains(service.name.as_str())
-    {
+    if primary_app_name == Some(service.name.as_str()) {
         return None;
     }
 
@@ -1181,6 +1276,10 @@ mod tests {
         let dir = setup_dir_with_nested_files(&[
             ("device-api/Cargo.toml", "[package]\nname = \"device-api\"\nversion = \"0.1.0\"\n"),
             ("device-api/Dockerfile", "FROM rust:1.82\n"),
+            (
+                "device-api/src/auth/jwt.rs",
+                "const PRIVATE_KEY_PATH: &str = \"properties/private.pem\";\nconst PUBLIC_KEY_PATH: &str = \"properties/public.pem\";\n",
+            ),
             ("upload/Cargo.toml", "[package]\nname = \"upload\"\nversion = \"0.1.0\"\n"),
             ("upload/Dockerfile", "FROM rust:1.82\n"),
             (
@@ -1189,11 +1288,11 @@ mod tests {
             ),
             (
                 "device-api/docker/local/compose.yml",
-                "services:\n  device-api:\n    build: .\n",
+                "services:\n  device-api:\n    build: .\n    volumes:\n      - device-api-properties:/app/properties\n",
             ),
             (
                 "upload/docker/local/compose.yml",
-                "services:\n  upload:\n    build: .\n  redis:\n    image: redis:7\n  grafana:\n    image: grafana/grafana:latest\n    environment:\n      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}\n",
+                "services:\n  upload:\n    build: .\n    image: ${UPLOAD_IMAGE:-syncopia/upload:local}\n    ports:\n      - \"8080:8080\"\n  redis:\n    image: redis:7\n  grafana:\n    image: grafana/grafana:latest\n    environment:\n      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}\n",
             ),
         ]);
 
@@ -1210,14 +1309,20 @@ mod tests {
             config.deploy.compose_file,
             Some(PathBuf::from("docker/local/compose.yml"))
         );
-        assert_eq!(
-            config
-                .services
-                .iter()
-                .map(|service| service.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["grafana", "redis"]
-        );
+        let mut service_names = config
+            .services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>();
+        service_names.sort();
+        assert_eq!(service_names, vec!["grafana", "redis", "upload"]);
+        let upload = config
+            .services
+            .iter()
+            .find(|service| service.name == "upload")
+            .unwrap();
+        assert_eq!(upload.image, "syncopia/upload:local");
+        assert_eq!(upload.ports, vec!["8080:8080"]);
         let grafana = config
             .services
             .iter()
@@ -1232,6 +1337,7 @@ mod tests {
         );
         assert!(rendered.contains("Discovered apps: device-api [custom], upload [custom]"));
         assert!(rendered.contains("Compose services detected: device-api, grafana, redis, upload"));
+        assert!(rendered.contains("device-api mounts /app/properties but scan did not find a checked-in keypair or generator service"));
     }
 
     #[test]
