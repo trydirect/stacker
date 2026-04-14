@@ -278,6 +278,17 @@ async fn given_upserted_chat(world: &mut StepWorld) {
     );
 }
 
+#[when("I upsert and then get chat history")]
+async fn upsert_then_get_chat(world: &mut StepWorld) {
+    let body = json!({
+        "messages": [{"role": "user", "content": "Test message"}]
+    });
+    world.put_json("/chat/history", &body).await;
+    assert_eq!(world.status_code.unwrap_or(0), 200, "Chat upsert failed");
+    // GET immediately after
+    world.get("/chat/history").await;
+}
+
 #[when("I get chat history")]
 async fn get_chat(world: &mut StepWorld) {
     world.get("/chat/history").await;

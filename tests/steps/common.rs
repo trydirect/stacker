@@ -31,6 +31,9 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     // Increase client limit for BDD tests (multiple scenarios create clients)
     configuration.max_clients_number = 100;
 
+    // Set internal services access key for audit ingest tests
+    std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", "bdd-internal-key");
+
     let connection_pool = match configure_database(&configuration.database).await {
         Ok(pool) => pool,
         Err(err) => {

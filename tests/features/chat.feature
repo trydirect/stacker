@@ -1,3 +1,4 @@
+@serial
 Feature: Chat History
   As a user I want to manage chat conversation history
 
@@ -9,8 +10,7 @@ Feature: Chat History
     Then the response status should be one of "200, 201"
 
   Scenario: Get chat history
-    Given I have upserted chat history
-    When I get chat history
+    When I upsert and then get chat history
     Then the response status should be 200
 
   Scenario: Delete chat history
