@@ -9,6 +9,7 @@ pub(crate) mod deployment;
 pub mod marketplace;
 pub mod dag;
 pub mod pipe;
+pub mod resilience;
 mod product;
 pub mod project;
 pub mod project_app;

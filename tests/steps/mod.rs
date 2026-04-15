@@ -3,6 +3,7 @@ pub mod cloud_server;
 pub mod common;
 pub mod dag;
 pub mod deployment;
+pub mod resilience;
 pub mod health;
 pub mod marketplace;
 pub mod mcp;

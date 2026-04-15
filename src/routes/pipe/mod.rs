@@ -1,6 +1,7 @@
 mod create;
 pub mod dag;
 mod delete;
+pub mod resilience;
 mod executions;
 mod get;
 mod list;

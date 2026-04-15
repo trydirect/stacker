@@ -89,3 +89,25 @@ async fn check_json_at_path_not_empty(world: &mut StepWorld, path: String) {
         _ => {} // non-null, non-string is fine
     }
 }
+
+#[then(regex = r#"^the response JSON at "(.+)" should be an empty array$"#)]
+async fn check_json_at_path_empty_array(world: &mut StepWorld, path: String) {
+    let json = world
+        .response_json
+        .as_ref()
+        .expect("No JSON response available");
+    let value = json
+        .pointer(&path)
+        .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
+    match value {
+        serde_json::Value::Array(arr) => {
+            assert!(arr.is_empty(), "Expected empty array at '{}', got {} items: {}", path, arr.len(), value);
+        }
+        serde_json::Value::Null => {
+            // null is acceptable as "empty" list for some endpoints
+        }
+        other => {
+            panic!("Expected array at '{}', got: {}", path, other);
+        }
+    }
+}

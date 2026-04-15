@@ -277,7 +277,18 @@ pub async fn run(
                             .service(routes::pipe::dag::add_edge_handler)
                             .service(routes::pipe::dag::list_edges_handler)
                             .service(routes::pipe::dag::delete_edge_handler)
-                            .service(routes::pipe::dag::validate_dag_handler),
+                            .service(routes::pipe::dag::validate_dag_handler)
+                            // Resilience: DLQ + Circuit Breaker
+                            .service(routes::pipe::resilience::list_dlq_handler)
+                            .service(routes::pipe::resilience::create_dlq_handler)
+                            .service(routes::pipe::resilience::get_dlq_handler)
+                            .service(routes::pipe::resilience::retry_dlq_handler)
+                            .service(routes::pipe::resilience::discard_dlq_handler)
+                            .service(routes::pipe::resilience::get_circuit_breaker_handler)
+                            .service(routes::pipe::resilience::update_circuit_breaker_handler)
+                            .service(routes::pipe::resilience::record_failure_handler)
+                            .service(routes::pipe::resilience::record_success_handler)
+                            .service(routes::pipe::resilience::reset_circuit_breaker_handler),
                     )
                     .service(
                         web::scope("/admin")
