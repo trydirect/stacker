@@ -37,7 +37,7 @@ async fn given_dag_pipe_template(world: &mut StepWorld, name: String) {
 
 // ─── Step creation helpers ────────────────────────────────────
 
-fn infer_step_type(name: &str) -> &str {
+pub fn infer_step_type(name: &str) -> &str {
     let lower = name.to_lowercase();
     if lower.contains("source") || lower == "s" {
         "source"

@@ -2,6 +2,7 @@ pub mod agent;
 pub mod cloud_server;
 pub mod common;
 pub mod dag;
+pub mod dag_execution;
 pub mod deployment;
 pub mod resilience;
 pub mod health;

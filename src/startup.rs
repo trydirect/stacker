@@ -278,6 +278,8 @@ pub async fn run(
                             .service(routes::pipe::dag::list_edges_handler)
                             .service(routes::pipe::dag::delete_edge_handler)
                             .service(routes::pipe::dag::validate_dag_handler)
+                            .service(routes::pipe::dag::execute_dag_handler)
+                            .service(routes::pipe::dag::list_step_executions_handler)
                             // Resilience: DLQ + Circuit Breaker
                             .service(routes::pipe::resilience::list_dlq_handler)
                             .service(routes::pipe::resilience::create_dlq_handler)

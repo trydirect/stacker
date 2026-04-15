@@ -2,6 +2,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::dag::{DagEdge, DagStep, VALID_STEP_TYPES};
 use crate::models::User;
+use crate::services::dag_executor;
 use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Result};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -385,4 +386,101 @@ pub async fn validate_dag_handler(
     Ok(JsonResponse::build()
         .set_item(Some(resp))
         .ok("DAG validation complete"))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Execute DAG
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Deserialize)]
+pub struct ExecuteDagRequest {
+    #[serde(default = "default_input")]
+    pub input_data: JsonValue,
+}
+
+fn default_input() -> JsonValue {
+    serde_json::json!({})
+}
+
+#[tracing::instrument(name = "Execute DAG", skip_all)]
+#[post("/instances/{instance_id}/dag/execute")]
+pub async fn execute_dag_handler(
+    user: web::ReqData<Arc<User>>,
+    path: web::Path<uuid::Uuid>,
+    req: web::Json<ExecuteDagRequest>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let instance_id = path.into_inner();
+
+    // Verify instance ownership
+    let instance = db::pipe::get_instance(pg_pool.get_ref(), &instance_id)
+        .await
+        .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
+
+    let instance = match instance {
+        Some(i) => i,
+        None => return Err(JsonResponse::<String>::not_found("Pipe instance not found")),
+    };
+
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &instance.deployment_hash)
+            .await
+            .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
+
+    match &deployment {
+        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+        _ => return Err(JsonResponse::<String>::not_found("Pipe instance not found")),
+    }
+
+    let template_id = instance.template_id
+        .ok_or_else(|| JsonResponse::<String>::bad_request("Pipe instance has no template".to_string()))?;
+
+    // Create a pipe_execution record for FK compliance
+    let pipe_exec = crate::models::pipe::PipeExecution::new(
+        instance_id,
+        instance.deployment_hash.clone(),
+        "dag".to_string(),
+        user.id.clone(),
+    );
+
+    let pipe_exec = db::pipe::insert_execution(pg_pool.get_ref(), &pipe_exec)
+        .await
+        .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
+
+    match dag_executor::execute_dag(
+        pg_pool.get_ref(),
+        &template_id,
+        pipe_exec.id,
+        &req.input_data,
+    )
+    .await
+    {
+        Ok(result) => Ok(JsonResponse::build()
+            .set_item(Some(result))
+            .ok("DAG executed successfully")),
+        Err(err) => Err(JsonResponse::<()>::build().bad_request(err)),
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// List Step Executions
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[tracing::instrument(name = "List DAG step executions", skip_all)]
+#[get("/{template_id}/dag/executions/{execution_id}/steps")]
+pub async fn list_step_executions_handler(
+    user: web::ReqData<Arc<User>>,
+    path: web::Path<(uuid::Uuid, uuid::Uuid)>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let (template_id, execution_id) = path.into_inner();
+    verify_template_owner(pg_pool.get_ref(), &template_id, &user).await?;
+
+    let step_executions = db::dag::list_step_executions(pg_pool.get_ref(), &execution_id)
+        .await
+        .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
+
+    Ok(JsonResponse::build()
+        .set_list(step_executions)
+        .ok("Step executions listed successfully"))
 }
