@@ -16,6 +16,7 @@ pub mod project;
 pub mod prometheus;
 pub mod streaming;
 pub mod supporting;
+pub mod visual_editor;
 
 use cucumber::World;
 use sqlx::PgPool;

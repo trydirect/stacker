@@ -373,6 +373,10 @@ pub async fn run(
                     .service(crate::routes::chat::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
+            .service(
+                actix_files::Files::new("/editor", "./web/dist")
+                    .index_file("index.html"),
+            )
             .app_data(json_config.clone())
             .app_data(api_pool.clone())
             .app_data(agent_pool.clone())
