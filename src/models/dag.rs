@@ -32,6 +32,7 @@ pub const VALID_STEP_TYPES: &[&str] = &[
     "http_stream_source",
     "grpc_source",
     "grpc_target",
+    "cdc_source",
 ];
 
 impl DagStep {

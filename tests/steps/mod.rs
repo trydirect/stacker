@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_executor;
+pub mod cdc;
 pub mod cloud_server;
 pub mod common;
 pub mod dag;
@@ -50,6 +51,12 @@ pub struct StepWorld {
     pub mcp_ws: McpWs,
     /// Circuit breaker for agent executor tests
     pub circuit_breaker: Option<stacker::services::resilience_engine::InMemoryCircuitBreaker>,
+    /// CDC change event for CDC BDD tests
+    pub cdc_event: Option<stacker::models::cdc::CdcChangeEvent>,
+    /// CDC pipe payload for CDC BDD tests
+    pub cdc_payload: Option<serde_json::Value>,
+    /// CDC trigger config for CDC BDD tests
+    pub cdc_trigger: Option<stacker::models::cdc::CdcTriggerConfig>,
 }
 
 /// Wrapper for WebSocket stream that implements Debug
@@ -102,6 +109,9 @@ impl StepWorld {
             mcp_connected: false,
             mcp_ws: McpWs(None),
             circuit_breaker: None,
+            cdc_event: None,
+            cdc_payload: None,
+            cdc_trigger: None,
         }
     }
 

@@ -111,6 +111,21 @@ pub async fn execute_step(
                 }))
             }
         }
+        "cdc_source" => {
+            // CDC source produces change events from PostgreSQL WAL.
+            // In simulation mode, returns config-defined output or a sample change event.
+            if let Some(output) = config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "cdc_connected": true,
+                    "replication_slot": config.get("replication_slot").cloned().unwrap_or(serde_json::json!("pipe_slot")),
+                    "publication": config.get("publication").cloned().unwrap_or(serde_json::json!("pipe_pub")),
+                    "tables": config.get("tables").cloned().unwrap_or(serde_json::json!([])),
+                    "status": "listening",
+                }))
+            }
+        }
         _ => Err(format!("Unknown step type: {}", step_type)),
     }
 }
@@ -281,6 +296,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, json!({"stream": "events"}));
+    }
+
+    #[tokio::test]
+    async fn cdc_source_default() {
+        let config = json!({"replication_slot": "test_slot", "publication": "test_pub", "tables": ["users"]});
+        let result = execute_step("cdc_source", &config, &json!({})).await.unwrap();
+        assert_eq!(result["cdc_connected"], true);
+        assert_eq!(result["replication_slot"], "test_slot");
+        assert_eq!(result["publication"], "test_pub");
+        assert_eq!(result["status"], "listening");
+    }
+
+    #[tokio::test]
+    async fn cdc_source_with_output() {
+        let config = json!({"output": {"event": "insert", "table": "users"}});
+        let result = execute_step("cdc_source", &config, &json!({})).await.unwrap();
+        assert_eq!(result["event"], "insert");
+        assert_eq!(result["table"], "users");
     }
 
     #[tokio::test]

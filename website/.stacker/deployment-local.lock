@@ -1,0 +1,10 @@
+target: local
+server_ip: 127.0.0.1
+ssh_user: null
+ssh_port: null
+server_name: null
+deployment_id: null
+project_id: null
+cloud_id: null
+project_name: null
+deployed_at: 2026-04-11T10:58:36.439261+00:00
