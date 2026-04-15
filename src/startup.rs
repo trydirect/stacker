@@ -268,7 +268,16 @@ pub async fn run(
                             .service(routes::pipe::update_instance_status_handler)
                             .service(routes::pipe::list_executions_handler)
                             .service(routes::pipe::get_execution_handler)
-                            .service(routes::pipe::replay_execution_handler),
+                            .service(routes::pipe::replay_execution_handler)
+                            .service(routes::pipe::dag::add_step_handler)
+                            .service(routes::pipe::dag::list_steps_handler)
+                            .service(routes::pipe::dag::get_step_handler)
+                            .service(routes::pipe::dag::update_step_handler)
+                            .service(routes::pipe::dag::delete_step_handler)
+                            .service(routes::pipe::dag::add_edge_handler)
+                            .service(routes::pipe::dag::list_edges_handler)
+                            .service(routes::pipe::dag::delete_edge_handler)
+                            .service(routes::pipe::dag::validate_dag_handler),
                     )
                     .service(
                         web::scope("/admin")

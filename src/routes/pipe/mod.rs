@@ -1,4 +1,5 @@
 mod create;
+pub mod dag;
 mod delete;
 mod executions;
 mod get;
