@@ -5,6 +5,7 @@ pub mod resilience;
 mod executions;
 mod get;
 mod list;
+pub mod stream;
 mod update;
 
 pub use create::*;

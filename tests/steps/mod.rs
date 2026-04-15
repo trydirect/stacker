@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod pipe;
 pub mod project;
 pub mod prometheus;
+pub mod streaming;
 pub mod supporting;
 
 use cucumber::World;

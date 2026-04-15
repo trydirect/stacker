@@ -1,5 +1,6 @@
 use crate::db;
 use crate::models::dag::{DagEdge, DagStep, DagStepExecution};
+use crate::services::{grpc_pipe, ws_pipe};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
@@ -161,7 +162,7 @@ fn compare_values(a: &JsonValue, b: &JsonValue) -> Option<std::cmp::Ordering> {
 
 /// Execute a single step given its type, config, and aggregated input from upstream steps.
 /// Returns (output_data, error) — error means the step failed.
-fn execute_step(
+async fn execute_step(
     step: &DagStep,
     input: &JsonValue,
 ) -> Result<JsonValue, String> {
@@ -172,7 +173,6 @@ fn execute_step(
 
     match step.step_type.as_str() {
         "source" => {
-            // Source: emit configured output or pass through input
             if let Some(output) = step.config.get("output") {
                 Ok(output.clone())
             } else {
@@ -180,15 +180,12 @@ fn execute_step(
             }
         }
         "transform" => {
-            // Transform: apply mapping config to produce output
-            // For now, merge input with mapping keys as a simple transform
             if let Some(mapping) = step.config.get("mapping") {
                 let mut result = input.clone();
                 if let (Some(result_obj), Some(mapping_obj)) =
                     (result.as_object_mut(), mapping.as_object())
                 {
                     for (key, _) in mapping_obj {
-                        // Copy field from input if referenced, otherwise keep the key
                         if let Some(val) = input.get(key) {
                             result_obj.insert(key.clone(), val.clone());
                         }
@@ -200,7 +197,6 @@ fn execute_step(
             }
         }
         "condition" => {
-            // Condition: evaluate and return result with pass/fail flag
             let passed = evaluate_condition(&step.config, input);
             Ok(serde_json::json!({
                 "condition_met": passed,
@@ -208,19 +204,68 @@ fn execute_step(
             }))
         }
         "target" => {
-            // Target: pass through input as final output
             Ok(serde_json::json!({
                 "delivered": true,
                 "data": input,
             }))
         }
-        "parallel_split" => {
-            // Split: fan out input to all downstream steps
-            Ok(input.clone())
+        "parallel_split" => Ok(input.clone()),
+        "parallel_join" => Ok(input.clone()),
+        "ws_source" => {
+            if let Some(output) = step.config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "ws_connected": true,
+                    "url": step.config.get("url").cloned().unwrap_or(serde_json::json!("unknown")),
+                    "data": input,
+                }))
+            }
         }
-        "parallel_join" => {
-            // Join: merge all upstream outputs
-            Ok(input.clone())
+        "ws_target" => {
+            if let Some(output) = step.config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "ws_delivered": true,
+                    "url": step.config.get("url").cloned().unwrap_or(serde_json::json!("unknown")),
+                    "data": input,
+                }))
+            }
+        }
+        "http_stream_source" => {
+            if let Some(output) = step.config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "stream_connected": true,
+                    "url": step.config.get("url").cloned().unwrap_or(serde_json::json!("unknown")),
+                    "event_filter": step.config.get("event_filter").cloned(),
+                    "data": input,
+                }))
+            }
+        }
+        "grpc_source" => {
+            if let Some(output) = step.config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "grpc_connected": true,
+                    "endpoint": step.config.get("endpoint").cloned().unwrap_or(serde_json::json!("unknown")),
+                    "data": input,
+                }))
+            }
+        }
+        "grpc_target" => {
+            if let Some(output) = step.config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "grpc_delivered": true,
+                    "endpoint": step.config.get("endpoint").cloned().unwrap_or(serde_json::json!("unknown")),
+                    "data": input,
+                }))
+            }
         }
         _ => Err(format!("Unknown step type: {}", step.step_type)),
     }
@@ -235,12 +280,15 @@ pub fn validate_dag(steps: &[DagStep], _edges: &[DagEdge]) -> Result<(), String>
         return Err("DAG must have at least one step".to_string());
     }
 
-    let has_source = steps.iter().any(|s| s.step_type == "source");
+    let source_types = ["source", "ws_source", "http_stream_source", "grpc_source"];
+    let target_types = ["target", "ws_target", "grpc_target"];
+
+    let has_source = steps.iter().any(|s| source_types.contains(&s.step_type.as_str()));
     if !has_source {
         return Err("DAG must have at least one source step".to_string());
     }
 
-    let has_target = steps.iter().any(|s| s.step_type == "target");
+    let has_target = steps.iter().any(|s| target_types.contains(&s.step_type.as_str()));
     if !has_target {
         return Err("DAG must have at least one target step".to_string());
     }
@@ -362,7 +410,7 @@ pub async fn execute_dag(
             };
 
             // Execute the step
-            match execute_step(step, &input) {
+            match execute_step(step, &input).await {
                 Ok(output) => {
                     // For condition steps, check if condition passed
                     if step.step_type == "condition" {

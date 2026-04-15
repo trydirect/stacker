@@ -27,6 +27,11 @@ pub const VALID_STEP_TYPES: &[&str] = &[
     "target",
     "parallel_split",
     "parallel_join",
+    "ws_source",
+    "ws_target",
+    "http_stream_source",
+    "grpc_source",
+    "grpc_target",
 ];
 
 impl DagStep {
