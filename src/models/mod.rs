@@ -1,5 +1,6 @@
 mod agent;
 pub mod agent_audit_log;
+pub mod agent_protocol;
 mod agreement;
 mod chat;
 mod client;

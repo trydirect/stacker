@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_executor;
 pub mod cloud_server;
 pub mod common;
 pub mod dag;
@@ -47,6 +48,8 @@ pub struct StepWorld {
     pub mcp_connected: bool,
     /// Active MCP WebSocket connection
     pub mcp_ws: McpWs,
+    /// Circuit breaker for agent executor tests
+    pub circuit_breaker: Option<stacker::services::resilience_engine::InMemoryCircuitBreaker>,
 }
 
 /// Wrapper for WebSocket stream that implements Debug
@@ -98,6 +101,7 @@ impl StepWorld {
             mcp_response: None,
             mcp_connected: false,
             mcp_ws: McpWs(None),
+            circuit_breaker: None,
         }
     }
 

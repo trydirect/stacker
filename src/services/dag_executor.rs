@@ -1,6 +1,6 @@
 use crate::db;
 use crate::models::dag::{DagEdge, DagStep, DagStepExecution};
-use crate::services::{grpc_pipe, ws_pipe};
+use crate::services::step_executor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
@@ -101,174 +101,21 @@ pub fn topological_sort(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Condition Evaluator
+// Step Executor (delegates to step_executor module)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Evaluates a condition config against input data.
-/// Config format: {"field": "field_name", "operator": "gt|lt|eq|ne|gte|lte", "value": <val>}
-fn evaluate_condition(config: &JsonValue, input: &JsonValue) -> bool {
-    let field = match config.get("field").and_then(|f| f.as_str()) {
-        Some(f) => f,
-        None => return true, // No field = pass-through
-    };
-
-    let operator = match config.get("operator").and_then(|o| o.as_str()) {
-        Some(o) => o,
-        None => return true,
-    };
-
-    let threshold = match config.get("value") {
-        Some(v) => v,
-        None => return true,
-    };
-
-    let actual = match input.get(field) {
-        Some(v) => v,
-        None => return false, // Field missing = condition fails
-    };
-
-    match operator {
-        "gt" => compare_values(actual, threshold) == Some(std::cmp::Ordering::Greater),
-        "gte" => matches!(
-            compare_values(actual, threshold),
-            Some(std::cmp::Ordering::Greater) | Some(std::cmp::Ordering::Equal)
-        ),
-        "lt" => compare_values(actual, threshold) == Some(std::cmp::Ordering::Less),
-        "lte" => matches!(
-            compare_values(actual, threshold),
-            Some(std::cmp::Ordering::Less) | Some(std::cmp::Ordering::Equal)
-        ),
-        "eq" => compare_values(actual, threshold) == Some(std::cmp::Ordering::Equal),
-        "ne" => compare_values(actual, threshold) != Some(std::cmp::Ordering::Equal),
-        _ => true,
-    }
-}
-
-fn compare_values(a: &JsonValue, b: &JsonValue) -> Option<std::cmp::Ordering> {
-    // Try numeric comparison first
-    if let (Some(a_num), Some(b_num)) = (a.as_f64(), b.as_f64()) {
-        return a_num.partial_cmp(&b_num);
-    }
-    // String comparison
-    if let (Some(a_str), Some(b_str)) = (a.as_str(), b.as_str()) {
-        return Some(a_str.cmp(b_str));
-    }
-    None
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Step Executor
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Execute a single step given its type, config, and aggregated input from upstream steps.
-/// Returns (output_data, error) — error means the step failed.
+/// Execute a single step — delegates to the shared step_executor module.
 async fn execute_step(
     step: &DagStep,
     input: &JsonValue,
 ) -> Result<JsonValue, String> {
-    // Check for simulated failure (testing hook)
-    if let Some(err_msg) = step.config.get("error").and_then(|e| e.as_str()) {
-        return Err(err_msg.to_string());
-    }
+    step_executor::execute_step(&step.step_type, &step.config, input).await
+}
 
-    match step.step_type.as_str() {
-        "source" => {
-            if let Some(output) = step.config.get("output") {
-                Ok(output.clone())
-            } else {
-                Ok(input.clone())
-            }
-        }
-        "transform" => {
-            if let Some(mapping) = step.config.get("mapping") {
-                let mut result = input.clone();
-                if let (Some(result_obj), Some(mapping_obj)) =
-                    (result.as_object_mut(), mapping.as_object())
-                {
-                    for (key, _) in mapping_obj {
-                        if let Some(val) = input.get(key) {
-                            result_obj.insert(key.clone(), val.clone());
-                        }
-                    }
-                }
-                Ok(result)
-            } else {
-                Ok(input.clone())
-            }
-        }
-        "condition" => {
-            let passed = evaluate_condition(&step.config, input);
-            Ok(serde_json::json!({
-                "condition_met": passed,
-                "input": input,
-            }))
-        }
-        "target" => {
-            Ok(serde_json::json!({
-                "delivered": true,
-                "data": input,
-            }))
-        }
-        "parallel_split" => Ok(input.clone()),
-        "parallel_join" => Ok(input.clone()),
-        "ws_source" => {
-            if let Some(output) = step.config.get("output") {
-                Ok(output.clone())
-            } else {
-                Ok(serde_json::json!({
-                    "ws_connected": true,
-                    "url": step.config.get("url").cloned().unwrap_or(serde_json::json!("unknown")),
-                    "data": input,
-                }))
-            }
-        }
-        "ws_target" => {
-            if let Some(output) = step.config.get("output") {
-                Ok(output.clone())
-            } else {
-                Ok(serde_json::json!({
-                    "ws_delivered": true,
-                    "url": step.config.get("url").cloned().unwrap_or(serde_json::json!("unknown")),
-                    "data": input,
-                }))
-            }
-        }
-        "http_stream_source" => {
-            if let Some(output) = step.config.get("output") {
-                Ok(output.clone())
-            } else {
-                Ok(serde_json::json!({
-                    "stream_connected": true,
-                    "url": step.config.get("url").cloned().unwrap_or(serde_json::json!("unknown")),
-                    "event_filter": step.config.get("event_filter").cloned(),
-                    "data": input,
-                }))
-            }
-        }
-        "grpc_source" => {
-            if let Some(output) = step.config.get("output") {
-                Ok(output.clone())
-            } else {
-                Ok(serde_json::json!({
-                    "grpc_connected": true,
-                    "endpoint": step.config.get("endpoint").cloned().unwrap_or(serde_json::json!("unknown")),
-                    "data": input,
-                }))
-            }
-        }
-        "grpc_target" => {
-            if let Some(output) = step.config.get("output") {
-                Ok(output.clone())
-            } else {
-                Ok(serde_json::json!({
-                    "grpc_delivered": true,
-                    "endpoint": step.config.get("endpoint").cloned().unwrap_or(serde_json::json!("unknown")),
-                    "data": input,
-                }))
-            }
-        }
-        _ => Err(format!("Unknown step type: {}", step.step_type)),
-    }
+/// Evaluate a condition — delegates to the shared step_executor module.
+#[allow(dead_code)]
+fn evaluate_condition(config: &JsonValue, input: &JsonValue) -> bool {
+    step_executor::evaluate_condition(config, input)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
