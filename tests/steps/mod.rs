@@ -10,6 +10,7 @@ pub mod marketplace;
 pub mod mcp;
 pub mod pipe;
 pub mod project;
+pub mod prometheus;
 pub mod supporting;
 
 use cucumber::World;
@@ -36,6 +37,8 @@ pub struct StepWorld {
     pub stored_ids: HashMap<String, String>,
     /// Last JSON response parsed
     pub response_json: Option<serde_json::Value>,
+    /// Last HTTP response headers
+    pub response_headers: Option<reqwest::header::HeaderMap>,
     /// MCP WebSocket response (last JSON-RPC response received)
     pub mcp_response: Option<serde_json::Value>,
     /// Whether the MCP WebSocket connection is open
@@ -89,6 +92,7 @@ impl StepWorld {
             auth_token: "user-a-token".to_string(),
             stored_ids: HashMap::new(),
             response_json: None,
+            response_headers: None,
             mcp_response: None,
             mcp_connected: false,
             mcp_ws: McpWs(None),
@@ -107,10 +111,12 @@ impl StepWorld {
             .expect("GET request failed");
 
         let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
         let body = resp.text().await.unwrap_or_default();
         self.status_code = Some(status);
         self.response_body = Some(body.clone());
         self.response_json = serde_json::from_str(&body).ok();
+        self.response_headers = Some(headers);
         (status, body)
     }
 
@@ -127,10 +133,12 @@ impl StepWorld {
             .expect("POST request failed");
 
         let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
         let body = resp.text().await.unwrap_or_default();
         self.status_code = Some(status);
         self.response_body = Some(body.clone());
         self.response_json = serde_json::from_str(&body).ok();
+        self.response_headers = Some(headers);
         (status, body)
     }
 

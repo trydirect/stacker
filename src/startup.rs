@@ -25,6 +25,9 @@ pub async fn run(
     let settings_arc = Arc::new(settings.clone());
     let api_pool_arc = Arc::new(api_pool.clone());
 
+    // Initialize Prometheus metrics (registers all counters/gauges/histograms)
+    crate::metrics::init();
+
     let settings = web::Data::new(settings);
     let api_pool = web::Data::new(api_pool);
     let agent_pool = web::Data::new(agent_pool);
@@ -102,6 +105,7 @@ pub async fn run(
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Compress::default())
+            .wrap(middleware::prometheus::PrometheusMetrics)
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
             .app_data(handoff_store.clone())
@@ -111,6 +115,10 @@ pub async fn run(
                 web::scope("/health_check")
                     .service(routes::health_check)
                     .service(routes::health_metrics),
+            )
+            .service(
+                web::scope("/metrics")
+                    .service(routes::prometheus_metrics),
             )
             .service(
                 web::scope("/client")
