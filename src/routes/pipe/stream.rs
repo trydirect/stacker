@@ -11,8 +11,8 @@ use std::sync::Arc;
 /// completion notifications, and error reports.
 #[get("/instances/{instance_id}/stream")]
 pub async fn execution_stream_handler(
-    pg_pool: web::Data<Arc<PgPool>>,
-    user: web::ReqData<User>,
+    pg_pool: web::Data<PgPool>,
+    user: web::ReqData<Arc<User>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let instance_id = path.into_inner();

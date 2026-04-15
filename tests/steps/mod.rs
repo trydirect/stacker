@@ -8,6 +8,7 @@ pub mod resilience;
 pub mod health;
 pub mod marketplace;
 pub mod mcp;
+pub mod ml_field_match;
 pub mod pipe;
 pub mod project;
 pub mod prometheus;
