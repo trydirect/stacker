@@ -127,7 +127,7 @@ pub fn validate_dag(steps: &[DagStep], _edges: &[DagEdge]) -> Result<(), String>
         return Err("DAG must have at least one step".to_string());
     }
 
-    let source_types = ["source", "ws_source", "http_stream_source", "grpc_source", "cdc_source"];
+    let source_types = ["source", "ws_source", "http_stream_source", "grpc_source", "cdc_source", "amqp_source", "kafka_source"];
     let target_types = ["target", "ws_target", "grpc_target"];
 
     let has_source = steps.iter().any(|s| source_types.contains(&s.step_type.as_str()));

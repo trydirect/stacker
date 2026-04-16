@@ -80,6 +80,21 @@ const STEP_FIELDS: Record<string, FieldDef[]> = {
   parallel_join: [
     { key: 'strategy', label: 'Strategy', type: 'select', options: ['wait_all', 'wait_any', 'merge'] },
   ],
+  amqp_source: [
+    { key: 'amqp_url', label: 'AMQP URL', type: 'text', placeholder: 'amqp://guest:guest@localhost:5672/%2f' },
+    { key: 'queue', label: 'Queue', type: 'text', placeholder: 'my_queue' },
+    { key: 'exchange', label: 'Exchange', type: 'text', placeholder: 'my_exchange' },
+    { key: 'routing_key', label: 'Routing Key', type: 'text', placeholder: '#' },
+    { key: 'prefetch_count', label: 'Prefetch Count', type: 'number' },
+    { key: 'auto_ack', label: 'Auto Ack', type: 'checkbox' },
+  ],
+  kafka_source: [
+    { key: 'brokers', label: 'Brokers', type: 'text', placeholder: 'localhost:9092,localhost:9093' },
+    { key: 'topic', label: 'Topic', type: 'text', placeholder: 'my_topic' },
+    { key: 'group_id', label: 'Group ID', type: 'text', placeholder: 'my_consumer_group' },
+    { key: 'auto_offset_reset', label: 'Offset Reset', type: 'select', options: ['earliest', 'latest'] },
+    { key: 'enable_ssl', label: 'SSL', type: 'checkbox' },
+  ],
 };
 
 const StepConfigPanel: React.FC<StepConfigPanelProps> = ({

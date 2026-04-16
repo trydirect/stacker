@@ -10,7 +10,7 @@ const StepPalette: React.FC<StepPaletteProps> = ({ onAddStep }) => {
   const [expanded, setExpanded] = useState(true);
 
   const categories: Record<string, StepType[]> = {
-    'Sources': ['source', 'cdc_source', 'ws_source', 'grpc_source', 'http_stream_source'],
+    'Sources': ['source', 'cdc_source', 'ws_source', 'grpc_source', 'http_stream_source', 'amqp_source', 'kafka_source'],
     'Processing': ['transform', 'condition'],
     'Targets': ['target', 'ws_target', 'grpc_target'],
     'Parallel': ['parallel_split', 'parallel_join'],

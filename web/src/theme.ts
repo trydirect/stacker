@@ -14,6 +14,8 @@ const STEP_COLORS: Record<StepType | string, { bg: string; border: string; icon:
   grpc_target:      { bg: '#f3e5f5', border: '#9c27b0', icon: '🚀' },
   parallel_split:   { bg: '#e0f7fa', border: '#00bcd4', icon: '🔀' },
   parallel_join:    { bg: '#f1f8e9', border: '#8bc34a', icon: '🔁' },
+  amqp_source:      { bg: '#fce4ec', border: '#e91e63', icon: '🐰' },
+  kafka_source:     { bg: '#efebe9', border: '#795548', icon: '📨' },
 };
 
 export function stepColor(type: string) {

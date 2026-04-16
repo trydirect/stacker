@@ -33,6 +33,8 @@ pub const VALID_STEP_TYPES: &[&str] = &[
     "grpc_source",
     "grpc_target",
     "cdc_source",
+    "amqp_source",
+    "kafka_source",
 ];
 
 impl DagStep {

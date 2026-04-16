@@ -126,6 +126,33 @@ pub async fn execute_step(
                 }))
             }
         }
+        "amqp_source" => {
+            if let Some(output) = config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "amqp_connected": true,
+                    "queue": config.get("queue").cloned().unwrap_or(serde_json::json!("default")),
+                    "exchange": config.get("exchange").cloned().unwrap_or(serde_json::json!("")),
+                    "status": "consuming",
+                    "data": input,
+                }))
+            }
+        }
+        "kafka_source" => {
+            if let Some(output) = config.get("output") {
+                Ok(output.clone())
+            } else {
+                Ok(serde_json::json!({
+                    "kafka_connected": true,
+                    "brokers": config.get("brokers").cloned().unwrap_or(serde_json::json!("localhost:9092")),
+                    "topic": config.get("topic").cloned().unwrap_or(serde_json::json!("default")),
+                    "group_id": config.get("group_id").cloned().unwrap_or(serde_json::json!("pipe_group")),
+                    "status": "subscribed",
+                    "data": input,
+                }))
+            }
+        }
         _ => Err(format!("Unknown step type: {}", step_type)),
     }
 }

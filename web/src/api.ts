@@ -53,6 +53,7 @@ export const STEP_TYPES = [
   'parallel_split', 'parallel_join',
   'ws_source', 'ws_target', 'http_stream_source',
   'grpc_source', 'grpc_target', 'cdc_source',
+  'amqp_source', 'kafka_source',
 ] as const;
 
 export type StepType = typeof STEP_TYPES[number];
