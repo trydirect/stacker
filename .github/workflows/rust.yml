@@ -31,6 +31,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+      - name: Install protoc
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install protobuf
+          fi
       - name: Verify .sqlx cache exists
         run: |
           ls -lh .sqlx/ || echo ".sqlx directory not found"
@@ -91,6 +98,8 @@ jobs:
       SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
