@@ -366,6 +366,7 @@ pub struct PipeCreateCommand {
     pub manual: bool,
     pub ai: bool,
     pub no_ai: bool,
+    pub ml: bool,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -377,6 +378,7 @@ impl PipeCreateCommand {
         manual: bool,
         ai: bool,
         no_ai: bool,
+        ml: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -386,6 +388,7 @@ impl PipeCreateCommand {
             manual,
             ai,
             no_ai,
+            ml,
             json,
             deployment,
         }
@@ -561,11 +564,12 @@ impl CallableTrait for PipeCreateCommand {
             && !src_fields.is_empty()
             && !tgt_fields.is_empty()
         {
-            let matcher = select_field_matcher(self.ai, self.no_ai);
+            let matcher = select_field_matcher(self.ai, self.no_ai, self.ml);
             let result = matcher.match_fields(src_fields, tgt_fields, src_sample.as_ref());
             let mode_label = match result.mode {
                 crate::cli::field_matcher::MatchingMode::Ai => "AI",
                 crate::cli::field_matcher::MatchingMode::Deterministic => "deterministic",
+                crate::cli::field_matcher::MatchingMode::Ml => "ML",
             };
             println!(
                 "\n  Auto-matching fields ({} mode, source → target):",
@@ -841,7 +845,11 @@ fn truncate_str(s: &str, max: usize) -> String {
 /// 1. `--ai` flag → AI matcher (error if AI not configured)
 /// 2. `--no-ai` flag → deterministic matcher
 /// 3. Neither flag → check `stacker.yml` ai.enabled; if true → AI, else → deterministic
-fn select_field_matcher(force_ai: bool, force_no_ai: bool) -> Box<dyn FieldMatcher> {
+fn select_field_matcher(force_ai: bool, force_no_ai: bool, force_ml: bool) -> Box<dyn FieldMatcher> {
+    if force_ml {
+        return Box::new(crate::cli::ml_field_matcher::MlFieldMatcher::new());
+    }
+
     if force_no_ai {
         return Box::new(DeterministicFieldMatcher);
     }

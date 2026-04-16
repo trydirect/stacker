@@ -1,7 +1,9 @@
+use crate::configuration::Settings;
 use crate::db;
 use crate::forms::status_panel;
 use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, CommandPriority, User};
+use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
 use actix_web::{post, web, Responder, Result};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -24,6 +26,7 @@ pub async fn enqueue_handler(
     user: web::ReqData<Arc<User>>,
     payload: web::Json<EnqueueRequest>,
     agent_pool: web::Data<AgentPgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     if payload.deployment_hash.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
@@ -33,18 +36,13 @@ pub async fn enqueue_handler(
         return Err(JsonResponse::<()>::build().bad_request("command_type is required"));
     }
 
-    // Verify deployment belongs to the requesting user
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => {
-            return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
-        }
-    }
+    resolve_owned_deployment_by_hash(
+        agent_pool.as_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &payload.deployment_hash,
+    )
+    .await?;
 
     // Validate parameters
     let validated_parameters =

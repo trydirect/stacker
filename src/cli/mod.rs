@@ -13,6 +13,7 @@ pub mod fmt;
 pub mod generator;
 pub mod install_runner;
 pub mod local_compose;
+pub mod ml_field_matcher;
 pub mod progress;
 pub mod proxy_manager;
 pub mod runtime;

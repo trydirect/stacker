@@ -25,6 +25,9 @@ pub async fn run(
     let settings_arc = Arc::new(settings.clone());
     let api_pool_arc = Arc::new(api_pool.clone());
 
+    // Initialize Prometheus metrics (registers all counters/gauges/histograms)
+    crate::metrics::init();
+
     let settings = web::Data::new(settings);
     let api_pool = web::Data::new(api_pool);
     let agent_pool = web::Data::new(agent_pool);
@@ -102,6 +105,7 @@ pub async fn run(
             .wrap(authorization.clone())
             .wrap(middleware::authentication::Manager::new())
             .wrap(Compress::default())
+            .wrap(middleware::prometheus::PrometheusMetrics)
             .app_data(health_checker.clone())
             .app_data(health_metrics.clone())
             .app_data(handoff_store.clone())
@@ -111,6 +115,10 @@ pub async fn run(
                 web::scope("/health_check")
                     .service(routes::health_check)
                     .service(routes::health_metrics),
+            )
+            .service(
+                web::scope("/metrics")
+                    .service(routes::prometheus_metrics),
             )
             .service(
                 web::scope("/client")
@@ -137,8 +145,12 @@ pub async fn run(
                     .service(crate::routes::project::deploy::item)
                     .service(crate::routes::project::deploy::saved_item)
                     .service(crate::routes::project::deploy::rollback)
+                    .service(crate::routes::project::member::add)
+                    .service(crate::routes::project::member::list)
+                    .service(crate::routes::project::member::delete)
                     .service(crate::routes::project::compose::add)
                     .service(crate::routes::project::get::list)
+                    .service(crate::routes::project::get::shared_list)
                     .service(crate::routes::project::get::item)
                     .service(crate::routes::project::add::item)
                     .service(crate::routes::project::update::item)
@@ -264,7 +276,33 @@ pub async fn run(
                             .service(routes::pipe::update_instance_status_handler)
                             .service(routes::pipe::list_executions_handler)
                             .service(routes::pipe::get_execution_handler)
-                            .service(routes::pipe::replay_execution_handler),
+                            .service(routes::pipe::replay_execution_handler)
+                            .service(routes::pipe::dag::add_step_handler)
+                            .service(routes::pipe::dag::list_steps_handler)
+                            .service(routes::pipe::dag::get_step_handler)
+                            .service(routes::pipe::dag::update_step_handler)
+                            .service(routes::pipe::dag::delete_step_handler)
+                            .service(routes::pipe::dag::add_edge_handler)
+                            .service(routes::pipe::dag::list_edges_handler)
+                            .service(routes::pipe::dag::delete_edge_handler)
+                            .service(routes::pipe::dag::validate_dag_handler)
+                            .service(routes::pipe::dag::execute_dag_handler)
+                            .service(routes::pipe::dag::list_step_executions_handler)
+                            // Streaming: SSE execution stream
+                            .service(routes::pipe::stream::execution_stream_handler)
+                            // Field matching
+                            .service(routes::pipe::field_match_handler)
+                            // Resilience: DLQ + Circuit Breaker
+                            .service(routes::pipe::resilience::list_dlq_handler)
+                            .service(routes::pipe::resilience::create_dlq_handler)
+                            .service(routes::pipe::resilience::get_dlq_handler)
+                            .service(routes::pipe::resilience::retry_dlq_handler)
+                            .service(routes::pipe::resilience::discard_dlq_handler)
+                            .service(routes::pipe::resilience::get_circuit_breaker_handler)
+                            .service(routes::pipe::resilience::update_circuit_breaker_handler)
+                            .service(routes::pipe::resilience::record_failure_handler)
+                            .service(routes::pipe::resilience::record_success_handler)
+                            .service(routes::pipe::resilience::reset_circuit_breaker_handler),
                     )
                     .service(
                         web::scope("/admin")
@@ -335,6 +373,10 @@ pub async fn run(
                     .service(crate::routes::chat::delete::item),
             )
             .service(web::resource("/mcp").route(web::get().to(mcp::mcp_websocket)))
+            .service(
+                actix_files::Files::new("/editor", "./web/dist")
+                    .index_file("index.html"),
+            )
             .app_data(json_config.clone())
             .app_data(api_pool.clone())
             .app_data(agent_pool.clone())

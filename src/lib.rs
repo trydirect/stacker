@@ -9,6 +9,7 @@ pub mod handoff;
 pub mod health;
 pub mod helpers;
 pub mod mcp;
+pub mod metrics;
 mod middleware;
 pub mod models;
 pub mod project_app;

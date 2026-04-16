@@ -188,10 +188,17 @@ fn resolve_deployment_hash(ctx: &CliRuntime) -> Result<String, CliError> {
         }
     }
 
-    // 2. stacker.yml project → active agent (most recent heartbeat)
+    // 2. stacker.yml explicit deployment hash
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     if config_path.exists() {
         if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
+            if let Some(hash) = config.deploy.deployment_hash.as_ref() {
+                if !hash.trim().is_empty() {
+                    return Ok(hash.clone());
+                }
+            }
+
+            // 3. stacker.yml project → active agent (most recent heartbeat)
             if let Some(ref project_name) = config.project.identity {
                 let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
                 if let Some(proj) = project {

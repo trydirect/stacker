@@ -27,6 +27,18 @@ pub async fn item(
         })
 }
 
+#[tracing::instrument(name = "Get shared project list.", skip_all)]
+#[get("/shared")]
+pub async fn shared_list(
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::project::fetch_shared_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|err| JsonResponse::internal_server_error(err))
+        .map(|projects| JsonResponse::build().set_list(projects).ok("OK"))
+}
+
 #[tracing::instrument(name = "Get project list.", skip_all)]
 #[get("")]
 pub async fn list(

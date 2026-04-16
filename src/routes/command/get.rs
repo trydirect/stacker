@@ -1,6 +1,8 @@
+use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::User;
+use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
 use actix_web::{get, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -11,20 +13,17 @@ pub async fn get_handler(
     user: web::ReqData<Arc<User>>,
     path: web::Path<(String, String)>,
     pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     let (deployment_hash, command_id) = path.into_inner();
 
-    // Verify deployment belongs to the requesting user
-    let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
-        .await
-        .map_err(|err| JsonResponse::internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => {
-            return Err(JsonResponse::not_found("Deployment not found"));
-        }
-    }
+    resolve_owned_deployment_by_hash(
+        pg_pool.get_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &deployment_hash,
+    )
+    .await?;
 
     // Fetch command by its string command_id (e.g. "cmd_<uuid>"), not the row UUID
     let command = db::command::fetch_by_command_id(pg_pool.get_ref(), &command_id)

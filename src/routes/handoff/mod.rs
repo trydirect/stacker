@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::stacker_client::DEFAULT_STACKER_URL;
+use crate::configuration::Settings;
 use crate::db;
 use crate::handoff::{
     DeploymentHandoffAgent, DeploymentHandoffCloud, DeploymentHandoffCredentials,
@@ -14,6 +15,9 @@ use crate::handoff::{
 };
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::routes::legacy_installations::{
+    infer_legacy_target, legacy_target_name, resolve_owned_deployment_for_handoff, OwnedDeployment,
+};
 use crate::services::InMemoryHandoffStore;
 
 const HANDOFF_TTL_MINUTES: i64 = 15;
@@ -24,29 +28,44 @@ pub async fn mint_handler(
     user: web::ReqData<Arc<models::User>>,
     pg_pool: web::Data<PgPool>,
     handoff_store: web::Data<Arc<InMemoryHandoffStore>>,
+    settings: web::Data<Settings>,
     http_request: actix_web::HttpRequest,
 ) -> Result<impl Responder> {
-    let deployment = resolve_owned_deployment(pg_pool.get_ref(), &user.id, &request).await?;
-    let project = db::project::fetch(pg_pool.get_ref(), deployment.project_id)
-        .await
-        .map_err(JsonResponse::<String>::internal_server_error)?
-        .ok_or_else(|| JsonResponse::<String>::not_found("Project not found"))?;
-
-    let server = db::server::fetch_by_project(pg_pool.get_ref(), project.id)
-        .await
-        .map_err(JsonResponse::<String>::internal_server_error)?
-        .into_iter()
-        .next();
-
     let expires_at = Utc::now() + Duration::minutes(HANDOFF_TTL_MINUTES);
-    let payload = build_payload(
-        &http_request,
+    let payload = match resolve_owned_deployment_for_handoff(
+        pg_pool.get_ref(),
+        settings.get_ref(),
         user.as_ref(),
-        &project,
-        &deployment,
-        server.as_ref(),
-        expires_at,
-    );
+        request.deployment_id.map(i64::from),
+        request.deployment_hash.as_deref(),
+    )
+    .await?
+    {
+        OwnedDeployment::Native(deployment) => {
+            let project = db::project::fetch(pg_pool.get_ref(), deployment.project_id)
+                .await
+                .map_err(JsonResponse::<String>::internal_server_error)?
+                .ok_or_else(|| JsonResponse::<String>::not_found("Project not found"))?;
+
+            let server = db::server::fetch_by_project(pg_pool.get_ref(), project.id)
+                .await
+                .map_err(JsonResponse::<String>::internal_server_error)?
+                .into_iter()
+                .next();
+
+            build_payload(
+                &http_request,
+                user.as_ref(),
+                &project,
+                &deployment,
+                server.as_ref(),
+                expires_at,
+            )
+        }
+        OwnedDeployment::Legacy(installation) => {
+            build_legacy_payload(&http_request, user.as_ref(), &installation, expires_at)
+        }
+    };
     let token = handoff_store.insert(payload);
     let base_url = resolve_public_base_url(&http_request);
     let link = DeploymentHandoffLink {
@@ -77,33 +96,6 @@ pub async fn resolve_handler(
     Ok(JsonResponse::build()
         .set_item(payload)
         .ok("CLI handoff resolved"))
-}
-
-async fn resolve_owned_deployment(
-    pg_pool: &PgPool,
-    user_id: &str,
-    request: &DeploymentHandoffMintRequest,
-) -> Result<models::Deployment> {
-    let deployment = if let Some(deployment_id) = request.deployment_id {
-        db::deployment::fetch(pg_pool, deployment_id)
-            .await
-            .map_err(JsonResponse::<String>::internal_server_error)?
-    } else if let Some(deployment_hash) = request.deployment_hash.as_deref() {
-        db::deployment::fetch_by_deployment_hash(pg_pool, deployment_hash)
-            .await
-            .map_err(JsonResponse::<String>::internal_server_error)?
-    } else {
-        return Err(JsonResponse::<String>::bad_request(
-            "deployment_id or deployment_hash is required",
-        ));
-    };
-
-    let deployment =
-        deployment.ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
-    if deployment.user_id.as_deref() != Some(user_id) {
-        return Err(JsonResponse::<String>::not_found("Deployment not found"));
-    }
-    Ok(deployment)
 }
 
 fn build_payload(
@@ -194,6 +186,103 @@ fn build_payload(
     }
 }
 
+fn build_legacy_payload(
+    http_request: &actix_web::HttpRequest,
+    user: &models::User,
+    installation: &crate::connectors::user_service::install::InstallationDetails,
+    expires_at: chrono::DateTime<Utc>,
+) -> DeploymentHandoffPayload {
+    let target = infer_legacy_target(installation);
+    let installation_id = installation
+        .id
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or_default();
+    let deployment_hash = installation.deployment_hash.clone().unwrap_or_default();
+    let project_name = legacy_target_name(installation);
+    let server_ip = installation
+        .server_ip
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+
+    let lockfile = serde_json::to_value(DeploymentLock {
+        target: target.clone(),
+        server_ip: server_ip.clone(),
+        ssh_user: server_ip.as_ref().map(|_| "root".to_string()),
+        ssh_port: server_ip.as_ref().map(|_| 22),
+        server_name: installation
+            .domain
+            .clone()
+            .or_else(|| installation.stack_code.clone()),
+        deployment_id: None,
+        project_id: None,
+        cloud_id: None,
+        project_name: Some(project_name.clone()),
+        deployed_at: installation
+            .updated_at
+            .clone()
+            .unwrap_or_else(|| Utc::now().to_rfc3339()),
+    })
+    .unwrap_or_else(|_| serde_json::json!({}));
+
+    let base_url = resolve_public_base_url(http_request);
+    DeploymentHandoffPayload {
+        version: 1,
+        expires_at,
+        project: DeploymentHandoffProject {
+            id: installation_id,
+            name: project_name.clone(),
+            identity: Some(project_name.clone()),
+        },
+        deployment: DeploymentHandoffDeployment {
+            id: installation_id,
+            hash: deployment_hash.clone(),
+            target: target.clone(),
+            status: installation
+                .status
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        },
+        server: server_ip.clone().map(|ip| DeploymentHandoffServer {
+            ip: Some(ip),
+            ssh_user: Some("root".to_string()),
+            ssh_port: Some(22),
+            name: installation
+                .domain
+                .clone()
+                .or_else(|| installation.stack_code.clone()),
+        }),
+        cloud: installation
+            .cloud
+            .as_ref()
+            .map(|provider| DeploymentHandoffCloud {
+                id: 0,
+                provider: Some(provider.clone()),
+                region: None,
+            }),
+        lockfile,
+        stacker_yml: Some(render_legacy_stacker_yml(
+            &project_name,
+            &deployment_hash,
+            &target,
+            installation,
+        )),
+        agent: server_ip.map(|ip| DeploymentHandoffAgent {
+            base_url: format!("http://{}:8080", ip),
+            deployment_hash,
+        }),
+        credentials: user
+            .access_token
+            .clone()
+            .map(|access_token| DeploymentHandoffCredentials {
+                access_token,
+                token_type: "Bearer".to_string(),
+                expires_at,
+                email: Some(user.email.clone()),
+                server_url: Some(base_url),
+            }),
+    }
+}
+
 fn infer_target(server: Option<&models::Server>) -> String {
     match server {
         Some(srv) if srv.cloud_id.is_some() => "cloud".to_string(),
@@ -238,6 +327,33 @@ fn render_stacker_yml(
                 lines.push(format!("    server: {}", quote_yaml(server_name)));
             }
         }
+    }
+
+    lines.join("\n") + "\n"
+}
+
+fn render_legacy_stacker_yml(
+    project_name: &str,
+    deployment_hash: &str,
+    target: &str,
+    installation: &crate::connectors::user_service::install::InstallationDetails,
+) -> String {
+    let mut lines = vec![
+        format!("name: {}", quote_yaml(project_name)),
+        "project:".to_string(),
+        format!("  identity: {}", quote_yaml(project_name)),
+        "deploy:".to_string(),
+        format!("  target: {}", quote_yaml(target)),
+        format!("  deployment_hash: {}", quote_yaml(deployment_hash)),
+    ];
+
+    if target == "server" {
+        lines.push("  server:".to_string());
+        if let Some(host) = installation.server_ip.as_ref() {
+            lines.push(format!("    host: {}", quote_yaml(host)));
+        }
+        lines.push("    user: root".to_string());
+        lines.push("    port: 22".to_string());
     }
 
     lines.join("\n") + "\n"

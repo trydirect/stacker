@@ -90,6 +90,192 @@ async fn create_marketplace_project(
     project_id
 }
 
+async fn create_project_with_locked_provider(
+    pool: &sqlx::PgPool,
+    user_id: &str,
+    locked_cloud_provider: &str,
+) -> i32 {
+    sqlx::query(
+        r#"INSERT INTO project (
+            stack_id,
+            user_id,
+            name,
+            metadata,
+            request_json,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            gen_random_uuid(),
+            $1,
+            'Locked Provider Project',
+            '{}'::jsonb,
+            $2,
+            NOW(),
+            NOW()
+        )
+        RETURNING id"#,
+    )
+    .bind(user_id)
+    .bind(json!({
+        "custom": {
+            "locked_cloud_provider": locked_cloud_provider
+        }
+    }))
+    .fetch_one(pool)
+    .await
+    .expect("Failed to insert project with locked cloud provider")
+    .get::<i32, _>("id")
+}
+
+#[tokio::test]
+async fn deploy_rejects_provider_mismatch_when_project_has_locked_cloud_provider() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = create_project_with_locked_provider(&app.db_pool, "test_user_id", "htz").await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/project/{}/deploy", app.address, project_id))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "stack": {
+                "vars": [],
+                "integrated_features": [],
+                "extended_features": [],
+                "subscriptions": [],
+                "form_app": []
+            },
+            "cloud": {
+                "provider": "aws",
+                "cloud_token": "test-cloud-token",
+                "save_token": false
+            },
+            "server": {
+                "region": "us-east-1",
+                "server": "t3.small",
+                "os": "ubuntu-24.04",
+                "disk_type": "gp3"
+            }
+        }))
+        .send()
+        .await
+        .expect("deploy request failed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json().await.expect("response body should be json");
+    let message = body["message"]
+        .as_str()
+        .expect("error response should include message");
+
+    assert!(message.contains("locked"));
+    assert!(message.contains("htz"));
+    assert!(message.contains("aws"));
+}
+
+#[tokio::test]
+async fn deploy_with_saved_cloud_rejects_provider_mismatch_when_project_has_locked_cloud_provider()
+{
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = create_project_with_locked_provider(&app.db_pool, "test_user_id", "htz").await;
+    let cloud_id =
+        common::create_test_cloud(&app.db_pool, "test_user_id", "saved-aws", "aws").await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/project/{}/deploy/{}",
+            app.address, project_id, cloud_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "stack": {
+                "vars": [],
+                "integrated_features": [],
+                "extended_features": [],
+                "subscriptions": [],
+                "form_app": []
+            },
+            "cloud": {
+                "provider": "aws"
+            },
+            "server": {
+                "region": "us-east-1",
+                "server": "t3.small",
+                "os": "ubuntu-24.04",
+                "disk_type": "gp3"
+            }
+        }))
+        .send()
+        .await
+        .expect("deploy request failed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json().await.expect("response body should be json");
+    let message = body["message"]
+        .as_str()
+        .expect("error response should include message");
+
+    assert!(message.contains("locked"));
+    assert!(message.contains("htz"));
+    assert!(message.contains("aws"));
+}
+
+#[tokio::test]
+async fn deploy_with_saved_cloud_uses_saved_provider_for_locked_provider_validation() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = create_project_with_locked_provider(&app.db_pool, "test_user_id", "htz").await;
+    let cloud_id =
+        common::create_test_cloud(&app.db_pool, "test_user_id", "saved-aws", "aws").await;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/project/{}/deploy/{}",
+            app.address, project_id, cloud_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "stack": {
+                "vars": [],
+                "integrated_features": [],
+                "extended_features": [],
+                "subscriptions": [],
+                "form_app": []
+            },
+            "cloud": {
+                "provider": ""
+            },
+            "server": {
+                "region": "us-east-1",
+                "server": "t3.small",
+                "os": "ubuntu-24.04",
+                "disk_type": "gp3"
+            }
+        }))
+        .send()
+        .await
+        .expect("deploy request failed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json().await.expect("response body should be json");
+    let message = body["message"]
+        .as_str()
+        .expect("error response should include message");
+
+    assert!(message.contains("locked"));
+    assert!(message.contains("htz"));
+    assert!(message.contains("aws"));
+}
+
 #[tokio::test]
 async fn deploy_rejects_marketplace_targets_that_do_not_match_template_requirements() {
     let Some(app) = common::spawn_app_with_vault().await else {

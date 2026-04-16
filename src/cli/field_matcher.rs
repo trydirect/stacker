@@ -30,6 +30,7 @@ pub struct FieldMatchResult {
 pub enum MatchingMode {
     Deterministic,
     Ai,
+    Ml,
 }
 
 impl std::fmt::Display for MatchingMode {
@@ -37,6 +38,7 @@ impl std::fmt::Display for MatchingMode {
         match self {
             Self::Deterministic => write!(f, "deterministic"),
             Self::Ai => write!(f, "ai"),
+            Self::Ml => write!(f, "ml"),
         }
     }
 }
@@ -313,6 +315,7 @@ mod tests {
     fn test_matching_mode_display() {
         assert_eq!(MatchingMode::Deterministic.to_string(), "deterministic");
         assert_eq!(MatchingMode::Ai.to_string(), "ai");
+        assert_eq!(MatchingMode::Ml.to_string(), "ml");
     }
 
     #[test]

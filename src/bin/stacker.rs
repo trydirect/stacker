@@ -589,6 +589,9 @@ enum PipeCommands {
         /// Force deterministic field matching (disable AI even if configured)
         #[arg(long, conflicts_with = "ai")]
         no_ai: bool,
+        /// Use ML-based field matching (n-gram cosine similarity)
+        #[arg(long, conflicts_with_all = ["ai", "no_ai"])]
+        ml: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1251,10 +1254,11 @@ fn get_command(
                     manual,
                     ai,
                     no_ai,
+                    ml,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeCreateCommand::new(
-                    source, target, manual, ai, no_ai, json, deployment,
+                    source, target, manual, ai, no_ai, ml, json, deployment,
                 )),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))

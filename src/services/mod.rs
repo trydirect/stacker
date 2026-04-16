@@ -1,5 +1,10 @@
 pub mod agent_dispatcher;
 pub mod config_renderer;
+pub mod dag_executor;
+pub mod grpc_pipe;
+pub mod resilience_engine;
+pub mod step_executor;
+pub mod ws_pipe;
 pub mod deployment_identifier;
 pub mod handoff;
 pub mod log_cache;

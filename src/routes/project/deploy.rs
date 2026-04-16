@@ -139,6 +139,35 @@ fn validate_min_cpu_requirement(
     }
 }
 
+fn project_locked_cloud_provider(project: &models::Project) -> Option<&str> {
+    project
+        .request_json
+        .get("custom")
+        .and_then(|custom| custom.get("locked_cloud_provider"))
+        .and_then(|provider| provider.as_str())
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+}
+
+fn validate_project_locked_cloud_provider(
+    project: &models::Project,
+    provider: &str,
+) -> Result<(), String> {
+    let provider = provider.trim();
+    let Some(locked_provider) = project_locked_cloud_provider(project) else {
+        return Ok(());
+    };
+
+    if locked_provider.eq_ignore_ascii_case(provider) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "This project is locked to cloud provider '{}'. Deploying with '{}' is not allowed.",
+        locked_provider, provider
+    ))
+}
+
 async fn validate_template_server_capacity_requirements(
     template: &models::StackTemplate,
     requirements: &models::InfrastructureRequirements,
@@ -409,6 +438,7 @@ pub async fn item(
 ) -> Result<impl Responder> {
     let id = path.0;
     tracing::debug!("User {} is deploying project: {}", user.id, id);
+    form.cloud.provider = form.cloud.provider.trim().to_string();
 
     if !form.validate().is_ok() {
         let errors = form.validate().unwrap_err().to_string();
@@ -426,6 +456,9 @@ pub async fn item(
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
         })?;
+
+    validate_project_locked_cloud_provider(&project, &form.cloud.provider)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
         let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
@@ -617,7 +650,7 @@ pub async fn item(
 #[post("/{id}/deploy/{cloud_id}")]
 pub async fn saved_item(
     user: web::ReqData<Arc<models::User>>,
-    form: web::Json<forms::project::Deploy>,
+    mut form: web::Json<forms::project::Deploy>,
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
@@ -635,14 +668,6 @@ pub async fn saved_item(
         id,
         cloud_id
     );
-
-    if !form.validate().is_ok() {
-        let errors = form.validate().unwrap_err().to_string();
-        let err_msg = format!("Invalid form data received {:?}", &errors);
-        tracing::debug!(err_msg);
-
-        return Err(JsonResponse::<models::Project>::build().form_error(errors));
-    }
 
     // Validate project
     let project = db::project::fetch(pg_pool.get_ref(), id)
@@ -706,6 +731,19 @@ pub async fn saved_item(
             return Err(JsonResponse::<models::Project>::build().not_found("No cloud configured"));
         }
     };
+
+    validate_project_locked_cloud_provider(&project, &cloud.provider)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+    form.cloud.provider = cloud.provider.trim().to_string();
+
+    if !form.validate().is_ok() {
+        let errors = form.validate().unwrap_err().to_string();
+        let err_msg = format!("Invalid form data received {:?}", &errors);
+        tracing::debug!(err_msg);
+
+        return Err(JsonResponse::<models::Project>::build().form_error(errors));
+    }
 
     // Validate that saved cloud credentials can be decrypted before proceeding.
     // When SECURITY_KEY changed or encryption is corrupted, decode() silently

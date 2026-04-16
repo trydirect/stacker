@@ -3,9 +3,11 @@
 mod common;
 
 use common::{
-    create_test_deployment, create_test_project, spawn_app_two_users, USER_A_ID, USER_A_TOKEN,
-    USER_B_TOKEN,
+    create_test_deployment, create_test_project, spawn_app_two_users,
+    spawn_app_two_users_with_user_service, USER_A_ID, USER_A_TOKEN, USER_B_TOKEN,
 };
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn test_owner_can_mint_and_resolve_handoff() {
@@ -144,4 +146,69 @@ async fn test_handoff_mint_rejects_unauthenticated() {
         .expect("Failed to send unauthenticated mint request");
 
     assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn test_owner_can_mint_handoff_for_legacy_installation() {
+    let user_service = MockServer::start().await;
+    let auth_header = format!("Bearer {}", USER_A_TOKEN);
+    Mock::given(method("GET"))
+        .and(path("/api/1.0/installations/13830"))
+        .and(header("authorization", auth_header.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "_id": 13830,
+            "stack_code": "openclaw",
+            "status": "completed",
+            "cloud": "hetzner",
+            "deployment_hash": "legacy-dep-13830",
+            "domain": "openclawtest1.com",
+            "server_ip": "203.0.113.10",
+            "_created": "2026-04-13T10:00:00Z",
+            "_updated": "2026-04-13T10:05:00Z"
+        })))
+        .mount(&user_service)
+        .await;
+
+    let Some(app) = spawn_app_two_users_with_user_service(&user_service.uri()).await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let mint = client
+        .post(format!("{}/api/v1/handoff/mint", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .json(&serde_json::json!({
+            "deployment_id": 13830,
+            "deployment_hash": "legacy-dep-13830"
+        }))
+        .send()
+        .await
+        .expect("Failed to mint handoff");
+
+    assert_eq!(
+        mint.status(),
+        200,
+        "Mint should succeed for legacy installation"
+    );
+    let minted: serde_json::Value = mint.json().await.expect("Mint response must be json");
+    let command = minted["item"]["command"]
+        .as_str()
+        .expect("Mint response should include CLI command");
+    let token = minted["item"]["token"]
+        .as_str()
+        .expect("Mint response should include handoff token");
+    assert!(command.starts_with("stacker connect --handoff "));
+
+    let resolve = client
+        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .json(&serde_json::json!({ "token": token }))
+        .send()
+        .await
+        .expect("Failed to resolve handoff");
+    assert_eq!(resolve.status(), 200);
+
+    let resolved: serde_json::Value = resolve.json().await.expect("Resolve response must be json");
+    assert_eq!(resolved["item"]["deployment"]["hash"], "legacy-dep-13830");
+    assert_eq!(resolved["item"]["deployment"]["target"], "cloud");
+    assert_eq!(resolved["item"]["server"]["ip"], "203.0.113.10");
 }

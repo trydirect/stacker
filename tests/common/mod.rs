@@ -1,6 +1,7 @@
 use actix_web::{get, web, App, HttpServer, Responder};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
+use stacker::connectors::config::UserServiceConfig;
 use stacker::forms;
 use stacker::helpers::AgentPgPool;
 use std::net::TcpListener;
@@ -90,8 +91,27 @@ pub struct TwoUserTestApp {
 /// - Bearer token containing "user-b" → returns User B (other_user_id)
 /// - Any other Bearer token → returns User A (test_user_id)
 pub async fn spawn_app_two_users() -> Option<TwoUserTestApp> {
-    let mut configuration = get_configuration().expect("Failed to get configuration");
+    let configuration = get_configuration().expect("Failed to get configuration");
+    spawn_app_two_users_with_configuration(configuration).await
+}
 
+pub async fn spawn_app_two_users_with_user_service(
+    user_service_base_url: &str,
+) -> Option<TwoUserTestApp> {
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+    configuration.connectors.user_service = Some(UserServiceConfig {
+        enabled: true,
+        base_url: user_service_base_url.trim_end_matches('/').to_string(),
+        timeout_secs: 10,
+        retry_attempts: 1,
+        auth_token: None,
+    });
+    spawn_app_two_users_with_configuration(configuration).await
+}
+
+pub async fn spawn_app_two_users_with_configuration(
+    mut configuration: Settings,
+) -> Option<TwoUserTestApp> {
     let auth_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
 

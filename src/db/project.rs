@@ -49,6 +49,34 @@ pub async fn fetch_by_user(pool: &PgPool, user_id: &str) -> Result<Vec<models::P
     })
 }
 
+pub async fn fetch_shared_by_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<models::SharedProjectSummary>, String> {
+    let query_span = tracing::info_span!("Fetch shared projects by user id.");
+    sqlx::query_as::<_, models::SharedProjectSummary>(
+        r#"
+        SELECT
+            p.id,
+            p.name,
+            pm.role,
+            pm.created_at AS shared_at
+        FROM project_member pm
+        JOIN project p ON p.id = pm.project_id
+        WHERE pm.user_id = $1
+        ORDER BY pm.created_at DESC, p.id DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to fetch shared projects, error: {:?}", err);
+        "".to_string()
+    })
+}
+
 pub async fn fetch_one_by_name(
     pool: &PgPool,
     name: &str,
