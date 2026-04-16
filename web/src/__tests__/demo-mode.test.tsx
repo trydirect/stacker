@@ -64,6 +64,13 @@ describe('Demo mode — standalone without auth', () => {
     expect(screen.getByText(/demo mode/i)).toBeInTheDocument();
   });
 
+  it('shows Sign Up / Login link in demo mode', () => {
+    render(<DagEditor templateId="demo" token="" />);
+    const link = screen.getByText(/sign up/i);
+    expect(link).toBeInTheDocument();
+    expect(link.closest('a')).toHaveAttribute('href', '/login');
+  });
+
   it('does NOT show demo banner when a real token is provided', () => {
     render(<DagEditor templateId="demo" token="abc123-real-token" />);
     expect(screen.queryByText(/demo mode/i)).not.toBeInTheDocument();

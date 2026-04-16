@@ -90,11 +90,11 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
   const onConnect = useCallback(
     (params: Connection) => {
       setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: '#666' } }, eds));
-      if (params.source && params.target) {
+      if (!isDemo && params.source && params.target) {
         api.addEdge(templateId, { from_step_id: params.source, to_step_id: params.target }, token).catch((e: Error) => toast.error(e.message));
       }
     },
-    [setEdges, templateId, token],
+    [setEdges, templateId, token, isDemo],
   );
 
   const onAddStep = useCallback(
@@ -110,23 +110,25 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
       };
       setNodes((nds) => [...nds, newNode]);
 
-      api
-        .addStep(templateId, { name: name || stepType, step_type: stepType, config: {} }, token)
-        .then((created) => {
-          setNodes((nds) =>
-            nds.map((n) => (n.id === id ? { ...n, id: created.id } : n)),
-          );
-          setEdges((eds) =>
-            eds.map((e) => ({
-              ...e,
-              source: e.source === id ? created.id : e.source,
-              target: e.target === id ? created.id : e.target,
-            })),
-          );
-        })
-        .catch((e: Error) => toast.error(e.message));
+      if (!isDemo) {
+        api
+          .addStep(templateId, { name: name || stepType, step_type: stepType, config: {} }, token)
+          .then((created) => {
+            setNodes((nds) =>
+              nds.map((n) => (n.id === id ? { ...n, id: created.id } : n)),
+            );
+            setEdges((eds) =>
+              eds.map((e) => ({
+                ...e,
+                source: e.source === id ? created.id : e.source,
+                target: e.target === id ? created.id : e.target,
+              })),
+            );
+          })
+          .catch((e: Error) => toast.error(e.message));
+      }
     },
-    [setNodes, setEdges, templateId, token],
+    [setNodes, setEdges, templateId, token, isDemo],
   );
 
   const onDrop = useCallback(
@@ -151,14 +153,16 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
       };
       setNodes((nds) => [...nds, newNode]);
 
-      api
-        .addStep(templateId, { name: stepType, step_type: stepType, config: {} }, token)
-        .then((created) => {
-          setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, id: created.id } : n)));
-        })
-        .catch((e: Error) => toast.error(e.message));
+      if (!isDemo) {
+        api
+          .addStep(templateId, { name: stepType, step_type: stepType, config: {} }, token)
+          .then((created) => {
+            setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, id: created.id } : n)));
+          })
+          .catch((e: Error) => toast.error(e.message));
+      }
     },
-    [reactFlowInstance, setNodes, templateId, token],
+    [reactFlowInstance, setNodes, templateId, token, isDemo],
   );
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -177,9 +181,11 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
           n.id === stepId ? { ...n, data: { ...n.data, label: name, config } } : n,
         ),
       );
-      api.updateStep(templateId, stepId, { name, config }, token).catch((e: Error) => toast.error(e.message));
+      if (!isDemo) {
+        api.updateStep(templateId, stepId, { name, config }, token).catch((e: Error) => toast.error(e.message));
+      }
     },
-    [setNodes, templateId, token],
+    [setNodes, templateId, token, isDemo],
   );
 
   const onDeleteStep = useCallback(
@@ -187,18 +193,22 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
       setNodes((nds) => nds.filter((n) => n.id !== stepId));
       setEdges((eds) => eds.filter((e) => e.source !== stepId && e.target !== stepId));
       setSelectedStep(null);
-      api.deleteStep(templateId, stepId, token).catch((e: Error) => toast.error(e.message));
+      if (!isDemo) {
+        api.deleteStep(templateId, stepId, token).catch((e: Error) => toast.error(e.message));
+      }
     },
-    [setNodes, setEdges, templateId, token],
+    [setNodes, setEdges, templateId, token, isDemo],
   );
 
   const onEdgesDelete = useCallback(
     (deletedEdges: Edge[]) => {
-      for (const edge of deletedEdges) {
-        api.deleteEdge(templateId, edge.id, token).catch((e: Error) => toast.error(e.message));
+      if (!isDemo) {
+        for (const edge of deletedEdges) {
+          api.deleteEdge(templateId, edge.id, token).catch((e: Error) => toast.error(e.message));
+        }
       }
     },
-    [templateId, token],
+    [templateId, token, isDemo],
   );
 
   const onValidate = useCallback(async () => {
@@ -275,9 +285,28 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
             padding: '6px 12px',
             fontSize: 13,
             fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
           }}
         >
-          Demo mode — changes not saved
+          <span>Demo mode — changes not saved</span>
+          <a
+            href="/login"
+            style={{
+              background: '#fff',
+              color: '#ff9800',
+              padding: '3px 12px',
+              borderRadius: 4,
+              fontSize: 12,
+              fontWeight: 700,
+              textDecoration: 'none',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Sign Up / Login
+          </a>
         </div>
       )}
       {showTemplatePicker && <TemplatePicker onSelect={onSelectTemplate} />}
