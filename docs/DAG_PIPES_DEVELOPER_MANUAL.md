@@ -11,14 +11,15 @@ Build, validate, and execute data pipelines across your deployed services using 
 
 1. [Concepts](#concepts)
 2. [Step Types Reference](#step-types-reference)
-3. [Tutorial: OpenClaw + PostgreSQL CDC Pipeline](#tutorial-openclaw--postgresql-cdc-pipeline)
-   - [Scenario](#scenario)
-   - [Method 1: CLI Workflow](#method-1-cli-workflow)
-   - [Method 2: Visual DAG Editor (Web)](#method-2-visual-dag-editor-web)
-4. [CLI Command Reference](#cli-command-reference)
-5. [REST API Reference](#rest-api-reference)
-6. [gRPC Streaming](#grpc-streaming)
-7. [Troubleshooting](#troubleshooting)
+3. [Examples](#examples)
+   - [Example 1: Contact Form → Telegram + Slack](#example-1-contact-form--telegram--slack)
+   - [Example 2: Contact Form → PostgreSQL → CDC → Telegram](#example-2-contact-form--postgresql--cdc--telegram)
+   - [Example 3: Contact Form → Email + Slack](#example-3-contact-form--email--slack)
+4. [Visual DAG Editor (Web)](#visual-dag-editor-web)
+5. [CLI Command Reference](#cli-command-reference)
+6. [REST API Reference](#rest-api-reference)
+7. [gRPC Streaming](#grpc-streaming)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -101,419 +102,437 @@ Used in `condition` steps:
 
 ---
 
-## Tutorial: OpenClaw + PostgreSQL CDC Pipeline
+## Examples
 
-### Scenario
+All examples below use the same pattern:
 
-You have a deployed stack with:
-
-- **OpenClaw** — AI workbench (REST API on port 8080)
-- **PostgreSQL** — database backend
-- **Redis** — caching layer
-- **Telegraf** — metrics collection
-
-**Goal**: Build a pipeline that:
-
-1. Captures database changes (INSERT/UPDATE) from PostgreSQL via CDC
-2. Filters only changes to the `ai_sessions` table
-3. Transforms the data into a notification payload
-4. Sends it to OpenClaw's webhook endpoint for real-time model re-training triggers
-5. Also streams the event via WebSocket for a live monitoring dashboard
-
-The resulting DAG:
-
+```bash
+# Setup variables (used in all examples)
+BASE="http://localhost:8080/api/v1"
+AUTH="Authorization: Bearer $(stacker token)"
+CT="Content-Type: application/json"
 ```
-[cdc_source: pg_changes]
-        │
-        ▼
-[condition: is_ai_session]
-        │
-   ┌────┴────┐
-   ▼         ▼
-[transform: [parallel_split]
- enrich]     │
-   │    ┌────┴────┐
-   │    ▼         ▼
-   │ [target:  [ws_target:
-   │  openclaw]  dashboard]
-   │    │         │
-   │    └────┬────┘
-   │         ▼
-   │  [parallel_join]
-   │         │
-   └────►────┘
-```
+
+> **Prefer a visual approach?** All examples below can also be built in the [Visual DAG Editor](#visual-dag-editor-web) at `http://localhost:8080/editor` using drag-and-drop — no curl needed.
 
 ---
 
-### Method 1: CLI Workflow
+### Example 1: Contact Form → Telegram + Slack
 
-#### Step 1 — Create the pipe template
+The simplest multi-target pipeline. A website form submission is sent to both Telegram and Slack simultaneously.
 
-```bash
-# Login to stacker (if not already authenticated)
-stacker login
-
-# Create a named pipe template for our project
-curl -s -X POST http://localhost:8080/api/v1/pipes/templates \
-  -H "Authorization: Bearer $(stacker token)" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "OpenClaw CDC Retraining Pipeline",
-    "description": "Captures PostgreSQL changes and triggers OpenClaw model retraining",
-    "source_app_type": "postgresql",
-    "target_app_type": "openclaw"
-  }' | jq .
+```
+[source: contact_form] → [parallel_split] → [target: telegram]
+                                           → [target: slack]
+                                → [parallel_join] → [target: log]
 ```
 
-Save the returned `template_id`:
-
-```bash
-TEMPLATE_ID="<returned-uuid>"
-```
-
-#### Step 2 — Add DAG steps
-
-```bash
-API="http://localhost:8080/api/v1/pipes/$TEMPLATE_ID/dag"
-AUTH="Authorization: Bearer $(stacker token)"
-
-# Step 1: CDC Source — listen to PostgreSQL WAL
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "pg_changes",
-    "step_type": "cdc_source",
-    "step_order": 1,
-    "config": {
-      "replication_slot": "openclaw_pipe_slot",
-      "publication": "openclaw_pub",
-      "tables": ["public.ai_sessions", "public.training_jobs"]
-    }
-  }' | jq -r '.item.id'
-# → Save as CDC_STEP_ID
-
-# Step 2: Condition — filter for ai_sessions table only
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "is_ai_session",
-    "step_type": "condition",
-    "step_order": 2,
-    "config": {
-      "field": "table_name",
-      "operator": "eq",
-      "value": "ai_sessions"
-    }
-  }' | jq -r '.item.id'
-# → Save as CONDITION_STEP_ID
-
-# Step 3: Transform — enrich CDC event for OpenClaw
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "enrich_payload",
-    "step_type": "transform",
-    "step_order": 3,
-    "config": {
-      "field_mapping": {
-        "event_type": "$.operation",
-        "session_id": "$.after.id",
-        "model_name": "$.after.model_name",
-        "parameters": "$.after.parameters",
-        "timestamp": "$.captured_at",
-        "action": "retrain_trigger"
-      }
-    }
-  }' | jq -r '.item.id'
-# → Save as TRANSFORM_STEP_ID
-
-# Step 4: Parallel split — fan out to two targets
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "fan_out",
-    "step_type": "parallel_split",
-    "step_order": 4,
-    "config": {}
-  }' | jq -r '.item.id'
-# → Save as SPLIT_STEP_ID
-
-# Step 5: Target — POST to OpenClaw retraining webhook
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "openclaw_webhook",
-    "step_type": "target",
-    "step_order": 5,
-    "config": {
-      "url": "http://openclaw:8080/api/v1/hooks/retrain",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/json",
-        "X-Pipe-Source": "cdc"
-      }
-    }
-  }' | jq -r '.item.id'
-# → Save as TARGET_STEP_ID
-
-# Step 6: WebSocket target — stream to monitoring dashboard
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "dashboard_stream",
-    "step_type": "ws_target",
-    "step_order": 6,
-    "config": {
-      "url": "ws://dashboard:3000/ws/events"
-    }
-  }' | jq -r '.item.id'
-# → Save as WS_TARGET_STEP_ID
-
-# Step 7: Parallel join — merge branches
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "merge",
-    "step_type": "parallel_join",
-    "step_order": 7,
-    "config": {}
-  }' | jq -r '.item.id'
-# → Save as JOIN_STEP_ID
-
-# Step 8: Final target — log completion
-curl -s -X POST "$API/steps" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "name": "completion_log",
-    "step_type": "target",
-    "step_order": 8,
-    "config": {
-      "url": "http://telegraf:8186/write",
-      "method": "POST",
-      "headers": {"Content-Type": "text/plain"},
-      "body_template": "pipe_execution,pipeline=openclaw_cdc status=\"completed\""
-    }
-  }' | jq -r '.item.id'
-# → Save as LOG_TARGET_ID
-```
-
-#### Step 3 — Connect steps with edges
-
-```bash
-# CDC → Condition
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$CDC_STEP_ID\", \"to_step_id\": \"$CONDITION_STEP_ID\"}"
-
-# Condition → Transform
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$CONDITION_STEP_ID\", \"to_step_id\": \"$TRANSFORM_STEP_ID\"}"
-
-# Transform → Parallel Split
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$TRANSFORM_STEP_ID\", \"to_step_id\": \"$SPLIT_STEP_ID\"}"
-
-# Split → OpenClaw target
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$SPLIT_STEP_ID\", \"to_step_id\": \"$TARGET_STEP_ID\"}"
-
-# Split → WebSocket dashboard
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$SPLIT_STEP_ID\", \"to_step_id\": \"$WS_TARGET_STEP_ID\"}"
-
-# OpenClaw target → Join
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$TARGET_STEP_ID\", \"to_step_id\": \"$JOIN_STEP_ID\"}"
-
-# WebSocket target → Join
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$WS_TARGET_STEP_ID\", \"to_step_id\": \"$JOIN_STEP_ID\"}"
-
-# Join → Completion log
-curl -s -X POST "$API/edges" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{\"from_step_id\": \"$JOIN_STEP_ID\", \"to_step_id\": \"$LOG_TARGET_ID\"}"
-```
-
-#### Step 4 — Validate the DAG
-
-```bash
-curl -s -X POST "$API/validate" \
-  -H "$AUTH" -H "Content-Type: application/json" | jq .
-```
-
-Expected response:
-```json
-{
-  "valid": true,
-  "total_steps": 8,
-  "execution_levels": 5,
-  "sources": ["cdc_source"],
-  "targets": ["target", "ws_target"]
-}
-```
-
-#### Step 5 — Create an instance and execute
-
-```bash
-# Create a pipe instance bound to your deployment
-INSTANCE=$(curl -s -X POST http://localhost:8080/api/v1/pipes/instances \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d "{
-    \"pipe_template_id\": \"$TEMPLATE_ID\",
-    \"deployment_hash\": \"$(stacker config get deployment_hash)\",
-    \"name\": \"OpenClaw CDC — Production\"
-  }" | jq -r '.item.id')
-
-# Execute the DAG (manual trigger with test data)
-curl -s -X POST "http://localhost:8080/api/v1/pipes/instances/$INSTANCE/dag/execute" \
-  -H "$AUTH" -H "Content-Type: application/json" \
-  -d '{
-    "input_data": {
-      "table_name": "ai_sessions",
-      "operation": "INSERT",
-      "after": {
-        "id": "sess-001",
-        "model_name": "gpt-4-finetune",
-        "parameters": {"epochs": 3, "learning_rate": 0.001}
-      },
-      "captured_at": "2026-04-16T12:00:00Z"
-    }
-  }' | jq .
-```
-
-Expected execution result:
-```json
-{
-  "execution_id": "...",
-  "status": "completed",
-  "total_steps": 8,
-  "completed_steps": 8,
-  "failed_steps": 0,
-  "skipped_steps": 0,
-  "execution_order": ["pg_changes", "is_ai_session", "enrich_payload", "fan_out", "openclaw_webhook", "dashboard_stream", "merge", "completion_log"]
-}
-```
-
-#### Step 6 — Activate for continuous CDC listening
-
-```bash
-# Activate with webhook trigger — agent will listen for CDC events
-stacker pipe activate $INSTANCE --trigger webhook
-```
-
-#### All-in-one script
-
-For convenience, here's the complete pipeline as a shell script:
+#### Create the pipeline (CLI)
 
 ```bash
 #!/bin/bash
-# create-openclaw-cdc-pipeline.sh
+# example1-contact-to-telegram-slack.sh
 set -euo pipefail
 
 BASE="http://localhost:8080/api/v1"
 AUTH="Authorization: Bearer $(stacker token)"
 CT="Content-Type: application/json"
 
-echo "Creating pipe template..."
-TEMPLATE_ID=$(curl -sf -X POST "$BASE/pipes/templates" \
+# 1. Create template
+TEMPLATE=$(curl -sf -X POST "$BASE/pipes/templates" \
   -H "$AUTH" -H "$CT" \
-  -d '{"name":"OpenClaw CDC Pipeline","description":"CDC → filter → transform → OpenClaw + dashboard"}' \
+  -d '{"name":"Contact Form → Telegram + Slack","description":"Forward contact form submissions to Telegram and Slack"}' \
   | jq -r '.item.id')
-echo "Template: $TEMPLATE_ID"
+echo "Template: $TEMPLATE"
 
-DAG="$BASE/pipes/$TEMPLATE_ID/dag"
-
+DAG="$BASE/pipes/$TEMPLATE/dag"
 add_step() { curl -sf -X POST "$DAG/steps" -H "$AUTH" -H "$CT" -d "$1" | jq -r '.item.id'; }
-add_edge() { curl -sf -X POST "$DAG/edges" -H "$AUTH" -H "$CT" -d "$1"; }
+add_edge() { curl -sf -X POST "$DAG/edges" -H "$AUTH" -H "$CT" -d "$1" > /dev/null; }
 
-echo "Adding steps..."
-S1=$(add_step '{"name":"pg_changes","step_type":"cdc_source","step_order":1,"config":{"replication_slot":"openclaw_pipe_slot","publication":"openclaw_pub","tables":["public.ai_sessions"]}}')
-S2=$(add_step '{"name":"is_ai_session","step_type":"condition","step_order":2,"config":{"field":"table_name","operator":"eq","value":"ai_sessions"}}')
-S3=$(add_step '{"name":"enrich","step_type":"transform","step_order":3,"config":{"field_mapping":{"event_type":"$.operation","session_id":"$.after.id","model_name":"$.after.model_name","action":"retrain_trigger"}}}')
-S4=$(add_step '{"name":"fan_out","step_type":"parallel_split","step_order":4,"config":{}}')
-S5=$(add_step '{"name":"openclaw_webhook","step_type":"target","step_order":5,"config":{"url":"http://openclaw:8080/api/v1/hooks/retrain","method":"POST"}}')
-S6=$(add_step '{"name":"dashboard_ws","step_type":"ws_target","step_order":6,"config":{"url":"ws://dashboard:3000/ws/events"}}')
-S7=$(add_step '{"name":"merge","step_type":"parallel_join","step_order":7,"config":{}}')
-S8=$(add_step '{"name":"log_to_telegraf","step_type":"target","step_order":8,"config":{"url":"http://telegraf:8186/write","method":"POST"}}')
+# 2. Add steps
+SOURCE=$(add_step '{
+  "name": "contact_form",
+  "step_type": "source",
+  "step_order": 1,
+  "config": {
+    "url": "http://website:3000/api/contact",
+    "method": "POST"
+  }
+}')
 
-echo "Connecting edges..."
-add_edge "{\"from_step_id\":\"$S1\",\"to_step_id\":\"$S2\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S2\",\"to_step_id\":\"$S3\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S3\",\"to_step_id\":\"$S4\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S4\",\"to_step_id\":\"$S5\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S4\",\"to_step_id\":\"$S6\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S5\",\"to_step_id\":\"$S7\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S6\",\"to_step_id\":\"$S7\"}" > /dev/null
-add_edge "{\"from_step_id\":\"$S7\",\"to_step_id\":\"$S8\"}" > /dev/null
+SPLIT=$(add_step '{
+  "name": "fan_out",
+  "step_type": "parallel_split",
+  "step_order": 2,
+  "config": {}
+}')
 
-echo "Validating..."
+TELEGRAM=$(add_step '{
+  "name": "telegram_notify",
+  "step_type": "target",
+  "step_order": 3,
+  "config": {
+    "url": "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage",
+    "method": "POST",
+    "headers": {"Content-Type": "application/json"},
+    "body_template": {
+      "chat_id": "<CHAT_ID>",
+      "text": "📬 New contact from {{name}} ({{email}}): {{message}}"
+    }
+  }
+}')
+
+SLACK=$(add_step '{
+  "name": "slack_notify",
+  "step_type": "target",
+  "step_order": 3,
+  "config": {
+    "url": "https://hooks.slack.com/services/T.../B.../xxx",
+    "method": "POST",
+    "headers": {"Content-Type": "application/json"},
+    "body_template": {
+      "text": "📬 New contact form submission",
+      "blocks": [
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*From:* {{name}} ({{email}})\n*Message:* {{message}}"}}
+      ]
+    }
+  }
+}')
+
+JOIN=$(add_step '{"name":"merge","step_type":"parallel_join","step_order":4,"config":{}}')
+
+LOG=$(add_step '{
+  "name": "log_delivery",
+  "step_type": "target",
+  "step_order": 5,
+  "config": {"url": "http://telegraf:8186/write", "method": "POST"}
+}')
+
+# 3. Connect edges
+add_edge "{\"from_step_id\":\"$SOURCE\",\"to_step_id\":\"$SPLIT\"}"
+add_edge "{\"from_step_id\":\"$SPLIT\",\"to_step_id\":\"$TELEGRAM\"}"
+add_edge "{\"from_step_id\":\"$SPLIT\",\"to_step_id\":\"$SLACK\"}"
+add_edge "{\"from_step_id\":\"$TELEGRAM\",\"to_step_id\":\"$JOIN\"}"
+add_edge "{\"from_step_id\":\"$SLACK\",\"to_step_id\":\"$JOIN\"}"
+add_edge "{\"from_step_id\":\"$JOIN\",\"to_step_id\":\"$LOG\"}"
+
+# 4. Validate
 curl -sf -X POST "$DAG/validate" -H "$AUTH" -H "$CT" | jq .
 
-echo ""
-echo "✅ Pipeline ready! Template ID: $TEMPLATE_ID"
-echo ""
-echo "Next steps:"
-echo "  1. Create instance:  curl -X POST $BASE/pipes/instances -d '{\"pipe_template_id\":\"$TEMPLATE_ID\",\"deployment_hash\":\"YOUR_HASH\",\"name\":\"Production CDC\"}'"
-echo "  2. Execute:           curl -X POST $BASE/pipes/instances/INSTANCE_ID/dag/execute -d '{\"input_data\":{...}}'"
-echo "  3. Activate:          stacker pipe activate INSTANCE_ID --trigger webhook"
+echo "✅ Pipeline ready! Template: $TEMPLATE"
+```
+
+#### Test it
+
+```bash
+# Create an instance
+INSTANCE=$(curl -sf -X POST "$BASE/pipes/instances" \
+  -H "$AUTH" -H "$CT" \
+  -d "{\"pipe_template_id\":\"$TEMPLATE\",\"deployment_hash\":\"my-deploy\",\"name\":\"Contact notifications\"}" \
+  | jq -r '.item.id')
+
+# Trigger with sample form data
+curl -sf -X POST "$BASE/pipes/instances/$INSTANCE/dag/execute" \
+  -H "$AUTH" -H "$CT" \
+  -d '{
+    "input_data": {
+      "name": "Alice Johnson",
+      "email": "alice@example.com",
+      "message": "I would like to learn more about your services."
+    }
+  }' | jq '.status, .completed_steps, .failed_steps'
+# → "completed", 6, 0
 ```
 
 ---
 
-### Method 2: Visual DAG Editor (Web)
+### Example 2: Contact Form → PostgreSQL → CDC → Telegram
 
-The **Visual DAG Editor** provides a drag-and-drop interface for building the same pipeline — no curl commands needed.
+A more realistic flow: the website saves form data to PostgreSQL, and the CDC source detects the new row and triggers a Telegram notification. This decouples the website from the notification system.
 
-#### Access
+```
+[cdc_source: pg_contacts] → [transform: format_message] → [target: telegram]
+```
+
+The website writes to PostgreSQL normally — no changes needed. The pipeline watches for new rows.
+
+#### PostgreSQL setup (one-time)
+
+```sql
+-- Enable logical replication (postgresql.conf: wal_level = logical)
+-- Create a publication for the contacts table
+CREATE PUBLICATION contact_pub FOR TABLE public.contacts;
+-- Stacker will create the replication slot automatically
+```
+
+#### Create the pipeline (CLI)
+
+```bash
+#!/bin/bash
+# example2-cdc-contact-to-telegram.sh
+set -euo pipefail
+
+BASE="http://localhost:8080/api/v1"
+AUTH="Authorization: Bearer $(stacker token)"
+CT="Content-Type: application/json"
+
+TEMPLATE=$(curl -sf -X POST "$BASE/pipes/templates" \
+  -H "$AUTH" -H "$CT" \
+  -d '{"name":"CDC Contact → Telegram","description":"Watch PostgreSQL contacts table, notify via Telegram"}' \
+  | jq -r '.item.id')
+
+DAG="$BASE/pipes/$TEMPLATE/dag"
+add_step() { curl -sf -X POST "$DAG/steps" -H "$AUTH" -H "$CT" -d "$1" | jq -r '.item.id'; }
+add_edge() { curl -sf -X POST "$DAG/edges" -H "$AUTH" -H "$CT" -d "$1" > /dev/null; }
+
+# Step 1: CDC source — watch the contacts table
+CDC=$(add_step '{
+  "name": "pg_contacts",
+  "step_type": "cdc_source",
+  "step_order": 1,
+  "config": {
+    "replication_slot": "contacts_pipe_slot",
+    "publication": "contact_pub",
+    "tables": ["public.contacts"]
+  }
+}')
+
+# Step 2: Transform — format CDC event into a readable message
+TRANSFORM=$(add_step '{
+  "name": "format_message",
+  "step_type": "transform",
+  "step_order": 2,
+  "config": {
+    "field_mapping": {
+      "chat_id": "<YOUR_CHAT_ID>",
+      "text": "📬 New contact form!\n\nName: $.after.name\nEmail: $.after.email\nMessage: $.after.message\nSubmitted: $.captured_at"
+    }
+  }
+}')
+
+# Step 3: Target — send to Telegram Bot API
+TELEGRAM=$(add_step '{
+  "name": "telegram",
+  "step_type": "target",
+  "step_order": 3,
+  "config": {
+    "url": "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage",
+    "method": "POST",
+    "headers": {"Content-Type": "application/json"}
+  }
+}')
+
+# Connect: CDC → Transform → Telegram
+add_edge "{\"from_step_id\":\"$CDC\",\"to_step_id\":\"$TRANSFORM\"}"
+add_edge "{\"from_step_id\":\"$TRANSFORM\",\"to_step_id\":\"$TELEGRAM\"}"
+
+# Validate
+curl -sf -X POST "$DAG/validate" -H "$AUTH" -H "$CT" | jq .
+
+echo "✅ Pipeline ready! Template: $TEMPLATE"
+echo ""
+echo "Activate with: stacker pipe activate <INSTANCE_ID> --trigger webhook"
+```
+
+#### Test with simulated CDC event
+
+```bash
+INSTANCE=$(curl -sf -X POST "$BASE/pipes/instances" \
+  -H "$AUTH" -H "$CT" \
+  -d "{\"pipe_template_id\":\"$TEMPLATE\",\"deployment_hash\":\"my-deploy\",\"name\":\"Contact CDC\"}" \
+  | jq -r '.item.id')
+
+# Simulate a CDC INSERT event (in production this comes from PostgreSQL WAL)
+curl -sf -X POST "$BASE/pipes/instances/$INSTANCE/dag/execute" \
+  -H "$AUTH" -H "$CT" \
+  -d '{
+    "input_data": {
+      "table_name": "contacts",
+      "operation": "INSERT",
+      "after": {
+        "id": 42,
+        "name": "Bob Smith",
+        "email": "bob@example.com",
+        "message": "Hi, I need help with deployment."
+      },
+      "captured_at": "2026-04-16T13:00:00Z"
+    }
+  }' | jq '.status, .completed_steps'
+# → "completed", 3
+
+# For continuous listening, activate the pipe:
+stacker pipe activate $INSTANCE --trigger webhook
+```
+
+---
+
+### Example 3: Contact Form → Email + Slack
+
+Direct webhook-based pipeline: when a form is submitted, simultaneously send a confirmation email and post to a Slack channel.
+
+```
+[source: form_webhook] → [parallel_split] → [target: email_service]
+                                           → [target: slack]
+                              → [parallel_join]
+```
+
+#### Create the pipeline (CLI)
+
+```bash
+#!/bin/bash
+# example3-contact-to-email-slack.sh
+set -euo pipefail
+
+BASE="http://localhost:8080/api/v1"
+AUTH="Authorization: Bearer $(stacker token)"
+CT="Content-Type: application/json"
+
+TEMPLATE=$(curl -sf -X POST "$BASE/pipes/templates" \
+  -H "$AUTH" -H "$CT" \
+  -d '{"name":"Contact Form → Email + Slack","description":"Send confirmation email and Slack notification on form submit"}' \
+  | jq -r '.item.id')
+
+DAG="$BASE/pipes/$TEMPLATE/dag"
+add_step() { curl -sf -X POST "$DAG/steps" -H "$AUTH" -H "$CT" -d "$1" | jq -r '.item.id'; }
+add_edge() { curl -sf -X POST "$DAG/edges" -H "$AUTH" -H "$CT" -d "$1" > /dev/null; }
+
+# Step 1: Source — incoming form webhook
+SOURCE=$(add_step '{
+  "name": "form_webhook",
+  "step_type": "source",
+  "step_order": 1,
+  "config": {
+    "url": "http://website:3000/api/contact",
+    "method": "POST"
+  }
+}')
+
+# Step 2: Fan out
+SPLIT=$(add_step '{"name":"fan_out","step_type":"parallel_split","step_order":2,"config":{}}')
+
+# Step 3a: Email — send via Mailjet / SendGrid / any SMTP API
+EMAIL=$(add_step '{
+  "name": "send_email",
+  "step_type": "target",
+  "step_order": 3,
+  "config": {
+    "url": "http://notify-service:4500/api/send",
+    "method": "POST",
+    "headers": {"Content-Type": "application/json"},
+    "body_template": {
+      "to": "{{email}}",
+      "subject": "Thanks for contacting us, {{name}}!",
+      "body": "Hi {{name}},\n\nWe received your message and will get back to you within 24 hours.\n\nBest regards,\nThe Team"
+    }
+  }
+}')
+
+# Step 3b: Slack — post to #contacts channel
+SLACK=$(add_step '{
+  "name": "slack_post",
+  "step_type": "target",
+  "step_order": 3,
+  "config": {
+    "url": "https://hooks.slack.com/services/T.../B.../xxx",
+    "method": "POST",
+    "headers": {"Content-Type": "application/json"},
+    "body_template": {
+      "text": "📬 *New contact form*\n• Name: {{name}}\n• Email: {{email}}\n• Message: {{message}}"
+    }
+  }
+}')
+
+# Step 4: Merge
+JOIN=$(add_step '{"name":"merge","step_type":"parallel_join","step_order":4,"config":{}}')
+
+# Connect
+add_edge "{\"from_step_id\":\"$SOURCE\",\"to_step_id\":\"$SPLIT\"}"
+add_edge "{\"from_step_id\":\"$SPLIT\",\"to_step_id\":\"$EMAIL\"}"
+add_edge "{\"from_step_id\":\"$SPLIT\",\"to_step_id\":\"$SLACK\"}"
+add_edge "{\"from_step_id\":\"$EMAIL\",\"to_step_id\":\"$JOIN\"}"
+add_edge "{\"from_step_id\":\"$SLACK\",\"to_step_id\":\"$JOIN\"}"
+
+# Validate
+curl -sf -X POST "$DAG/validate" -H "$AUTH" -H "$CT" | jq .
+
+echo "✅ Pipeline ready! Template: $TEMPLATE"
+```
+
+#### Test it
+
+```bash
+INSTANCE=$(curl -sf -X POST "$BASE/pipes/instances" \
+  -H "$AUTH" -H "$CT" \
+  -d "{\"pipe_template_id\":\"$TEMPLATE\",\"deployment_hash\":\"my-deploy\",\"name\":\"Contact email+slack\"}" \
+  | jq -r '.item.id')
+
+curl -sf -X POST "$BASE/pipes/instances/$INSTANCE/dag/execute" \
+  -H "$AUTH" -H "$CT" \
+  -d '{
+    "input_data": {
+      "name": "Carol Lee",
+      "email": "carol@example.com",
+      "message": "Can I get a demo of the platform?"
+    }
+  }' | jq '.status, .completed_steps'
+# → "completed", 5
+```
+
+#### Or use the `stacker pipe` shorthand
+
+```bash
+# Instead of raw curl, you can also:
+stacker pipe trigger $INSTANCE --data '{"name":"Carol","email":"carol@example.com","message":"Demo please"}'
+
+# View history
+stacker pipe history $INSTANCE
+
+# Activate for continuous operation (webhook-triggered)
+stacker pipe activate $INSTANCE --trigger webhook
+```
+
+---
+
+## Visual DAG Editor (Web)
+
+All three examples above can be built visually — no terminal needed.
+
+### Access
 
 ```
 http://localhost:8080/editor
 ```
 
-> **Demo Mode**: The editor works without authentication for local experimentation. A "Demo Mode" banner is shown — API calls are skipped, and changes exist only in the browser. Sign up or log in to persist pipelines.
+> **Demo Mode**: Works without authentication for experimenting. API calls are skipped and changes exist only in the browser. Click **"Sign Up / Login"** to persist pipelines.
 
-#### Building the OpenClaw CDC Pipeline
+### Quick start — building Example 1 visually
 
-1. **Start from a template** (optional):
-   Click **"Use Template"** and select **"CDC Replicator"** as a starting point, then customize it.
+1. **Open the editor** at `http://localhost:8080/editor`
 
-2. **Or build from scratch**:
+2. **Drag steps from the palette** (left sidebar):
+   - Drag **"Source"** 📥 onto the canvas → click it → set name: `contact_form`
+   - Drag **"Parallel Split"** ⑃
+   - Drag two **"Target"** 📤 nodes → name them `telegram` and `slack`, configure URLs
+   - Drag **"Parallel Join"** ⑂
 
-   a. **Drag sources from the palette** (left sidebar):
-      - Drag **"CDC Source"** 🔄 onto the canvas
+3. **Connect steps**: Click an output handle (right side of node) → drag to the input handle (left side of next node)
 
-   b. **Configure the step** (click the node):
-      - Replication Slot: `openclaw_pipe_slot`
-      - Publication: `openclaw_pub`
-      - Tables: `public.ai_sessions`
+4. **Configure each step**: Click any node to open the config panel on the right. Fill in URL, method, headers, etc.
 
-   c. **Add processing steps**:
-      - Drag **"Condition"** ❓ → set field=`table_name`, operator=`eq`, value=`ai_sessions`
-      - Drag **"Transform"** 🔀 → define field mappings
-      - Drag **"Parallel Split"** ⑃ for fan-out
+5. **Delete a connection**: Select an edge → press **Delete** or **Backspace**
 
-   d. **Add targets**:
-      - Drag **"Target"** 📤 → set URL to `http://openclaw:8080/api/v1/hooks/retrain`
-      - Drag **"WS Target"** 🔌 → set URL to `ws://dashboard:3000/ws/events`
-      - Drag **"Parallel Join"** ⑂ to merge
+6. **Validate**: Click **"Validate"** → green toast = valid ✅
 
-   e. **Connect steps**: Click a node's output handle and drag to the next node's input handle.
+7. **Execute**: Click **"Execute"** → runs the pipeline with test data
 
-   f. **Delete connections**: Select an edge and press **Delete** or **Backspace** key.
+### Use a starter template
 
-3. **Validate**: Click the **"Validate"** button — green toast = valid, red toast = errors.
+Click **"Use Template"** to start from a pre-built pipeline:
+- **ETL Pipeline** — source → transform → target (simplest)
+- **Webhook Router** — source → condition → two targets
+- **CDC Replicator** — CDC source → transform → target
 
-4. **Execute**: Click **"Execute"** to trigger a test run.
-
-#### Keyboard Shortcuts
+### Keyboard shortcuts
 
 | Key | Action |
 |-----|--------|
