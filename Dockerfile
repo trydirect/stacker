@@ -1,9 +1,6 @@
 FROM rust:bookworm AS builder
 
-#RUN apt-get update; \
-#    apt-get install --no-install-recommends -y libssl-dev; \
-#    rm -rf /var/lib/apt/lists/*; \
-#    USER=root cargo new --bin app;
+RUN apt-get update && apt-get install --no-install-recommends -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install sqlx-cli
 
