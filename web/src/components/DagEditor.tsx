@@ -18,9 +18,12 @@ import '@xyflow/react/dist/style.css';
 import DagNode, { type DagNodeData } from './DagNode';
 import StepPalette from './StepPalette';
 import StepConfigPanel from './StepConfigPanel';
+import TemplatePicker from './TemplatePicker';
 import Toolbar from './Toolbar';
+import { useToast } from './Toast';
 import { api, type StepType, type DagStep, type DagEdge as ApiEdge } from '../api';
 import { stepColor } from '../theme';
+import { type StarterTemplate } from '../templates';
 
 const nodeTypes = { dag: DagNode };
 
@@ -40,9 +43,35 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
   const [executing, setExecuting] = useState(false);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const toast = useToast();
 
-  // Load existing DAG
+  const isDemo = !token || token === 'dev-token';
+  const [showTemplatePicker, setShowTemplatePicker] = useState(isDemo);
+
+  const onSelectTemplate = useCallback((tpl: StarterTemplate | null) => {
+    setShowTemplatePicker(false);
+    if (!tpl) return;
+    const newNodes = tpl.steps.map((s, i) => ({
+      id: s.id,
+      type: 'dag' as const,
+      position: { x: 100 + (i % 4) * 200, y: 80 + Math.floor(i / 4) * 120 },
+      data: { label: s.name, stepType: s.step_type, config: s.config } satisfies DagNodeData,
+    }));
+    const newEdges = tpl.edges.map((e, i) => ({
+      id: `tpl-edge-${i}`,
+      source: e.source,
+      target: e.target,
+      animated: true,
+      style: { stroke: '#888' },
+    }));
+    setNodes(newNodes);
+    setEdges(newEdges);
+    toast.success(`Loaded template: ${tpl.name}`);
+  }, [setNodes, setEdges, toast]);
+
+  // Load existing DAG (skip in demo mode)
   useEffect(() => {
+    if (isDemo) return;
     const load = async () => {
       try {
         const [steps, apiEdges] = await Promise.all([
@@ -62,7 +91,7 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
     (params: Connection) => {
       setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: '#666' } }, eds));
       if (params.source && params.target) {
-        api.addEdge(templateId, { from_step_id: params.source, to_step_id: params.target }, token).catch(console.error);
+        api.addEdge(templateId, { from_step_id: params.source, to_step_id: params.target }, token).catch((e: Error) => toast.error(e.message));
       }
     },
     [setEdges, templateId, token],
@@ -82,7 +111,7 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
       setNodes((nds) => [...nds, newNode]);
 
       api
-        .addStep(templateId, { step_name: name || stepType, step_type: stepType, config: {}, position_x: position.x, position_y: position.y }, token)
+        .addStep(templateId, { name: name || stepType, step_type: stepType, config: {} }, token)
         .then((created) => {
           setNodes((nds) =>
             nds.map((n) => (n.id === id ? { ...n, id: created.id } : n)),
@@ -95,7 +124,7 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
             })),
           );
         })
-        .catch(console.error);
+        .catch((e: Error) => toast.error(e.message));
     },
     [setNodes, setEdges, templateId, token],
   );
@@ -123,11 +152,11 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
       setNodes((nds) => [...nds, newNode]);
 
       api
-        .addStep(templateId, { step_name: stepType, step_type: stepType, config: {}, position_x: Math.round(position.x), position_y: Math.round(position.y) }, token)
+        .addStep(templateId, { name: stepType, step_type: stepType, config: {} }, token)
         .then((created) => {
           setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, id: created.id } : n)));
         })
-        .catch(console.error);
+        .catch((e: Error) => toast.error(e.message));
     },
     [reactFlowInstance, setNodes, templateId, token],
   );
@@ -148,7 +177,7 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
           n.id === stepId ? { ...n, data: { ...n.data, label: name, config } } : n,
         ),
       );
-      api.updateStep(templateId, stepId, { step_name: name, config }, token).catch(console.error);
+      api.updateStep(templateId, stepId, { name, config }, token).catch((e: Error) => toast.error(e.message));
     },
     [setNodes, templateId, token],
   );
@@ -158,33 +187,58 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
       setNodes((nds) => nds.filter((n) => n.id !== stepId));
       setEdges((eds) => eds.filter((e) => e.source !== stepId && e.target !== stepId));
       setSelectedStep(null);
-      api.deleteStep(templateId, stepId, token).catch(console.error);
+      api.deleteStep(templateId, stepId, token).catch((e: Error) => toast.error(e.message));
     },
     [setNodes, setEdges, templateId, token],
   );
 
+  const onEdgesDelete = useCallback(
+    (deletedEdges: Edge[]) => {
+      for (const edge of deletedEdges) {
+        api.deleteEdge(templateId, edge.id, token).catch((e: Error) => toast.error(e.message));
+      }
+    },
+    [templateId, token],
+  );
+
   const onValidate = useCallback(async () => {
+    if (isDemo) {
+      // Local validation in demo mode
+      const errors: string[] = [];
+      if (nodes.length === 0) errors.push('DAG has no steps');
+      const result = { valid: errors.length === 0, errors };
+      setValidationResult(result);
+      if (result.valid) toast.success('DAG is valid (demo)');
+      else toast.error(`Validation: ${errors.join(', ')}`);
+      return;
+    }
     try {
       const result = await api.validateDag(templateId, token);
       setValidationResult(result);
+      if (result.valid) toast.success('DAG is valid');
+      else toast.error(`Validation failed: ${result.errors?.join(', ')}`);
     } catch (e) {
-      setValidationResult({ valid: false, errors: [(e as Error).message] });
+      const msg = (e as Error).message;
+      setValidationResult({ valid: false, errors: [msg] });
+      toast.error(msg);
     }
-  }, [templateId, token]);
+  }, [templateId, token, toast, isDemo, nodes]);
 
   const onExecute = useCallback(async () => {
+    if (isDemo) {
+      toast.info('Demo mode — execution is not available without authentication');
+      return;
+    }
     if (!instanceId) return;
     setExecuting(true);
     setValidationResult(null);
 
-    // Reset step statuses
     setNodes((nds) =>
       nds.map((n) => ({ ...n, data: { ...n.data, executionStatus: 'pending', error: undefined } })),
     );
 
     try {
       const result = await api.executeDag(instanceId, {}, token);
-      // Update node statuses from results
       setNodes((nds) =>
         nds.map((n) => {
           const sr = result.step_results.find((r) => r.step_id === n.id);
@@ -193,28 +247,53 @@ const DagEditor: React.FC<DagEditorProps> = ({ templateId, instanceId, token }) 
             : n;
         }),
       );
+      toast.success(`Execution complete: ${result.completed_steps}/${result.total_steps} steps`);
     } catch (e) {
-      setValidationResult({ valid: false, errors: [(e as Error).message] });
+      const msg = (e as Error).message;
+      setValidationResult({ valid: false, errors: [msg] });
+      toast.error(msg);
     } finally {
       setExecuting(false);
     }
-  }, [instanceId, templateId, token, setNodes]);
+  }, [instanceId, templateId, token, setNodes, toast]);
 
   const selectedNode = nodes.find((n) => n.id === selectedStep);
 
   return (
     <div ref={reactFlowWrapper} style={{ width: '100%', height: '100vh' }}>
+      {isDemo && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            background: '#ff9800',
+            color: '#fff',
+            textAlign: 'center',
+            padding: '6px 12px',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          Demo mode — changes not saved
+        </div>
+      )}
+      {showTemplatePicker && <TemplatePicker onSelect={onSelectTemplate} />}
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onEdgesDelete={onEdgesDelete}
         onInit={setReactFlowInstance}
         onDrop={onDrop}
         onDragOver={onDragOver}
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
+        deleteKeyCode={['Backspace', 'Delete']}
         fitView
         snapToGrid
         snapGrid={[20, 20]}
@@ -259,8 +338,8 @@ function stepsToNodes(steps: DagStep[]): Node[] {
   return steps.map((s, i) => ({
     id: s.id,
     type: 'dag',
-    position: { x: s.position_x ?? 100 + (i % 4) * 200, y: s.position_y ?? 80 + Math.floor(i / 4) * 120 },
-    data: { label: s.step_name, stepType: s.step_type, config: s.config } satisfies DagNodeData,
+    position: { x: 100 + (i % 4) * 200, y: 80 + Math.floor(i / 4) * 120 },
+    data: { label: s.name, stepType: s.step_type, config: s.config } satisfies DagNodeData,
   }));
 }
 

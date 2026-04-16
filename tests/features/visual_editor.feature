@@ -138,3 +138,71 @@ Feature: Visual DAG Editor API Integration
       """
     Then the response status should be 200
     And the response body should contain "completed"
+
+  # ──────────────────────────────────────────────
+  # Edge Deletion (v2)
+  # ──────────────────────────────────────────────
+
+  Scenario: Deleting an edge returns it in subsequent listing
+    Given I have a DAG pipe template named "editor-edge-del-v2"
+    And I have added a DAG step "X" of type "source" with config:
+      """
+      {"output": {"v": 1}}
+      """
+    And I have added a DAG step "Y" of type "target" with config:
+      """
+      {}
+      """
+    And I have added a DAG edge from step "X" to step "Y"
+    When I delete the edge from "X" to "Y"
+    Then the response status should be 200
+    And listing edges should return 0 edges
+    And listing steps should return 2 steps
+
+  # ──────────────────────────────────────────────
+  # Casbin anonymous /editor access (v2)
+  # ──────────────────────────────────────────────
+
+  Scenario: Anonymous GET /editor is permitted by Casbin
+    When I make an unauthenticated GET request to "/editor/"
+    Then the response status should not be 403
+
+  Scenario: Anonymous GET /editor/assets/index.js is permitted
+    When I make an unauthenticated GET request to "/editor/assets/index.js"
+    Then the response status should not be 403
+
+  # ──────────────────────────────────────────────
+  # Starter Templates data validation (v2)
+  # ──────────────────────────────────────────────
+
+  Scenario: Seed DAG from ETL Pipeline template
+    Given I have a DAG pipe template named "etl-seed-test"
+    When I add a step "Fetch API Data" of type "source" at position 100,80
+    And I add a step "Clean & Map" of type "transform" at position 300,80
+    And I add a step "Write to DB" of type "target" at position 500,80
+    And I add an edge from step "Fetch API Data" to step "Clean & Map"
+    And I add an edge from step "Clean & Map" to step "Write to DB"
+    Then listing steps should return 3 steps
+    And listing edges should return 2 edges
+
+  Scenario: Seed DAG from Webhook Router template with condition
+    Given I have a DAG pipe template named "webhook-seed-test"
+    When I add a step "Webhook Receiver" of type "http_stream_source" at position 100,80
+    And I add a step "Route by Type" of type "condition" at position 300,80
+    And I add a step "Order Service" of type "target" at position 500,80
+    And I add a step "Notification Service" of type "target" at position 500,200
+    And I add an edge from step "Webhook Receiver" to step "Route by Type"
+    And I add an edge from step "Route by Type" to step "Order Service"
+    And I add an edge from step "Route by Type" to step "Notification Service"
+    Then listing steps should return 4 steps
+    And listing edges should return 3 edges
+
+  Scenario: Seed DAG from CDC Replicator template
+    Given I have a DAG pipe template named "cdc-seed-test"
+    When I add a step "PG WAL Capture" of type "cdc_source" at position 100,80
+    And I add a step "Map Fields" of type "transform" at position 300,80
+    And I add a step "Replicate to Target" of type "grpc_target" at position 500,80
+    And I add an edge from step "PG WAL Capture" to step "Map Fields"
+    And I add an edge from step "Map Fields" to step "Replicate to Target"
+    Then listing steps should return 3 steps
+    And listing edges should return 2 edges

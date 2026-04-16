@@ -114,6 +114,7 @@ async fn when_add_edge(world: &mut StepWorld, from: String, to: String) {
     if let Some(ref json) = world.response_json {
         if let Some(id) = json.pointer("/item/id").and_then(|v| v.as_str()) {
             world.stored_ids.insert(format!("dag_edge:{}_{}", from, to), id.to_string());
+            world.stored_ids.insert("last_dag_edge_id".to_string(), id.to_string());
         }
     }
 }
@@ -193,4 +194,25 @@ async fn then_all_steps_created(world: &mut StepWorld, expected: usize) {
         .parse()
         .unwrap();
     assert_eq!(count, expected, "Expected {} steps created, got {}", expected, count);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// V2: Unauthenticated access (Casbin anonymous)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[when(regex = r#"^I make an unauthenticated GET request to "([^"]+)"$"#)]
+async fn when_unauthenticated_get(world: &mut StepWorld, path: String) {
+    let (status, body) = world.get_unauthenticated(&path).await;
+    world.status_code = Some(status);
+    world.response_body = Some(body);
+}
+
+#[then(regex = r#"^the response status should not be (\d+)$"#)]
+async fn then_status_not(world: &mut StepWorld, forbidden_status: u16) {
+    let actual = world.status_code.expect("No status code recorded");
+    assert_ne!(
+        actual, forbidden_status,
+        "Expected status NOT {}, but got {}",
+        forbidden_status, actual
+    );
 }

@@ -7,12 +7,10 @@ const BASE = '/api/v1/pipes';
 export interface DagStep {
   id: string;
   pipe_template_id: string;
-  step_name: string;
+  name: string;
   step_type: string;
   step_order: number;
   config: Record<string, unknown>;
-  position_x?: number;
-  position_y?: number;
 }
 
 export interface DagEdge {
@@ -70,7 +68,15 @@ async function apiFetch<T>(url: string, opts: RequestInit): Promise<T> {
     const text = await resp.text();
     throw new Error(`API ${resp.status}: ${text}`);
   }
-  return resp.json();
+  if (resp.status === 204 || opts.method === 'DELETE') {
+    return undefined as T;
+  }
+  const json = await resp.json();
+  if (json && typeof json === 'object') {
+    if ('list' in json && Array.isArray(json.list)) return json.list as T;
+    if ('item' in json && json.item !== undefined) return json.item as T;
+  }
+  return json as T;
 }
 
 export const api = {

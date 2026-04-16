@@ -137,6 +137,26 @@ impl StepWorld {
         (status, body)
     }
 
+    /// Make an unauthenticated GET request (no Authorization header)
+    pub async fn get_unauthenticated(&mut self, path: &str) -> (u16, String) {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .expect("GET (unauthenticated) request failed");
+
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        let body = resp.text().await.unwrap_or_default();
+        self.status_code = Some(status);
+        self.response_body = Some(body.clone());
+        self.response_json = serde_json::from_str(&body).ok();
+        self.response_headers = Some(headers);
+        (status, body)
+    }
+
     /// Make a POST request with JSON body
     pub async fn post_json(&mut self, path: &str, body: &serde_json::Value) -> (u16, String) {
         let url = format!("{}{}", self.base_url, path);
