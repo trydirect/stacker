@@ -260,6 +260,67 @@ impl DeploymentLock {
         Self::lockfile_path(project_dir).exists()
     }
 
+    // ── Active Target ────────────────────────────────
+
+    /// Path to the active-target file: `.stacker/active-target`
+    pub fn active_target_path(project_dir: &Path) -> PathBuf {
+        project_dir.join(".stacker").join("active-target")
+    }
+
+    /// Read the current active target (local, cloud, or server).
+    /// Returns `None` if no active-target file exists.
+    pub fn read_active_target(project_dir: &Path) -> Result<Option<String>, CliError> {
+        let path = Self::active_target_path(project_dir);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&path)
+            .map_err(CliError::Io)?;
+        let target = content.trim().to_string();
+        if target.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(target))
+        }
+    }
+
+    /// Write the active target to `.stacker/active-target`.
+    pub fn write_active_target(project_dir: &Path, target: &str) -> Result<(), CliError> {
+        let path = Self::active_target_path(project_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(CliError::Io)?;
+        }
+        std::fs::write(&path, target).map_err(CliError::Io)?;
+        Ok(())
+    }
+
+    /// Switch active target. For `local`, also creates the lock if missing.
+    pub fn switch_target(project_dir: &Path, target: &str) -> Result<(), CliError> {
+        match target {
+            "local" => {
+                if !Self::exists_for_target(project_dir, "local") {
+                    let lock = Self::for_local();
+                    lock.save(project_dir)?;
+                }
+            }
+            "cloud" | "server" => {
+                if !Self::exists_for_target(project_dir, target) {
+                    return Err(CliError::ConfigValidation(format!(
+                        "No {} deployment lock found. Deploy to {} first before switching.",
+                        target, target
+                    )));
+                }
+            }
+            _ => {
+                return Err(CliError::ConfigValidation(format!(
+                    "Unknown target '{}'. Use: local, cloud, or server.",
+                    target
+                )));
+            }
+        }
+        Self::write_active_target(project_dir, target)
+    }
+
     // ── Config update ────────────────────────────────
 
     /// Update a StackerConfig's `deploy.server` section from this lock.
@@ -497,5 +558,56 @@ mod tests {
         assert_eq!(enriched.ssh_user, Some("ubuntu".to_string()));
         assert_eq!(enriched.server_name, Some("prod-01".to_string()));
         assert_eq!(enriched.cloud_id, Some(99));
+    }
+
+    #[test]
+    fn active_target_read_write() {
+        let tmp = TempDir::new().unwrap();
+
+        // No active target initially
+        assert_eq!(DeploymentLock::read_active_target(tmp.path()).unwrap(), None);
+
+        // Write and read back
+        DeploymentLock::write_active_target(tmp.path(), "local").unwrap();
+        assert_eq!(
+            DeploymentLock::read_active_target(tmp.path()).unwrap(),
+            Some("local".to_string())
+        );
+
+        // Switch to cloud
+        DeploymentLock::write_active_target(tmp.path(), "cloud").unwrap();
+        assert_eq!(
+            DeploymentLock::read_active_target(tmp.path()).unwrap(),
+            Some("cloud".to_string())
+        );
+    }
+
+    #[test]
+    fn switch_target_creates_local_lock() {
+        let tmp = TempDir::new().unwrap();
+
+        // Switch to local — should create the lock automatically
+        DeploymentLock::switch_target(tmp.path(), "local").unwrap();
+        assert!(DeploymentLock::exists_for_target(tmp.path(), "local"));
+        assert_eq!(
+            DeploymentLock::read_active_target(tmp.path()).unwrap(),
+            Some("local".to_string())
+        );
+    }
+
+    #[test]
+    fn switch_target_cloud_requires_existing_lock() {
+        let tmp = TempDir::new().unwrap();
+
+        // Switch to cloud without a lock should fail
+        let result = DeploymentLock::switch_target(tmp.path(), "cloud");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn switch_target_unknown_target_fails() {
+        let tmp = TempDir::new().unwrap();
+        let result = DeploymentLock::switch_target(tmp.path(), "mars");
+        assert!(result.is_err());
     }
 }

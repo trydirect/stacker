@@ -276,6 +276,11 @@ enum StackerCommands {
         #[command(subcommand)]
         command: MarketplaceCommands,
     },
+    /// Switch or show the active deployment target (local, cloud, server)
+    Target {
+        /// Target to switch to: local, cloud, or server. Omit to show current.
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -992,6 +997,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Target switching is filesystem-only, no API needed.
+    if let StackerCommands::Target { target } = subcommand {
+        use stacker::cli::deployment_lock::DeploymentLock;
+        let project_dir = std::env::current_dir()?;
+
+        match target {
+            Some(t) => {
+                DeploymentLock::switch_target(&project_dir, &t)?;
+                eprintln!("✓ Active target switched to: {}", t);
+            }
+            None => {
+                match DeploymentLock::read_active_target(&project_dir)? {
+                    Some(t) => println!("{}", t),
+                    None => {
+                        eprintln!("No active target set. Use: stacker target <local|cloud|server>");
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let command = get_command(subcommand)?;
     if let Err(err) = command.call() {
         eprintln!("Error: {}", err);
@@ -1473,6 +1500,8 @@ fn get_command(
         },
         // Completion is handled in main() before this function is called.
         StackerCommands::Completion { .. } => unreachable!(),
+        // Target is handled in main() before this function is called.
+        StackerCommands::Target { .. } => unreachable!(),
     };
 
     Ok(cmd)
