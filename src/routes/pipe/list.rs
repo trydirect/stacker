@@ -72,3 +72,21 @@ pub async fn list_instances_handler(
         .set_list(instances)
         .ok("Pipe instances fetched successfully"))
 }
+
+#[tracing::instrument(name = "List local pipe instances", skip_all)]
+#[get("/instances/local")]
+pub async fn list_local_instances_handler(
+    user: web::ReqData<Arc<User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let instances = db::pipe::list_local_instances_by_user(pg_pool.get_ref(), &user.id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to list local pipe instances: {}", err);
+            JsonResponse::internal_server_error(err)
+        })?;
+
+    Ok(JsonResponse::build()
+        .set_list(instances)
+        .ok("Local pipe instances fetched successfully"))
+}

@@ -268,6 +268,7 @@ pub async fn run(
                             .service(routes::pipe::create_template_handler)
                             .service(routes::pipe::create_instance_handler)
                             .service(routes::pipe::list_templates_handler)
+                            .service(routes::pipe::list_local_instances_handler)
                             .service(routes::pipe::list_instances_handler)
                             .service(routes::pipe::get_template_handler)
                             .service(routes::pipe::get_instance_handler)
