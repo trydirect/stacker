@@ -553,4 +553,63 @@ mod tests {
         assert_eq!(deserialized.status, "success");
         assert_eq!(deserialized.source_data, Some(json!({"key": "value"})));
     }
+
+    #[test]
+    fn test_pipe_instance_local_no_hash_and_is_local_flag() {
+        let instance = PipeInstance::new_local("my-app".to_string(), "user1".to_string());
+        assert!(instance.is_local);
+        assert!(instance.deployment_hash.is_none());
+        assert_eq!(instance.source_container, "my-app");
+        assert_eq!(instance.created_by, "user1");
+        assert_eq!(instance.status, "draft");
+        assert_eq!(instance.trigger_count, 0);
+        assert_eq!(instance.error_count, 0);
+    }
+
+    #[test]
+    fn test_pipe_instance_new_remote_has_hash() {
+        let instance = PipeInstance::new(
+            "abc123hash".to_string(),
+            "my-app".to_string(),
+            "user1".to_string(),
+        );
+        assert!(!instance.is_local);
+        assert_eq!(instance.deployment_hash, Some("abc123hash".to_string()));
+    }
+
+    #[test]
+    fn test_pipe_instance_local_serialization_roundtrip() {
+        let instance = PipeInstance::new_local("my-app".to_string(), "user1".to_string());
+        let json_str = serde_json::to_string(&instance).unwrap();
+        let deserialized: PipeInstance = serde_json::from_str(&json_str).unwrap();
+        assert!(deserialized.is_local);
+        assert!(deserialized.deployment_hash.is_none());
+        assert_eq!(deserialized.source_container, "my-app");
+    }
+
+    #[test]
+    fn test_pipe_execution_local_no_hash() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            None,
+            "manual".to_string(),
+            "user1".to_string(),
+        );
+        assert!(exec.is_local);
+        assert!(exec.deployment_hash.is_none());
+        assert_eq!(exec.trigger_type, "manual");
+        assert_eq!(exec.status, "running");
+    }
+
+    #[test]
+    fn test_pipe_execution_remote_has_hash() {
+        let exec = PipeExecution::new(
+            Uuid::new_v4(),
+            Some("hash123".to_string()),
+            "webhook".to_string(),
+            "user1".to_string(),
+        );
+        assert!(!exec.is_local);
+        assert_eq!(exec.deployment_hash, Some("hash123".to_string()));
+    }
 }

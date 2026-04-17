@@ -1804,4 +1804,55 @@ mod tests {
         assert_eq!(map["phone"], "$.Phone");
         assert!(!map.contains_key("unknown"));
     }
+
+    #[test]
+    fn test_deployment_context_local_is_local() {
+        let ctx = DeploymentContext::Local;
+        assert!(ctx.is_local());
+        assert!(ctx.hash().is_none());
+    }
+
+    #[test]
+    fn test_deployment_context_remote_has_hash() {
+        let ctx = DeploymentContext::Remote("abc123".to_string());
+        assert!(!ctx.is_local());
+        assert_eq!(ctx.hash(), Some("abc123"));
+    }
+
+    #[test]
+    fn test_mode_prefix_local() {
+        let ctx = DeploymentContext::Local;
+        let prefix = mode_prefix(&ctx);
+        assert!(prefix.contains("[local]"));
+        assert!(!prefix.is_empty());
+    }
+
+    #[test]
+    fn test_mode_prefix_remote_empty() {
+        let ctx = DeploymentContext::Remote("hash".to_string());
+        let prefix = mode_prefix(&ctx);
+        assert!(prefix.is_empty());
+    }
+
+    #[test]
+    fn test_deployment_context_equality() {
+        assert_eq!(DeploymentContext::Local, DeploymentContext::Local);
+        assert_eq!(
+            DeploymentContext::Remote("a".to_string()),
+            DeploymentContext::Remote("a".to_string())
+        );
+        assert_ne!(DeploymentContext::Local, DeploymentContext::Remote("a".to_string()));
+    }
+
+    #[test]
+    fn test_pipe_deploy_command_new() {
+        let cmd = PipeDeployCommand::new(
+            "inst-123".to_string(),
+            "deploy-hash".to_string(),
+            true,
+        );
+        assert_eq!(cmd.instance_id, "inst-123");
+        assert_eq!(cmd.deployment_hash, "deploy-hash");
+        assert!(cmd.json);
+    }
 }
