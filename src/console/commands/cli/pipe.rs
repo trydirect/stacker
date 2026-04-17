@@ -264,12 +264,117 @@ impl PipeScanCommand {
             deployment,
         }
     }
+
+    /// Local scan: discover containers via `docker ps`.
+    fn scan_local(&self, prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let pb = progress::spinner(&format!("{}Scanning local Docker containers...", prefix));
+
+        let output = std::process::Command::new("docker")
+            .args(["ps", "--format", "{{.Names}}\t{{.Ports}}\t{{.Networks}}\t{{.Status}}\t{{.Image}}"])
+            .output();
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            Ok(o) => {
+                progress::finish_error(&pb, "Docker command failed");
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                eprintln!("Docker error: {}", stderr);
+                return Ok(());
+            }
+            Err(e) => {
+                progress::finish_error(&pb, "Docker not available");
+                eprintln!(
+                    "Cannot run 'docker ps': {}\n\
+                     Make sure Docker is installed and running.",
+                    e
+                );
+                return Ok(());
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let containers: Vec<_> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        if containers.is_empty() {
+            progress::finish_error(&pb, "No containers running");
+            println!("No Docker containers found. Start your services first.");
+            return Ok(());
+        }
+
+        // Filter by app name if not wildcard
+        let filtered: Vec<_> = if self.app == "*" || self.app == "all" {
+            containers.clone()
+        } else {
+            containers
+                .iter()
+                .filter(|line| {
+                    line.split('\t')
+                        .next()
+                        .map(|name| name.contains(&self.app))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        };
+
+        progress::finish_success(
+            &pb,
+            &format!("{}{} container(s) discovered", prefix, filtered.len()),
+        );
+
+        if self.json {
+            let json_containers: Vec<serde_json::Value> = filtered
+                .iter()
+                .map(|line| {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    serde_json::json!({
+                        "name": parts.first().unwrap_or(&""),
+                        "ports": parts.get(1).unwrap_or(&""),
+                        "networks": parts.get(2).unwrap_or(&""),
+                        "status": parts.get(3).unwrap_or(&""),
+                        "image": parts.get(4).unwrap_or(&""),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_containers)?);
+        } else {
+            println!(
+                "\n{:<30} {:<30} {:<20} {}",
+                "CONTAINER", "PORTS", "NETWORK", "IMAGE"
+            );
+            println!("{}", "─".repeat(100));
+            for line in &filtered {
+                let parts: Vec<&str> = line.split('\t').collect();
+                let name = parts.first().unwrap_or(&"");
+                let ports = parts.get(1).unwrap_or(&"");
+                let network = parts.get(2).unwrap_or(&"");
+                let image = parts.get(4).unwrap_or(&"");
+                println!("{:<30} {:<30} {:<20} {}", name, ports, network, image);
+            }
+            println!(
+                "\n  Use these container names with 'stacker pipe create <source> <target>'"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 impl CallableTrait for PipeScanCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe scan")?;
-        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let prefix = mode_prefix(&deploy_ctx);
+
+        // Local mode: discover containers via docker ps
+        if deploy_ctx.is_local() {
+            return self.scan_local(prefix);
+        }
+
+        let hash = match &deploy_ctx {
+            DeploymentContext::Remote(h) => h.clone(),
+            _ => unreachable!(),
+        };
 
         let protocols = if self.protocols.is_empty() {
             vec!["openapi".to_string(), "rest".to_string()]
@@ -1286,7 +1391,8 @@ impl PipeTriggerCommand {
 impl CallableTrait for PipeTriggerCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe trigger")?;
-        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let prefix = mode_prefix(&deploy_ctx);
 
         let input_data = match &self.data {
             Some(raw) => {
@@ -1295,6 +1401,91 @@ impl CallableTrait for PipeTriggerCommand {
                 Some(parsed)
             }
             None => None,
+        };
+
+        // Local mode: execute locally via docker exec
+        if deploy_ctx.is_local() {
+            let pb = progress::spinner(&format!(
+                "{}Triggering pipe '{}' locally...",
+                prefix, self.pipe_id
+            ));
+
+            // Fetch the pipe instance to get source/target info
+            let instance = ctx
+                .block_on(ctx.client.get_pipe_instance(&self.pipe_id))
+                .map_err(|e| {
+                    progress::finish_error(&pb, "Failed to fetch pipe instance");
+                    e
+                })?
+                .ok_or_else(|| {
+                    progress::finish_error(&pb, "Pipe not found");
+                    CliError::ConfigValidation(format!("Pipe instance '{}' not found", self.pipe_id))
+                })?;
+
+            // For local trigger, we attempt docker exec on the source container
+            let data_json = input_data
+                .as_ref()
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "{}".to_string());
+
+            let output = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    &instance.source_container,
+                    "curl",
+                    "-s",
+                    "-X",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/json",
+                    "-d",
+                    &data_json,
+                    "http://localhost:80/",
+                ])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    progress::finish_success(&pb, &format!("{}Pipe triggered locally", prefix));
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    if self.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "status": "completed",
+                                "local": true,
+                                "pipe_id": self.pipe_id,
+                                "output": stdout.trim(),
+                            }))?
+                        );
+                    } else {
+                        println!("\n  {}✓ Pipe '{}' triggered locally", prefix, self.pipe_id);
+                        if !stdout.trim().is_empty() {
+                            println!("  Output: {}", stdout.trim());
+                        }
+                    }
+                }
+                Ok(o) => {
+                    progress::finish_error(&pb, "Local trigger failed");
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    eprintln!(
+                        "{}Docker exec failed on container '{}': {}",
+                        prefix, instance.source_container, stderr
+                    );
+                }
+                Err(e) => {
+                    progress::finish_error(&pb, "Docker not available");
+                    eprintln!("Cannot run docker exec: {}", e);
+                }
+            }
+
+            return Ok(());
+        }
+
+        // Remote mode
+        let hash = match &deploy_ctx {
+            DeploymentContext::Remote(h) => h.clone(),
+            _ => unreachable!(),
         };
 
         let params = serde_json::json!({
@@ -1351,7 +1542,8 @@ impl PipeHistoryCommand {
 impl CallableTrait for PipeHistoryCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe history")?;
-        let _hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let _prefix = mode_prefix(&deploy_ctx);
 
         let pb = progress::spinner("Fetching execution history...");
         let executions = ctx
