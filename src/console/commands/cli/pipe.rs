@@ -1662,6 +1662,66 @@ impl CallableTrait for PipeReplayCommand {
     }
 }
 
+pub struct PipeDeployCommand {
+    pub instance_id: String,
+    pub deployment_hash: String,
+    pub json: bool,
+}
+
+impl PipeDeployCommand {
+    pub fn new(instance_id: String, deployment_hash: String, json: bool) -> Self {
+        Self {
+            instance_id,
+            deployment_hash,
+            json,
+        }
+    }
+}
+
+impl CallableTrait for PipeDeployCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("pipe deploy")?;
+
+        let pb = progress::spinner(&format!(
+            "Deploying local pipe {} → {}...",
+            &self.instance_id, &self.deployment_hash
+        ));
+        let remote = ctx
+            .block_on(
+                ctx.client
+                    .deploy_pipe(&self.instance_id, &self.deployment_hash),
+            )
+            .map_err(|e| {
+                progress::finish_error(&pb, "Deploy failed");
+                e
+            })?;
+        progress::finish_success(&pb, "Pipe deployed to remote");
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&remote)?);
+            return Ok(());
+        }
+
+        println!("\n  ✓ Local pipe promoted to remote deployment");
+        println!("  Remote instance ID: {}", remote.id);
+        println!(
+            "  Deployment:         {}",
+            &remote.deployment_hash
+        );
+        println!("  Source:             {}", remote.source_container);
+        if let Some(ref t) = remote.target_container {
+            println!("  Target:             {}", t);
+        }
+        println!("  Status:             {}", remote.status);
+        println!(
+            "\n  Use 'stacker pipe activate {}' to start the remote pipe.",
+            remote.id
+        );
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

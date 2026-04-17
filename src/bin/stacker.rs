@@ -683,6 +683,17 @@ enum PipeCommands {
         #[arg(long)]
         deployment: Option<String>,
     },
+    /// Deploy (promote) a local pipe instance to a remote deployment
+    Deploy {
+        /// Local pipe instance ID (UUID) to promote
+        instance_id: String,
+        /// Target deployment hash to deploy into
+        #[arg(long)]
+        deployment: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1345,6 +1356,11 @@ fn get_command(
                     json,
                     deployment,
                 } => Box::new(pipe::PipeReplayCommand::new(execution_id, json, deployment)),
+                PipeCommands::Deploy {
+                    instance_id,
+                    deployment,
+                    json,
+                } => Box::new(pipe::PipeDeployCommand::new(instance_id, deployment, json)),
             }
         }
         StackerCommands::Agent { command: agent_cmd } => {

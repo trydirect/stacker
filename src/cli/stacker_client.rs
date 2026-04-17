@@ -311,6 +311,12 @@ pub struct CreatePipeInstanceApiRequest {
     pub config_override: Option<serde_json::Value>,
 }
 
+/// Request body for deploying (promoting) a local pipe to remote
+#[derive(Debug, Serialize)]
+pub struct DeployPipeApiRequest {
+    pub deployment_hash: String,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StackerClient — HTTP client for the Stacker server
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1998,6 +2004,50 @@ impl StackerClient {
 
         api.item
             .ok_or_else(|| CliError::ConfigValidation("No replay response returned".to_string()))
+    }
+
+    /// Deploy (promote) a local pipe instance to a remote deployment.
+    ///
+    /// `POST /api/v1/pipes/instances/{instance_id}/deploy`
+    pub async fn deploy_pipe(
+        &self,
+        instance_id: &str,
+        deployment_hash: &str,
+    ) -> Result<PipeInstanceInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/{}/deploy",
+            self.base_url, instance_id
+        );
+        let body = DeployPipeApiRequest {
+            deployment_hash: deployment_hash.to_string(),
+        };
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to deploy pipe: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Deploy failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> = resp
+            .json()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid deploy response: {}", e)))?;
+
+        api.item
+            .ok_or_else(|| CliError::ConfigValidation("No deploy response returned".to_string()))
     }
 
     // ── Marketplace (creator) ────────────────────────
