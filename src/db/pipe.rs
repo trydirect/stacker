@@ -247,13 +247,13 @@ pub async fn insert_instance(
         INSERT INTO pipe_instances (
             id, template_id, deployment_hash, source_container, target_container,
             target_url, field_mapping_override, config_override, status,
-            last_triggered_at, trigger_count, error_count, created_by,
+            last_triggered_at, trigger_count, error_count, is_local, created_by,
             created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING id, template_id, deployment_hash, source_container, target_container,
                   target_url, field_mapping_override, config_override, status,
-                  last_triggered_at, trigger_count, error_count, created_by,
+                  last_triggered_at, trigger_count, error_count, is_local, created_by,
                   created_at, updated_at
         "#,
     )
@@ -269,6 +269,7 @@ pub async fn insert_instance(
     .bind(instance.last_triggered_at)
     .bind(instance.trigger_count)
     .bind(instance.error_count)
+    .bind(instance.is_local)
     .bind(&instance.created_by)
     .bind(instance.created_at)
     .bind(instance.updated_at)
@@ -289,7 +290,7 @@ pub async fn get_instance(pool: &PgPool, id: &Uuid) -> Result<Option<PipeInstanc
         r#"
         SELECT id, template_id, deployment_hash, source_container, target_container,
                target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, created_by,
+               last_triggered_at, trigger_count, error_count, is_local, created_by,
                created_at, updated_at
         FROM pipe_instances
         WHERE id = $1
@@ -316,7 +317,7 @@ pub async fn list_instances(
         r#"
         SELECT id, template_id, deployment_hash, source_container, target_container,
                target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, created_by,
+               last_triggered_at, trigger_count, error_count, is_local, created_by,
                created_at, updated_at
         FROM pipe_instances
         WHERE deployment_hash = $1
@@ -348,7 +349,7 @@ pub async fn update_instance_status(
         WHERE id = $1
         RETURNING id, template_id, deployment_hash, source_container, target_container,
                   target_url, field_mapping_override, config_override, status,
-                  last_triggered_at, trigger_count, error_count, created_by,
+                  last_triggered_at, trigger_count, error_count, is_local, created_by,
                   created_at, updated_at
         "#,
     )
@@ -436,12 +437,12 @@ pub async fn insert_execution(
         INSERT INTO pipe_executions (
             id, pipe_instance_id, deployment_hash, trigger_type, status,
             source_data, mapped_data, target_response, error, duration_ms,
-            replay_of, created_by, started_at, completed_at
+            replay_of, is_local, created_by, started_at, completed_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING id, pipe_instance_id, deployment_hash, trigger_type, status,
                   source_data, mapped_data, target_response, error, duration_ms,
-                  replay_of, created_by, started_at, completed_at
+                  replay_of, is_local, created_by, started_at, completed_at
         "#,
     )
     .bind(execution.id)
@@ -455,6 +456,7 @@ pub async fn insert_execution(
     .bind(&execution.error)
     .bind(execution.duration_ms)
     .bind(execution.replay_of)
+    .bind(execution.is_local)
     .bind(&execution.created_by)
     .bind(execution.started_at)
     .bind(execution.completed_at)
@@ -475,7 +477,7 @@ pub async fn get_execution(pool: &PgPool, id: &Uuid) -> Result<Option<PipeExecut
         r#"
         SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
                source_data, mapped_data, target_response, error, duration_ms,
-               replay_of, created_by, started_at, completed_at
+               replay_of, is_local, created_by, started_at, completed_at
         FROM pipe_executions
         WHERE id = $1
         "#,
@@ -502,7 +504,7 @@ pub async fn find_pending_replay_execution(
         r#"
         SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
                source_data, mapped_data, target_response, error, duration_ms,
-               replay_of, created_by, started_at, completed_at
+               replay_of, is_local, created_by, started_at, completed_at
         FROM pipe_executions
         WHERE pipe_instance_id = $1
           AND deployment_hash = $2
@@ -537,7 +539,7 @@ pub async fn list_executions(
         r#"
         SELECT id, pipe_instance_id, deployment_hash, trigger_type, status,
                source_data, mapped_data, target_response, error, duration_ms,
-               replay_of, created_by, started_at, completed_at
+               replay_of, is_local, created_by, started_at, completed_at
         FROM pipe_executions
         WHERE pipe_instance_id = $1
         ORDER BY started_at DESC
@@ -582,7 +584,7 @@ pub async fn update_execution_result(
         WHERE id = $1
         RETURNING id, pipe_instance_id, deployment_hash, trigger_type, status,
                   source_data, mapped_data, target_response, error, duration_ms,
-                  replay_of, created_by, started_at, completed_at
+                  replay_of, is_local, created_by, started_at, completed_at
         "#,
     )
     .bind(id)

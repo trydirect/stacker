@@ -422,15 +422,7 @@ pub async fn execute_dag_handler(
         None => return Err(JsonResponse::<String>::not_found("Pipe instance not found")),
     };
 
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &instance.deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => return Err(JsonResponse::<String>::not_found("Pipe instance not found")),
-    }
+    super::verify_pipe_owner(pg_pool.get_ref(), &instance, &user.id).await?;
 
     let template_id = instance.template_id
         .ok_or_else(|| JsonResponse::<String>::bad_request("Pipe instance has no template".to_string()))?;

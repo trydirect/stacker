@@ -27,15 +27,7 @@ async fn verify_instance_owner(
         None => return Err(JsonResponse::<String>::not_found("Pipe instance not found")),
     };
 
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pool, &instance.deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(user_id) => Ok(()),
-        _ => Err(JsonResponse::<String>::not_found("Pipe instance not found")),
-    }
+    super::verify_pipe_owner(pool, &instance, user_id).await
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

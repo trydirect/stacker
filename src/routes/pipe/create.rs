@@ -27,7 +27,8 @@ pub struct CreatePipeTemplateRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreatePipeInstanceRequest {
-    pub deployment_hash: String,
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
     pub source_container: String,
     #[serde(default)]
     pub target_container: Option<String>,
@@ -107,9 +108,8 @@ pub async fn create_instance_handler(
     req: web::Json<CreatePipeInstanceRequest>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    if req.deployment_hash.trim().is_empty() {
-        return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
-    }
+    let deployment_hash = req.deployment_hash.as_deref().map(|h| h.trim()).filter(|h| !h.is_empty());
+
     if req.source_container.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("source_container is required"));
     }
@@ -118,16 +118,18 @@ pub async fn create_instance_handler(
             .bad_request("either target_container or target_url is required"));
     }
 
-    // Verify deployment belongs to the requesting user
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), req.deployment_hash.trim())
-            .await
-            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
+    // For remote pipes, verify deployment belongs to the requesting user
+    if let Some(hash) = deployment_hash {
+        let deployment =
+            db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), hash)
+                .await
+                .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
 
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => {
-            return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
+        match &deployment {
+            Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
+            _ => {
+                return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
+            }
         }
     }
 
@@ -144,11 +146,17 @@ pub async fn create_instance_handler(
         }
     }
 
-    let mut instance = PipeInstance::new(
-        req.deployment_hash.trim().to_string(),
-        req.source_container.trim().to_string(),
-        user.id.clone(),
-    );
+    let mut instance = match deployment_hash {
+        Some(hash) => PipeInstance::new(
+            hash.to_string(),
+            req.source_container.trim().to_string(),
+            user.id.clone(),
+        ),
+        None => PipeInstance::new_local(
+            req.source_container.trim().to_string(),
+            user.id.clone(),
+        ),
+    };
 
     if let Some(template_id) = req.template_id {
         instance = instance.with_template(template_id);
@@ -175,7 +183,8 @@ pub async fn create_instance_handler(
 
     tracing::info!(
         instance_id = %saved.id,
-        deployment_hash = %saved.deployment_hash,
+        deployment_hash = ?saved.deployment_hash,
+        is_local = saved.is_local,
         "Pipe instance created by user {}",
         user.id
     );

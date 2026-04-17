@@ -53,18 +53,7 @@ pub async fn get_instance_handler(
 
     match instance {
         Some(i) => {
-            // Verify the deployment belongs to the requesting user
-            let deployment =
-                db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &i.deployment_hash)
-                    .await
-                    .map_err(|err| JsonResponse::internal_server_error(err))?;
-
-            match &deployment {
-                Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-                _ => {
-                    return Err(JsonResponse::not_found("Pipe instance not found"));
-                }
-            }
+            super::verify_pipe_owner(pg_pool.get_ref(), &i, &user.id).await?;
 
             Ok(JsonResponse::build()
                 .set_item(Some(i))

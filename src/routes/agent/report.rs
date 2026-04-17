@@ -278,7 +278,7 @@ pub async fn report_handler(
                                     Ok(None) => {
                                         let execution = PipeExecution::new(
                                             instance_id,
-                                            payload.deployment_hash.clone(),
+                                            Some(payload.deployment_hash.clone()),
                                             report.trigger_type.clone(),
                                             created_by.clone(),
                                         );
@@ -307,7 +307,7 @@ pub async fn report_handler(
                             } else {
                                 let execution = PipeExecution::new(
                                     instance_id,
-                                    payload.deployment_hash.clone(),
+                                    Some(payload.deployment_hash.clone()),
                                     report.trigger_type.clone(),
                                     created_by,
                                 );
