@@ -1,6 +1,7 @@
 mod create;
 pub mod dag;
 mod delete;
+mod deploy;
 mod field_match;
 pub mod resilience;
 mod executions;
@@ -11,6 +12,7 @@ mod update;
 
 pub use create::*;
 pub use delete::*;
+pub use deploy::*;
 pub use executions::*;
 pub use field_match::*;
 pub use get::*;

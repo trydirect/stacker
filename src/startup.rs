@@ -275,6 +275,7 @@ pub async fn run(
                             .service(routes::pipe::delete_template_handler)
                             .service(routes::pipe::delete_instance_handler)
                             .service(routes::pipe::update_instance_status_handler)
+                            .service(routes::pipe::deploy_pipe_handler)
                             .service(routes::pipe::list_executions_handler)
                             .service(routes::pipe::get_execution_handler)
                             .service(routes::pipe::replay_execution_handler)

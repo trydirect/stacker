@@ -1236,7 +1236,7 @@ async fn test_replay_trigger_pipe_report_updates_existing_replay_execution() {
 
     let replay_execution = stacker::models::pipe::PipeExecution::new(
         pipe_instance_id,
-        deployment_hash.clone(),
+        Some(deployment_hash.clone()),
         "replay".to_string(),
         "test_user_id".to_string(),
     )
