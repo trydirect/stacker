@@ -179,6 +179,8 @@ Click **"Execute"** to run the pipeline with test data.
 
 Demo mode is great for learning the interface. Sign in to actually run pipelines.
 
+> **💡 Local mode (CLI)**: For local experimentation with _real_ execution, use `stacker target local` and the CLI pipe commands (see [Part 1: Local Mode](./DAG_PIPES_PART1_CLI_GUIDE.md#local-mode-experimental)). Local pipes can later be promoted to remote via `stacker pipe deploy`.
+
 ---
 
 ## What's Next?

@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Local Pipe Mode
+
+- **`stacker target [local|cloud|server]`** — switch deployment target mode; persists in `.stacker/active-target`
+- **Local pipe creation** — `stacker pipe create` works without a cloud deployment (`deployment_hash` is now optional, `is_local` flag on PipeInstance/PipeExecution)
+- **Local scanning** — `stacker pipe scan` discovers containers via `docker ps` in local mode
+- **Local triggering** — `stacker pipe trigger` executes via `docker exec` / HTTP against local containers
+- **`stacker pipe deploy <id> --deployment <hash>`** — promote a local pipe to a remote deployment (clones config to new remote instance)
+- **`GET /api/v1/pipes/instances/local`** — list local pipe instances for the authenticated user
+- **`POST /api/v1/pipes/instances/{id}/deploy`** — deploy (promote) local pipe to remote
+- **`stacker init --target local`** — initialize project in local mode directly
+- Database migration: `deployment_hash` nullable, `is_local BOOLEAN DEFAULT FALSE`, partial index on local instances
+
 ## [0.2.7] — 2026-04-10
 
 ### Security — IDOR Hardening & Test Coverage

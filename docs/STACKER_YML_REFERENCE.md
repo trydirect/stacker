@@ -501,6 +501,8 @@ deploy:
   target: local
 ```
 
+> **Pipe mode**: The `deploy.target` value also affects how `stacker pipe` commands behave. When target is `local`, pipes are created without a `deployment_hash` and execute against local Docker containers (`docker exec`). Use `stacker target` to switch modes at runtime without editing `stacker.yml`. See the [DAG Pipes CLI Guide — Local Mode](./DAG_PIPES_PART1_CLI_GUIDE.md#local-mode-experimental) for details.
+
 ### `deploy.compose_file`
 
 *Optional* · `string` (path) · Default: none

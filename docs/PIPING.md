@@ -12,7 +12,16 @@ Data piping connects containerized apps in a deployment, routing data from one s
 |  pipe create     |       |  validate params  |       |  curl endpoints  |
 |  pipe trigger    |       |  store results    |       |  capture samples |
 |  pipe history    |       |  persist history  |       |  execute pipes   |
+|  pipe deploy     |       |  promote local→   |       |                  |
 +------------------+       +------------------+       +------------------+
+        |
+        | (local mode — no agent needed)
+        v
++------------------+
+|  Local Docker    |
+|  docker ps       |
+|  docker exec     |
++------------------+
 ```
 
 **Three components work together:**
@@ -20,6 +29,8 @@ Data piping connects containerized apps in a deployment, routing data from one s
 1. **CLI** (`stacker pipe`) - user-facing commands
 2. **Server** (`/api/v1/pipes`) - REST API, validation, persistence
 3. **Agent** (status-panel) - runs on the deployment, probes containers, executes pipe triggers
+
+> **Local mode**: When `stacker target local` is active, scan uses `docker ps` and trigger uses `docker exec` — no agent required. Pipes are stored with `is_local=true` and no `deployment_hash`.
 
 ## Quick Start
 
@@ -138,7 +149,9 @@ stacker pipe deactivate <pipe-id>
 ### Templates vs Instances
 
 - **Template** - reusable pipe definition: source app type, target app type, endpoint paths, field mapping. Can be shared publicly.
-- **Instance** - deployment-specific activation of a template: ties to a `deployment_hash`, tracks status, trigger counts, errors.
+- **Instance** - activation of a template tied to a deployment or local context:
+  - **Remote instance** — bound to a `deployment_hash`, executed via the status agent on the cloud server.
+  - **Local instance** — no `deployment_hash`, `is_local=true`, executed via `docker exec` against local containers. Created when `stacker target local` is active.
 
 ### Field Mapping
 
@@ -257,10 +270,12 @@ All endpoints require authentication. Pipe instance access is verified through d
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/pipes/instances` | Create instance |
+| POST | `/api/v1/pipes/instances` | Create instance (`deployment_hash` optional for local) |
 | GET | `/api/v1/pipes/instances/{deployment_hash}` | List instances for deployment |
+| GET | `/api/v1/pipes/instances/local` | List local instances for current user |
 | GET | `/api/v1/pipes/instances/detail/{id}` | Get instance |
 | PUT | `/api/v1/pipes/instances/{id}/status` | Update status (draft/active/paused/error) |
+| POST | `/api/v1/pipes/instances/{id}/deploy` | Promote local instance to remote deployment |
 | DELETE | `/api/v1/pipes/instances/{id}` | Delete instance |
 
 ### Executions

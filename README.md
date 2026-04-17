@@ -166,6 +166,10 @@ The end-user tool. No server required for local deploys.
 | `stacker pipe activate <id>` | Activate a pipe (start listening for triggers) |
 | `stacker pipe deactivate <id>` | Pause an active pipe |
 | `stacker pipe trigger <id>` | One-shot pipe execution with optional input data |
+| `stacker pipe deploy <id>` | Promote a local pipe to a remote deployment |
+| `stacker pipe history <id>` | View execution history for a pipe |
+| `stacker pipe replay <exec-id>` | Re-run a previous pipe execution |
+| `stacker target [local\|cloud\|server]` | Switch deployment target mode (affects all pipe commands) |
 | `stacker submit` | Package current stack and submit to marketplace for review |
 | `stacker marketplace status` | Check submission status for your marketplace templates |
 | `stacker marketplace logs <name>` | Show review comments and history for a submission |
