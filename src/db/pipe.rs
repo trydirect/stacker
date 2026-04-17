@@ -334,6 +334,34 @@ pub async fn list_instances(
     })
 }
 
+/// List local pipe instances for a specific user (is_local = true)
+#[tracing::instrument(name = "List local pipe instances for user", skip(pool))]
+pub async fn list_local_instances_by_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<PipeInstance>, String> {
+    let query_span = tracing::info_span!("Listing local pipe instances");
+    sqlx::query_as::<_, PipeInstance>(
+        r#"
+        SELECT id, template_id, deployment_hash, source_container, target_container,
+               target_url, field_mapping_override, config_override, status,
+               last_triggered_at, trigger_count, error_count, is_local, created_by,
+               created_at, updated_at
+        FROM pipe_instances
+        WHERE is_local = true AND created_by = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to list local pipe instances: {:?}", err);
+        format!("Failed to list local pipe instances: {}", err)
+    })
+}
+
 /// Update the status of a pipe instance
 #[tracing::instrument(name = "Update pipe instance status", skip(pool))]
 pub async fn update_instance_status(
