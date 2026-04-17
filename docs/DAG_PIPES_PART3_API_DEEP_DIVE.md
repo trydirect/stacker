@@ -315,8 +315,10 @@ curl -sf -X POST "$BASE/pipes/instances/$INSTANCE/dag/execute" \
 |--------|------|-------------|
 | `POST` | `/api/v1/pipes/instances` | Create instance |
 | `GET` | `/api/v1/pipes/instances/{deployment_hash}` | List by deployment |
+| `GET` | `/api/v1/pipes/instances/local` | List local instances |
 | `GET` | `/api/v1/pipes/instances/detail/{id}` | Get instance |
 | `PUT` | `/api/v1/pipes/instances/{id}/status` | Update status |
+| `POST` | `/api/v1/pipes/instances/{id}/deploy` | Promote local → remote |
 | `DELETE` | `/api/v1/pipes/instances/{id}` | Delete instance |
 
 ### Executions

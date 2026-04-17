@@ -30,6 +30,8 @@ stacker login
 stacker status
 ```
 
+> **💡 No cloud deployment yet?** You can experiment locally first — see [Local Mode](#local-mode-experimental) below.
+
 ---
 
 ## Example 1: Contact Form → Telegram + Slack
@@ -211,6 +213,8 @@ stacker pipe trigger <slack-pipe-id> \
 | `stacker pipe trigger <id>` | Run the pipe once manually |
 | `stacker pipe history <id>` | View past executions |
 | `stacker pipe replay <exec-id>` | Re-run a past execution |
+| `stacker pipe deploy <id> --deployment <hash>` | Promote local pipe to remote |
+| `stacker target [local\|cloud\|server]` | Switch deployment target mode |
 
 ### Useful flags
 
@@ -252,6 +256,72 @@ stacker pipe replay <execution-id>
 # Trigger with custom test data
 stacker pipe trigger <id> --data '{"name":"test","email":"test@test.com","message":"debug"}'
 ```
+
+---
+
+## Local Mode (Experimental)
+
+Local mode lets you design, test, and iterate on pipes **without a cloud deployment**. Pipes run against your local Docker containers.
+
+### Setting Up Local Mode
+
+```bash
+# Switch to local mode
+stacker target local
+
+# Verify active target
+stacker target
+# Output: Active target: local
+
+# All pipe commands now show [local] prefix
+stacker pipe scan website
+# [local] ✓ 3 containers discovered
+```
+
+### Local Workflow
+
+```bash
+# 1. Discover local containers (uses docker ps)
+stacker pipe scan website
+
+# 2. Create a pipe — no deployment hash needed
+stacker pipe create website telegram
+# [local] ✓ Pipe instance created (id: abc-123)
+
+# 3. Trigger locally (executes via docker exec)
+stacker pipe trigger abc-123 --data '{"name":"test","email":"test@test.com"}'
+
+# 4. Check history
+stacker pipe history abc-123
+
+# 5. When ready — promote to a remote deployment
+stacker pipe deploy abc-123 --deployment <your-deployment-hash>
+# ✓ Local pipe promoted to remote deployment
+# Remote instance ID: def-456
+# Use 'stacker pipe activate def-456' to start the remote pipe.
+```
+
+### Switching Targets
+
+```bash
+stacker target local   # local Docker containers
+stacker target cloud   # cloud deployment (from prior deploy)
+stacker target server  # dedicated server deployment
+stacker target         # show current
+```
+
+### What Works Locally
+
+| Command | Local Behavior |
+|---------|---------------|
+| `pipe scan` | Runs `docker ps` to discover containers |
+| `pipe create` | Creates pipe with `is_local=true`, no deployment hash |
+| `pipe list` | Shows your local pipes only |
+| `pipe trigger` | Executes via `docker exec` / HTTP |
+| `pipe history` | Shows execution history |
+| `pipe deploy` | Promotes local pipe → remote deployment |
+| `pipe activate/deactivate` | Remote only (use after deploy) |
+| `pipe replay` | Remote only |
 
 ---
 
