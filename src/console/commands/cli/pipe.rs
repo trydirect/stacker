@@ -38,26 +38,87 @@ fn resolve_deployment_hash(
     explicit: &Option<String>,
     ctx: &CliRuntime,
 ) -> Result<String, CliError> {
-    // 1. Explicit flag
+    match resolve_deployment_context(explicit, ctx)? {
+        DeploymentContext::Remote(hash) => Ok(hash),
+        DeploymentContext::Local => Err(CliError::ConfigValidation(
+            "This command requires a remote deployment, but the active target is 'local'.\n\
+             Switch with: stacker target cloud"
+                .to_string(),
+        )),
+    }
+}
+
+/// Deployment context resolved from CLI flags, active target, or lockfiles.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeploymentContext {
+    /// Remote deployment identified by hash.
+    Remote(String),
+    /// Local mode — no deployment hash, pipes run against local Docker.
+    Local,
+}
+
+impl DeploymentContext {
+    /// Returns `true` when in local mode.
+    pub fn is_local(&self) -> bool {
+        matches!(self, DeploymentContext::Local)
+    }
+
+    /// Returns the deployment hash if remote.
+    pub fn hash(&self) -> Option<&str> {
+        match self {
+            DeploymentContext::Remote(h) => Some(h),
+            DeploymentContext::Local => None,
+        }
+    }
+}
+
+/// Helper that prepends `[local] ` when in local mode.
+pub fn mode_prefix(ctx_mode: &DeploymentContext) -> &'static str {
+    match ctx_mode {
+        DeploymentContext::Local => "\x1b[36m[local]\x1b[0m ",
+        DeploymentContext::Remote(_) => "",
+    }
+}
+
+/// Resolve the deployment context from explicit flag, active target, deployment lock,
+/// or stacker.yml project name.
+///
+/// Resolution order:
+/// 1. Explicit `--deployment` flag value → `Remote(hash)`
+/// 2. `.stacker/active-target` == "local" → `Local`
+/// 3. Deployment lock → `deployment_id` → API lookup → `Remote(hash)`
+/// 4. `stacker.yml` project name → API project lookup → `Remote(hash)`
+fn resolve_deployment_context(
+    explicit: &Option<String>,
+    ctx: &CliRuntime,
+) -> Result<DeploymentContext, CliError> {
+    // 1. Explicit flag always wins
     if let Some(hash) = explicit {
         if !hash.is_empty() {
-            return Ok(hash.clone());
+            return Ok(DeploymentContext::Remote(hash.clone()));
         }
     }
 
     let project_dir = std::env::current_dir().map_err(CliError::Io)?;
 
-    // 2. Deployment lock
+    // 2. Check active target — if "local", return Local immediately
+    if let Some(target) = crate::cli::deployment_lock::DeploymentLock::read_active_target(&project_dir)? {
+        if target == "local" {
+            return Ok(DeploymentContext::Local);
+        }
+    }
+
+    // 3. Deployment lock
     if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
         if let Some(dep_id) = lock.deployment_id {
             let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
             if let Some(info) = info {
-                return Ok(info.deployment_hash);
+                return Ok(DeploymentContext::Remote(info.deployment_hash));
             }
         }
     }
 
-    // 3. stacker.yml project → active agent (most recent heartbeat)
+    // 4. stacker.yml project → active agent (most recent heartbeat)
     let config_path = project_dir.join("stacker.yml");
     if config_path.exists() {
         if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
@@ -70,7 +131,7 @@ fn resolve_deployment_hash(
                                 "\x1b[2mℹ No --deployment specified — using active agent for project '{}': {}\x1b[0m",
                                 project_name, hash
                             );
-                            return Ok(hash);
+                            return Ok(DeploymentContext::Remote(hash));
                         }
                         Err(_) => {}
                     }
@@ -80,8 +141,9 @@ fn resolve_deployment_hash(
     }
 
     Err(CliError::ConfigValidation(
-        "Cannot determine deployment hash.\n\
-         Use --deployment <HASH>, or run from a directory with a deployment lock or stacker.yml."
+        "Cannot determine deployment context.\n\
+         Use --deployment <HASH>, run `stacker target local` for local mode,\n\
+         or run from a directory with a deployment lock or stacker.yml."
             .to_string(),
     ))
 }
@@ -437,9 +499,91 @@ fn extract_operations(
 impl CallableTrait for PipeCreateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe create")?;
-        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let prefix = mode_prefix(&deploy_ctx);
 
-        // Step 1: Scan both source and target
+        // In local mode, skip agent-based endpoint scanning — just create the pipe directly
+        if deploy_ctx.is_local() {
+            // Step 1 (local): Ask for pipe name
+            let default_name = format!("{}-to-{}", self.source, self.target);
+            let pipe_name: String = dialoguer::Input::new()
+                .with_prompt("Pipe name")
+                .default(default_name)
+                .interact_text()?;
+
+            // Step 2 (local): Create template via API
+            let template_request = CreatePipeTemplateApiRequest {
+                name: pipe_name.clone(),
+                description: Some(format!("{} → {} (local)", self.source, self.target)),
+                source_app_type: self.source.clone(),
+                source_endpoint: serde_json::json!({}),
+                target_app_type: self.target.clone(),
+                target_endpoint: serde_json::json!({}),
+                target_external_url: None,
+                field_mapping: serde_json::json!({}),
+                config: Some(serde_json::json!({"retry_count": 3})),
+                is_public: Some(false),
+            };
+
+            let pb = progress::spinner(&format!("{}Creating pipe template...", prefix));
+            let template = ctx
+                .block_on(ctx.client.create_pipe_template(&template_request))
+                .map_err(|e| {
+                    progress::finish_error(&pb, "Template creation failed");
+                    e
+                })?;
+            progress::finish_success(&pb, &format!("{}Template created", prefix));
+
+            // Step 3 (local): Create instance with no deployment_hash
+            let instance_request = CreatePipeInstanceApiRequest {
+                deployment_hash: None,
+                source_container: self.source.clone(),
+                target_container: Some(self.target.clone()),
+                target_url: None,
+                template_id: Some(template.id.clone()),
+                field_mapping_override: None,
+                config_override: None,
+            };
+
+            let pb = progress::spinner(&format!("{}Creating local pipe instance...", prefix));
+            let instance = ctx
+                .block_on(ctx.client.create_pipe_instance(&instance_request))
+                .map_err(|e| {
+                    progress::finish_error(&pb, "Instance creation failed");
+                    e
+                })?;
+            progress::finish_success(&pb, &format!("{}Pipe instance created", prefix));
+
+            if self.json {
+                let output = serde_json::json!({
+                    "template": template,
+                    "instance": instance,
+                    "local": true,
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                println!("\n  {}✓ Local pipe '{}' created successfully", prefix, pipe_name);
+                println!("  Template ID:  {}", template.id);
+                println!("  Instance ID:  {}", instance.id);
+                println!("  Source:       {}", self.source);
+                println!("  Target:       {}", self.target);
+                println!("  Mode:         local (no deployment required)");
+                println!(
+                    "  Next:         Configure endpoints, then 'stacker pipe trigger {}'",
+                    instance.id
+                );
+            }
+
+            return Ok(());
+        }
+
+        // Remote mode — resolve hash
+        let hash = match &deploy_ctx {
+            DeploymentContext::Remote(h) => h.clone(),
+            _ => unreachable!(),
+        };
+
+        // Step 1: Scan both source and target (remote only — local skips agent scan)
         println!(
             "Scanning source app '{}' and target app '{}'...",
             self.source, self.target
@@ -712,7 +856,7 @@ impl CallableTrait for PipeCreateCommand {
 
         // Step 8: Create instance linked to this deployment
         let instance_request = CreatePipeInstanceApiRequest {
-            deployment_hash: hash.clone(),
+            deployment_hash: Some(hash.clone()),
             source_container: self.source.clone(),
             target_container: Some(self.target.clone()),
             target_url: None,
@@ -771,16 +915,25 @@ impl PipeListCommand {
 impl CallableTrait for PipeListCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe list")?;
-        let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let prefix = mode_prefix(&deploy_ctx);
 
-        let pb = progress::spinner("Fetching pipes...");
-        let pipes = ctx
-            .block_on(ctx.client.list_pipe_instances(&hash))
-            .map_err(|e| {
-                progress::finish_error(&pb, "Failed to fetch pipes");
-                e
-            })?;
-        progress::finish_success(&pb, &format!("{} pipe(s) found", pipes.len()));
+        let pb = progress::spinner(&format!("{}Fetching pipes...", prefix));
+        let pipes = match &deploy_ctx {
+            DeploymentContext::Local => ctx
+                .block_on(ctx.client.list_local_pipe_instances())
+                .map_err(|e| {
+                    progress::finish_error(&pb, "Failed to fetch local pipes");
+                    e
+                })?,
+            DeploymentContext::Remote(hash) => ctx
+                .block_on(ctx.client.list_pipe_instances(hash))
+                .map_err(|e| {
+                    progress::finish_error(&pb, "Failed to fetch pipes");
+                    e
+                })?,
+        };
+        progress::finish_success(&pb, &format!("{}{} pipe(s) found", prefix, pipes.len()));
 
         if pipes.is_empty() {
             println!("No pipes configured for this deployment.");

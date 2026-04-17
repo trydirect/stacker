@@ -296,7 +296,8 @@ pub struct CreatePipeTemplateApiRequest {
 /// Request body for creating a pipe instance
 #[derive(Debug, Clone, Serialize)]
 pub struct CreatePipeInstanceApiRequest {
-    pub deployment_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_hash: Option<String>,
     pub source_container: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_container: Option<String>,
@@ -1651,6 +1652,35 @@ impl StackerClient {
 
         let api: ApiResponse<PipeInstanceInfo> = resp.json().await.map_err(|e| {
             CliError::ConfigValidation(format!("Invalid pipe list response: {}", e))
+        })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// List local pipe instances for the current user.
+    ///
+    /// `GET /api/v1/pipes/instances/local`
+    pub async fn list_local_pipe_instances(&self) -> Result<Vec<PipeInstanceInfo>, CliError> {
+        let url = format!("{}/api/v1/pipes/instances/local", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to list local pipes: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "List local pipes failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> = resp.json().await.map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid local pipe list response: {}", e))
         })?;
 
         Ok(api.list.unwrap_or_default())

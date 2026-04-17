@@ -78,6 +78,9 @@ enum StackerCommands {
         /// Immediately run cloud setup wizard after init
         #[arg(long)]
         with_cloud: bool,
+        /// Set the active deployment target: local, cloud, server
+        #[arg(long, value_name = "TARGET")]
+        target: Option<String>,
         /// AI provider: openai, anthropic, ollama, custom (default: ollama)
         #[arg(long, value_name = "PROVIDER")]
         ai_provider: Option<String>,
@@ -1043,15 +1046,25 @@ fn get_command(
             with_proxy,
             with_ai,
             with_cloud,
+            target,
             ai_provider,
             ai_model,
             ai_api_key,
-        } => Box::new(
-            stacker::console::commands::cli::init::InitCommand::new(
-                app_type, with_proxy, with_ai, with_cloud,
+        } => {
+            // If --target is specified, set the active target after init
+            if let Some(ref t) = target {
+                use stacker::cli::deployment_lock::DeploymentLock;
+                let project_dir = std::env::current_dir()?;
+                DeploymentLock::switch_target(&project_dir, t)?;
+                eprintln!("✓ Active target set to: {}", t);
+            }
+            Box::new(
+                stacker::console::commands::cli::init::InitCommand::new(
+                    app_type, with_proxy, with_ai, with_cloud,
+                )
+                .with_ai_options(ai_provider, ai_model, ai_api_key),
             )
-            .with_ai_options(ai_provider, ai_model, ai_api_key),
-        ),
+        }
         StackerCommands::Deploy {
             target,
             file,
