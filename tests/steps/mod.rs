@@ -6,7 +6,6 @@ pub mod common;
 pub mod dag;
 pub mod dag_execution;
 pub mod deployment;
-pub mod resilience;
 pub mod health;
 pub mod marketplace;
 pub mod mcp;
@@ -14,6 +13,7 @@ pub mod ml_field_match;
 pub mod pipe;
 pub mod project;
 pub mod prometheus;
+pub mod resilience;
 pub mod streaming;
 pub mod supporting;
 pub mod visual_editor;
@@ -85,7 +85,11 @@ static APP_INIT_ASYNC: tokio::sync::OnceCell<Option<(String, PgPool)>> =
 
 async fn get_shared_app() -> &'static Option<(String, PgPool)> {
     APP_INIT_ASYNC
-        .get_or_init(|| async { common::spawn_bdd_app().await.map(|a| (a.address, a.db_pool)) })
+        .get_or_init(|| async {
+            common::spawn_bdd_app()
+                .await
+                .map(|a| (a.address, a.db_pool))
+        })
         .await
 }
 

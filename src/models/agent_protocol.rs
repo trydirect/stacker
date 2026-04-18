@@ -139,12 +139,7 @@ impl StepResultMsg {
         }
     }
 
-    pub fn failure(
-        execution_id: Uuid,
-        step_id: Uuid,
-        error: String,
-        duration_ms: i64,
-    ) -> Self {
+    pub fn failure(execution_id: Uuid, step_id: Uuid, error: String, duration_ms: i64) -> Self {
         Self {
             execution_id,
             step_id,
@@ -187,12 +182,8 @@ mod tests {
 
     #[test]
     fn step_result_success_serde_roundtrip() {
-        let result = StepResultMsg::success(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            json!({"rows": 42}),
-            150,
-        );
+        let result =
+            StepResultMsg::success(Uuid::new_v4(), Uuid::new_v4(), json!({"rows": 42}), 150);
 
         let serialized = serde_json::to_string(&result).unwrap();
         let deserialized: StepResultMsg = serde_json::from_str(&serialized).unwrap();

@@ -108,7 +108,11 @@ pub async fn create_instance_handler(
     req: web::Json<CreatePipeInstanceRequest>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
-    let deployment_hash = req.deployment_hash.as_deref().map(|h| h.trim()).filter(|h| !h.is_empty());
+    let deployment_hash = req
+        .deployment_hash
+        .as_deref()
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty());
 
     if req.source_container.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("source_container is required"));
@@ -120,10 +124,9 @@ pub async fn create_instance_handler(
 
     // For remote pipes, verify deployment belongs to the requesting user
     if let Some(hash) = deployment_hash {
-        let deployment =
-            db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), hash)
-                .await
-                .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
+        let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), hash)
+            .await
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
 
         match &deployment {
             Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
@@ -152,10 +155,7 @@ pub async fn create_instance_handler(
             req.source_container.trim().to_string(),
             user.id.clone(),
         ),
-        None => PipeInstance::new_local(
-            req.source_container.trim().to_string(),
-            user.id.clone(),
-        ),
+        None => PipeInstance::new_local(req.source_container.trim().to_string(), user.id.clone()),
     };
 
     if let Some(template_id) = req.template_id {

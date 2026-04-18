@@ -183,7 +183,10 @@ pub async fn replay_execution_handler(
         }
     } else {
         // Local pipe — no agent dispatch
-        tracing::info!("Replay for local pipe instance {}, skipping agent dispatch", instance.id);
+        tracing::info!(
+            "Replay for local pipe instance {}, skipping agent dispatch",
+            instance.id
+        );
         None
     };
 

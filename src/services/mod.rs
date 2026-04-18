@@ -1,17 +1,17 @@
 pub mod agent_dispatcher;
 pub mod config_renderer;
 pub mod dag_executor;
-pub mod grpc_pipe;
-pub mod resilience_engine;
-pub mod step_executor;
-pub mod ws_pipe;
 pub mod deployment_identifier;
+pub mod grpc_pipe;
 pub mod handoff;
 pub mod log_cache;
 pub mod project;
 pub mod project_app_service;
 mod rating;
+pub mod resilience_engine;
+pub mod step_executor;
 pub mod vault_service;
+pub mod ws_pipe;
 
 pub use config_renderer::{AppRenderContext, ConfigBundle, ConfigRenderer, SyncResult};
 pub use deployment_identifier::{

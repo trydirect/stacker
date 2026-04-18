@@ -84,9 +84,7 @@ impl InMemoryCircuitBreaker {
                     false
                 }
             }
-            CircuitState::HalfOpen => {
-                self.half_open_requests < self.config.half_open_max_requests
-            }
+            CircuitState::HalfOpen => self.half_open_requests < self.config.half_open_max_requests,
         }
     }
 

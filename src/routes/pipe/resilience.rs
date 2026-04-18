@@ -4,10 +4,10 @@ use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::Deserialize;
 use sqlx::PgPool;
 
+use crate::db;
 use crate::helpers::JsonResponse;
-use crate::models::resilience::{DeadLetterEntry};
+use crate::models::resilience::DeadLetterEntry;
 use crate::models::User;
-use crate::{db};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Ownership helper

@@ -1674,7 +1674,9 @@ impl StackerClient {
             .bearer_auth(&self.token)
             .send()
             .await
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to list local pipes: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to list local pipes: {}", e))
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -2028,9 +2030,7 @@ impl StackerClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to deploy pipe: {}", e))
-            })?;
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to deploy pipe: {}", e)))?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();

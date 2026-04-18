@@ -11,7 +11,8 @@ async fn send_get_request(world: &mut StepWorld, path: String) {
 async fn check_status(world: &mut StepWorld, expected: u16) {
     let actual = world.status_code.expect("No response received yet");
     assert_eq!(
-        actual, expected,
+        actual,
+        expected,
         "Expected status {}, got {}. Body: {}",
         expected,
         actual,
@@ -81,7 +82,11 @@ async fn check_json_at_path_not_empty(world: &mut StepWorld, path: String) {
         .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
     match value {
         serde_json::Value::String(s) => {
-            assert!(!s.is_empty(), "Expected non-empty string at '{}', got empty", path);
+            assert!(
+                !s.is_empty(),
+                "Expected non-empty string at '{}', got empty",
+                path
+            );
         }
         serde_json::Value::Null => {
             panic!("Expected non-empty value at '{}', got null", path);
@@ -101,7 +106,13 @@ async fn check_json_at_path_empty_array(world: &mut StepWorld, path: String) {
         .unwrap_or_else(|| panic!("JSON path '{}' not found in: {}", path, json));
     match value {
         serde_json::Value::Array(arr) => {
-            assert!(arr.is_empty(), "Expected empty array at '{}', got {} items: {}", path, arr.len(), value);
+            assert!(
+                arr.is_empty(),
+                "Expected empty array at '{}', got {} items: {}",
+                path,
+                arr.len(),
+                value
+            );
         }
         serde_json::Value::Null => {
             // null is acceptable as "empty" list for some endpoints

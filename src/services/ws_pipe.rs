@@ -4,7 +4,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// Connect to a WebSocket endpoint and read the first message as source data.
 /// If `config.output` is set, returns it directly (simulation mode for BDD tests).
-pub async fn execute_ws_source(config: &JsonValue, _input: &JsonValue) -> Result<JsonValue, String> {
+pub async fn execute_ws_source(
+    config: &JsonValue,
+    _input: &JsonValue,
+) -> Result<JsonValue, String> {
     if let Some(output) = config.get("output") {
         return Ok(output.clone());
     }
@@ -49,8 +52,8 @@ pub async fn execute_ws_target(config: &JsonValue, input: &JsonValue) -> Result<
 
     let (mut write, _read) = ws_stream.split();
 
-    let payload = serde_json::to_string(input)
-        .map_err(|e| format!("ws_target serialize error: {e}"))?;
+    let payload =
+        serde_json::to_string(input).map_err(|e| format!("ws_target serialize error: {e}"))?;
 
     write
         .send(Message::Text(payload))

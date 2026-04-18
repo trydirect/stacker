@@ -69,21 +69,16 @@ pub async fn get_dlq_entry(
     entry_id: &Uuid,
 ) -> Result<Option<DeadLetterEntry>, String> {
     let span = tracing::info_span!("Fetching DLQ entry");
-    sqlx::query_as::<_, DeadLetterEntry>(
-        r#"SELECT * FROM dead_letter_queue WHERE id = $1"#,
-    )
-    .bind(entry_id)
-    .fetch_optional(pool)
-    .instrument(span)
-    .await
-    .map_err(|e| format!("Failed to get DLQ entry: {}", e))
+    sqlx::query_as::<_, DeadLetterEntry>(r#"SELECT * FROM dead_letter_queue WHERE id = $1"#)
+        .bind(entry_id)
+        .fetch_optional(pool)
+        .instrument(span)
+        .await
+        .map_err(|e| format!("Failed to get DLQ entry: {}", e))
 }
 
 #[tracing::instrument(name = "Retry DLQ entry", skip(pool))]
-pub async fn retry_dlq_entry(
-    pool: &PgPool,
-    entry_id: &Uuid,
-) -> Result<DeadLetterEntry, String> {
+pub async fn retry_dlq_entry(pool: &PgPool, entry_id: &Uuid) -> Result<DeadLetterEntry, String> {
     let span = tracing::info_span!("Retrying DLQ entry");
     // Increment retry_count; if retry_count >= max_retries, set status = 'exhausted'
     sqlx::query_as::<_, DeadLetterEntry>(
@@ -108,10 +103,7 @@ pub async fn retry_dlq_entry(
 }
 
 #[tracing::instrument(name = "Discard DLQ entry", skip(pool))]
-pub async fn discard_dlq_entry(
-    pool: &PgPool,
-    entry_id: &Uuid,
-) -> Result<(), String> {
+pub async fn discard_dlq_entry(pool: &PgPool, entry_id: &Uuid) -> Result<(), String> {
     let span = tracing::info_span!("Discarding DLQ entry");
     sqlx::query(
         r#"UPDATE dead_letter_queue SET status = 'discarded', updated_at = NOW() WHERE id = $1"#,

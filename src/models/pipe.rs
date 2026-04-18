@@ -393,10 +393,7 @@ mod tests {
 
     #[test]
     fn test_pipe_instance_new_local() {
-        let instance = PipeInstance::new_local(
-            "my_postgres".to_string(),
-            "user789".to_string(),
-        );
+        let instance = PipeInstance::new_local("my_postgres".to_string(), "user789".to_string());
 
         assert!(instance.deployment_hash.is_none());
         assert_eq!(instance.source_container, "my_postgres");
@@ -442,7 +439,10 @@ mod tests {
 
         let json_str = serde_json::to_string(&instance).unwrap();
         let deserialized: PipeInstance = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.deployment_hash, Some("deploy_test".to_string()));
+        assert_eq!(
+            deserialized.deployment_hash,
+            Some("deploy_test".to_string())
+        );
         assert_eq!(deserialized.source_container, "container_a");
         assert_eq!(deserialized.status, "draft");
     }
@@ -548,7 +548,10 @@ mod tests {
 
         let json_str = serde_json::to_string(&exec).unwrap();
         let deserialized: PipeExecution = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.deployment_hash, Some("deploy_test".to_string()));
+        assert_eq!(
+            deserialized.deployment_hash,
+            Some("deploy_test".to_string())
+        );
         assert_eq!(deserialized.trigger_type, "manual");
         assert_eq!(deserialized.status, "success");
         assert_eq!(deserialized.source_data, Some(json!({"key": "value"})));

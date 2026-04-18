@@ -10,7 +10,11 @@ fn store_template_id(world: &mut StepWorld) {
         if let Some(id) = json
             .pointer("/data/id")
             .or_else(|| json.pointer("/item/id"))
-            .and_then(|v| v.as_str().or_else(|| v.as_i64().map(|_| "")).and_then(|_| v.as_str()))
+            .and_then(|v| {
+                v.as_str()
+                    .or_else(|| v.as_i64().map(|_| ""))
+                    .and_then(|_| v.as_str())
+            })
         {
             world
                 .stored_ids
@@ -78,7 +82,9 @@ async fn update_template(world: &mut StepWorld, name: String) {
         .expect("No stored template_id")
         .clone();
     let body = json!({ "name": name });
-    world.put_json(&format!("/api/templates/{}", id), &body).await;
+    world
+        .put_json(&format!("/api/templates/{}", id), &body)
+        .await;
 }
 
 #[when("I submit the stored template for review")]
@@ -206,10 +212,7 @@ async fn needs_changes(world: &mut StepWorld, reason: String) {
         .clone();
     let body = json!({ "reason": reason });
     world
-        .post_json(
-            &format!("/api/admin/templates/{}/needs-changes", id),
-            &body,
-        )
+        .post_json(&format!("/api/admin/templates/{}/needs-changes", id), &body)
         .await;
 }
 
@@ -260,10 +263,7 @@ async fn update_verifications(world: &mut StepWorld) {
         .clone();
     let body = json!({ "security_reviewed": true });
     world
-        .patch(
-            &format!("/api/admin/templates/{}/verifications", id),
-            &body,
-        )
+        .patch(&format!("/api/admin/templates/{}/verifications", id), &body)
         .await;
 }
 

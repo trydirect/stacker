@@ -160,7 +160,9 @@ The end-user tool. No server required for local deploys.
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
-| `stacker pipe scan <app>` | Discover API endpoints on a running container |
+| `stacker pipe scan` | Discover local endpoints/resources from running containers (when target is `local`) |
+| `stacker pipe scan --containers [filter]` | Discover local endpoints/resources for matching containers |
+| `stacker pipe scan --app <app>` | Probe a remote app for API endpoints |
 | `stacker pipe create <src> <tgt>` | Create a data pipe between two containers (interactive) |
 | `stacker pipe list` | List pipe instances for the current deployment |
 | `stacker pipe activate <id>` | Activate a pipe (start listening for triggers) |

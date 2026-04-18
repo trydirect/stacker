@@ -19,7 +19,9 @@ use tokio::signal;
 use tokio::sync::Notify;
 use tracing::{error, info};
 
-use stacker::models::agent_protocol::{routing, RetryPolicy, StepCommand, StepResultMsg, StepStatus};
+use stacker::models::agent_protocol::{
+    routing, RetryPolicy, StepCommand, StepResultMsg, StepStatus,
+};
 use stacker::services::resilience_engine::{
     execute_with_resilience, CircuitBreakerConfig, InMemoryCircuitBreaker,
 };
@@ -28,7 +30,11 @@ use stacker::services::resilience_engine::{
 #[command(name = "agent-executor", about = "Pipe step executor agent")]
 struct Args {
     /// AMQP connection URL
-    #[arg(long, env = "AMQP_URL", default_value = "amqp://guest:guest@localhost:5672")]
+    #[arg(
+        long,
+        env = "AMQP_URL",
+        default_value = "amqp://guest:guest@localhost:5672"
+    )]
     amqp_url: String,
 
     /// Deployment hash to scope this executor to

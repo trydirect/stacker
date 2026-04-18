@@ -205,8 +205,7 @@ pub async fn delete_step_handler(
         .await
         .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
 
-    Ok(JsonResponse::<()>::build()
-        .ok("DAG step deleted successfully"))
+    Ok(JsonResponse::<()>::build().ok("DAG step deleted successfully"))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -233,8 +232,13 @@ pub async fn add_edge_handler(
         .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
 
     match (&from_step, &to_step) {
-        (Some(f), Some(t)) if f.pipe_template_id == template_id && t.pipe_template_id == template_id => {}
-        _ => return Err(JsonResponse::<()>::build().bad_request("Both steps must belong to this template")),
+        (Some(f), Some(t))
+            if f.pipe_template_id == template_id && t.pipe_template_id == template_id => {}
+        _ => {
+            return Err(
+                JsonResponse::<()>::build().bad_request("Both steps must belong to this template")
+            )
+        }
     }
 
     // Check for cycles
@@ -248,7 +252,9 @@ pub async fn add_edge_handler(
     .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
 
     if would_cycle {
-        return Err(JsonResponse::<()>::build().bad_request("Adding this edge would create a cycle"));
+        return Err(
+            JsonResponse::<()>::build().bad_request("Adding this edge would create a cycle")
+        );
     }
 
     let mut edge = DagEdge::new(template_id, req.from_step_id, req.to_step_id);
@@ -298,8 +304,7 @@ pub async fn delete_edge_handler(
         .await
         .map_err(|err| JsonResponse::<String>::internal_server_error(err))?;
 
-    Ok(JsonResponse::<()>::build()
-        .ok("DAG edge deleted successfully"))
+    Ok(JsonResponse::<()>::build().ok("DAG edge deleted successfully"))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -358,10 +363,12 @@ pub async fn validate_dag_handler(
         edges.iter().map(|e| e.from_step_id).collect();
 
     for step in &steps {
-        if step.step_type != "source" && !steps_with_incoming.contains(&step.id) && steps.len() > 1 {
+        if step.step_type != "source" && !steps_with_incoming.contains(&step.id) && steps.len() > 1
+        {
             errors.push(format!("Step '{}' has no incoming edges", step.name));
         }
-        if step.step_type != "target" && !steps_with_outgoing.contains(&step.id) && steps.len() > 1 {
+        if step.step_type != "target" && !steps_with_outgoing.contains(&step.id) && steps.len() > 1
+        {
             errors.push(format!("Step '{}' has no outgoing edges", step.name));
         }
     }
@@ -369,10 +376,16 @@ pub async fn validate_dag_handler(
     // Verify edge references are valid
     for edge in &edges {
         if !step_ids.contains(&edge.from_step_id) {
-            errors.push(format!("Edge references non-existent from_step {}", edge.from_step_id));
+            errors.push(format!(
+                "Edge references non-existent from_step {}",
+                edge.from_step_id
+            ));
         }
         if !step_ids.contains(&edge.to_step_id) {
-            errors.push(format!("Edge references non-existent to_step {}", edge.to_step_id));
+            errors.push(format!(
+                "Edge references non-existent to_step {}",
+                edge.to_step_id
+            ));
         }
     }
 
@@ -424,8 +437,9 @@ pub async fn execute_dag_handler(
 
     super::verify_pipe_owner(pg_pool.get_ref(), &instance, &user.id).await?;
 
-    let template_id = instance.template_id
-        .ok_or_else(|| JsonResponse::<String>::bad_request("Pipe instance has no template".to_string()))?;
+    let template_id = instance.template_id.ok_or_else(|| {
+        JsonResponse::<String>::bad_request("Pipe instance has no template".to_string())
+    })?;
 
     // Create a pipe_execution record for FK compliance
     let pipe_exec = crate::models::pipe::PipeExecution::new(

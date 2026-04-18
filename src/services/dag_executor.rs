@@ -38,10 +38,7 @@ pub struct StepResult {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Returns steps grouped by execution level (steps in same level can run in parallel).
-pub fn topological_sort(
-    steps: &[DagStep],
-    edges: &[DagEdge],
-) -> Result<Vec<Vec<Uuid>>, String> {
+pub fn topological_sort(steps: &[DagStep], edges: &[DagEdge]) -> Result<Vec<Vec<Uuid>>, String> {
     if steps.is_empty() {
         return Err("DAG must have at least one step".to_string());
     }
@@ -50,7 +47,8 @@ pub fn topological_sort(
 
     // Build adjacency list and in-degree map
     let mut in_degree: HashMap<Uuid, usize> = step_ids.iter().map(|&id| (id, 0)).collect();
-    let mut adjacency: HashMap<Uuid, Vec<Uuid>> = step_ids.iter().map(|&id| (id, Vec::new())).collect();
+    let mut adjacency: HashMap<Uuid, Vec<Uuid>> =
+        step_ids.iter().map(|&id| (id, Vec::new())).collect();
 
     for edge in edges {
         if step_ids.contains(&edge.from_step_id) && step_ids.contains(&edge.to_step_id) {
@@ -105,10 +103,7 @@ pub fn topological_sort(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Execute a single step — delegates to the shared step_executor module.
-async fn execute_step(
-    step: &DagStep,
-    input: &JsonValue,
-) -> Result<JsonValue, String> {
+async fn execute_step(step: &DagStep, input: &JsonValue) -> Result<JsonValue, String> {
     step_executor::execute_step(&step.step_type, &step.config, input).await
 }
 
@@ -127,15 +122,27 @@ pub fn validate_dag(steps: &[DagStep], _edges: &[DagEdge]) -> Result<(), String>
         return Err("DAG must have at least one step".to_string());
     }
 
-    let source_types = ["source", "ws_source", "http_stream_source", "grpc_source", "cdc_source", "amqp_source", "kafka_source"];
+    let source_types = [
+        "source",
+        "ws_source",
+        "http_stream_source",
+        "grpc_source",
+        "cdc_source",
+        "amqp_source",
+        "kafka_source",
+    ];
     let target_types = ["target", "ws_target", "grpc_target"];
 
-    let has_source = steps.iter().any(|s| source_types.contains(&s.step_type.as_str()));
+    let has_source = steps
+        .iter()
+        .any(|s| source_types.contains(&s.step_type.as_str()));
     if !has_source {
         return Err("DAG must have at least one source step".to_string());
     }
 
-    let has_target = steps.iter().any(|s| target_types.contains(&s.step_type.as_str()));
+    let has_target = steps
+        .iter()
+        .any(|s| target_types.contains(&s.step_type.as_str()));
     if !has_target {
         return Err("DAG must have at least one target step".to_string());
     }
@@ -177,10 +184,7 @@ pub async fn execute_dag(
     // Build edge condition map (from_step_id → condition) for condition-gated edges
     let mut edge_conditions: HashMap<(Uuid, Uuid), Option<JsonValue>> = HashMap::new();
     for edge in &edges {
-        edge_conditions.insert(
-            (edge.from_step_id, edge.to_step_id),
-            edge.condition.clone(),
-        );
+        edge_conditions.insert((edge.from_step_id, edge.to_step_id), edge.condition.clone());
     }
 
     // Create step execution records
@@ -317,14 +321,8 @@ pub async fn execute_dag(
                 Err(err) => {
                     step_statuses.insert(step_id, "failed".to_string());
 
-                    db::dag::update_step_execution(
-                        pool,
-                        &exec_id,
-                        "failed",
-                        None,
-                        Some(&err),
-                    )
-                    .await?;
+                    db::dag::update_step_execution(pool, &exec_id, "failed", None, Some(&err))
+                        .await?;
 
                     step_results.push(StepResult {
                         step_id,

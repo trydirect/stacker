@@ -28,27 +28,36 @@ Data piping connects containerized apps in a deployment, routing data from one s
 
 1. **CLI** (`stacker pipe`) - user-facing commands
 2. **Server** (`/api/v1/pipes`) - REST API, validation, persistence
-3. **Agent** (status-panel) - runs on the deployment, probes containers, executes pipe triggers
+3. **Agent** (status-panel) - runs on the deployment, probes app/container endpoints, executes pipe triggers
 
-> **Local mode**: When `stacker target local` is active, scan uses `docker ps` and trigger uses `docker exec` — no agent required. Pipes are stored with `is_local=true` and no `deployment_hash`.
+> **Local mode**: When `stacker target local` is active, scan starts with Docker discovery (`docker ps` + `docker inspect`) and then probes matched containers for endpoints/resources locally — no remote agent required. Pipes are stored with `is_local=true` and no `deployment_hash`.
+
+> **Scan semantics**: local scan is **container-first**; remote scan is **app-first** with optional `--container` narrowing.
 
 ## Quick Start
 
 ### 1. Scan for connectable endpoints
 
 ```bash
-# Discover what APIs wordpress exposes
-stacker pipe scan wordpress
+# Local target: discover endpoints/resources from running containers
+stacker pipe scan
 
-# With sample response capture (shows actual data)
-stacker pipe scan wordpress --capture-samples
+# Filter local containers by name, then probe them
+stacker pipe scan --containers wordpress
+
+# Remote target: probe a deployed app for endpoints
+stacker pipe scan --app wordpress --capture-samples
 
 # Scan specific protocols
-stacker pipe scan wordpress --protocols openapi,html_forms,rest
+stacker pipe scan --app wordpress --protocols openapi,html_forms,rest
 ```
 
 Output:
 ```
+  Containers matched: 1
+    local-wordpress-1 [blog] wordpress:latest
+      addresses: 172.18.0.8:80
+
   App: wordpress
   Protocols detected: openapi
 
@@ -205,8 +214,8 @@ When `--capture-samples` is enabled during scanning, the agent:
 
 ```bash
 # 1. Scan both services
-stacker pipe scan wordpress --capture-samples
-stacker pipe scan mailchimp --capture-samples
+stacker pipe scan --app wordpress --capture-samples
+stacker pipe scan --app mailchimp --capture-samples
 
 # 2. Create the pipe
 stacker pipe create wordpress mailchimp
@@ -290,7 +299,7 @@ All endpoints require authentication. Pipe instance access is verified through d
 
 | Command | Direction | Description |
 |---------|-----------|-------------|
-| `probe_endpoints` | Server -> Agent | Discover API endpoints on a container |
+| `probe_endpoints` | Server -> Agent | Discover API endpoints for an app, optionally narrowed to a container |
 | `activate_pipe` | Server -> Agent | Start webhook listener or poll scheduler |
 | `deactivate_pipe` | Server -> Agent | Stop listener/scheduler |
 | `trigger_pipe` | Server -> Agent | One-shot pipe execution |

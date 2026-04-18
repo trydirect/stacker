@@ -274,8 +274,7 @@ impl DeploymentLock {
         if !path.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(CliError::Io)?;
+        let content = std::fs::read_to_string(&path).map_err(CliError::Io)?;
         let target = content.trim().to_string();
         if target.is_empty() {
             Ok(None)
@@ -565,7 +564,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // No active target initially
-        assert_eq!(DeploymentLock::read_active_target(tmp.path()).unwrap(), None);
+        assert_eq!(
+            DeploymentLock::read_active_target(tmp.path()).unwrap(),
+            None
+        );
 
         // Write and read back
         DeploymentLock::write_active_target(tmp.path(), "local").unwrap();

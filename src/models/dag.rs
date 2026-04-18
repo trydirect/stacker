@@ -38,12 +38,7 @@ pub const VALID_STEP_TYPES: &[&str] = &[
 ];
 
 impl DagStep {
-    pub fn new(
-        pipe_template_id: Uuid,
-        name: String,
-        step_type: String,
-        config: JsonValue,
-    ) -> Self {
+    pub fn new(pipe_template_id: Uuid, name: String, step_type: String, config: JsonValue) -> Self {
         Self {
             id: Uuid::new_v4(),
             pipe_template_id,
@@ -77,11 +72,7 @@ pub struct DagEdge {
 }
 
 impl DagEdge {
-    pub fn new(
-        pipe_template_id: Uuid,
-        from_step_id: Uuid,
-        to_step_id: Uuid,
-    ) -> Self {
+    pub fn new(pipe_template_id: Uuid, from_step_id: Uuid, to_step_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
             pipe_template_id,

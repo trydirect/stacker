@@ -8,7 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - **`stacker target [local|cloud|server]`** — switch deployment target mode; persists in `.stacker/active-target`
 - **Local pipe creation** — `stacker pipe create` works without a cloud deployment (`deployment_hash` is now optional, `is_local` flag on PipeInstance/PipeExecution)
-- **Local scanning** — `stacker pipe scan` discovers containers via `docker ps` in local mode
+- **Local scanning** — `stacker pipe scan` now performs local endpoint/resource discovery on matched containers instead of only listing Docker inventory
+- **Explicit scan modes** — `stacker pipe scan --containers [FILTER]` for local container discovery + probing and `stacker pipe scan --app <APP> [--container <NAME>]` for remote endpoint probing
 - **Local triggering** — `stacker pipe trigger` executes via `docker exec` / HTTP against local containers
 - **`stacker pipe deploy <id> --deployment <hash>`** — promote a local pipe to a remote deployment (clones config to new remote instance)
 - **`GET /api/v1/pipes/instances/local`** — list local pipe instances for the authenticated user

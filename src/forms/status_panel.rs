@@ -851,6 +851,8 @@ pub struct ProbeEndpointsCommandRequest {
 /// A discovered API endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProbeEndpoint {
+    #[serde(default)]
+    pub container: Option<String>,
     pub protocol: String,
     pub base_url: String,
     pub spec_url: String,
@@ -874,9 +876,48 @@ pub struct ProbeOperation {
 /// A discovered HTML form
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProbeForm {
+    #[serde(default)]
+    pub container: Option<String>,
     pub id: String,
     pub action: String,
     pub method: String,
+    pub fields: Vec<String>,
+}
+
+/// A matched container in a local probe run
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeContainer {
+    pub name: String,
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub network: String,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+}
+
+/// A discovered non-HTTP resource (DB table, queue, topic, stream, etc.)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeResource {
+    #[serde(default)]
+    pub container: String,
+    pub protocol: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub items: Vec<ProbeResourceItem>,
+}
+
+/// A single discovered resource item
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeResourceItem {
+    pub resource_type: String,
+    pub name: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
     pub fields: Vec<String>,
 }
 
@@ -900,7 +941,11 @@ pub struct ProbeEndpointsCommandReport {
     pub deployment_hash: String,
     pub app_code: String,
     pub protocols_detected: Vec<String>,
+    #[serde(default)]
+    pub containers: Vec<ProbeContainer>,
     pub endpoints: Vec<ProbeEndpoint>,
+    #[serde(default)]
+    pub resources: Vec<ProbeResource>,
     pub forms: Vec<ProbeForm>,
     pub probed_at: String,
 }
@@ -1610,6 +1655,59 @@ mod tests {
         let sample = &payload["endpoints"][0]["operations"][0]["sample_response"];
         assert_eq!(sample["id"], 1);
         assert_eq!(sample["author"], 42);
+    }
+
+    #[test]
+    fn probe_endpoints_result_accepts_local_resources_and_containers() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "local",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "local",
+                "app_code": "device-api",
+                "protocols_detected": ["openapi", "postgres"],
+                "containers": [{
+                    "name": "local-device-api-1",
+                    "image": "syncopia/device-api:local",
+                    "network": "syncopia",
+                    "ports": [],
+                    "addresses": ["172.18.0.20:5050"]
+                }],
+                "endpoints": [{
+                    "protocol": "openapi",
+                    "base_url": "http://172.18.0.20:5050",
+                    "spec_url": "/openapi.json",
+                    "operations": [{
+                        "path": "/devices",
+                        "method": "GET",
+                        "summary": "List devices",
+                        "fields": ["id", "name"]
+                    }]
+                }],
+                "resources": [{
+                    "container": "local-postgres-1",
+                    "protocol": "postgres",
+                    "address": "postgres://postgres@172.18.0.10:5432/app",
+                    "items": [{
+                        "resource_type": "table",
+                        "name": "public.devices",
+                        "summary": "CDC candidate",
+                        "fields": ["id", "name"]
+                    }]
+                }],
+                "forms": [],
+                "probed_at": "2026-04-17T18:00:00Z"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["containers"][0]["name"], "local-device-api-1");
+        assert_eq!(payload["resources"][0]["protocol"], "postgres");
+        assert_eq!(
+            payload["resources"][0]["items"][0]["name"],
+            "public.devices"
+        );
     }
 
     #[test]

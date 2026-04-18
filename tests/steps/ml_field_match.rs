@@ -5,7 +5,9 @@ use super::StepWorld;
 
 // ─── Field Matching Steps ────────────────────────────────────────
 
-#[when(regex = r#"^I request field matching with source fields "([^"]*)" and target fields "([^"]*)"$"#)]
+#[when(
+    regex = r#"^I request field matching with source fields "([^"]*)" and target fields "([^"]*)"$"#
+)]
 async fn when_request_field_matching(
     world: &mut StepWorld,
     source_fields_csv: String,
@@ -35,10 +37,7 @@ async fn when_request_field_matching(
 
 #[then(regex = r#"^the field match for "([^"]+)" should map to "([^"]+)"$"#)]
 async fn then_field_match_maps(world: &mut StepWorld, target_field: String, source_field: String) {
-    let json = world
-        .response_json
-        .as_ref()
-        .expect("no response JSON");
+    let json = world.response_json.as_ref().expect("no response JSON");
     let item = &json["item"];
     let mapping = &item["mapping"];
 
@@ -61,10 +60,7 @@ async fn then_field_match_confidence(
     field_name: String,
     min_confidence: f32,
 ) {
-    let json = world
-        .response_json
-        .as_ref()
-        .expect("no response JSON");
+    let json = world.response_json.as_ref().expect("no response JSON");
     let item = &json["item"];
     let confidence = &item["confidence"];
 
@@ -85,10 +81,7 @@ async fn then_field_match_confidence(
 
 #[then(regex = r#"^the field match result should have unmatched target "([^"]+)"$"#)]
 async fn then_unmatched_target(world: &mut StepWorld, field_name: String) {
-    let json = world
-        .response_json
-        .as_ref()
-        .expect("no response JSON");
+    let json = world.response_json.as_ref().expect("no response JSON");
     let item = &json["item"];
     let unmatched = item["unmatched_target"]
         .as_array()
@@ -107,14 +100,9 @@ async fn then_unmatched_target(world: &mut StepWorld, field_name: String) {
 
 #[then("the field match mapping should be empty")]
 async fn then_mapping_empty(world: &mut StepWorld) {
-    let json = world
-        .response_json
-        .as_ref()
-        .expect("no response JSON");
+    let json = world.response_json.as_ref().expect("no response JSON");
     let item = &json["item"];
-    let mapping = item["mapping"]
-        .as_object()
-        .expect("mapping not an object");
+    let mapping = item["mapping"].as_object().expect("mapping not an object");
 
     assert!(
         mapping.is_empty(),

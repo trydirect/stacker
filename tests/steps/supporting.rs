@@ -65,9 +65,7 @@ async fn update_client(world: &mut StepWorld) {
         .get("client_id")
         .expect("No stored client_id")
         .clone();
-    world
-        .put_json(&format!("/client/{}", id), &json!({}))
-        .await;
+    world.put_json(&format!("/client/{}", id), &json!({})).await;
 }
 
 // ─── Rating steps ───
@@ -112,9 +110,7 @@ async fn create_rating_with_comment(
     store_rating_id(world);
 }
 
-#[given(
-    regex = r#"^I have created a rating for object (\d+) category "([^"]+)" with rate (\d+)$"#
-)]
+#[given(regex = r#"^I have created a rating for object (\d+) category "([^"]+)" with rate (\d+)$"#)]
 async fn given_created_rating(world: &mut StepWorld, obj_id: i32, category: String, rate: i32) {
     // Ensure a product row exists for this obj_id
     let pool = world.db_pool.as_ref().unwrap();
@@ -146,9 +142,7 @@ async fn get_rating(world: &mut StepWorld) {
     world.get(&format!("/rating/{}", id)).await;
 }
 
-#[when(
-    regex = r#"^I update the stored rating with rate (\d+) and comment "([^"]+)"$"#
-)]
+#[when(regex = r#"^I update the stored rating with rate (\d+) and comment "([^"]+)"$"#)]
 async fn update_rating(world: &mut StepWorld, rate: i32, comment: String) {
     let id = world
         .stored_ids
@@ -189,9 +183,7 @@ fn store_agreement_id(world: &mut StepWorld) {
     }
 }
 
-#[when(
-    regex = r#"^I create an agreement with name "([^"]+)" and text "([^"]+)"$"#
-)]
+#[when(regex = r#"^I create an agreement with name "([^"]+)" and text "([^"]+)"$"#)]
 async fn create_agreement(world: &mut StepWorld, name: String, text: String) {
     let body = json!({
         "name": name,
@@ -315,9 +307,7 @@ async fn list_repositories(world: &mut StepWorld, namespace: String) {
         .await;
 }
 
-#[when(
-    regex = r#"^I list DockerHub tags for namespace "([^"]+)" repository "([^"]+)"$"#
-)]
+#[when(regex = r#"^I list DockerHub tags for namespace "([^"]+)" repository "([^"]+)"$"#)]
 async fn list_tags(world: &mut StepWorld, namespace: String, repository: String) {
     world
         .get(&format!(

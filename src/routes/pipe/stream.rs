@@ -16,8 +16,9 @@ pub async fn execution_stream_handler(
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let instance_id = path.into_inner();
-    let instance_uuid = uuid::Uuid::parse_str(&instance_id)
-        .map_err(|_| JsonResponse::<String>::bad_request(String::from("Invalid instance ID format")))?;
+    let instance_uuid = uuid::Uuid::parse_str(&instance_id).map_err(|_| {
+        JsonResponse::<String>::bad_request(String::from("Invalid instance ID format"))
+    })?;
 
     // Verify instance exists and belongs to user
     let instance = db::pipe::get_instance(pg_pool.get_ref(), &instance_uuid)
@@ -29,16 +30,15 @@ pub async fn execution_stream_handler(
     })?;
 
     if instance.created_by != user.id {
-        return Err(JsonResponse::<String>::forbidden(
-            String::from("Access denied: not your pipe instance"),
-        ));
+        return Err(JsonResponse::<String>::forbidden(String::from(
+            "Access denied: not your pipe instance",
+        )));
     }
 
     // Fetch recent executions for initial state
-    let recent_executions =
-        db::pipe::list_executions(pg_pool.get_ref(), &instance_uuid, 10, 0)
-            .await
-            .unwrap_or_default();
+    let recent_executions = db::pipe::list_executions(pg_pool.get_ref(), &instance_uuid, 10, 0)
+        .await
+        .unwrap_or_default();
 
     // Build SSE response body
     let mut body = String::new();

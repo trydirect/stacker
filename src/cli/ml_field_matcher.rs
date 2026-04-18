@@ -66,9 +66,7 @@ impl FieldMatcher for MlFieldMatcher {
                 break;
             }
 
-            if let Some((src, score)) =
-                best_match(tgt_field, &available, self.threshold)
-            {
+            if let Some((src, score)) = best_match(tgt_field, &available, self.threshold) {
                 mapping.insert(
                     tgt_field.clone(),
                     serde_json::Value::String(format!("$.{}", src)),
@@ -109,10 +107,7 @@ fn best_match(target: &str, sources: &[&String], threshold: f32) -> Option<(Stri
 
     // Layer 2: Case-insensitive
     let tgt_lower = target.to_ascii_lowercase();
-    if let Some(src) = sources
-        .iter()
-        .find(|s| s.to_ascii_lowercase() == tgt_lower)
-    {
+    if let Some(src) = sources.iter().find(|s| s.to_ascii_lowercase() == tgt_lower) {
         return Some(((*src).clone(), 0.95));
     }
 
@@ -246,7 +241,10 @@ mod tests {
     #[test]
     fn test_normalize_camel_case() {
         assert_eq!(normalize_field_name("firstName"), "first_name");
-        assert_eq!(normalize_field_name("userEmailAddress"), "user_email_address");
+        assert_eq!(
+            normalize_field_name("userEmailAddress"),
+            "user_email_address"
+        );
         assert_eq!(normalize_field_name("id"), "id");
         assert_eq!(normalize_field_name("HTTPStatus"), "h_t_t_p_status");
     }
@@ -256,7 +254,10 @@ mod tests {
         assert_eq!(tokenize("first_name"), vec!["first", "name"]);
         assert_eq!(tokenize("userName"), vec!["user", "name"]);
         assert_eq!(tokenize("email"), vec!["email"]);
-        assert_eq!(tokenize("user-email-address"), vec!["user", "email", "address"]);
+        assert_eq!(
+            tokenize("user-email-address"),
+            vec!["user", "email", "address"]
+        );
     }
 
     #[test]
@@ -378,7 +379,10 @@ mod tests {
         let result = matcher.match_fields(&src, &tgt, None);
         let map = result.mapping.as_object().unwrap();
         // Should fuzzy-match via n-gram similarity
-        assert!(map.contains_key("email_addr"), "Expected fuzzy match for email_addr");
+        assert!(
+            map.contains_key("email_addr"),
+            "Expected fuzzy match for email_addr"
+        );
         let conf = *result.confidence.get("email_addr").unwrap();
         assert!(
             conf >= 0.45 && conf < 1.0,
@@ -407,7 +411,10 @@ mod tests {
         let tgt = vec!["xxxx".into()];
         let result = matcher.match_fields(&src, &tgt, None);
         let map = result.mapping.as_object().unwrap();
-        assert!(map.is_empty(), "Expected no match for totally dissimilar fields");
+        assert!(
+            map.is_empty(),
+            "Expected no match for totally dissimilar fields"
+        );
     }
 
     #[test]
@@ -418,7 +425,11 @@ mod tests {
         let result = matcher.match_fields(&src, &tgt, None);
         // With 0.99 threshold, only exact/near-exact matches qualify
         let map = result.mapping.as_object().unwrap();
-        assert!(map.is_empty(), "Expected no match at 0.99 threshold, got: {:?}", map);
+        assert!(
+            map.is_empty(),
+            "Expected no match at 0.99 threshold, got: {:?}",
+            map
+        );
     }
 
     #[test]
@@ -462,17 +473,21 @@ mod tests {
             "customer_address_line1".into(),
         ];
         let tgt = vec![
-            "email".into(),       // exact → 1.0
-            "name".into(),        // alias → 0.90
-            "phone".into(),       // case insensitive → 0.95
-            "addr_line1".into(),  // fuzzy
+            "email".into(),      // exact → 1.0
+            "name".into(),       // alias → 0.90
+            "phone".into(),      // case insensitive → 0.95
+            "addr_line1".into(), // fuzzy
         ];
         let result = matcher.match_fields(&src, &tgt, None);
         let map = result.mapping.as_object().unwrap();
         assert_eq!(map["email"], "$.email");
         assert_eq!(map["name"], "$.display_name");
         assert_eq!(map["phone"], "$.Phone");
-        assert!(map.len() >= 3, "Expected at least 3 matches, got {}", map.len());
+        assert!(
+            map.len() >= 3,
+            "Expected at least 3 matches, got {}",
+            map.len()
+        );
     }
 
     #[test]

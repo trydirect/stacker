@@ -1,5 +1,5 @@
-use crate::cli::ml_field_matcher::MlFieldMatcher;
 use crate::cli::field_matcher::FieldMatcher;
+use crate::cli::ml_field_matcher::MlFieldMatcher;
 use crate::helpers::JsonResponse;
 use crate::models::User;
 use actix_web::{post, web, Responder, Result};
@@ -71,4 +71,3 @@ pub async fn field_match_handler(
         })))
         .ok("Field matching completed"))
 }
-

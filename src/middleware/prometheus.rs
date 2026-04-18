@@ -96,9 +96,6 @@ mod tests {
 
     #[test]
     fn test_normalize_no_ids() {
-        assert_eq!(
-            normalize_path("/health_check"),
-            "/health_check"
-        );
+        assert_eq!(normalize_path("/health_check"), "/health_check");
     }
 }

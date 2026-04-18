@@ -565,10 +565,20 @@ enum CiCommands {
 
 #[derive(Debug, Subcommand)]
 enum PipeCommands {
-    /// Discover connectable endpoints on a container
+    /// Discover local containers or probe a remote app
     Scan {
-        /// App code to scan (e.g., "crm", "website")
-        app: String,
+        /// Legacy selector: container filter in local mode, app code in remote mode
+        #[arg(value_name = "APP_OR_FILTER", hide = true)]
+        legacy_selector: Option<String>,
+        /// Explicit remote app selector
+        #[arg(long, conflicts_with = "containers")]
+        app: Option<String>,
+        /// Explicit local container discovery; optional filter when provided
+        #[arg(long, value_name = "FILTER", num_args = 0..=1, default_missing_value = "*", conflicts_with = "app")]
+        containers: Option<String>,
+        /// Narrow the remote app scan to a specific container
+        #[arg(long, requires = "app")]
+        container: Option<String>,
         /// Protocols to probe (default: openapi,rest)
         #[arg(long, value_delimiter = ',')]
         protocols: Vec<String>,
@@ -1021,14 +1031,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 DeploymentLock::switch_target(&project_dir, &t)?;
                 eprintln!("✓ Active target switched to: {}", t);
             }
-            None => {
-                match DeploymentLock::read_active_target(&project_dir)? {
-                    Some(t) => println!("{}", t),
-                    None => {
-                        eprintln!("No active target set. Use: stacker target <local|cloud|server>");
-                    }
+            None => match DeploymentLock::read_active_target(&project_dir)? {
+                Some(t) => println!("{}", t),
+                None => {
+                    eprintln!("No active target set. Use: stacker target <local|cloud|server>");
                 }
-            }
+            },
         }
         return Ok(());
     }
@@ -1287,18 +1295,33 @@ fn get_command(
             use stacker::console::commands::cli::pipe;
             match pipe_cmd {
                 PipeCommands::Scan {
+                    legacy_selector,
                     app,
+                    containers,
+                    container,
                     protocols,
                     capture_samples,
                     json,
                     deployment,
-                } => Box::new(pipe::PipeScanCommand::new(
-                    app,
-                    protocols,
-                    capture_samples,
-                    json,
-                    deployment,
-                )),
+                } => {
+                    let request = if let Some(app) = app {
+                        pipe::PipeScanRequest::App { app, container }
+                    } else if let Some(filter) = containers {
+                        let filter = if filter == "*" { None } else { Some(filter) };
+                        pipe::PipeScanRequest::Containers { filter }
+                    } else {
+                        pipe::PipeScanRequest::Legacy {
+                            selector: legacy_selector,
+                        }
+                    };
+                    Box::new(pipe::PipeScanCommand::new(
+                        request,
+                        protocols,
+                        capture_samples,
+                        json,
+                        deployment,
+                    ))
+                }
                 PipeCommands::Create {
                     source,
                     target,
@@ -1534,4 +1557,138 @@ fn get_command(
     };
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pipe_scan_parses_without_selector() {
+        let cli = Cli::try_parse_from(["stacker", "pipe", "scan"]).unwrap();
+        match cli.command.unwrap() {
+            StackerCommands::Pipe {
+                command:
+                    PipeCommands::Scan {
+                        legacy_selector,
+                        app,
+                        containers,
+                        container,
+                        ..
+                    },
+            } => {
+                assert!(legacy_selector.is_none());
+                assert!(app.is_none());
+                assert!(containers.is_none());
+                assert!(container.is_none());
+            }
+            _ => panic!("expected pipe scan command"),
+        }
+    }
+
+    #[test]
+    fn test_pipe_scan_parses_containers_flag() {
+        let cli =
+            Cli::try_parse_from(["stacker", "pipe", "scan", "--containers", "upload"]).unwrap();
+        match cli.command.unwrap() {
+            StackerCommands::Pipe {
+                command:
+                    PipeCommands::Scan {
+                        containers,
+                        legacy_selector,
+                        ..
+                    },
+            } => {
+                assert_eq!(containers.as_deref(), Some("upload"));
+                assert!(legacy_selector.is_none());
+            }
+            _ => panic!("expected pipe scan command"),
+        }
+    }
+
+    #[test]
+    fn test_pipe_scan_parses_app_flag() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "pipe",
+            "scan",
+            "--app",
+            "website",
+            "--container",
+            "website-web-1",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            StackerCommands::Pipe {
+                command: PipeCommands::Scan { app, container, .. },
+            } => {
+                assert_eq!(app.as_deref(), Some("website"));
+                assert_eq!(container.as_deref(), Some("website-web-1"));
+            }
+            _ => panic!("expected pipe scan command"),
+        }
+    }
+
+    #[test]
+    fn test_pipe_scan_parses_legacy_selector() {
+        let cli = Cli::try_parse_from(["stacker", "pipe", "scan", "website"]).unwrap();
+        match cli.command.unwrap() {
+            StackerCommands::Pipe {
+                command:
+                    PipeCommands::Scan {
+                        legacy_selector,
+                        app,
+                        containers,
+                        ..
+                    },
+            } => {
+                assert_eq!(legacy_selector.as_deref(), Some("website"));
+                assert!(app.is_none());
+                assert!(containers.is_none());
+            }
+            _ => panic!("expected pipe scan command"),
+        }
+    }
+
+    #[test]
+    fn test_pipe_scan_parses_legacy_keyword_app() {
+        let cli = Cli::try_parse_from(["stacker", "pipe", "scan", "app"]).unwrap();
+        match cli.command.unwrap() {
+            StackerCommands::Pipe {
+                command:
+                    PipeCommands::Scan {
+                        legacy_selector,
+                        app,
+                        containers,
+                        ..
+                    },
+            } => {
+                assert_eq!(legacy_selector.as_deref(), Some("app"));
+                assert!(app.is_none());
+                assert!(containers.is_none());
+            }
+            _ => panic!("expected pipe scan command"),
+        }
+    }
+
+    #[test]
+    fn test_pipe_scan_parses_legacy_keyword_containers() {
+        let cli = Cli::try_parse_from(["stacker", "pipe", "scan", "containers"]).unwrap();
+        match cli.command.unwrap() {
+            StackerCommands::Pipe {
+                command:
+                    PipeCommands::Scan {
+                        legacy_selector,
+                        app,
+                        containers,
+                        ..
+                    },
+            } => {
+                assert_eq!(legacy_selector.as_deref(), Some("containers"));
+                assert!(app.is_none());
+                assert!(containers.is_none());
+            }
+            _ => panic!("expected pipe scan command"),
+        }
+    }
 }

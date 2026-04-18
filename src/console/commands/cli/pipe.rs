@@ -17,6 +17,13 @@ use crate::cli::stacker_client::{
     CreatePipeTemplateApiRequest,
 };
 use crate::console::commands::CallableTrait;
+use crate::forms::status_panel::{
+    ProbeContainer, ProbeEndpoint, ProbeEndpointsCommandReport, ProbeForm, ProbeOperation,
+    ProbeResource, ProbeResourceItem,
+};
+use chrono::Utc;
+use regex::Regex;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Default poll timeout for pipe probe commands (seconds).
 const PROBE_TIMEOUT_SECS: u64 = 90;
@@ -102,7 +109,9 @@ fn resolve_deployment_context(
     let project_dir = std::env::current_dir().map_err(CliError::Io)?;
 
     // 2. Check active target — if "local", return Local immediately
-    if let Some(target) = crate::cli::deployment_lock::DeploymentLock::read_active_target(&project_dir)? {
+    if let Some(target) =
+        crate::cli::deployment_lock::DeploymentLock::read_active_target(&project_dir)?
+    {
         if target == "local" {
             return Ok(DeploymentContext::Local);
         }
@@ -240,8 +249,1056 @@ fn print_command_result(info: &AgentCommandInfo, json_output: bool) {
 // stacker pipe scan
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalPortBinding {
+    container_port: u16,
+    host_port: Option<u16>,
+    protocol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalContainerInfo {
+    id: String,
+    name: String,
+    image: String,
+    network: String,
+    addresses: Vec<String>,
+    ports: Vec<LocalPortBinding>,
+    status: String,
+    env: BTreeMap<String, String>,
+    labels: BTreeMap<String, String>,
+}
+
+fn default_local_probe_protocols() -> Vec<String> {
+    vec![
+        "openapi".to_string(),
+        "rest".to_string(),
+        "html_forms".to_string(),
+        "graphql".to_string(),
+        "postgres".to_string(),
+        "mysql".to_string(),
+        "redis".to_string(),
+        "rabbitmq".to_string(),
+        "kafka".to_string(),
+        "mcp".to_string(),
+        "websocket".to_string(),
+        "grpc".to_string(),
+    ]
+}
+
+fn parse_port_key(key: &str) -> Option<(u16, String)> {
+    let mut parts = key.split('/');
+    let port = parts.next()?.parse::<u16>().ok()?;
+    let protocol = parts.next().unwrap_or("tcp").to_string();
+    Some((port, protocol))
+}
+
+fn parse_env_map(values: &[serde_json::Value]) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    for value in values {
+        if let Some(entry) = value.as_str() {
+            if let Some((key, val)) = entry.split_once('=') {
+                env.insert(key.to_string(), val.to_string());
+            }
+        }
+    }
+    env
+}
+
+fn parse_string_map(value: Option<&serde_json::Value>) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    if let Some(obj) = value.and_then(|v| v.as_object()) {
+        for (key, val) in obj {
+            if let Some(str_val) = val.as_str() {
+                map.insert(key.clone(), str_val.to_string());
+            }
+        }
+    }
+    map
+}
+
+fn parse_local_container_inspect(
+    value: &serde_json::Value,
+) -> Result<LocalContainerInfo, CliError> {
+    let id = value["Id"]
+        .as_str()
+        .ok_or_else(|| CliError::ConfigValidation("docker inspect missing Id".to_string()))?
+        .to_string();
+    let name = value["Name"]
+        .as_str()
+        .unwrap_or("")
+        .trim_start_matches('/')
+        .to_string();
+    let image = value["Config"]["Image"].as_str().unwrap_or("").to_string();
+    let status = value["State"]["Status"].as_str().unwrap_or("").to_string();
+    let env = parse_env_map(
+        value["Config"]["Env"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
+    let labels = parse_string_map(value["Config"].get("Labels"));
+
+    let mut addresses = Vec::new();
+    let mut network = String::new();
+    if let Some(networks) = value["NetworkSettings"]["Networks"].as_object() {
+        for (network_name, network_info) in networks {
+            if network.is_empty() {
+                network = network_name.clone();
+            }
+            if let Some(ip) = network_info["IPAddress"].as_str() {
+                if !ip.is_empty() {
+                    addresses.push(ip.to_string());
+                }
+            }
+        }
+    }
+
+    let mut ports = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Some(port_map) = value["NetworkSettings"]["Ports"].as_object() {
+        for (key, host_bindings) in port_map {
+            if let Some((container_port, protocol)) = parse_port_key(key) {
+                let host_ports: Vec<Option<u16>> = if let Some(bindings) = host_bindings.as_array()
+                {
+                    bindings
+                        .iter()
+                        .map(|binding| {
+                            binding["HostPort"]
+                                .as_str()
+                                .and_then(|v| v.parse::<u16>().ok())
+                        })
+                        .collect()
+                } else {
+                    vec![None]
+                };
+                for host_port in host_ports {
+                    if seen.insert((container_port, host_port, protocol.clone())) {
+                        ports.push(LocalPortBinding {
+                            container_port,
+                            host_port,
+                            protocol: protocol.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(exposed) = value["Config"]["ExposedPorts"].as_object() {
+        for key in exposed.keys() {
+            if let Some((container_port, protocol)) = parse_port_key(key) {
+                if seen.insert((container_port, None, protocol.clone())) {
+                    ports.push(LocalPortBinding {
+                        container_port,
+                        host_port: None,
+                        protocol,
+                    });
+                }
+            }
+        }
+    }
+
+    if ports.is_empty() {
+        for env_key in ["PORT", "APP_PORT", "SERVICE_PORT", "HTTP_PORT"] {
+            if let Some(value) = env.get(env_key).and_then(|v| v.parse::<u16>().ok()) {
+                ports.push(LocalPortBinding {
+                    container_port: value,
+                    host_port: None,
+                    protocol: "tcp".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(LocalContainerInfo {
+        id,
+        name,
+        image,
+        network,
+        addresses,
+        ports,
+        status,
+        env,
+        labels,
+    })
+}
+
+fn local_http_candidate_urls(container: &LocalContainerInfo) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut seen = BTreeSet::new();
+    for port in &container.ports {
+        if port.protocol != "tcp" {
+            continue;
+        }
+        if let Some(host_port) = port.host_port {
+            let url = format!("http://127.0.0.1:{}", host_port);
+            if seen.insert(url.clone()) {
+                urls.push(url);
+            }
+        }
+        for address in &container.addresses {
+            let url = format!("http://{}:{}", address, port.container_port);
+            if seen.insert(url.clone()) {
+                urls.push(url);
+            }
+        }
+    }
+    urls
+}
+
+fn local_resource_probe_plan(container: &LocalContainerInfo) -> Vec<String> {
+    let identity = format!(
+        "{} {}",
+        container.name.to_lowercase(),
+        container.image.to_lowercase()
+    );
+    let mut plan = Vec::new();
+    for (needle, protocol) in [
+        ("postgres", "postgres"),
+        ("timescaledb", "postgres"),
+        ("mysql", "mysql"),
+        ("mariadb", "mysql"),
+        ("redis", "redis"),
+        ("rabbitmq", "rabbitmq"),
+        ("kafka", "kafka"),
+        ("mcp", "mcp"),
+        ("grpc", "grpc"),
+        ("ws", "websocket"),
+        ("socket", "websocket"),
+    ] {
+        if identity.contains(needle) && !plan.iter().any(|item| item == protocol) {
+            plan.push(protocol.to_string());
+        }
+    }
+    for port in &container.ports {
+        match port.container_port {
+            5432 => plan.push("postgres".to_string()),
+            3306 => plan.push("mysql".to_string()),
+            6379 => plan.push("redis".to_string()),
+            5672 | 15672 => plan.push("rabbitmq".to_string()),
+            9092 => plan.push("kafka".to_string()),
+            50051 | 50052 => plan.push("grpc".to_string()),
+            _ => {}
+        }
+    }
+    plan.sort();
+    plan.dedup();
+    plan
+}
+
+fn parse_openapi_fields(operation: &serde_json::Value) -> Vec<String> {
+    let mut fields = Vec::new();
+    if let Some(parameters) = operation["parameters"].as_array() {
+        for param in parameters {
+            if let Some(name) = param["name"].as_str() {
+                fields.push(name.to_string());
+            }
+        }
+    }
+    if let Some(content) = operation["requestBody"]["content"].as_object() {
+        for schema in content.values() {
+            if let Some(properties) = schema["schema"]["properties"].as_object() {
+                for key in properties.keys() {
+                    if !fields.contains(key) {
+                        fields.push(key.clone());
+                    }
+                }
+            }
+        }
+    }
+    fields
+}
+
+fn parse_openapi_endpoint(
+    container_name: &str,
+    base_url: &str,
+    spec_url: &str,
+    doc: &serde_json::Value,
+) -> Option<ProbeEndpoint> {
+    let paths = doc["paths"].as_object()?;
+    let mut operations = Vec::new();
+    for (path, path_item) in paths {
+        for method in ["get", "post", "put", "patch", "delete"] {
+            if let Some(operation) = path_item.get(method) {
+                operations.push(ProbeOperation {
+                    path: path.clone(),
+                    method: method.to_uppercase(),
+                    summary: operation["summary"].as_str().unwrap_or("").to_string(),
+                    fields: parse_openapi_fields(operation),
+                    sample_response: None,
+                });
+            }
+        }
+    }
+    if operations.is_empty() {
+        return None;
+    }
+    Some(ProbeEndpoint {
+        container: Some(container_name.to_string()),
+        protocol: "openapi".to_string(),
+        base_url: base_url.to_string(),
+        spec_url: spec_url.to_string(),
+        operations,
+    })
+}
+
+fn try_parse_json(value: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(value).ok()
+}
+
+fn docker_exec(container: &str, args: &[String]) -> Option<String> {
+    let output = std::process::Command::new("docker")
+        .arg("exec")
+        .arg(container)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn local_http_probe(
+    container: &LocalContainerInfo,
+    protocols: &[String],
+    capture_samples: bool,
+    timeout_secs: u64,
+) -> (Vec<ProbeEndpoint>, Vec<ProbeForm>, Vec<String>) {
+    let mut endpoints = Vec::new();
+    let mut forms = Vec::new();
+    let mut detected = Vec::new();
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .danger_accept_invalid_certs(true)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return (endpoints, forms, detected),
+    };
+
+    let urls = local_http_candidate_urls(container);
+    let mut seen_endpoint = BTreeSet::new();
+    let protocol_set: BTreeSet<String> = protocols.iter().map(|p| p.to_lowercase()).collect();
+
+    if protocol_set.contains("openapi") {
+        for base_url in &urls {
+            for spec_url in [
+                "/openapi.json",
+                "/swagger.json",
+                "/api/openapi.json",
+                "/v3/api-docs",
+                "/swagger/v1/swagger.json",
+            ] {
+                let full_url = format!("{}{}", base_url, spec_url);
+                let Ok(response) = client.get(&full_url).send() else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
+                }
+                let Ok(body) = response.text() else {
+                    continue;
+                };
+                let Some(json) = try_parse_json(&body) else {
+                    continue;
+                };
+                if json.get("paths").is_none() {
+                    continue;
+                }
+                if let Some(endpoint) =
+                    parse_openapi_endpoint(&container.name, base_url, spec_url, &json)
+                {
+                    let key = format!("openapi:{}{}", base_url, spec_url);
+                    if seen_endpoint.insert(key) {
+                        endpoints.push(endpoint);
+                        detected.push("openapi".to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if protocol_set.contains("rest") {
+        for base_url in &urls {
+            for path in ["/health", "/healthz", "/ready", "/api", "/"] {
+                let full_url = format!("{}{}", base_url, path);
+                let Ok(response) = client.get(&full_url).send() else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let Ok(body) = response.text() else {
+                    continue;
+                };
+                if content_type.contains("html") {
+                    continue;
+                }
+                let sample = if capture_samples {
+                    try_parse_json(&body)
+                } else {
+                    None
+                };
+                let key = format!("rest:{}{}", base_url, path);
+                if seen_endpoint.insert(key) {
+                    endpoints.push(ProbeEndpoint {
+                        container: Some(container.name.clone()),
+                        protocol: "rest".to_string(),
+                        base_url: base_url.to_string(),
+                        spec_url: String::new(),
+                        operations: vec![ProbeOperation {
+                            path: path.to_string(),
+                            method: "GET".to_string(),
+                            summary: "Discovered local HTTP endpoint".to_string(),
+                            fields: Vec::new(),
+                            sample_response: sample,
+                        }],
+                    });
+                    detected.push("rest".to_string());
+                }
+            }
+        }
+    }
+
+    if protocol_set.contains("html_forms") {
+        let form_re =
+            Regex::new(r#"(?si)<form([^>]*)>(.*?)</form>"#).expect("form regex must compile");
+        let action_re =
+            Regex::new(r#"action=["']?([^"'\s>]+)"#).expect("action regex must compile");
+        let method_re =
+            Regex::new(r#"method=["']?([^"'\s>]+)"#).expect("method regex must compile");
+        let id_re = Regex::new(r#"id=["']?([^"'\s>]+)"#).expect("id regex must compile");
+        let field_re = Regex::new(r#"(?:input|select|textarea)[^>]*name=["']?([^"'\s>]+)"#)
+            .expect("field regex must compile");
+
+        for base_url in &urls {
+            for path in ["/", "/login", "/signup", "/contact"] {
+                let full_url = format!("{}{}", base_url, path);
+                let Ok(response) = client.get(&full_url).send() else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                if !content_type.contains("html") {
+                    continue;
+                }
+                let Ok(body) = response.text() else {
+                    continue;
+                };
+                for capture in form_re.captures_iter(&body) {
+                    let attrs = capture.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let inner = capture.get(2).map(|m| m.as_str()).unwrap_or("");
+                    let action = action_re
+                        .captures(attrs)
+                        .and_then(|c| c.get(1))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_else(|| path.to_string());
+                    let method = method_re
+                        .captures(attrs)
+                        .and_then(|c| c.get(1))
+                        .map(|m| m.as_str().to_uppercase())
+                        .unwrap_or_else(|| "GET".to_string());
+                    let id = id_re
+                        .captures(attrs)
+                        .and_then(|c| c.get(1))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_else(|| format!("{}{}", container.name, path));
+                    let fields = field_re
+                        .captures_iter(inner)
+                        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+                        .collect::<Vec<_>>();
+                    forms.push(ProbeForm {
+                        container: Some(container.name.clone()),
+                        id,
+                        action,
+                        method,
+                        fields,
+                    });
+                    detected.push("html_forms".to_string());
+                }
+            }
+        }
+    }
+
+    if protocol_set.contains("graphql") {
+        let introspection = serde_json::json!({
+            "query": "query IntrospectionQuery { __schema { queryType { name } mutationType { name } } }"
+        });
+        for base_url in &urls {
+            for path in ["/graphql", "/api/graphql"] {
+                let full_url = format!("{}{}", base_url, path);
+                let Ok(response) = client.post(&full_url).json(&introspection).send() else {
+                    continue;
+                };
+                if !response.status().is_success() {
+                    continue;
+                }
+                let Ok(body) = response.text() else {
+                    continue;
+                };
+                let Some(json) = try_parse_json(&body) else {
+                    continue;
+                };
+                if json.get("data").is_none() {
+                    continue;
+                }
+                let key = format!("graphql:{}{}", base_url, path);
+                if seen_endpoint.insert(key) {
+                    endpoints.push(ProbeEndpoint {
+                        container: Some(container.name.clone()),
+                        protocol: "graphql".to_string(),
+                        base_url: base_url.to_string(),
+                        spec_url: path.to_string(),
+                        operations: vec![ProbeOperation {
+                            path: path.to_string(),
+                            method: "POST".to_string(),
+                            summary: "GraphQL endpoint".to_string(),
+                            fields: vec!["query".to_string(), "variables".to_string()],
+                            sample_response: if capture_samples { Some(json) } else { None },
+                        }],
+                    });
+                    detected.push("graphql".to_string());
+                }
+            }
+        }
+    }
+
+    (endpoints, forms, detected)
+}
+
+fn first_container_address(container: &LocalContainerInfo, default_port: u16) -> String {
+    if let Some(port) = container
+        .ports
+        .iter()
+        .find(|port| port.container_port == default_port)
+    {
+        if let Some(host_port) = port.host_port {
+            return format!("127.0.0.1:{}", host_port);
+        }
+    }
+    container
+        .addresses
+        .first()
+        .map(|ip| format!("{}:{}", ip, default_port))
+        .unwrap_or_else(|| format!("{}:{}", container.name, default_port))
+}
+
+fn local_resource_probe(
+    container: &LocalContainerInfo,
+    protocols: &[String],
+) -> (Vec<ProbeResource>, Vec<String>) {
+    let mut resources = Vec::new();
+    let mut detected = Vec::new();
+    let requested: BTreeSet<String> = protocols.iter().map(|p| p.to_lowercase()).collect();
+
+    if requested.contains("postgres")
+        && local_resource_probe_plan(container)
+            .iter()
+            .any(|p| p == "postgres")
+    {
+        let user = container
+            .env
+            .get("POSTGRES_USER")
+            .cloned()
+            .unwrap_or_else(|| "postgres".to_string());
+        let db = container
+            .env
+            .get("POSTGRES_DB")
+            .cloned()
+            .unwrap_or_else(|| user.clone());
+        let command = vec![
+            "psql".to_string(),
+            "-U".to_string(),
+            user.clone(),
+            "-d".to_string(),
+            db.clone(),
+            "-Atqc".to_string(),
+            "SELECT table_schema||'.'||table_name FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1 LIMIT 50".to_string(),
+        ];
+        if let Some(output) = docker_exec(&container.name, &command) {
+            let items = output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| ProbeResourceItem {
+                    resource_type: "table".to_string(),
+                    name: line.trim().to_string(),
+                    summary: "CDC candidate".to_string(),
+                    fields: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            if !items.is_empty() {
+                resources.push(ProbeResource {
+                    container: container.name.clone(),
+                    protocol: "postgres".to_string(),
+                    address: format!(
+                        "postgres://{}/{}",
+                        first_container_address(container, 5432),
+                        db
+                    ),
+                    items,
+                });
+                detected.push("postgres".to_string());
+            }
+        }
+    }
+
+    if requested.contains("mysql")
+        && local_resource_probe_plan(container)
+            .iter()
+            .any(|p| p == "mysql")
+    {
+        let user = container
+            .env
+            .get("MYSQL_USER")
+            .cloned()
+            .unwrap_or_else(|| "root".to_string());
+        let db = container
+            .env
+            .get("MYSQL_DATABASE")
+            .cloned()
+            .unwrap_or_else(|| "mysql".to_string());
+        let password_arg = container
+            .env
+            .get("MYSQL_PASSWORD")
+            .or_else(|| container.env.get("MYSQL_ROOT_PASSWORD"))
+            .map(|v| format!("-p{}", v))
+            .unwrap_or_default();
+        let mut args = vec!["mysql".to_string(), "-u".to_string(), user.clone()];
+        if !password_arg.is_empty() {
+            args.push(password_arg);
+        }
+        args.extend([
+            "-Nse".to_string(),
+            "SELECT CONCAT(TABLE_SCHEMA,'.',TABLE_NAME) FROM information_schema.TABLES WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sys') LIMIT 50".to_string(),
+            db.clone(),
+        ]);
+        if let Some(output) = docker_exec(&container.name, &args) {
+            let items = output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| ProbeResourceItem {
+                    resource_type: "table".to_string(),
+                    name: line.trim().to_string(),
+                    summary: "SQL resource".to_string(),
+                    fields: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            if !items.is_empty() {
+                resources.push(ProbeResource {
+                    container: container.name.clone(),
+                    protocol: "mysql".to_string(),
+                    address: format!(
+                        "mysql://{}/{}",
+                        first_container_address(container, 3306),
+                        db
+                    ),
+                    items,
+                });
+                detected.push("mysql".to_string());
+            }
+        }
+    }
+
+    if requested.contains("redis")
+        && local_resource_probe_plan(container)
+            .iter()
+            .any(|p| p == "redis")
+    {
+        if let Some(output) = docker_exec(
+            &container.name,
+            &[
+                "redis-cli".to_string(),
+                "--raw".to_string(),
+                "INFO".to_string(),
+                "keyspace".to_string(),
+            ],
+        ) {
+            let items = output
+                .lines()
+                .filter(|line| line.starts_with("db"))
+                .map(|line| ProbeResourceItem {
+                    resource_type: "keyspace".to_string(),
+                    name: line.split(':').next().unwrap_or(line).to_string(),
+                    summary: line.to_string(),
+                    fields: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            if !items.is_empty() {
+                resources.push(ProbeResource {
+                    container: container.name.clone(),
+                    protocol: "redis".to_string(),
+                    address: format!("redis://{}", first_container_address(container, 6379)),
+                    items,
+                });
+                detected.push("redis".to_string());
+            }
+        }
+    }
+
+    if requested.contains("rabbitmq")
+        && local_resource_probe_plan(container)
+            .iter()
+            .any(|p| p == "rabbitmq")
+    {
+        let queues = docker_exec(
+            &container.name,
+            &[
+                "rabbitmqctl".to_string(),
+                "list_queues".to_string(),
+                "name".to_string(),
+                "messages".to_string(),
+            ],
+        )
+        .unwrap_or_default();
+        let exchanges = docker_exec(
+            &container.name,
+            &[
+                "rabbitmqctl".to_string(),
+                "list_exchanges".to_string(),
+                "name".to_string(),
+                "type".to_string(),
+            ],
+        )
+        .unwrap_or_default();
+        let mut items = Vec::new();
+        for line in queues.lines().skip(1) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                let name = trimmed
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(trimmed)
+                    .to_string();
+                items.push(ProbeResourceItem {
+                    resource_type: "queue".to_string(),
+                    name,
+                    summary: trimmed.to_string(),
+                    fields: Vec::new(),
+                });
+            }
+        }
+        for line in exchanges.lines().skip(1) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                let name = trimmed
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(trimmed)
+                    .to_string();
+                items.push(ProbeResourceItem {
+                    resource_type: "exchange".to_string(),
+                    name,
+                    summary: trimmed.to_string(),
+                    fields: Vec::new(),
+                });
+            }
+        }
+        if !items.is_empty() {
+            resources.push(ProbeResource {
+                container: container.name.clone(),
+                protocol: "rabbitmq".to_string(),
+                address: format!("amqp://{}", first_container_address(container, 5672)),
+                items,
+            });
+            detected.push("rabbitmq".to_string());
+        }
+    }
+
+    if requested.contains("kafka")
+        && local_resource_probe_plan(container)
+            .iter()
+            .any(|p| p == "kafka")
+    {
+        let script = "if command -v kafka-topics.sh >/dev/null 2>&1; then kafka-topics.sh --bootstrap-server localhost:9092 --list; elif [ -x /opt/bitnami/kafka/bin/kafka-topics.sh ]; then /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list; fi";
+        if let Some(output) = docker_exec(
+            &container.name,
+            &["sh".to_string(), "-lc".to_string(), script.to_string()],
+        ) {
+            let items = output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| ProbeResourceItem {
+                    resource_type: "topic".to_string(),
+                    name: line.trim().to_string(),
+                    summary: "Kafka topic".to_string(),
+                    fields: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            if !items.is_empty() {
+                resources.push(ProbeResource {
+                    container: container.name.clone(),
+                    protocol: "kafka".to_string(),
+                    address: first_container_address(container, 9092),
+                    items,
+                });
+                detected.push("kafka".to_string());
+            }
+        }
+    }
+
+    if requested.contains("grpc")
+        && local_resource_probe_plan(container)
+            .iter()
+            .any(|p| p == "grpc")
+    {
+        resources.push(ProbeResource {
+            container: container.name.clone(),
+            protocol: "grpc".to_string(),
+            address: first_container_address(container, 50051),
+            items: vec![ProbeResourceItem {
+                resource_type: "service".to_string(),
+                name: container.name.clone(),
+                summary: "gRPC port detected; reflection probing not yet available locally"
+                    .to_string(),
+                fields: Vec::new(),
+            }],
+        });
+        detected.push("grpc".to_string());
+    }
+
+    (resources, detected)
+}
+
+fn discover_local_containers(
+    filter: Option<&str>,
+) -> Result<Vec<LocalContainerInfo>, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("docker")
+        .args([
+            "ps",
+            "--format",
+            "{{.ID}}\t{{.Names}}\t{{.Ports}}\t{{.Networks}}\t{{.Status}}\t{{.Image}}",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Box::new(CliError::ConfigValidation(format!(
+            "docker ps failed: {}",
+            stderr.trim()
+        ))));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    let filter = filter.filter(|value| !value.is_empty() && *value != "*" && *value != "all");
+
+    let matched: Vec<_> = if let Some(filter) = filter {
+        lines
+            .into_iter()
+            .filter(|line| {
+                line.split('\t')
+                    .nth(1)
+                    .map(|name| name.contains(filter))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        lines
+    };
+
+    let mut containers = Vec::new();
+    for line in matched {
+        let parts: Vec<&str> = line.split('\t').collect();
+        let container_id = parts.first().copied().unwrap_or("");
+        let inspect_output = std::process::Command::new("docker")
+            .args(["inspect", container_id])
+            .output()?;
+        if !inspect_output.status.success() {
+            continue;
+        }
+        let inspect_json: serde_json::Value = serde_json::from_slice(&inspect_output.stdout)?;
+        let inspect_entry = inspect_json
+            .as_array()
+            .and_then(|items| items.first())
+            .cloned()
+            .unwrap_or(inspect_json);
+        if let Ok(container) = parse_local_container_inspect(&inspect_entry) {
+            containers.push(container);
+        }
+    }
+
+    Ok(containers)
+}
+
+fn build_local_probe_report(
+    app_code: &str,
+    containers: &[LocalContainerInfo],
+    protocols: &[String],
+    capture_samples: bool,
+) -> ProbeEndpointsCommandReport {
+    let mut endpoints = Vec::new();
+    let mut forms = Vec::new();
+    let mut resources = Vec::new();
+    let mut containers_out = Vec::new();
+    let mut protocols_detected = BTreeSet::new();
+
+    for container in containers {
+        let (http_endpoints, http_forms, http_detected) =
+            local_http_probe(container, protocols, capture_samples, 3);
+        let (resource_items, resource_detected) = local_resource_probe(container, protocols);
+
+        for protocol in http_detected
+            .into_iter()
+            .chain(resource_detected.into_iter())
+        {
+            protocols_detected.insert(protocol);
+        }
+        endpoints.extend(http_endpoints);
+        forms.extend(http_forms);
+        resources.extend(resource_items);
+        containers_out.push(ProbeContainer {
+            name: container.name.clone(),
+            image: container.image.clone(),
+            network: container.network.clone(),
+            ports: container
+                .ports
+                .iter()
+                .map(|binding| match binding.host_port {
+                    Some(host_port) => format!(
+                        "{}->{}{}",
+                        host_port,
+                        binding.container_port,
+                        format!("/{}", binding.protocol)
+                    ),
+                    None => format!("{}/{}", binding.container_port, binding.protocol),
+                })
+                .collect(),
+            addresses: container
+                .addresses
+                .iter()
+                .flat_map(|address| {
+                    if container.ports.is_empty() {
+                        vec![address.clone()]
+                    } else {
+                        container
+                            .ports
+                            .iter()
+                            .map(|binding| format!("{}:{}", address, binding.container_port))
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .collect(),
+        });
+    }
+
+    ProbeEndpointsCommandReport {
+        command_type: "probe_endpoints".to_string(),
+        deployment_hash: "local".to_string(),
+        app_code: app_code.to_string(),
+        protocols_detected: protocols_detected.into_iter().collect(),
+        containers: containers_out,
+        endpoints,
+        resources,
+        forms,
+        probed_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn local_report_to_agent_info(
+    report: &ProbeEndpointsCommandReport,
+) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
+    Ok(AgentCommandInfo {
+        command_id: "local-scan".to_string(),
+        deployment_hash: "local".to_string(),
+        command_type: "probe_endpoints".to_string(),
+        status: "completed".to_string(),
+        priority: "normal".to_string(),
+        parameters: None,
+        result: Some(serde_json::to_value(report)?),
+        error: None,
+        created_at: report.probed_at.clone(),
+        updated_at: report.probed_at.clone(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PipeScanRequest {
+    /// Backward-compatible form: local = container filter, remote = app code.
+    Legacy { selector: Option<String> },
+    /// Explicit local container discovery.
+    Containers { filter: Option<String> },
+    /// Explicit remote app probe.
+    App {
+        app: String,
+        container: Option<String>,
+    },
+}
+
+impl PipeScanRequest {
+    fn local_filter(&self) -> Result<Option<&str>, CliError> {
+        match self {
+            PipeScanRequest::Legacy { selector } => Ok(selector.as_deref()),
+            PipeScanRequest::Containers { filter } => Ok(filter.as_deref()),
+            PipeScanRequest::App { .. } => Err(CliError::ConfigValidation(
+                "Local scan works with containers, not app codes.\n\
+                 Use `stacker pipe scan` or `stacker pipe scan --containers [FILTER]`."
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn remote_selector(&self) -> Result<(&str, Option<&str>), CliError> {
+        match self {
+            PipeScanRequest::Legacy {
+                selector: Some(selector),
+            } => Ok((selector.as_str(), None)),
+            PipeScanRequest::Legacy { selector: None } => Err(CliError::ConfigValidation(
+                "Remote scan requires an app selector.\n\
+                 Use `stacker pipe scan --app <APP>`."
+                    .to_string(),
+            )),
+            PipeScanRequest::Containers { .. } => Err(CliError::ConfigValidation(
+                "Container inventory is local-only.\n\
+                 For remote scans use `stacker pipe scan --app <APP> [--container <NAME>]`."
+                    .to_string(),
+            )),
+            PipeScanRequest::App { app, container } => Ok((app.as_str(), container.as_deref())),
+        }
+    }
+
+    fn maybe_print_legacy_hint(&self, is_local: bool) {
+        if let PipeScanRequest::Legacy {
+            selector: Some(selector),
+        } = self
+        {
+            if is_local {
+                eprintln!(
+                    "Hint: `stacker pipe scan {}` is legacy syntax. Prefer `stacker pipe scan --containers {}`.",
+                    selector, selector
+                );
+            } else {
+                eprintln!(
+                    "Hint: `stacker pipe scan {}` is legacy syntax. Prefer `stacker pipe scan --app {}`.",
+                    selector, selector
+                );
+            }
+        }
+    }
+}
+
 pub struct PipeScanCommand {
-    pub app: String,
+    pub request: PipeScanRequest,
     pub protocols: Vec<String>,
     pub capture_samples: bool,
     pub json: bool,
@@ -250,14 +1307,14 @@ pub struct PipeScanCommand {
 
 impl PipeScanCommand {
     pub fn new(
-        app: String,
+        request: PipeScanRequest,
         protocols: Vec<String>,
         capture_samples: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
         Self {
-            app,
+            request,
             protocols,
             capture_samples,
             json,
@@ -266,94 +1323,94 @@ impl PipeScanCommand {
     }
 
     /// Local scan: discover containers via `docker ps`.
-    fn scan_local(&self, prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn scan_local(
+        &self,
+        prefix: &str,
+        filter: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let pb = progress::spinner(&format!("{}Scanning local Docker containers...", prefix));
-
-        let output = std::process::Command::new("docker")
-            .args(["ps", "--format", "{{.Names}}\t{{.Ports}}\t{{.Networks}}\t{{.Status}}\t{{.Image}}"])
-            .output();
-
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            Ok(o) => {
-                progress::finish_error(&pb, "Docker command failed");
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                eprintln!("Docker error: {}", stderr);
-                return Ok(());
-            }
-            Err(e) => {
-                progress::finish_error(&pb, "Docker not available");
-                eprintln!(
-                    "Cannot run 'docker ps': {}\n\
-                     Make sure Docker is installed and running.",
-                    e
-                );
+        let containers = match discover_local_containers(filter) {
+            Ok(containers) => containers,
+            Err(error) => {
+                progress::finish_error(&pb, "Docker discovery failed");
+                eprintln!("{}", error);
                 return Ok(());
             }
         };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let containers: Vec<_> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-
         if containers.is_empty() {
             progress::finish_error(&pb, "No containers running");
             println!("No Docker containers found. Start your services first.");
             return Ok(());
         }
-
-        // Filter by app name if not wildcard
-        let filtered: Vec<_> = if self.app == "*" || self.app == "all" {
-            containers.clone()
-        } else {
-            containers
-                .iter()
-                .filter(|line| {
-                    line.split('\t')
-                        .next()
-                        .map(|name| name.contains(&self.app))
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect()
-        };
-
         progress::finish_success(
             &pb,
-            &format!("{}{} container(s) discovered", prefix, filtered.len()),
+            &format!("{}{} container(s) discovered", prefix, containers.len()),
+        );
+
+        let protocols = if self.protocols.is_empty() {
+            default_local_probe_protocols()
+        } else {
+            self.protocols.clone()
+        };
+        let report = build_local_probe_report(
+            filter.unwrap_or("local"),
+            &containers,
+            &protocols,
+            self.capture_samples,
         );
 
         if self.json {
-            let json_containers: Vec<serde_json::Value> = filtered
-                .iter()
-                .map(|line| {
-                    let parts: Vec<&str> = line.split('\t').collect();
-                    serde_json::json!({
-                        "name": parts.first().unwrap_or(&""),
-                        "ports": parts.get(1).unwrap_or(&""),
-                        "networks": parts.get(2).unwrap_or(&""),
-                        "status": parts.get(3).unwrap_or(&""),
-                        "image": parts.get(4).unwrap_or(&""),
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&json_containers)?);
+            println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            println!(
-                "\n{:<30} {:<30} {:<20} {}",
-                "CONTAINER", "PORTS", "NETWORK", "IMAGE"
-            );
-            println!("{}", "─".repeat(100));
-            for line in &filtered {
-                let parts: Vec<&str> = line.split('\t').collect();
-                let name = parts.first().unwrap_or(&"");
-                let ports = parts.get(1).unwrap_or(&"");
-                let network = parts.get(2).unwrap_or(&"");
-                let image = parts.get(4).unwrap_or(&"");
-                println!("{:<30} {:<30} {:<20} {}", name, ports, network, image);
+            let info = local_report_to_agent_info(&report)?;
+            print_scan_result(&info);
+            println!("  Use these container names with 'stacker pipe create <source> <target>'");
+        }
+
+        Ok(())
+    }
+
+    fn scan_remote(
+        &self,
+        ctx: &CliRuntime,
+        hash: &str,
+        app: &str,
+        container: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let protocols = if self.protocols.is_empty() {
+            vec!["openapi".to_string(), "rest".to_string()]
+        } else {
+            self.protocols.clone()
+        };
+
+        let params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
+            app_code: app.to_string(),
+            container: container.map(|value| value.to_string()),
+            protocols,
+            probe_timeout: 5,
+            capture_samples: self.capture_samples,
+        };
+
+        let request = AgentEnqueueRequest::new(hash, "probe_endpoints")
+            .with_parameters(&params)
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+
+        let description = match container {
+            Some(container_name) => {
+                format!(
+                    "Scanning app {} (container {}) for endpoints",
+                    app, container_name
+                )
             }
-            println!(
-                "\n  Use these container names with 'stacker pipe create <source> <target>'"
-            );
+            None => format!("Scanning app {} for endpoints", app),
+        };
+
+        let info = run_agent_command(ctx, &request, &description, PROBE_TIMEOUT_SECS)?;
+
+        if self.json {
+            print_command_result(&info, true);
+        } else {
+            print_scan_result(&info);
         }
 
         Ok(())
@@ -366,48 +1423,19 @@ impl CallableTrait for PipeScanCommand {
         let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
         let prefix = mode_prefix(&deploy_ctx);
 
-        // Local mode: discover containers via docker ps
         if deploy_ctx.is_local() {
-            return self.scan_local(prefix);
+            self.request.maybe_print_legacy_hint(true);
+            let filter = self.request.local_filter()?;
+            return self.scan_local(prefix, filter);
         }
 
         let hash = match &deploy_ctx {
             DeploymentContext::Remote(h) => h.clone(),
             _ => unreachable!(),
         };
-
-        let protocols = if self.protocols.is_empty() {
-            vec!["openapi".to_string(), "rest".to_string()]
-        } else {
-            self.protocols.clone()
-        };
-
-        let params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
-            app_code: self.app.clone(),
-            container: None,
-            protocols,
-            probe_timeout: 5,
-            capture_samples: self.capture_samples,
-        };
-
-        let request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
-            .with_parameters(&params)
-            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-
-        let info = run_agent_command(
-            &ctx,
-            &request,
-            &format!("Scanning {} for endpoints", self.app),
-            PROBE_TIMEOUT_SECS,
-        )?;
-
-        if self.json {
-            print_command_result(&info, true);
-        } else {
-            print_scan_result(&info);
-        }
-
-        Ok(())
+        self.request.maybe_print_legacy_hint(false);
+        let (app, container) = self.request.remote_selector()?;
+        self.scan_remote(&ctx, &hash, app, container)
     }
 }
 
@@ -439,6 +1467,30 @@ fn print_scan_result(info: &AgentCommandInfo) {
                 .join(", ")
         })
         .unwrap_or_default();
+
+    if let Some(containers) = result["containers"].as_array() {
+        if !containers.is_empty() {
+            println!("\n  Containers matched: {}", containers.len());
+            for container in containers {
+                let name = container["name"].as_str().unwrap_or("?");
+                let network = container["network"].as_str().unwrap_or("");
+                let image = container["image"].as_str().unwrap_or("");
+                let addresses = container["addresses"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                println!("    {}  [{}] {}", name, network, image);
+                if !addresses.is_empty() {
+                    println!("      addresses: {}", addresses);
+                }
+            }
+        }
+    }
 
     println!("\n  App: {}", app_code);
     println!(
@@ -495,6 +1547,46 @@ fn print_scan_result(info: &AgentCommandInfo) {
         }
     }
 
+    if let Some(resources) = result["resources"].as_array() {
+        if !resources.is_empty() {
+            println!("\n  Resources:");
+            for resource in resources {
+                let protocol = resource["protocol"].as_str().unwrap_or("unknown");
+                let address = resource["address"].as_str().unwrap_or("");
+                let container = resource["container"].as_str().unwrap_or("");
+                if container.is_empty() {
+                    println!("    [{}] {}", protocol, address);
+                } else {
+                    println!("    [{}] {} ({})", protocol, address, container);
+                }
+                if let Some(items) = resource["items"].as_array() {
+                    for item in items {
+                        let resource_type = item["resource_type"].as_str().unwrap_or("resource");
+                        let name = item["name"].as_str().unwrap_or("?");
+                        let summary = item["summary"].as_str().unwrap_or("");
+                        let fields = item["fields"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        if summary.is_empty() {
+                            println!("      {} {}", resource_type, name);
+                        } else {
+                            println!("      {} {}  -- {}", resource_type, name, summary);
+                        }
+                        if !fields.is_empty() {
+                            println!("        fields: [{}]", fields);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(forms) = result["forms"].as_array() {
         if !forms.is_empty() {
             println!("\n  HTML Forms:");
@@ -518,6 +1610,22 @@ fn print_scan_result(info: &AgentCommandInfo) {
                 }
             }
         }
+    }
+
+    let no_endpoints = result["endpoints"]
+        .as_array()
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    let no_resources = result["resources"]
+        .as_array()
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    let no_forms = result["forms"]
+        .as_array()
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    if no_endpoints && no_resources && no_forms {
+        println!("\n  No endpoints or resources were discovered for the matched containers.");
     }
 
     println!();
@@ -562,22 +1670,24 @@ impl PipeCreateCommand {
     }
 }
 
-/// Extract operations from a probe result as a flat list of
-/// (method, path, summary, fields, sample_response).
-fn extract_operations(
-    info: &AgentCommandInfo,
-) -> Vec<(
-    String,
-    String,
-    String,
-    Vec<String>,
-    Option<serde_json::Value>,
-)> {
+#[derive(Debug, Clone)]
+struct SelectableOperation {
+    container: Option<String>,
+    method: String,
+    path: String,
+    summary: String,
+    fields: Vec<String>,
+    sample: Option<serde_json::Value>,
+}
+
+/// Extract selectable HTTP/form operations from a probe result.
+fn extract_operations(info: &AgentCommandInfo) -> Vec<SelectableOperation> {
     let mut ops = Vec::new();
     if let Some(ref result) = info.result {
         if let Some(endpoints) = result["endpoints"].as_array() {
             for ep in endpoints {
                 let base = ep["base_url"].as_str().unwrap_or("");
+                let container = ep["container"].as_str().map(String::from);
                 if let Some(operations) = ep["operations"].as_array() {
                     for op in operations {
                         let method = op["method"].as_str().unwrap_or("GET").to_string();
@@ -592,13 +1702,141 @@ fn extract_operations(
                             })
                             .unwrap_or_default();
                         let sample = op.get("sample_response").filter(|v| !v.is_null()).cloned();
-                        ops.push((method, path, summary, fields, sample));
+                        ops.push(SelectableOperation {
+                            container: container.clone(),
+                            method,
+                            path,
+                            summary,
+                            fields,
+                            sample,
+                        });
                     }
                 }
             }
         }
+        if let Some(forms) = result["forms"].as_array() {
+            for form in forms {
+                let method = form["method"].as_str().unwrap_or("GET").to_string();
+                let path = form["action"].as_str().unwrap_or("/").to_string();
+                let fields = form["fields"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ops.push(SelectableOperation {
+                    container: form["container"].as_str().map(String::from),
+                    method,
+                    path,
+                    summary: format!("HTML form {}", form["id"].as_str().unwrap_or("?")),
+                    fields,
+                    sample: None,
+                });
+            }
+        }
     }
     ops
+}
+
+fn result_has_resources(info: &AgentCommandInfo) -> bool {
+    info.result
+        .as_ref()
+        .and_then(|result| result["resources"].as_array())
+        .map(|resources| !resources.is_empty())
+        .unwrap_or(false)
+}
+
+fn build_local_scan_info(
+    selector: &str,
+    protocols: &[String],
+    capture_samples: bool,
+) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
+    let containers = discover_local_containers(Some(selector))?;
+    let report = build_local_probe_report(selector, &containers, protocols, capture_samples);
+    local_report_to_agent_info(&report)
+}
+
+fn local_container_for_operation(operation: &SelectableOperation, fallback: &str) -> String {
+    operation
+        .container
+        .clone()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn operation_label(operation: &SelectableOperation) -> String {
+    let prefix = operation
+        .container
+        .as_ref()
+        .map(|container| format!("[{}] ", container))
+        .unwrap_or_default();
+    if operation.summary.is_empty() {
+        format!("{}{:>6} {}", prefix, operation.method, operation.path)
+    } else {
+        format!(
+            "{}{:>6} {} — {}",
+            prefix, operation.method, operation.path, operation.summary
+        )
+    }
+}
+
+fn operation_labels(operations: &[SelectableOperation]) -> Vec<String> {
+    operations.iter().map(operation_label).collect()
+}
+
+fn explain_no_local_operations(name: &str, info: &AgentCommandInfo) -> String {
+    if result_has_resources(info) {
+        format!(
+            "Resources were discovered for '{}', but `pipe create` currently supports HTTP endpoints and HTML forms only.\nRun `stacker pipe scan --containers {}` to inspect the discovered resources.",
+            name, name
+        )
+    } else {
+        format!(
+            "No selectable HTTP endpoints or HTML forms were discovered for '{}'.\nRun `stacker pipe scan --containers {}` to inspect discovery results.",
+            name, name
+        )
+    }
+}
+
+#[cfg(test)]
+mod selectable_operation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extract_operations_includes_html_forms_and_container() {
+        let info = AgentCommandInfo {
+            command_id: "local".to_string(),
+            deployment_hash: "local".to_string(),
+            command_type: "probe_endpoints".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(json!({
+                "app_code": "website",
+                "protocols_detected": ["html_forms"],
+                "endpoints": [],
+                "resources": [],
+                "forms": [{
+                    "container": "local-website-1",
+                    "id": "contact-form",
+                    "action": "/contact",
+                    "method": "POST",
+                    "fields": ["name", "email"]
+                }]
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let ops = extract_operations(&info);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].container.as_deref(), Some("local-website-1"));
+        assert_eq!(ops[0].method, "POST");
+        assert_eq!(ops[0].path, "/contact");
+        assert_eq!(ops[0].fields, vec!["name".to_string(), "email".to_string()]);
+    }
 }
 
 impl CallableTrait for PipeCreateCommand {
@@ -606,135 +1844,94 @@ impl CallableTrait for PipeCreateCommand {
         let ctx = CliRuntime::new("pipe create")?;
         let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
         let prefix = mode_prefix(&deploy_ctx);
-
-        // In local mode, skip agent-based endpoint scanning — just create the pipe directly
-        if deploy_ctx.is_local() {
-            // Step 1 (local): Ask for pipe name
-            let default_name = format!("{}-to-{}", self.source, self.target);
-            let pipe_name: String = dialoguer::Input::new()
-                .with_prompt("Pipe name")
-                .default(default_name)
-                .interact_text()?;
-
-            // Step 2 (local): Create template via API
-            let template_request = CreatePipeTemplateApiRequest {
-                name: pipe_name.clone(),
-                description: Some(format!("{} → {} (local)", self.source, self.target)),
-                source_app_type: self.source.clone(),
-                source_endpoint: serde_json::json!({}),
-                target_app_type: self.target.clone(),
-                target_endpoint: serde_json::json!({}),
-                target_external_url: None,
-                field_mapping: serde_json::json!({}),
-                config: Some(serde_json::json!({"retry_count": 3})),
-                is_public: Some(false),
-            };
-
-            let pb = progress::spinner(&format!("{}Creating pipe template...", prefix));
-            let template = ctx
-                .block_on(ctx.client.create_pipe_template(&template_request))
-                .map_err(|e| {
-                    progress::finish_error(&pb, "Template creation failed");
-                    e
-                })?;
-            progress::finish_success(&pb, &format!("{}Template created", prefix));
-
-            // Step 3 (local): Create instance with no deployment_hash
-            let instance_request = CreatePipeInstanceApiRequest {
-                deployment_hash: None,
-                source_container: self.source.clone(),
-                target_container: Some(self.target.clone()),
-                target_url: None,
-                template_id: Some(template.id.clone()),
-                field_mapping_override: None,
-                config_override: None,
-            };
-
-            let pb = progress::spinner(&format!("{}Creating local pipe instance...", prefix));
-            let instance = ctx
-                .block_on(ctx.client.create_pipe_instance(&instance_request))
-                .map_err(|e| {
-                    progress::finish_error(&pb, "Instance creation failed");
-                    e
-                })?;
-            progress::finish_success(&pb, &format!("{}Pipe instance created", prefix));
-
-            if self.json {
-                let output = serde_json::json!({
-                    "template": template,
-                    "instance": instance,
-                    "local": true,
-                });
-                println!("{}", serde_json::to_string_pretty(&output)?);
-            } else {
-                println!("\n  {}✓ Local pipe '{}' created successfully", prefix, pipe_name);
-                println!("  Template ID:  {}", template.id);
-                println!("  Instance ID:  {}", instance.id);
-                println!("  Source:       {}", self.source);
-                println!("  Target:       {}", self.target);
-                println!("  Mode:         local (no deployment required)");
-                println!(
-                    "  Next:         Configure endpoints, then 'stacker pipe trigger {}'",
-                    instance.id
-                );
-            }
-
-            return Ok(());
-        }
-
-        // Remote mode — resolve hash
+        let local_mode = deploy_ctx.is_local();
         let hash = match &deploy_ctx {
-            DeploymentContext::Remote(h) => h.clone(),
-            _ => unreachable!(),
+            DeploymentContext::Remote(h) => Some(h.clone()),
+            DeploymentContext::Local => None,
         };
 
-        // Step 1: Scan both source and target (remote only — local skips agent scan)
-        println!(
-            "Scanning source app '{}' and target app '{}'...",
-            self.source, self.target
-        );
+        let (source_info, target_info) = if local_mode {
+            println!(
+                "{}Scanning local source '{}' and target '{}'...",
+                prefix, self.source, self.target
+            );
+            (
+                build_local_scan_info(
+                    &self.source,
+                    &[
+                        "openapi".to_string(),
+                        "html_forms".to_string(),
+                        "rest".to_string(),
+                        "graphql".to_string(),
+                    ],
+                    true,
+                )?,
+                build_local_scan_info(
+                    &self.target,
+                    &[
+                        "openapi".to_string(),
+                        "html_forms".to_string(),
+                        "rest".to_string(),
+                        "graphql".to_string(),
+                    ],
+                    true,
+                )?,
+            )
+        } else {
+            let hash = hash.clone().expect("remote hash");
+            println!(
+                "Scanning source app '{}' and target app '{}'...",
+                self.source, self.target
+            );
 
-        let source_params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
-            app_code: self.source.clone(),
-            container: None,
-            protocols: vec![
-                "openapi".to_string(),
-                "html_forms".to_string(),
-                "rest".to_string(),
-            ],
-            probe_timeout: 5,
-            capture_samples: true,
+            let source_params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
+                app_code: self.source.clone(),
+                container: None,
+                protocols: vec![
+                    "openapi".to_string(),
+                    "html_forms".to_string(),
+                    "rest".to_string(),
+                ],
+                probe_timeout: 5,
+                capture_samples: true,
+            };
+
+            let source_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
+                .with_parameters(&source_params)
+                .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+
+            let source_info = run_agent_command(
+                &ctx,
+                &source_request,
+                &format!("Scanning source: {}", self.source),
+                PROBE_TIMEOUT_SECS,
+            )?;
+
+            let target_params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
+                app_code: self.target.clone(),
+                container: None,
+                protocols: vec![
+                    "openapi".to_string(),
+                    "html_forms".to_string(),
+                    "rest".to_string(),
+                ],
+                probe_timeout: 5,
+                capture_samples: true,
+            };
+
+            let target_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
+                .with_parameters(&target_params)
+                .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+
+            let target_info = run_agent_command(
+                &ctx,
+                &target_request,
+                &format!("Scanning target: {}", self.target),
+                PROBE_TIMEOUT_SECS,
+            )?;
+
+            (source_info, target_info)
         };
-
-        let source_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
-            .with_parameters(&source_params)
-            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-
-        let source_info = run_agent_command(
-            &ctx,
-            &source_request,
-            &format!("Scanning source: {}", self.source),
-            PROBE_TIMEOUT_SECS,
-        )?;
-
-        let target_params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
-            app_code: self.target.clone(),
-            container: None,
-            protocols: vec!["openapi".to_string(), "rest".to_string()],
-            probe_timeout: 5,
-            capture_samples: true,
-        };
-
-        let target_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
-            .with_parameters(&target_params)
-            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-
-        let target_info = run_agent_command(
-            &ctx,
-            &target_request,
-            &format!("Scanning target: {}", self.target),
-            PROBE_TIMEOUT_SECS,
-        )?;
 
         if source_info.status != "completed" || target_info.status != "completed" {
             eprintln!("Scan failed for one or both apps. Cannot create pipe.");
@@ -753,60 +1950,47 @@ impl CallableTrait for PipeCreateCommand {
 
         if source_ops.is_empty() {
             eprintln!(
-                "No endpoints discovered on source app '{}'. Cannot create pipe.",
-                self.source
+                "{}",
+                explain_no_local_operations(&self.source, &source_info)
             );
             return Ok(());
         }
         if target_ops.is_empty() {
             eprintln!(
-                "No endpoints discovered on target app '{}'. Cannot create pipe.",
-                self.target
+                "{}",
+                explain_no_local_operations(&self.target, &target_info)
             );
             return Ok(());
         }
 
         // Step 3: Let user select source endpoint
-        let source_labels: Vec<String> = source_ops
-            .iter()
-            .map(|(m, p, s, _, _)| {
-                if s.is_empty() {
-                    format!("{:>6} {}", m, p)
-                } else {
-                    format!("{:>6} {} — {}", m, p, s)
-                }
-            })
-            .collect();
-
-        println!("\n  Select source endpoint (data comes FROM here):");
-        let source_idx = dialoguer::Select::new()
-            .items(&source_labels)
-            .default(0)
-            .interact()?;
-
-        let (ref src_method, ref src_path, _, ref src_fields, ref src_sample) =
-            source_ops[source_idx];
+        let source_idx = {
+            let source_labels = operation_labels(&source_ops);
+            println!("\n  Select source endpoint (data comes FROM here):");
+            dialoguer::Select::new()
+                .items(&source_labels)
+                .default(0)
+                .interact()?
+        };
+        let src_op = &source_ops[source_idx];
+        let src_method = &src_op.method;
+        let src_path = &src_op.path;
+        let src_fields = &src_op.fields;
+        let src_sample = &src_op.sample;
 
         // Step 4: Let user select target endpoint
-        let target_labels: Vec<String> = target_ops
-            .iter()
-            .map(|(m, p, s, _, _)| {
-                if s.is_empty() {
-                    format!("{:>6} {}", m, p)
-                } else {
-                    format!("{:>6} {} — {}", m, p, s)
-                }
-            })
-            .collect();
-
-        println!("\n  Select target endpoint (data goes TO here):");
-        let target_idx = dialoguer::Select::new()
-            .items(&target_labels)
-            .default(0)
-            .interact()?;
-
-        let (ref tgt_method, ref tgt_path, _, ref tgt_fields, ref _tgt_sample) =
-            target_ops[target_idx];
+        let target_idx = {
+            let target_labels = operation_labels(&target_ops);
+            println!("\n  Select target endpoint (data goes TO here):");
+            dialoguer::Select::new()
+                .items(&target_labels)
+                .default(0)
+                .interact()?
+        };
+        let tgt_op = &target_ops[target_idx];
+        let tgt_method = &tgt_op.method;
+        let tgt_path = &tgt_op.path;
+        let tgt_fields = &tgt_op.fields;
 
         // Step 5: Build field mapping (smart matching with sample data)
         let (field_mapping, match_result) = if !self.manual
@@ -959,11 +2143,22 @@ impl CallableTrait for PipeCreateCommand {
             })?;
         progress::finish_success(&pb, "Template created");
 
+        let source_container_name = if local_mode {
+            local_container_for_operation(src_op, &self.source)
+        } else {
+            self.source.clone()
+        };
+        let target_container_name = if local_mode {
+            local_container_for_operation(tgt_op, &self.target)
+        } else {
+            self.target.clone()
+        };
+
         // Step 8: Create instance linked to this deployment
         let instance_request = CreatePipeInstanceApiRequest {
-            deployment_hash: Some(hash.clone()),
-            source_container: self.source.clone(),
-            target_container: Some(self.target.clone()),
+            deployment_hash: hash.clone(),
+            source_container: source_container_name.clone(),
+            target_container: Some(target_container_name.clone()),
             target_url: None,
             template_id: Some(template.id.clone()),
             field_mapping_override: None,
@@ -983,14 +2178,25 @@ impl CallableTrait for PipeCreateCommand {
             let output = serde_json::json!({
                 "template": template,
                 "instance": instance,
+                "local": local_mode,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            println!("\n  ✓ Pipe '{}' created successfully", pipe_name);
+            if local_mode {
+                println!(
+                    "\n  {}✓ Local pipe '{}' created successfully",
+                    prefix, pipe_name
+                );
+            } else {
+                println!("\n  ✓ Pipe '{}' created successfully", pipe_name);
+            }
             println!("  Template ID:  {}", template.id);
             println!("  Instance ID:  {}", instance.id);
-            println!("  Source:       {} ({})", self.source, src_path);
-            println!("  Target:       {} ({})", self.target, tgt_path);
+            println!("  Source:       {} ({})", source_container_name, src_path);
+            println!("  Target:       {} ({})", target_container_name, tgt_path);
+            if local_mode {
+                println!("  Mode:         local (no deployment required)");
+            }
             println!(
                 "  Status:       {} (use 'stacker pipe activate {}' to start)",
                 instance.status, instance.id
@@ -1034,9 +2240,9 @@ impl CallableTrait for PipeListCommand {
             DeploymentContext::Remote(hash) => ctx
                 .block_on(ctx.client.list_pipe_instances(hash))
                 .map_err(|e| {
-                    progress::finish_error(&pb, "Failed to fetch pipes");
-                    e
-                })?,
+                progress::finish_error(&pb, "Failed to fetch pipes");
+                e
+            })?,
         };
         progress::finish_success(&pb, &format!("{}{} pipe(s) found", prefix, pipes.len()));
 
@@ -1103,7 +2309,11 @@ fn truncate_str(s: &str, max: usize) -> String {
 /// 1. `--ai` flag → AI matcher (error if AI not configured)
 /// 2. `--no-ai` flag → deterministic matcher
 /// 3. Neither flag → check `stacker.yml` ai.enabled; if true → AI, else → deterministic
-fn select_field_matcher(force_ai: bool, force_no_ai: bool, force_ml: bool) -> Box<dyn FieldMatcher> {
+fn select_field_matcher(
+    force_ai: bool,
+    force_no_ai: bool,
+    force_ml: bool,
+) -> Box<dyn FieldMatcher> {
     if force_ml {
         return Box::new(crate::cli::ml_field_matcher::MlFieldMatcher::new());
     }
@@ -1419,7 +2629,10 @@ impl CallableTrait for PipeTriggerCommand {
                 })?
                 .ok_or_else(|| {
                     progress::finish_error(&pb, "Pipe not found");
-                    CliError::ConfigValidation(format!("Pipe instance '{}' not found", self.pipe_id))
+                    CliError::ConfigValidation(format!(
+                        "Pipe instance '{}' not found",
+                        self.pipe_id
+                    ))
                 })?;
 
             // For local trigger, we attempt docker exec on the source container
@@ -1704,10 +2917,7 @@ impl CallableTrait for PipeDeployCommand {
 
         println!("\n  ✓ Local pipe promoted to remote deployment");
         println!("  Remote instance ID: {}", remote.id);
-        println!(
-            "  Deployment:         {}",
-            &remote.deployment_hash
-        );
+        println!("  Deployment:         {}", &remote.deployment_hash);
         println!("  Source:             {}", remote.source_container);
         if let Some(ref t) = remote.target_container {
             println!("  Target:             {}", t);
@@ -1841,18 +3051,186 @@ mod tests {
             DeploymentContext::Remote("a".to_string()),
             DeploymentContext::Remote("a".to_string())
         );
-        assert_ne!(DeploymentContext::Local, DeploymentContext::Remote("a".to_string()));
+        assert_ne!(
+            DeploymentContext::Local,
+            DeploymentContext::Remote("a".to_string())
+        );
     }
 
     #[test]
     fn test_pipe_deploy_command_new() {
-        let cmd = PipeDeployCommand::new(
-            "inst-123".to_string(),
-            "deploy-hash".to_string(),
-            true,
-        );
+        let cmd = PipeDeployCommand::new("inst-123".to_string(), "deploy-hash".to_string(), true);
         assert_eq!(cmd.instance_id, "inst-123");
         assert_eq!(cmd.deployment_hash, "deploy-hash");
         assert!(cmd.json);
+    }
+
+    #[test]
+    fn test_pipe_scan_request_local_filter_from_legacy() {
+        let request = PipeScanRequest::Legacy {
+            selector: Some("upload".to_string()),
+        };
+        assert_eq!(request.local_filter().unwrap(), Some("upload"));
+    }
+
+    #[test]
+    fn test_pipe_scan_request_local_filter_accepts_legacy_without_selector() {
+        let request = PipeScanRequest::Legacy { selector: None };
+        assert_eq!(request.local_filter().unwrap(), None);
+    }
+
+    #[test]
+    fn test_pipe_scan_request_local_filter_from_containers() {
+        let request = PipeScanRequest::Containers {
+            filter: Some("upload".to_string()),
+        };
+        assert_eq!(request.local_filter().unwrap(), Some("upload"));
+    }
+
+    #[test]
+    fn test_pipe_scan_request_local_filter_rejects_app_mode() {
+        let request = PipeScanRequest::App {
+            app: "website".to_string(),
+            container: None,
+        };
+        assert!(request.local_filter().is_err());
+    }
+
+    #[test]
+    fn test_pipe_scan_request_remote_selector_from_app_mode() {
+        let request = PipeScanRequest::App {
+            app: "website".to_string(),
+            container: Some("website-web-1".to_string()),
+        };
+        assert_eq!(
+            request.remote_selector().unwrap(),
+            ("website", Some("website-web-1"))
+        );
+    }
+
+    #[test]
+    fn test_pipe_scan_request_remote_selector_from_legacy() {
+        let request = PipeScanRequest::Legacy {
+            selector: Some("website".to_string()),
+        };
+        assert_eq!(request.remote_selector().unwrap(), ("website", None));
+    }
+
+    #[test]
+    fn test_pipe_scan_request_remote_selector_rejects_legacy_without_selector() {
+        let request = PipeScanRequest::Legacy { selector: None };
+        assert!(request.remote_selector().is_err());
+    }
+
+    #[test]
+    fn test_pipe_scan_request_remote_selector_rejects_containers_mode() {
+        let request = PipeScanRequest::Containers { filter: None };
+        assert!(request.remote_selector().is_err());
+    }
+
+    #[test]
+    fn test_local_http_candidate_urls_include_internal_and_host_ports() {
+        let container = LocalContainerInfo {
+            id: "abc".to_string(),
+            name: "local-device-api-1".to_string(),
+            image: "syncopia/device-api:local".to_string(),
+            network: "syncopia".to_string(),
+            addresses: vec!["172.18.0.20".to_string()],
+            ports: vec![
+                LocalPortBinding {
+                    container_port: 5050,
+                    host_port: None,
+                    protocol: "tcp".to_string(),
+                },
+                LocalPortBinding {
+                    container_port: 8080,
+                    host_port: Some(18080),
+                    protocol: "tcp".to_string(),
+                },
+            ],
+            status: "running".to_string(),
+            env: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        let urls = local_http_candidate_urls(&container);
+        assert!(urls.contains(&"http://172.18.0.20:5050".to_string()));
+        assert!(urls.contains(&"http://127.0.0.1:18080".to_string()));
+    }
+
+    #[test]
+    fn test_parse_local_container_inspect_extracts_ports_and_env() {
+        let inspect = json!({
+            "Id": "abc123",
+            "Name": "/local-postgres-1",
+            "Config": {
+                "Image": "postgres:17-alpine",
+                "Env": ["POSTGRES_USER=postgres", "POSTGRES_DB=app"],
+                "Labels": {"com.docker.compose.service": "database"},
+                "ExposedPorts": {"5432/tcp": {}}
+            },
+            "State": {"Status": "running"},
+            "NetworkSettings": {
+                "Networks": {
+                    "syncopia": {
+                        "IPAddress": "172.18.0.10"
+                    }
+                },
+                "Ports": {
+                    "5432/tcp": null
+                }
+            }
+        });
+
+        let container = parse_local_container_inspect(&inspect).unwrap();
+        assert_eq!(container.name, "local-postgres-1");
+        assert_eq!(container.network, "syncopia");
+        assert_eq!(container.addresses, vec!["172.18.0.10".to_string()]);
+        assert_eq!(
+            container.env.get("POSTGRES_USER").map(String::as_str),
+            Some("postgres")
+        );
+        assert_eq!(container.ports[0].container_port, 5432);
+        assert_eq!(container.ports[0].host_port, None);
+    }
+
+    #[test]
+    fn test_local_resource_probe_plan_detects_common_services() {
+        let postgres = LocalContainerInfo {
+            id: "pg".to_string(),
+            name: "local-postgres-1".to_string(),
+            image: "postgres:17-alpine".to_string(),
+            network: "syncopia".to_string(),
+            addresses: vec!["172.18.0.10".to_string()],
+            ports: vec![LocalPortBinding {
+                container_port: 5432,
+                host_port: None,
+                protocol: "tcp".to_string(),
+            }],
+            status: "running".to_string(),
+            env: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
+        };
+        let rabbit = LocalContainerInfo {
+            id: "rmq".to_string(),
+            name: "local-rabbitmq-1".to_string(),
+            image: "rabbitmq:3-management".to_string(),
+            network: "syncopia".to_string(),
+            addresses: vec!["172.18.0.11".to_string()],
+            ports: vec![LocalPortBinding {
+                container_port: 5672,
+                host_port: None,
+                protocol: "tcp".to_string(),
+            }],
+            status: "running".to_string(),
+            env: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
+        };
+
+        let pg_plan = local_resource_probe_plan(&postgres);
+        let rabbit_plan = local_resource_probe_plan(&rabbit);
+
+        assert!(pg_plan.iter().any(|item| item == "postgres"));
+        assert!(rabbit_plan.iter().any(|item| item == "rabbitmq"));
     }
 }

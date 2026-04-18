@@ -285,7 +285,9 @@ mod tests {
     #[tokio::test]
     async fn ws_source_with_output() {
         let config = json!({"output": {"ws_data": "test"}});
-        let result = execute_step("ws_source", &config, &json!({})).await.unwrap();
+        let result = execute_step("ws_source", &config, &json!({}))
+            .await
+            .unwrap();
         assert_eq!(result, json!({"ws_data": "test"}));
     }
 
@@ -328,7 +330,9 @@ mod tests {
     #[tokio::test]
     async fn cdc_source_default() {
         let config = json!({"replication_slot": "test_slot", "publication": "test_pub", "tables": ["users"]});
-        let result = execute_step("cdc_source", &config, &json!({})).await.unwrap();
+        let result = execute_step("cdc_source", &config, &json!({}))
+            .await
+            .unwrap();
         assert_eq!(result["cdc_connected"], true);
         assert_eq!(result["replication_slot"], "test_slot");
         assert_eq!(result["publication"], "test_pub");
@@ -338,7 +342,9 @@ mod tests {
     #[tokio::test]
     async fn cdc_source_with_output() {
         let config = json!({"output": {"event": "insert", "table": "users"}});
-        let result = execute_step("cdc_source", &config, &json!({})).await.unwrap();
+        let result = execute_step("cdc_source", &config, &json!({}))
+            .await
+            .unwrap();
         assert_eq!(result["event"], "insert");
         assert_eq!(result["table"], "users");
     }

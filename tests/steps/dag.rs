@@ -158,7 +158,8 @@ async fn when_add_dag_step(world: &mut StepWorld, step: &cucumber::gherkin::Step
         .clone();
 
     let docstring = step.docstring.as_ref().expect("Missing docstring");
-    let body: serde_json::Value = serde_json::from_str(docstring).expect("Invalid JSON in docstring");
+    let body: serde_json::Value =
+        serde_json::from_str(docstring).expect("Invalid JSON in docstring");
 
     let path = format!("/api/v1/pipes/{}/dag/steps", template_id);
     world.post_json(&path, &body).await;

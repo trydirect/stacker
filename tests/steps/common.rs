@@ -42,8 +42,7 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
         }
     };
 
-    let app_listener =
-        TcpListener::bind("127.0.0.1:0").expect("Failed to bind port for BDD app");
+    let app_listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind port for BDD app");
     let port = app_listener.local_addr().unwrap().port();
     let address = format!("http://127.0.0.1:{}", port);
 

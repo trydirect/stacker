@@ -169,7 +169,12 @@ pub mod routing {
     pub const CDC_EVENT_PREFIX: &str = "cdc.event";
 
     pub fn event_key(table: &str, operation: &str) -> String {
-        format!("{}.{}.{}", CDC_EVENT_PREFIX, table, operation.to_lowercase())
+        format!(
+            "{}.{}.{}",
+            CDC_EVENT_PREFIX,
+            table,
+            operation.to_lowercase()
+        )
     }
 
     pub fn cdc_queue(deployment_hash: &str) -> String {
@@ -204,7 +209,11 @@ mod tests {
 
     #[test]
     fn cdc_operation_serde_roundtrip() {
-        let ops = vec![CdcOperation::Insert, CdcOperation::Update, CdcOperation::Delete];
+        let ops = vec![
+            CdcOperation::Insert,
+            CdcOperation::Update,
+            CdcOperation::Delete,
+        ];
         let json_str = serde_json::to_string(&ops).unwrap();
         assert_eq!(json_str, r#"["INSERT","UPDATE","DELETE"]"#);
         let deserialized: Vec<CdcOperation> = serde_json::from_str(&json_str).unwrap();
@@ -323,14 +332,8 @@ mod tests {
             routing::event_key("orders", "DELETE"),
             "cdc.event.orders.delete"
         );
-        assert_eq!(
-            routing::cdc_queue("deploy-xyz"),
-            "cdc_listener_deploy-xyz"
-        );
-        assert_eq!(
-            routing::wildcard_key("users"),
-            "cdc.event.users.#"
-        );
+        assert_eq!(routing::cdc_queue("deploy-xyz"), "cdc_listener_deploy-xyz");
+        assert_eq!(routing::wildcard_key("users"), "cdc.event.users.#");
     }
 
     #[test]

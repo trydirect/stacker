@@ -3,7 +3,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::steps::StepWorld;
-use stacker::models::cdc::{CdcChangeEvent, CdcOperation, CdcTriggerConfig, routing};
+use stacker::models::cdc::{routing, CdcChangeEvent, CdcOperation, CdcTriggerConfig};
 use stacker::services::step_executor;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -28,10 +28,9 @@ async fn given_cdc_event(world: &mut StepWorld, table: String, operation: String
 
 #[given("the event has after data:")]
 async fn given_event_after_data(world: &mut StepWorld, step: &cucumber::gherkin::Step) {
-    let data: serde_json::Value = serde_json::from_str(
-        step.docstring.as_ref().expect("Missing docstring"),
-    )
-    .expect("Invalid JSON in docstring");
+    let data: serde_json::Value =
+        serde_json::from_str(step.docstring.as_ref().expect("Missing docstring"))
+            .expect("Invalid JSON in docstring");
     if let Some(ref mut event) = world.cdc_event {
         event.after = Some(data);
     }
@@ -39,10 +38,9 @@ async fn given_event_after_data(world: &mut StepWorld, step: &cucumber::gherkin:
 
 #[given("the event has before data:")]
 async fn given_event_before_data(world: &mut StepWorld, step: &cucumber::gherkin::Step) {
-    let data: serde_json::Value = serde_json::from_str(
-        step.docstring.as_ref().expect("Missing docstring"),
-    )
-    .expect("Invalid JSON in docstring");
+    let data: serde_json::Value =
+        serde_json::from_str(step.docstring.as_ref().expect("Missing docstring"))
+            .expect("Invalid JSON in docstring");
     if let Some(ref mut event) = world.cdc_event {
         event.before = Some(data);
     }
@@ -100,7 +98,11 @@ async fn then_operation_parses(_world: &mut StepWorld, input: String, expected: 
 
 #[then(regex = r#"^CDC operation "([^"]+)" should not parse$"#)]
 async fn then_operation_does_not_parse(_world: &mut StepWorld, input: String) {
-    assert!(CdcOperation::from_str(&input).is_none(), "Expected None for '{}'", input);
+    assert!(
+        CdcOperation::from_str(&input).is_none(),
+        "Expected None for '{}'",
+        input
+    );
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -140,22 +142,30 @@ async fn then_payload_nested_has_key(world: &mut StepWorld, parent: String, key:
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[given(regex = r#"^a DAG step of type "([^"]+)" with config:$"#)]
-async fn given_dag_step_with_config(world: &mut StepWorld, step_type: String, step: &cucumber::gherkin::Step) {
-    let config: serde_json::Value = serde_json::from_str(
-        step.docstring.as_ref().expect("Missing docstring"),
-    )
-    .expect("Invalid JSON in docstring");
+async fn given_dag_step_with_config(
+    world: &mut StepWorld,
+    step_type: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let config: serde_json::Value =
+        serde_json::from_str(step.docstring.as_ref().expect("Missing docstring"))
+            .expect("Invalid JSON in docstring");
     world.stored_ids.insert("step_type".to_string(), step_type);
-    world.stored_ids.insert("step_config".to_string(), config.to_string());
+    world
+        .stored_ids
+        .insert("step_config".to_string(), config.to_string());
 }
 
 #[when("I execute the step with empty input")]
 async fn when_execute_step(world: &mut StepWorld) {
-    let step_type = world.stored_ids.get("step_type").expect("No step_type").clone();
-    let config: serde_json::Value = serde_json::from_str(
-        world.stored_ids.get("step_config").expect("No step_config"),
-    )
-    .expect("Invalid config JSON");
+    let step_type = world
+        .stored_ids
+        .get("step_type")
+        .expect("No step_type")
+        .clone();
+    let config: serde_json::Value =
+        serde_json::from_str(world.stored_ids.get("step_config").expect("No step_config"))
+            .expect("Invalid config JSON");
     let result = step_executor::execute_step(&step_type, &config, &json!({}))
         .await
         .expect("Step execution failed");
@@ -234,10 +244,15 @@ async fn then_trigger_filters_table(world: &mut StepWorld, table: String) {
     assert_eq!(trigger.table_filter.as_deref(), Some(table.as_str()));
 }
 
-#[then(regex = r#"^the trigger should filter operations (Insert|Update|Delete) and (Insert|Update|Delete)$"#)]
+#[then(
+    regex = r#"^the trigger should filter operations (Insert|Update|Delete) and (Insert|Update|Delete)$"#
+)]
 async fn then_trigger_filters_ops(world: &mut StepWorld, op1: String, op2: String) {
     let trigger = world.cdc_trigger.as_ref().expect("No trigger config");
-    let ops = trigger.operation_filter.as_ref().expect("No operation filter");
+    let ops = trigger
+        .operation_filter
+        .as_ref()
+        .expect("No operation filter");
     let parse = |s: &str| match s {
         "Insert" => CdcOperation::Insert,
         "Update" => CdcOperation::Update,

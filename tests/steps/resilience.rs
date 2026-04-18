@@ -174,7 +174,8 @@ async fn when_push_to_dlq(world: &mut StepWorld, step: &cucumber::gherkin::Step)
         .clone();
 
     let docstring = step.docstring.as_ref().expect("Missing docstring");
-    let body: serde_json::Value = serde_json::from_str(docstring).expect("Invalid JSON in docstring");
+    let body: serde_json::Value =
+        serde_json::from_str(docstring).expect("Invalid JSON in docstring");
 
     let path = format!("/api/v1/pipes/instances/{}/dlq", instance_id);
     world.post_json(&path, &body).await;
@@ -241,7 +242,9 @@ async fn when_update_cb(world: &mut StepWorld, step: &cucumber::gherkin::Step) {
     world.put_json(&path, &body).await;
 }
 
-#[given(regex = r#"^the circuit breaker is configured with failure_threshold (\d+) for the pipe instance$"#)]
+#[given(
+    regex = r#"^the circuit breaker is configured with failure_threshold (\d+) for the pipe instance$"#
+)]
 async fn given_cb_configured(world: &mut StepWorld, threshold: i32) {
     let instance_id = world
         .stored_ids
@@ -337,7 +340,10 @@ async fn given_cb_open(world: &mut StepWorld) {
         .pointer("/item/state")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    assert_eq!(state, "open", "Circuit breaker should be open after threshold failures");
+    assert_eq!(
+        state, "open",
+        "Circuit breaker should be open after threshold failures"
+    );
 }
 
 #[given(regex = r#"^I have recorded (\d+) circuit breaker failures for the pipe instance$"#)]

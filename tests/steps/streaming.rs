@@ -12,4 +12,3 @@ async fn when_get_execution_stream(world: &mut StepWorld) {
     let path = format!("/api/v1/pipes/instances/{}/stream", instance_id);
     world.get(&path).await;
 }
-

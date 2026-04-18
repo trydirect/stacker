@@ -35,9 +35,8 @@ pub async fn deploy_pipe_handler(
     }
 
     // 1. Fetch the source (local) instance
-    let instance_uuid = uuid::Uuid::parse_str(&instance_id).map_err(|_| {
-        JsonResponse::<()>::build().bad_request("Invalid instance ID format")
-    })?;
+    let instance_uuid = uuid::Uuid::parse_str(&instance_id)
+        .map_err(|_| JsonResponse::<()>::build().bad_request("Invalid instance ID format"))?;
 
     let source_instance = db::pipe::get_instance(pg_pool.get_ref(), &instance_uuid)
         .await
@@ -52,8 +51,9 @@ pub async fn deploy_pipe_handler(
 
     // 3. Verify it's a local instance
     if !source_instance.is_local {
-        return Err(JsonResponse::<()>::build()
-            .bad_request("Only local pipe instances can be deployed. This instance is already remote."));
+        return Err(JsonResponse::<()>::build().bad_request(
+            "Only local pipe instances can be deployed. This instance is already remote.",
+        ));
     }
 
     // 4. Verify target deployment exists and belongs to user

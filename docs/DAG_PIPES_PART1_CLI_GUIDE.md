@@ -41,11 +41,11 @@ stacker status
 ### Step 1 — Scan your services
 
 ```bash
-# See what APIs your website exposes
-stacker pipe scan website
+# Remote deployment: probe app endpoints
+stacker pipe scan --app website
 
 # See what APIs are available with sample data
-stacker pipe scan website --capture-samples
+stacker pipe scan --app website --capture-samples
 ```
 
 Output:
@@ -67,7 +67,7 @@ stacker pipe create website telegram
 ```
 
 The wizard will:
-1. Scan both apps for endpoints
+1. Scan both apps/containers for endpoints
 2. Let you pick source endpoint (POST /api/contact)
 3. Let you pick target endpoint (sendMessage)
 4. Auto-match fields (`name` → text, `email` → text)
@@ -205,7 +205,9 @@ stacker pipe trigger <slack-pipe-id> \
 
 | Command | What it does |
 |---------|-------------|
-| `stacker pipe scan <app>` | Discover what APIs an app exposes |
+| `stacker pipe scan` | Discover local Docker containers |
+| `stacker pipe scan --containers [filter]` | Discover local containers by name |
+| `stacker pipe scan --app <app>` | Discover what APIs a remote app exposes |
 | `stacker pipe create <source> <target>` | Create a pipe (interactive wizard) |
 | `stacker pipe list` | Show all pipes for your deployment |
 | `stacker pipe activate <id>` | Start the pipe (begin listening) |
@@ -274,15 +276,19 @@ stacker target
 # Output: Active target: local
 
 # All pipe commands now show [local] prefix
-stacker pipe scan website
+stacker pipe scan
 # [local] ✓ 3 containers discovered
+# [local] ✓ 7 endpoints/resources discovered
 ```
 
 ### Local Workflow
 
 ```bash
-# 1. Discover local containers (uses docker ps)
-stacker pipe scan website
+# 1. Discover local endpoints/resources from running containers
+stacker pipe scan
+
+# Optional: narrow to matching container names
+stacker pipe scan --containers website
 
 # 2. Create a pipe — no deployment hash needed
 stacker pipe create website telegram
@@ -314,7 +320,9 @@ stacker target         # show current
 
 | Command | Local Behavior |
 |---------|---------------|
-| `pipe scan` | Runs `docker ps` to discover containers |
+| `pipe scan` | Discovers local endpoints/resources from running containers |
+| `pipe scan --containers [filter]` | Filters matching containers, then probes their endpoints/resources |
+| `pipe scan --app <app>` | Not used locally — use container discovery instead |
 | `pipe create` | Creates pipe with `is_local=true`, no deployment hash |
 | `pipe list` | Shows your local pipes only |
 | `pipe trigger` | Executes via `docker exec` / HTTP |
@@ -322,6 +330,47 @@ stacker target         # show current
 | `pipe deploy` | Promotes local pipe → remote deployment |
 | `pipe activate/deactivate` | Remote only (use after deploy) |
 | `pipe replay` | Remote only |
+
+### Scan Semantics
+
+- **Local target** → scan works with **containers**
+- **Remote target** → scan works with **apps**, optionally narrowed by `--container`
+
+```bash
+# Local
+stacker pipe scan
+stacker pipe scan --containers upload
+
+# Remote
+stacker pipe scan --app website
+stacker pipe scan --app website --container website-web-1
+```
+
+Legacy `stacker pipe scan <ARG>` still works during the transition:
+
+- in **local mode** it is treated as a container name filter
+- in **remote mode** it is treated as an app code
+
+When local scan succeeds, expect output like:
+
+```text
+[local] ✓ 1 container(s) discovered
+
+  Containers matched: 1
+    local-device-api-1  [syncopia] syncopia/device-api:local
+      addresses: 172.18.0.20:5050
+
+  App: device-api
+  Protocols detected: openapi, postgres
+
+  [openapi] http://172.18.0.20:5050/openapi.json
+       GET /devices
+           fields: [id, name]
+
+  Resources:
+    [postgres] postgres://172.18.0.10:5432/app (local-postgres-1)
+      table public.devices  -- CDC candidate
+```
 
 ---
 

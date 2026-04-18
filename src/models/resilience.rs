@@ -7,7 +7,8 @@ use sqlx::types::JsonValue;
 // Dead Letter Queue entry
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-pub const VALID_DLQ_STATUSES: &[&str] = &["pending", "retrying", "exhausted", "resolved", "discarded"];
+pub const VALID_DLQ_STATUSES: &[&str] =
+    &["pending", "retrying", "exhausted", "resolved", "discarded"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct DeadLetterEntry {

@@ -258,10 +258,7 @@ async fn update_env_vars(world: &mut StepWorld, step: &cucumber::gherkin::Step, 
     // Skip header row (row 0), process data rows
     for row in table.rows.iter().skip(1) {
         if row.len() >= 2 {
-            vars.insert(
-                row[0].clone(),
-                serde_json::Value::String(row[1].clone()),
-            );
+            vars.insert(row[0].clone(), serde_json::Value::String(row[1].clone()));
         }
     }
     let body = json!({ "variables": vars });
@@ -314,7 +311,9 @@ async fn delete_env_var(world: &mut StepWorld, var_name: String, code: String) {
         .await;
 }
 
-#[when(regex = r#"^I update ports for app "(.+)" in the stored project with host (\d+) container (\d+)$"#)]
+#[when(
+    regex = r#"^I update ports for app "(.+)" in the stored project with host (\d+) container (\d+)$"#
+)]
 async fn update_ports(world: &mut StepWorld, code: String, host: u16, container: u16) {
     let id = world
         .stored_ids

@@ -160,8 +160,12 @@ async fn delete_stored_pipe_template(world: &mut StepWorld) {
 
 // ─── Pipe Instance steps ─────────────────────────────────────────
 
-#[when(regex = r#"^I create a pipe instance for deployment "(.+)" with source "(.+)" and target container "(.+)"$"#)]
-#[given(regex = r#"^I have created a pipe instance for deployment "(.+)" with source "(.+)" and target container "(.+)"$"#)]
+#[when(
+    regex = r#"^I create a pipe instance for deployment "(.+)" with source "(.+)" and target container "(.+)"$"#
+)]
+#[given(
+    regex = r#"^I have created a pipe instance for deployment "(.+)" with source "(.+)" and target container "(.+)"$"#
+)]
 async fn create_pipe_instance_container(
     world: &mut StepWorld,
     deployment_hash: String,
@@ -179,7 +183,9 @@ async fn create_pipe_instance_container(
     }
 }
 
-#[when(regex = r#"^I create a pipe instance for deployment "(.+)" with source "(.+)" and target url "(.+)"$"#)]
+#[when(
+    regex = r#"^I create a pipe instance for deployment "(.+)" with source "(.+)" and target url "(.+)"$"#
+)]
 async fn create_pipe_instance_url(
     world: &mut StepWorld,
     deployment_hash: String,
@@ -197,7 +203,9 @@ async fn create_pipe_instance_url(
     }
 }
 
-#[when(regex = r#"^I create a pipe instance for deployment "(.+)" with source "(.+)" and target container "(.+)" linked to the stored template$"#)]
+#[when(
+    regex = r#"^I create a pipe instance for deployment "(.+)" with source "(.+)" and target container "(.+)" linked to the stored template$"#
+)]
 async fn create_pipe_instance_with_template(
     world: &mut StepWorld,
     deployment_hash: String,

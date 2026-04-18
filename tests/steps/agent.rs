@@ -55,7 +55,10 @@ async fn register_agent_raw(world: &mut StepWorld, body: &serde_json::Value) {
                 .stored_ids
                 .insert("agent_id".to_string(), agent_id.to_string());
         }
-        if let Some(token) = json.pointer("/data/item/agent_token").and_then(|v| v.as_str()) {
+        if let Some(token) = json
+            .pointer("/data/item/agent_token")
+            .and_then(|v| v.as_str())
+        {
             world
                 .stored_ids
                 .insert("agent_token".to_string(), token.to_string());
@@ -87,7 +90,9 @@ async fn then_has_agent_token(world: &mut StepWorld) {
 
 // ─── Command steps ───────────────────────────────────────────────
 
-#[when(regex = r#"^I create a command for deployment "(.+)" with type "(.+)" and priority "(.+)"$"#)]
+#[when(
+    regex = r#"^I create a command for deployment "(.+)" with type "(.+)" and priority "(.+)"$"#
+)]
 async fn create_command_with_priority(
     world: &mut StepWorld,
     deployment_hash: String,
@@ -100,9 +105,7 @@ async fn create_command_with_priority(
         "priority": priority,
         "timeout_seconds": 60
     });
-    world
-        .post_json("/api/v1/commands", &body)
-        .await;
+    world.post_json("/api/v1/commands", &body).await;
     store_command_id(world);
 }
 
@@ -128,9 +131,7 @@ async fn create_command_with_params(
         "parameters": params,
         "timeout_seconds": 60
     });
-    world
-        .post_json("/api/v1/commands", &body)
-        .await;
+    world.post_json("/api/v1/commands", &body).await;
     store_command_id(world);
 }
 
@@ -143,19 +144,14 @@ async fn create_command(world: &mut StepWorld, deployment_hash: String, cmd_type
         "priority": "normal",
         "timeout_seconds": 60
     });
-    world
-        .post_json("/api/v1/commands", &body)
-        .await;
+    world.post_json("/api/v1/commands", &body).await;
     store_command_id(world);
 }
 
 fn store_command_id(world: &mut StepWorld) {
     if let Some(ref json) = world.response_json {
         // Store command_id (string like "cmd_xxx")
-        if let Some(id) = json
-            .pointer("/item/command_id")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(id) = json.pointer("/item/command_id").and_then(|v| v.as_str()) {
             world
                 .stored_ids
                 .insert("command_id".to_string(), id.to_string());
@@ -233,10 +229,7 @@ async fn cancel_stored_command(world: &mut StepWorld, deployment_hash: String) {
 #[when(regex = r#"^I get the snapshot for deployment "(.+)"$"#)]
 async fn get_snapshot(world: &mut StepWorld, deployment_hash: String) {
     world
-        .get(&format!(
-            "/api/v1/agent/deployments/{}",
-            deployment_hash
-        ))
+        .get(&format!("/api/v1/agent/deployments/{}", deployment_hash))
         .await;
 }
 
@@ -290,10 +283,7 @@ async fn create_logs_invalid_limit(world: &mut StepWorld) {
 #[when(regex = r#"^I get command "([^"]+)" for deployment "([^"]+)"$"#)]
 async fn get_command_by_id(world: &mut StepWorld, cmd_id: String, deployment_hash: String) {
     world
-        .get(&format!(
-            "/api/v1/commands/{}/{}",
-            deployment_hash, cmd_id
-        ))
+        .get(&format!("/api/v1/commands/{}/{}", deployment_hash, cmd_id))
         .await;
 }
 
@@ -337,7 +327,12 @@ async fn enqueue_command(world: &mut StepWorld, deployment_hash: String, cmd_typ
 
 // ─── Audit steps ─────────────────────────────────────────────────
 
-async fn do_ingest(world: &mut StepWorld, installation_hash: &str, key: &str, events: serde_json::Value) {
+async fn do_ingest(
+    world: &mut StepWorld,
+    installation_hash: &str,
+    key: &str,
+    events: serde_json::Value,
+) {
     let url = format!("{}/api/v1/agent/audit", world.base_url);
     let body = json!({
         "installation_hash": installation_hash,
@@ -402,7 +397,11 @@ async fn query_audit(world: &mut StepWorld, installation_hash: String) {
 }
 
 #[when(regex = r#"^I query audit events for installation "([^"]+)" with event type "([^"]+)"$"#)]
-async fn query_audit_filtered(world: &mut StepWorld, installation_hash: String, event_type: String) {
+async fn query_audit_filtered(
+    world: &mut StepWorld,
+    installation_hash: String,
+    event_type: String,
+) {
     world
         .get(&format!(
             "/api/v1/agent/audit?installation_hash={}&event_type={}",

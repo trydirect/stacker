@@ -245,10 +245,7 @@ async fn then_each_step_has_field(world: &mut StepWorld, field: String) {
 
 #[then(regex = r#"^the response body should contain "([^"]+)"$"#)]
 async fn then_response_body_contains(world: &mut StepWorld, substring: String) {
-    let body = world
-        .response_body
-        .as_deref()
-        .unwrap_or("");
+    let body = world.response_body.as_deref().unwrap_or("");
     assert!(
         body.contains(&substring),
         "Expected response body to contain '{}', got: {}",
@@ -261,10 +258,7 @@ async fn then_response_body_contains(world: &mut StepWorld, substring: String) {
 
 #[then(regex = r#"^the response JSON at "([^"]+)" should have length (\d+)$"#)]
 async fn then_json_array_length(world: &mut StepWorld, path: String, expected: usize) {
-    let json = world
-        .response_json
-        .as_ref()
-        .expect("No JSON response");
+    let json = world.response_json.as_ref().expect("No JSON response");
     let arr = json
         .pointer(&path)
         .and_then(|v| v.as_array())

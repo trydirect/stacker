@@ -2,11 +2,11 @@ mod create;
 pub mod dag;
 mod delete;
 mod deploy;
-mod field_match;
-pub mod resilience;
 mod executions;
+mod field_match;
 mod get;
 mod list;
+pub mod resilience;
 pub mod stream;
 mod update;
 

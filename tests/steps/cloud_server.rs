@@ -71,9 +71,7 @@ async fn update_stored_cloud(world: &mut StepWorld, provider: String) {
         "user_id": "test-user-id",
         "save_token": false
     });
-    world
-        .put_json(&format!("/cloud/{}", cloud_id), &body)
-        .await;
+    world.put_json(&format!("/cloud/{}", cloud_id), &body).await;
 }
 
 #[when("I delete the stored cloud")]
@@ -100,9 +98,7 @@ async fn get_servers_for_project(world: &mut StepWorld) {
         .get("deployment_project_id")
         .expect("No stored deployment_project_id")
         .clone();
-    world
-        .get(&format!("/server/project/{}", project_id))
-        .await;
+    world.get(&format!("/server/project/{}", project_id)).await;
 }
 
 #[given("I have a test server")]
