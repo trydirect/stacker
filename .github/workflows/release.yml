@@ -33,6 +33,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+      - name: Fetch shared pipe fixtures
+        run: |
+          rm -rf "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          git clone --depth 1 --branch main https://github.com/trydirect/config.git "${GITHUB_WORKSPACE}/../config"
+          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
 
       - name: Install protoc
         run: |

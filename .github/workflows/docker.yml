@@ -26,6 +26,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+      - name: Fetch shared pipe fixtures
+        run: |
+          rm -rf "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          git clone --depth 1 --branch main https://github.com/trydirect/config.git "${GITHUB_WORKSPACE}/../config"
+          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
 
       - name: Install OpenSSL and protoc build deps
         if: runner.os == 'Linux'
@@ -163,6 +169,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+      - name: Fetch shared pipe fixtures
+        run: |
+          rm -rf "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          git clone --depth 1 --branch main https://github.com/trydirect/config.git "${GITHUB_WORKSPACE}/../config"
+          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
 
       -
         name: Set up QEMU
@@ -189,6 +201,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-contexts: |
+            shared_fixtures=${{ github.workspace }}/../config/shared-fixtures
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_tags.outputs.tags }}
 
@@ -229,4 +243,3 @@ jobs:
           file: ./stackerdb/Dockerfile
           push: true
           tags: ${{ steps.stackerdb_tags.outputs.tags }}
-

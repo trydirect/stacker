@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM rust:bookworm AS builder
 
 RUN apt-get update && apt-get install --no-install-recommends -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
@@ -5,6 +6,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y protobuf-compil
 RUN cargo install sqlx-cli
 
 WORKDIR /app
+COPY --from=shared_fixtures / /shared-fixtures
 # copy manifests
 COPY ./Cargo.toml .
 COPY ./Cargo.lock .
