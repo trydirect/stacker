@@ -1147,13 +1147,34 @@ fn build_local_probe_report(
     protocols: &[String],
     capture_samples: bool,
 ) -> ProbeEndpointsCommandReport {
+    build_local_probe_report_with_progress(
+        app_code,
+        containers,
+        protocols,
+        capture_samples,
+        |_, _, _| {},
+    )
+}
+
+fn build_local_probe_report_with_progress<F>(
+    app_code: &str,
+    containers: &[LocalContainerInfo],
+    protocols: &[String],
+    capture_samples: bool,
+    mut on_progress: F,
+) -> ProbeEndpointsCommandReport
+where
+    F: FnMut(usize, usize, &str),
+{
     let mut endpoints = Vec::new();
     let mut forms = Vec::new();
     let mut resources = Vec::new();
     let mut containers_out = Vec::new();
     let mut protocols_detected = BTreeSet::new();
+    let total = containers.len();
 
-    for container in containers {
+    for (index, container) in containers.iter().enumerate() {
+        on_progress(index + 1, total, &container.name);
         let (http_endpoints, http_forms, http_detected) =
             local_http_probe(container, protocols, capture_samples, 3);
         let (resource_items, resource_detected) = local_resource_probe(container, protocols);
@@ -1352,11 +1373,29 @@ impl PipeScanCommand {
         } else {
             self.protocols.clone()
         };
-        let report = build_local_probe_report(
+        let probe_pb = progress::spinner(&format!(
+            "{}Probing local containers (0/{})...",
+            prefix,
+            containers.len()
+        ));
+        let report = build_local_probe_report_with_progress(
             filter.unwrap_or("local"),
             &containers,
             &protocols,
             self.capture_samples,
+            |current, total, container| {
+                progress::update_message(
+                    &probe_pb,
+                    &format!(
+                        "{}Probing container {}/{}: {}",
+                        prefix, current, total, container
+                    ),
+                );
+            },
+        );
+        progress::finish_success(
+            &probe_pb,
+            &format!("{}Probe stage complete", prefix),
         );
 
         if self.json {
@@ -3232,5 +3271,52 @@ mod tests {
 
         assert!(pg_plan.iter().any(|item| item == "postgres"));
         assert!(rabbit_plan.iter().any(|item| item == "rabbitmq"));
+    }
+
+    #[test]
+    fn test_build_local_probe_report_emits_progress_for_each_container() {
+        let containers = vec![
+            LocalContainerInfo {
+                id: "one".to_string(),
+                name: "local-api-1".to_string(),
+                image: "example/api:latest".to_string(),
+                network: "syncopia".to_string(),
+                addresses: vec![],
+                ports: vec![],
+                status: "running".to_string(),
+                env: std::collections::BTreeMap::new(),
+                labels: std::collections::BTreeMap::new(),
+            },
+            LocalContainerInfo {
+                id: "two".to_string(),
+                name: "local-web-1".to_string(),
+                image: "example/web:latest".to_string(),
+                network: "syncopia".to_string(),
+                addresses: vec![],
+                ports: vec![],
+                status: "running".to_string(),
+                env: std::collections::BTreeMap::new(),
+                labels: std::collections::BTreeMap::new(),
+            },
+        ];
+
+        let mut seen = Vec::new();
+        let _ = build_local_probe_report_with_progress(
+            "local",
+            &containers,
+            &[],
+            false,
+            |current, total, container| {
+                seen.push((current, total, container.to_string()));
+            },
+        );
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 2, "local-api-1".to_string()),
+                (2, 2, "local-web-1".to_string())
+            ]
+        );
     }
 }

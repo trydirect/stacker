@@ -58,6 +58,7 @@ pub fn finish_error(pb: &ProgressBar, msg: &str) {
 /// Update the spinner message without stopping it.
 pub fn update_message(pb: &ProgressBar, msg: &str) {
     pb.set_message(msg.to_string());
+    pb.tick();
 }
 
 // ── Status icons ─────────────────────────────────────
