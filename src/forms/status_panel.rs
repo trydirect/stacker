@@ -583,13 +583,46 @@ pub fn validate_command_parameters(
                 );
             }
             // Validate trigger_type
-            let valid_triggers = ["webhook", "poll", "manual"];
+            let valid_triggers = [
+                "webhook",
+                "poll",
+                "manual",
+                "websocket",
+                "ws",
+                "grpc",
+                "amqp",
+                "rabbitmq",
+            ];
             if !valid_triggers.contains(&params.trigger_type.as_str()) {
                 return Err(format!(
                     "activate_pipe: trigger_type must be one of: {}; got '{}'",
                     valid_triggers.join(", "),
                     params.trigger_type
                 ));
+            }
+            if matches!(params.trigger_type.as_str(), "amqp" | "rabbitmq") {
+                if params
+                    .source_broker_url
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .is_none()
+                {
+                    return Err(
+                        "activate_pipe: source_broker_url is required for rabbitmq trigger_type"
+                            .to_string(),
+                    );
+                }
+                if params
+                    .source_queue
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .is_none()
+                {
+                    return Err(
+                        "activate_pipe: source_queue is required for rabbitmq trigger_type"
+                            .to_string(),
+                    );
+                }
             }
             // Validate poll_interval for poll trigger
             if params.trigger_type == "poll"
@@ -800,7 +833,17 @@ pub fn validate_command_result(
             }
 
             // Validate trigger_type if present
-            let valid_trigger_types = ["manual", "webhook", "poll", "replay"];
+            let valid_trigger_types = [
+                "manual",
+                "webhook",
+                "poll",
+                "replay",
+                "websocket",
+                "ws",
+                "grpc",
+                "amqp",
+                "rabbitmq",
+            ];
             if !valid_trigger_types.contains(&report.trigger_type.as_str()) {
                 return Err(format!(
                     "trigger_pipe: trigger_type must be one of: {}; got '{}'",
@@ -960,12 +1003,26 @@ pub struct ActivatePipeCommandRequest {
     /// UUID of the pipe instance to activate
     pub pipe_instance_id: String,
     /// Source container name
-    pub source_container: String,
+    #[serde(default)]
+    pub source_container: Option<String>,
     /// Source endpoint path to watch
+    #[serde(default = "default_pipe_source_endpoint")]
     pub source_endpoint: String,
     /// Source HTTP method (GET, POST, etc.)
     #[serde(default = "default_source_method")]
     pub source_method: String,
+    /// Broker URL for broker-backed source activation
+    #[serde(default)]
+    pub source_broker_url: Option<String>,
+    /// Broker queue for AMQP / RabbitMQ source activation
+    #[serde(default)]
+    pub source_queue: Option<String>,
+    /// Optional exchange to bind when consuming broker-backed sources
+    #[serde(default)]
+    pub source_exchange: Option<String>,
+    /// Optional routing key used when binding broker-backed sources
+    #[serde(default)]
+    pub source_routing_key: Option<String>,
     /// Target container name (for internal pipes)
     #[serde(default)]
     pub target_container: Option<String>,
@@ -973,12 +1030,14 @@ pub struct ActivatePipeCommandRequest {
     #[serde(default)]
     pub target_url: Option<String>,
     /// Target endpoint path
+    #[serde(default = "default_pipe_target_endpoint")]
     pub target_endpoint: String,
     /// Target HTTP method
     #[serde(default = "default_target_method")]
     pub target_method: String,
     /// Field mapping (JSONPath expressions)
-    pub field_mapping: serde_json::Value,
+    #[serde(default)]
+    pub field_mapping: Option<serde_json::Value>,
     /// Trigger type: "webhook", "poll", "manual"
     #[serde(default = "default_trigger_type")]
     pub trigger_type: String,
@@ -990,8 +1049,14 @@ pub struct ActivatePipeCommandRequest {
 fn default_source_method() -> String {
     "GET".to_string()
 }
+fn default_pipe_source_endpoint() -> String {
+    "/".to_string()
+}
 fn default_target_method() -> String {
     "POST".to_string()
+}
+fn default_pipe_target_endpoint() -> String {
+    "/".to_string()
 }
 fn default_trigger_type() -> String {
     "webhook".to_string()
@@ -1018,6 +1083,33 @@ pub struct TriggerPipeCommandRequest {
     /// Optional input data to feed into the pipe (overrides source fetch)
     #[serde(default)]
     pub input_data: Option<serde_json::Value>,
+    /// Optional source container override
+    #[serde(default)]
+    pub source_container: Option<String>,
+    /// Optional source endpoint override
+    #[serde(default = "default_pipe_source_endpoint")]
+    pub source_endpoint: String,
+    /// Optional source method override
+    #[serde(default = "default_source_method")]
+    pub source_method: String,
+    /// Optional external target override
+    #[serde(default)]
+    pub target_url: Option<String>,
+    /// Optional internal target override
+    #[serde(default)]
+    pub target_container: Option<String>,
+    /// Optional target endpoint override
+    #[serde(default = "default_pipe_target_endpoint")]
+    pub target_endpoint: String,
+    /// Optional target method override
+    #[serde(default = "default_target_method")]
+    pub target_method: String,
+    /// Optional field mapping override
+    #[serde(default)]
+    pub field_mapping: Option<serde_json::Value>,
+    /// Trigger type reported back by the agent
+    #[serde(default = "default_trigger_type_manual")]
+    pub trigger_type: String,
 }
 
 /// Result of a pipe activation
@@ -1027,12 +1119,23 @@ pub struct ActivatePipeCommandReport {
     pub command_type: String,
     pub deployment_hash: String,
     pub pipe_instance_id: String,
-    pub status: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub replaced: Option<bool>,
+    #[serde(default)]
+    pub reactivated: Option<bool>,
+    #[serde(default = "default_trigger_type")]
     pub trigger_type: String,
     /// Agent-assigned listener ID (for webhook type) or schedule ID (for poll type)
     #[serde(default)]
     pub listener_id: Option<String>,
-    pub activated_at: String,
+    #[serde(default)]
+    pub activated_at: Option<String>,
+    #[serde(default)]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 /// Result of a pipe deactivation
@@ -1042,8 +1145,16 @@ pub struct DeactivatePipeCommandReport {
     pub command_type: String,
     pub deployment_hash: String,
     pub pipe_instance_id: String,
-    pub status: String,
-    pub deactivated_at: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub removed: Option<bool>,
+    #[serde(default)]
+    pub deactivated_at: Option<String>,
+    #[serde(default)]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 /// Result of a pipe trigger (one-shot execution)
@@ -1070,11 +1181,51 @@ pub struct TriggerPipeCommandReport {
     /// Trigger type: manual, webhook, poll
     #[serde(default = "default_trigger_type_manual")]
     pub trigger_type: String,
+    #[serde(default)]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(path: &str) -> serde_json::Value {
+        let body = match path {
+            "activate_pipe.webhook.command.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/activate_pipe.webhook.command.json"
+            ),
+            "activate_pipe.rabbitmq.command.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/activate_pipe.rabbitmq.command.json"
+            ),
+            "deactivate_pipe.command.json" => {
+                include_str!("../../../shared-fixtures/pipe-contract/deactivate_pipe.command.json")
+            }
+            "trigger_pipe.manual.command.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/trigger_pipe.manual.command.json"
+            ),
+            "trigger_pipe.replay.command.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/trigger_pipe.replay.command.json"
+            ),
+            "activate_pipe.success.report.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/activate_pipe.success.report.json"
+            ),
+            "deactivate_pipe.success.report.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/deactivate_pipe.success.report.json"
+            ),
+            "trigger_pipe.success.report.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/trigger_pipe.success.report.json"
+            ),
+            "trigger_pipe.failure.report.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/trigger_pipe.failure.report.json"
+            ),
+            "trigger_pipe.replay.report.json" => include_str!(
+                "../../../shared-fixtures/pipe-contract/trigger_pipe.replay.report.json"
+            ),
+            other => panic!("unknown fixture: {}", other),
+        };
+
+        serde_json::from_str(body).expect("fixture should be valid json")
+    }
 
     #[test]
     fn health_parameters_apply_defaults() {
@@ -1530,6 +1681,24 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_accepts_shared_webhook_fixture() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(fixture("activate_pipe.webhook.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn activate_pipe_accepts_shared_rabbitmq_fixture() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(fixture("activate_pipe.rabbitmq.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn trigger_pipe_requires_instance_id() {
         let err =
             validate_command_parameters("trigger_pipe", &Some(json!({ "pipe_instance_id": "" })));
@@ -1548,12 +1717,41 @@ mod tests {
     }
 
     #[test]
+    fn trigger_pipe_accepts_shared_manual_fixture() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(fixture("trigger_pipe.manual.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_accepts_shared_replay_fixture() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(fixture("trigger_pipe.replay.command.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "replay");
+    }
+
+    #[test]
     fn deactivate_pipe_accepts_valid_params() {
         let result = validate_command_parameters(
             "deactivate_pipe",
             &Some(json!({
                 "pipe_instance_id": "abc-123"
             })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deactivate_pipe_accepts_shared_fixture() {
+        let result = validate_command_parameters(
+            "deactivate_pipe",
+            &Some(fixture("deactivate_pipe.command.json")),
         );
         assert!(result.is_ok());
     }
@@ -1576,6 +1774,19 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "activate_pipe",
+            "dep-123",
+            &Some(fixture("activate_pipe.success.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["active"], true);
+        assert_eq!(payload["lifecycle"]["state"], "active");
+    }
+
+    #[test]
     fn trigger_pipe_result_validates() {
         let result = validate_command_result(
             "trigger_pipe",
@@ -1589,6 +1800,19 @@ mod tests {
             })),
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deactivate_pipe_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "deactivate_pipe",
+            "dep-123",
+            &Some(fixture("deactivate_pipe.success.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["removed"], true);
+        assert_eq!(payload["lifecycle"]["state"], "inactive");
     }
 
     #[test]
@@ -1730,6 +1954,31 @@ mod tests {
     }
 
     #[test]
+    fn trigger_pipe_success_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.success.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["lifecycle"]["state"], "active");
+        assert_eq!(payload["target_response"]["transport"], "http");
+    }
+
+    #[test]
+    fn trigger_pipe_failure_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.failure.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["lifecycle"]["state"], "failed");
+    }
+
     #[test]
     fn trigger_pipe_result_rejects_invalid_trigger_type() {
         let result = validate_command_result(
@@ -1763,6 +2012,19 @@ mod tests {
             })),
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_replay_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.replay.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "replay");
+        assert_eq!(payload["lifecycle"]["trigger_count"], 2);
     }
 
     #[test]

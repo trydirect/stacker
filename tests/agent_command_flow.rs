@@ -6,6 +6,20 @@ use stacker::db;
 use stacker::models::{Command, CommandPriority};
 use std::time::Duration;
 
+fn fixture(path: &str) -> serde_json::Value {
+    let body = match path {
+        "activate_pipe.success.report.json" => {
+            include_str!("../../shared-fixtures/pipe-contract/activate_pipe.success.report.json")
+        }
+        "deactivate_pipe.success.report.json" => {
+            include_str!("../../shared-fixtures/pipe-contract/deactivate_pipe.success.report.json")
+        }
+        other => panic!("unknown fixture: {}", other),
+    };
+
+    serde_json::from_str(body).expect("fixture should be valid json")
+}
+
 async fn create_test_deployment(app: &common::TestApp, project_name: &str, deployment_hash: &str) {
     sqlx::query(
         "INSERT INTO project (stack_id, name, user_id, metadata, created_at, updated_at)
@@ -137,6 +151,38 @@ async fn queue_trigger_pipe_command(
     )
     .await
     .expect("Failed to queue trigger_pipe command");
+
+    command_id
+}
+
+async fn queue_pipe_command(
+    app: &common::TestApp,
+    deployment_hash: &str,
+    command_type: &str,
+    parameters: serde_json::Value,
+) -> String {
+    let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
+    let command = Command::new(
+        command_id.clone(),
+        deployment_hash.to_string(),
+        command_type.to_string(),
+        "test_user_id".to_string(),
+    )
+    .with_priority(CommandPriority::Normal)
+    .with_parameters(parameters);
+
+    let saved_command = db::command::insert(&app.db_pool, &command)
+        .await
+        .expect("Failed to save pipe command");
+
+    db::command::add_to_queue(
+        &app.db_pool,
+        &saved_command.command_id,
+        &saved_command.deployment_hash,
+        &CommandPriority::Normal,
+    )
+    .await
+    .expect("Failed to queue pipe command");
 
     command_id
 }
@@ -1327,4 +1373,152 @@ async fn test_replay_trigger_pipe_report_updates_existing_replay_execution() {
         replay_execution.2,
         Some(json!({"queued": true, "replayed": true}))
     );
+}
+
+#[tokio::test]
+async fn test_activate_pipe_report_accepts_runtime_lifecycle_shape() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = reqwest::Client::new();
+    let deployment_hash = format!("test_activate_pipe_deployment_{}", uuid::Uuid::new_v4());
+
+    create_test_deployment(&app, "test_activate_pipe_project", &deployment_hash).await;
+    let pipe_instance_id = create_pipe_instance(&app, &deployment_hash, "test_user_id").await;
+    let (agent_id, agent_token) = register_test_agent(&client, &app, &deployment_hash).await;
+
+    let command_id = queue_pipe_command(
+        &app,
+        &deployment_hash,
+        "activate_pipe",
+        json!({
+            "pipe_instance_id": pipe_instance_id.to_string(),
+            "target_url": "https://example.com",
+            "trigger_type": "webhook"
+        }),
+    )
+    .await;
+
+    let wait_result =
+        wait_for_command(&client, &app, &deployment_hash, &agent_id, &agent_token).await;
+    assert_eq!(
+        wait_result["item"]["command_id"].as_str(),
+        Some(command_id.as_str())
+    );
+    assert_eq!(wait_result["item"]["type"].as_str(), Some("activate_pipe"));
+
+    let mut report_result = fixture("activate_pipe.success.report.json");
+    report_result["pipe_instance_id"] = json!(pipe_instance_id.to_string());
+    report_result["deployment_hash"] = json!(deployment_hash.clone());
+
+    let report_payload = json!({
+        "command_id": command_id,
+        "deployment_hash": deployment_hash,
+        "status": "completed",
+        "executed_by": "compose_agent",
+        "started_at": Utc::now(),
+        "completed_at": Utc::now(),
+        "result": report_result
+    });
+
+    let report_response = client
+        .post(&format!("{}/api/v1/agent/commands/report", &app.address))
+        .header("X-Agent-Id", &agent_id)
+        .header("Authorization", format!("Bearer {}", agent_token))
+        .json(&report_payload)
+        .send()
+        .await
+        .expect("Failed to report activate_pipe command");
+
+    assert!(
+        report_response.status().is_success(),
+        "activate_pipe report failed: {}",
+        report_response.text().await.unwrap_or_default()
+    );
+
+    let stored_result: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT result FROM commands WHERE command_id = $1")
+            .bind(&command_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch activate_pipe stored result");
+
+    let stored_result = stored_result.expect("activate_pipe result should be stored");
+    assert_eq!(stored_result["active"], true);
+    assert_eq!(stored_result["trigger_type"], "webhook");
+    assert_eq!(stored_result["lifecycle"]["state"], "active");
+}
+
+#[tokio::test]
+async fn test_deactivate_pipe_report_accepts_runtime_lifecycle_shape() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = reqwest::Client::new();
+    let deployment_hash = format!("test_deactivate_pipe_deployment_{}", uuid::Uuid::new_v4());
+
+    create_test_deployment(&app, "test_deactivate_pipe_project", &deployment_hash).await;
+    let pipe_instance_id = create_pipe_instance(&app, &deployment_hash, "test_user_id").await;
+    let (agent_id, agent_token) = register_test_agent(&client, &app, &deployment_hash).await;
+
+    let command_id = queue_pipe_command(
+        &app,
+        &deployment_hash,
+        "deactivate_pipe",
+        json!({
+            "pipe_instance_id": pipe_instance_id.to_string()
+        }),
+    )
+    .await;
+
+    let wait_result =
+        wait_for_command(&client, &app, &deployment_hash, &agent_id, &agent_token).await;
+    assert_eq!(
+        wait_result["item"]["command_id"].as_str(),
+        Some(command_id.as_str())
+    );
+    assert_eq!(wait_result["item"]["type"].as_str(), Some("deactivate_pipe"));
+
+    let mut report_result = fixture("deactivate_pipe.success.report.json");
+    report_result["pipe_instance_id"] = json!(pipe_instance_id.to_string());
+    report_result["deployment_hash"] = json!(deployment_hash.clone());
+
+    let report_payload = json!({
+        "command_id": command_id,
+        "deployment_hash": deployment_hash,
+        "status": "completed",
+        "executed_by": "compose_agent",
+        "started_at": Utc::now(),
+        "completed_at": Utc::now(),
+        "result": report_result
+    });
+
+    let report_response = client
+        .post(&format!("{}/api/v1/agent/commands/report", &app.address))
+        .header("X-Agent-Id", &agent_id)
+        .header("Authorization", format!("Bearer {}", agent_token))
+        .json(&report_payload)
+        .send()
+        .await
+        .expect("Failed to report deactivate_pipe command");
+
+    assert!(
+        report_response.status().is_success(),
+        "deactivate_pipe report failed: {}",
+        report_response.text().await.unwrap_or_default()
+    );
+
+    let stored_result: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT result FROM commands WHERE command_id = $1")
+            .bind(&command_id)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to fetch deactivate_pipe stored result");
+
+    let stored_result = stored_result.expect("deactivate_pipe result should be stored");
+    assert_eq!(stored_result["active"], false);
+    assert_eq!(stored_result["removed"], true);
+    assert_eq!(stored_result["lifecycle"]["state"], "inactive");
 }

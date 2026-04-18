@@ -21,6 +21,7 @@ pub struct CapabilityFeatures {
     pub kata_runtime: bool,
     pub compose: bool,
     pub backup: bool,
+    pub pipes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -94,6 +95,27 @@ const COMMAND_CATALOG: &[CommandMetadata] = &[
         label: "Backup",
         icon: "fas fa-download",
     },
+    CommandMetadata {
+        command_type: "activate_pipe",
+        requires: "pipes",
+        scope: "deployment",
+        label: "Activate Pipe",
+        icon: "fas fa-play-circle",
+    },
+    CommandMetadata {
+        command_type: "deactivate_pipe",
+        requires: "pipes",
+        scope: "deployment",
+        label: "Deactivate Pipe",
+        icon: "fas fa-stop-circle",
+    },
+    CommandMetadata {
+        command_type: "trigger_pipe",
+        requires: "pipes",
+        scope: "deployment",
+        label: "Trigger Pipe",
+        icon: "fas fa-bolt",
+    },
 ];
 
 #[tracing::instrument(name = "Get agent capabilities", skip_all)]
@@ -127,6 +149,7 @@ fn build_capabilities_payload(
                 kata_runtime: capabilities.iter().any(|c| c == "kata"),
                 compose: capabilities.iter().any(|c| c == "compose"),
                 backup: capabilities.iter().any(|c| c == "backup"),
+                pipes: capabilities.iter().any(|c| c == "pipes"),
             };
 
             CapabilitiesResponse {
@@ -223,6 +246,7 @@ mod tests {
         assert!(payload.features.kata_runtime);
         assert!(!payload.features.compose);
         assert!(!payload.features.backup);
+        assert!(!payload.features.pipes);
     }
 
     #[test]
@@ -240,5 +264,21 @@ mod tests {
         assert!(!payload.features.kata_runtime);
         assert!(!payload.features.compose);
         assert!(!payload.features.backup);
+        assert!(!payload.features.pipes);
+    }
+
+    #[test]
+    fn pipe_capabilities_surface_pipe_commands() {
+        let mut agent = Agent::new("hash".to_string());
+        agent.capabilities = Some(serde_json::json!(["pipes"]));
+
+        let payload = build_capabilities_payload("hash".to_string(), Some(agent));
+        let command_types: HashSet<&str> =
+            payload.commands.iter().map(|c| c.command_type.as_str()).collect();
+
+        assert!(payload.features.pipes);
+        assert!(command_types.contains("activate_pipe"));
+        assert!(command_types.contains("deactivate_pipe"));
+        assert!(command_types.contains("trigger_pipe"));
     }
 }

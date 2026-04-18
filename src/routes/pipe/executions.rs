@@ -7,6 +7,14 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+fn build_replay_trigger_params(original: &PipeExecution) -> serde_json::Value {
+    serde_json::json!({
+        "pipe_instance_id": original.pipe_instance_id.to_string(),
+        "input_data": original.source_data,
+        "trigger_type": "replay"
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
     #[serde(default = "default_limit")]
@@ -150,10 +158,7 @@ pub async fn replay_execution_handler(
 
     // Enqueue trigger_pipe command (only for remote pipes with a deployment)
     let command_id = if let Some(hash) = &instance.deployment_hash {
-        let trigger_params = serde_json::json!({
-            "pipe_instance_id": original.pipe_instance_id.to_string(),
-            "input_data": original.source_data,
-        });
+        let trigger_params = build_replay_trigger_params(&original);
 
         let command_id_str = format!("cmd_{}", uuid::Uuid::new_v4());
         let command = Command::new(
@@ -198,4 +203,28 @@ pub async fn replay_execution_handler(
             "status": replay_execution.status,
         })))
         .ok("Replay initiated"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_trigger_params_mark_replay_trigger_type() {
+        let execution = PipeExecution::new(
+            uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            Some("dep-123".to_string()),
+            "manual".to_string(),
+            "user-1".to_string(),
+        )
+        .complete_success(
+            serde_json::json!({ "invoice_id": "inv-replay" }),
+            serde_json::json!({ "customer_id": "cust-1" }),
+            serde_json::json!({ "queued": true }),
+        );
+
+        let params = build_replay_trigger_params(&execution);
+        assert_eq!(params["trigger_type"], "replay");
+        assert_eq!(params["input_data"]["invoice_id"], "inv-replay");
+    }
 }
