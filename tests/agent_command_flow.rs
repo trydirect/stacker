@@ -1479,7 +1479,10 @@ async fn test_deactivate_pipe_report_accepts_runtime_lifecycle_shape() {
         wait_result["item"]["command_id"].as_str(),
         Some(command_id.as_str())
     );
-    assert_eq!(wait_result["item"]["type"].as_str(), Some("deactivate_pipe"));
+    assert_eq!(
+        wait_result["item"]["type"].as_str(),
+        Some("deactivate_pipe")
+    );
 
     let mut report_result = fixture("deactivate_pipe.success.report.json");
     report_result["pipe_instance_id"] = json!(pipe_instance_id.to_string());

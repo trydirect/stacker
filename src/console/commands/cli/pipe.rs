@@ -1393,10 +1393,7 @@ impl PipeScanCommand {
                 );
             },
         );
-        progress::finish_success(
-            &probe_pb,
-            &format!("{}Probe stage complete", prefix),
-        );
+        progress::finish_success(&probe_pb, &format!("{}Probe stage complete", prefix));
 
         if self.json {
             println!("{}", serde_json::to_string_pretty(&report)?);

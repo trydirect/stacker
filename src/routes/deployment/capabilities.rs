@@ -273,8 +273,11 @@ mod tests {
         agent.capabilities = Some(serde_json::json!(["pipes"]));
 
         let payload = build_capabilities_payload("hash".to_string(), Some(agent));
-        let command_types: HashSet<&str> =
-            payload.commands.iter().map(|c| c.command_type.as_str()).collect();
+        let command_types: HashSet<&str> = payload
+            .commands
+            .iter()
+            .map(|c| c.command_type.as_str())
+            .collect();
 
         assert!(payload.features.pipes);
         assert!(command_types.contains("activate_pipe"));

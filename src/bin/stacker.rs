@@ -993,7 +993,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(());
                 }
                 ErrorKind::DisplayVersion => {
-                    err.print()?;
+                    println!("{}", stacker::version::display_version());
                     return Ok(());
                 }
                 _ => {
