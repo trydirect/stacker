@@ -45,8 +45,9 @@ jobs:
           token: ${{ secrets.CONFIG_REPO_TOKEN != '' && secrets.CONFIG_REPO_TOKEN || secrets.GITHUB_TOKEN }}
       - name: Link shared pipe fixtures
         run: |
-          ln -sfn "${GITHUB_WORKSPACE}/.ci/config" "${GITHUB_WORKSPACE}/../config"
-          ln -sfn "${GITHUB_WORKSPACE}/.ci/config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
+          mkdir -p "${GITHUB_WORKSPACE}/../config"
+          cp -a "${GITHUB_WORKSPACE}/.ci/config/." "${GITHUB_WORKSPACE}/../config/"
+          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
           test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
 
       - name: Install protoc
