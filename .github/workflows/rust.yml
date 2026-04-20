@@ -31,22 +31,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - name: Prepare shared pipe fixtures
-        run: |
-          rm -rf "${GITHUB_WORKSPACE}/.ci/config" "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
-      - name: Checkout shared fixture repo
-        uses: actions/checkout@v6
-        with:
-          repository: trydirect/config
-          ref: main
-          path: .ci/config
-          token: ${{ secrets.CONFIG_REPO_TOKEN != '' && secrets.CONFIG_REPO_TOKEN || secrets.GITHUB_TOKEN }}
-      - name: Link shared pipe fixtures
-        run: |
-          mkdir -p "${GITHUB_WORKSPACE}/../config"
-          cp -a "${GITHUB_WORKSPACE}/.ci/config/." "${GITHUB_WORKSPACE}/../config/"
-          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
       - name: Install protoc
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -114,22 +98,6 @@ jobs:
       SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare shared pipe fixtures
-        run: |
-          rm -rf "${GITHUB_WORKSPACE}/.ci/config" "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
-      - name: Checkout shared fixture repo
-        uses: actions/checkout@v6
-        with:
-          repository: trydirect/config
-          ref: main
-          path: .ci/config
-          token: ${{ secrets.CONFIG_REPO_TOKEN != '' && secrets.CONFIG_REPO_TOKEN || secrets.GITHUB_TOKEN }}
-      - name: Link shared pipe fixtures
-        run: |
-          mkdir -p "${GITHUB_WORKSPACE}/../config"
-          cp -a "${GITHUB_WORKSPACE}/.ci/config/." "${GITHUB_WORKSPACE}/../config/"
-          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install Rust toolchain
