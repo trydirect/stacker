@@ -102,7 +102,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
@@ -110,6 +110,10 @@ jobs:
           --health-retries 5
     env:
       SQLX_OFFLINE: true
+      PGHOST: 127.0.0.1
+      PGPORT: ${{ job.services.postgres.ports[5432] }}
+      PGUSER: postgres
+      PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@v4
       - name: Install protoc
@@ -117,7 +121,7 @@ jobs:
       - name: Wait for PostgreSQL
         run: |
           for _ in $(seq 1 60); do
-            if bash -lc 'exec 3<>/dev/tcp/127.0.0.1/5432' 2>/dev/null; then
+            if bash -lc "exec 3<>/dev/tcp/${PGHOST}/${PGPORT}" 2>/dev/null; then
               exit 0
             fi
             sleep 1
