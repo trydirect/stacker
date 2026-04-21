@@ -24,5 +24,8 @@ async fn middleware_trydirect_works() {
         .expect("Failed to execute request.");
 
     assert!(response.status().is_success());
-    assert_eq!(Some(0), response.content_length());
+    assert!(
+        response.content_length().unwrap_or(0) > 0,
+        "health_check should return a non-empty JSON body"
+    );
 }
