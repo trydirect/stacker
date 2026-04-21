@@ -83,6 +83,9 @@ fn env_lock() -> &'static Mutex<()> {
 
 #[tokio::test]
 async fn admin_can_mark_template_needs_changes_and_creator_can_see_reason() {
+    // Hold env_lock to prevent concurrent webhook-triggering tests from cross-contaminating
+    // each other's mock servers via shared env vars (URL_SERVER_USER etc.)
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
@@ -187,7 +190,7 @@ async fn admin_cannot_mark_approved_template_as_needs_changes() {
 
 #[tokio::test]
 async fn admin_approval_sends_template_published_webhook() {
-    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
@@ -252,7 +255,7 @@ async fn admin_approval_sends_template_published_webhook() {
 
 #[tokio::test]
 async fn admin_rejection_sends_template_review_rejected_webhook() {
-    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
@@ -320,7 +323,7 @@ async fn admin_rejection_sends_template_review_rejected_webhook() {
 
 #[tokio::test]
 async fn admin_unapprove_sends_template_unpublished_webhook() {
-    let _env_lock = env_lock().lock().expect("env lock should be available");
+    let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
