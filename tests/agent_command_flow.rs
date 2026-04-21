@@ -961,6 +961,10 @@ async fn test_authenticated_command_creation() {
         403,
         "Should return 403 without authentication"
     );
+    // Drain the response body so hyper closes the connection cleanly before reuse.
+    // Without this, a server-side Connection: close on the 403 can leave the pooled
+    // connection in a half-closed state, causing IncompleteMessage on the next request.
+    let _ = response_no_auth.bytes().await;
 
     println!("\n=== Test 2: Command creation with authentication (should succeed) ===");
     let response_with_auth = client
