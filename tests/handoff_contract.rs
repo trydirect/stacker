@@ -2,13 +2,14 @@ use chrono::{Duration, TimeZone, Utc};
 use serde_json::json;
 use stacker::handoff::{
     DeploymentHandoffAgent, DeploymentHandoffCloud, DeploymentHandoffCredentials,
-    DeploymentHandoffDeployment, DeploymentHandoffLink, DeploymentHandoffPayload,
-    DeploymentHandoffProject, DeploymentHandoffServer,
+    DeploymentHandoffDeployment, DeploymentHandoffKind, DeploymentHandoffLink,
+    DeploymentHandoffPayload, DeploymentHandoffProject, DeploymentHandoffServer,
 };
 
 #[test]
 fn handoff_payload_serializes_expected_contract() {
     let payload = DeploymentHandoffPayload {
+        kind: DeploymentHandoffKind::Deployment,
         version: 1,
         expires_at: Utc.with_ymd_and_hms(2026, 4, 12, 10, 0, 0).unwrap(),
         project: DeploymentHandoffProject {
@@ -55,6 +56,7 @@ fn handoff_payload_serializes_expected_contract() {
 
     let value = serde_json::to_value(&payload).expect("payload should serialize");
 
+    assert_eq!(value["kind"], "deployment");
     assert_eq!(value["version"], 1);
     assert_eq!(value["project"]["id"], 42);
     assert_eq!(value["deployment"]["target"], "cloud");
@@ -68,13 +70,13 @@ fn handoff_payload_serializes_expected_contract() {
 #[test]
 fn handoff_link_reports_expiry_against_reference_time() {
     let issued_at = Utc.with_ymd_and_hms(2026, 4, 12, 9, 0, 0).unwrap();
-    let expires_at = issued_at + Duration::minutes(15);
+    let expires_at = issued_at + Duration::hours(2);
     let link = DeploymentHandoffLink {
         token: "abc".to_string(),
         url: "https://dev.try.direct/handoff/abc".to_string(),
         expires_at,
     };
 
-    assert!(!link.is_expired_at(issued_at + Duration::minutes(10)));
-    assert!(link.is_expired_at(issued_at + Duration::minutes(16)));
+    assert!(!link.is_expired_at(issued_at + Duration::minutes(119)));
+    assert!(link.is_expired_at(issued_at + Duration::minutes(121)));
 }

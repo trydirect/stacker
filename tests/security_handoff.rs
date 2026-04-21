@@ -2,6 +2,7 @@
 
 mod common;
 
+use chrono::{DateTime, Duration, Utc};
 use common::{
     create_test_deployment, create_test_project, spawn_app_two_users,
     spawn_app_two_users_with_user_service, USER_A_ID, USER_A_TOKEN, USER_B_TOKEN,
@@ -39,8 +40,20 @@ async fn test_owner_can_mint_and_resolve_handoff() {
     let command = minted["item"]["command"]
         .as_str()
         .expect("Mint response should include CLI command");
+    let expires_at = DateTime::parse_from_rfc3339(
+        minted["item"]["expires_at"]
+            .as_str()
+            .expect("Mint response should include expires_at"),
+    )
+    .expect("expires_at should be valid RFC3339")
+    .with_timezone(&Utc);
     assert!(command.contains("stacker connect"));
     assert!(command.contains(token));
+    assert!(
+        expires_at >= Utc::now() + Duration::minutes(119)
+            && expires_at <= Utc::now() + Duration::minutes(121),
+        "Minted handoff should expire about two hours after mint, got {expires_at}"
+    );
 
     let resolve = client
         .post(format!("{}/api/v1/handoff/resolve", &app.address))
@@ -51,6 +64,7 @@ async fn test_owner_can_mint_and_resolve_handoff() {
 
     assert_eq!(resolve.status(), 200, "Resolve should succeed");
     let resolved: serde_json::Value = resolve.json().await.expect("Resolve response must be json");
+    assert_eq!(resolved["item"]["kind"], "deployment");
     assert_eq!(resolved["item"]["deployment"]["id"], deployment_id);
     assert_eq!(resolved["item"]["deployment"]["hash"], "handoff-dep-001");
     assert_eq!(resolved["item"]["project"]["id"], project_id);
@@ -58,6 +72,49 @@ async fn test_owner_can_mint_and_resolve_handoff() {
         resolved["item"]["credentials"]["access_token"],
         USER_A_TOKEN
     );
+}
+
+#[tokio::test]
+async fn test_authenticated_user_can_mint_and_resolve_account_handoff() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let mint = client
+        .post(format!("{}/api/v1/handoff/mint/account", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .expect("Failed to mint account handoff");
+
+    assert_eq!(mint.status(), 200, "Account handoff mint should succeed");
+    let minted: serde_json::Value = mint.json().await.expect("Mint response must be json");
+    let token = minted["item"]["token"]
+        .as_str()
+        .expect("Mint response should include handoff token");
+
+    let resolve = client
+        .post(format!("{}/api/v1/handoff/resolve", &app.address))
+        .json(&serde_json::json!({ "token": token }))
+        .send()
+        .await
+        .expect("Failed to resolve account handoff");
+
+    assert_eq!(
+        resolve.status(),
+        200,
+        "Account handoff resolve should succeed"
+    );
+    let resolved: serde_json::Value = resolve.json().await.expect("Resolve response must be json");
+    assert_eq!(resolved["item"]["kind"], "account");
+    assert_eq!(resolved["item"]["deployment"]["target"], "account");
+    assert_eq!(
+        resolved["item"]["credentials"]["access_token"],
+        USER_A_TOKEN
+    );
+    assert!(resolved["item"]["stacker_yml"].is_null());
+    assert!(resolved["item"]["server"].is_null());
 }
 
 #[tokio::test]

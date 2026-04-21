@@ -254,6 +254,7 @@ pub async fn run(
                     .service(
                         web::scope("/v1/handoff")
                             .service(routes::handoff::mint_handler)
+                            .service(routes::handoff::mint_account_handler)
                             .service(routes::handoff::resolve_handler),
                     )
                     .service(

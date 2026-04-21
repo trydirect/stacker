@@ -1,6 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentHandoffKind {
+    #[default]
+    Deployment,
+    Account,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentHandoffProject {
     pub id: i32,
@@ -57,6 +65,8 @@ pub struct DeploymentHandoffCredentials {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentHandoffPayload {
+    #[serde(default)]
+    pub kind: DeploymentHandoffKind,
     pub version: u32,
     pub expires_at: DateTime<Utc>,
     pub project: DeploymentHandoffProject,
@@ -72,6 +82,12 @@ pub struct DeploymentHandoffPayload {
     pub agent: Option<DeploymentHandoffAgent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<DeploymentHandoffCredentials>,
+}
+
+impl DeploymentHandoffPayload {
+    pub fn is_account_scoped(&self) -> bool {
+        self.kind == DeploymentHandoffKind::Account
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

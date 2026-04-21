@@ -1,15 +1,19 @@
-use crate::cli::credentials::{CredentialsManager, FileCredentialStore, StoredCredentials};
+use crate::cli::config_parser::StackerConfig;
+use crate::cli::credentials::{
+    CredentialStore, CredentialsManager, FileCredentialStore, StoredCredentials,
+};
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::{StackerClient, DEFAULT_STACKER_URL};
+use crate::console::commands::cli::init::{generate_config, DEFAULT_CONFIG_FILE};
 use crate::console::commands::CallableTrait;
 use crate::handoff::{
     DeploymentHandoffCredentials, DeploymentHandoffPayload, DeploymentHandoffProject,
 };
 use chrono::{DateTime, Utc};
+use dialoguer::Confirm;
+use std::io::{self, IsTerminal};
 use std::path::Path;
-
-const DEFAULT_STACKER_YML: &str = "stacker.yml";
 
 pub struct ConnectCommand {
     pub handoff: String,
@@ -25,6 +29,7 @@ impl CallableTrait for ConnectCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let token = extract_handoff_token(&self.handoff)?;
         let base_url = extract_handoff_base_url(&self.handoff);
+        let project_dir = std::env::current_dir()?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -32,13 +37,52 @@ impl CallableTrait for ConnectCommand {
                 CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
             })?;
         let payload = rt.block_on(StackerClient::resolve_handoff(&base_url, &token))?;
+        let is_account_scoped = payload.is_account_scoped();
+        let deployment_hash = payload.deployment.hash.clone();
 
-        hydrate_project_dir(std::env::current_dir()?.as_path(), &payload)?;
-        eprintln!(
-            "✓ Connected deployment {} to this directory",
-            payload.deployment.hash
-        );
-        eprintln!("  You can now run: stacker status");
+        hydrate_project_dir(project_dir.as_path(), &payload)?;
+        if is_account_scoped {
+            eprintln!("✓ Signed in to Stacker CLI");
+            match maybe_bootstrap_account_project_dir(project_dir.as_path()) {
+                Ok(AccountBootstrapOutcome::ExistingConfig(path)) => {
+                    eprintln!("  Found existing {}", path.display());
+                    eprintln!("  You can now run: stacker deploy");
+                }
+                Ok(AccountBootstrapOutcome::CreatedConfig(path)) => {
+                    match StackerConfig::from_file(&path) {
+                        Ok(config) => {
+                            eprintln!(
+                                "  Created {} for the detected {} project",
+                                path.display(),
+                                config.app.app_type
+                            );
+                            eprintln!("  Review the generated config, then run: stacker deploy");
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "  Created {}, but failed to re-read it: {}",
+                                path.display(),
+                                err
+                            );
+                            eprintln!("  Review the file, then run: stacker deploy");
+                        }
+                    }
+                }
+                Ok(AccountBootstrapOutcome::Skipped) => {
+                    eprintln!("  You can now run: stacker init");
+                }
+                Err(err) => {
+                    eprintln!("  Automatic project bootstrap skipped: {}", err);
+                    eprintln!("  You can still run: stacker init");
+                }
+            }
+        } else {
+            eprintln!(
+                "✓ Connected deployment {} to this directory",
+                deployment_hash
+            );
+            eprintln!("  You can now run: stacker status");
+        }
         Ok(())
     }
 }
@@ -91,12 +135,28 @@ fn hydrate_project_dir(
     project_dir: &Path,
     payload: &DeploymentHandoffPayload,
 ) -> Result<(), CliError> {
+    let manager = CredentialsManager::<FileCredentialStore>::with_default_store();
+    hydrate_project_dir_with_manager(project_dir, payload, &manager)
+}
+
+fn hydrate_project_dir_with_manager<S: CredentialStore>(
+    project_dir: &Path,
+    payload: &DeploymentHandoffPayload,
+    manager: &CredentialsManager<S>,
+) -> Result<(), CliError> {
+    if payload.is_account_scoped() {
+        let credentials = payload.credentials.as_ref().ok_or_else(|| {
+            CliError::ConfigValidation("Account handoff payload missing credentials".to_string())
+        })?;
+        return save_handoff_credentials_with_manager(manager, credentials);
+    }
+
     let lock: DeploymentLock = serde_json::from_value(payload.lockfile.clone()).map_err(|e| {
         CliError::ConfigValidation(format!("Invalid deployment lock in handoff payload: {}", e))
     })?;
     lock.save(project_dir)?;
 
-    let stacker_yml_path = project_dir.join(DEFAULT_STACKER_YML);
+    let stacker_yml_path = project_dir.join(DEFAULT_CONFIG_FILE);
     if !stacker_yml_path.exists() {
         let contents = payload.stacker_yml.clone().unwrap_or_else(|| {
             render_default_stacker_yml(&payload.project, &payload.deployment.hash)
@@ -105,7 +165,7 @@ fn hydrate_project_dir(
     }
 
     if let Some(credentials) = payload.credentials.as_ref() {
-        save_handoff_credentials(credentials)?;
+        save_handoff_credentials_with_manager(manager, credentials)?;
     }
 
     Ok(())
@@ -126,8 +186,10 @@ fn yaml_string(value: &str) -> String {
         .unwrap_or_else(|_| format!("{:?}", value))
 }
 
-fn save_handoff_credentials(credentials: &DeploymentHandoffCredentials) -> Result<(), CliError> {
-    let manager = CredentialsManager::<FileCredentialStore>::with_default_store();
+fn save_handoff_credentials_with_manager<S: CredentialStore>(
+    manager: &CredentialsManager<S>,
+    credentials: &DeploymentHandoffCredentials,
+) -> Result<(), CliError> {
     let stored = StoredCredentials {
         access_token: credentials.access_token.clone(),
         refresh_token: None,
@@ -145,10 +207,58 @@ fn identity_expiry(expires_at: DateTime<Utc>) -> DateTime<Utc> {
     expires_at
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AccountBootstrapOutcome {
+    ExistingConfig(std::path::PathBuf),
+    CreatedConfig(std::path::PathBuf),
+    Skipped,
+}
+
+fn maybe_bootstrap_account_project_dir(
+    project_dir: &Path,
+) -> Result<AccountBootstrapOutcome, CliError> {
+    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+    if config_path.exists() {
+        return Ok(AccountBootstrapOutcome::ExistingConfig(config_path));
+    }
+
+    if !io::stdin().is_terminal() {
+        return Ok(AccountBootstrapOutcome::Skipped);
+    }
+
+    let create_config = Confirm::new()
+        .with_prompt("No stacker.yml found. Create one now using detected project defaults?")
+        .default(true)
+        .interact()
+        .map_err(|e| CliError::ConfigValidation(format!("Prompt error: {}", e)))?;
+
+    bootstrap_account_project_dir(project_dir, create_config)
+}
+
+fn bootstrap_account_project_dir(
+    project_dir: &Path,
+    create_config: bool,
+) -> Result<AccountBootstrapOutcome, CliError> {
+    let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+    if config_path.exists() {
+        return Ok(AccountBootstrapOutcome::ExistingConfig(config_path));
+    }
+
+    if !create_config {
+        return Ok(AccountBootstrapOutcome::Skipped);
+    }
+
+    let created_path = generate_config(project_dir, None, false, false)?;
+    Ok(AccountBootstrapOutcome::CreatedConfig(created_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handoff::{DeploymentHandoffDeployment, DeploymentHandoffPayload};
+    use crate::cli::credentials::FileCredentialStore;
+    use crate::handoff::{
+        DeploymentHandoffDeployment, DeploymentHandoffKind, DeploymentHandoffPayload,
+    };
     use chrono::Duration;
     use tempfile::TempDir;
 
@@ -162,7 +272,12 @@ mod tests {
     #[test]
     fn hydrates_project_dir_from_payload() {
         let temp_dir = TempDir::new().unwrap();
+        let config_home = TempDir::new().unwrap();
+        let manager = CredentialsManager::new(FileCredentialStore::new(
+            config_home.path().join("stacker").join("credentials.json"),
+        ));
         let payload = DeploymentHandoffPayload {
+            kind: DeploymentHandoffKind::Deployment,
             version: 1,
             expires_at: Utc::now() + Duration::minutes(5),
             project: DeploymentHandoffProject {
@@ -201,11 +316,83 @@ mod tests {
             }),
         };
 
-        hydrate_project_dir(temp_dir.path(), &payload).unwrap();
+        hydrate_project_dir_with_manager(temp_dir.path(), &payload, &manager).unwrap();
 
         assert!(temp_dir.path().join("stacker.yml").exists());
         let lock = DeploymentLock::load(temp_dir.path()).unwrap().unwrap();
         assert_eq!(lock.deployment_id, Some(12));
         assert_eq!(lock.project_name.as_deref(), Some("demo"));
+    }
+
+    #[test]
+    fn account_scoped_handoff_skips_project_hydration() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_home = TempDir::new().unwrap();
+        let store_path = config_home.path().join("stacker").join("credentials.json");
+        let manager = CredentialsManager::new(FileCredentialStore::new(store_path.clone()));
+        let payload = DeploymentHandoffPayload {
+            kind: DeploymentHandoffKind::Account,
+            version: 1,
+            expires_at: Utc::now() + Duration::hours(2),
+            project: DeploymentHandoffProject {
+                id: 0,
+                name: "user@example.com".to_string(),
+                identity: Some("user@example.com".to_string()),
+            },
+            deployment: DeploymentHandoffDeployment {
+                id: 0,
+                hash: String::new(),
+                target: "account".to_string(),
+                status: "ready".to_string(),
+            },
+            server: None,
+            cloud: None,
+            lockfile: serde_json::json!({}),
+            stacker_yml: None,
+            agent: None,
+            credentials: Some(DeploymentHandoffCredentials {
+                access_token: "token-1".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_at: Utc::now() + Duration::hours(4),
+                email: Some("demo@example.com".to_string()),
+                server_url: Some("https://stacker.try.direct".to_string()),
+            }),
+        };
+
+        hydrate_project_dir_with_manager(temp_dir.path(), &payload, &manager).unwrap();
+
+        assert!(!temp_dir.path().join("stacker.yml").exists());
+        assert!(DeploymentLock::load(temp_dir.path()).unwrap().is_none());
+        assert!(store_path.exists());
+    }
+
+    #[test]
+    fn bootstrap_account_project_creates_config_when_requested() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("package.json"), "{}").unwrap();
+
+        let outcome = bootstrap_account_project_dir(temp_dir.path(), true).unwrap();
+
+        let config_path = temp_dir.path().join(DEFAULT_CONFIG_FILE);
+        assert_eq!(
+            outcome,
+            AccountBootstrapOutcome::CreatedConfig(config_path.clone())
+        );
+        let config = StackerConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.app.app_type.to_string(), "node");
+    }
+
+    #[test]
+    fn bootstrap_account_project_keeps_existing_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join(DEFAULT_CONFIG_FILE);
+        std::fs::write(&config_path, "name: demo\napp:\n  type: static\n").unwrap();
+
+        let outcome = bootstrap_account_project_dir(temp_dir.path(), true).unwrap();
+
+        assert_eq!(
+            outcome,
+            AccountBootstrapOutcome::ExistingConfig(config_path)
+        );
     }
 }

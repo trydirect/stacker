@@ -1,5 +1,5 @@
 use actix_web::{post, web, Responder, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -9,9 +9,9 @@ use crate::configuration::Settings;
 use crate::db;
 use crate::handoff::{
     DeploymentHandoffAgent, DeploymentHandoffCloud, DeploymentHandoffCredentials,
-    DeploymentHandoffDeployment, DeploymentHandoffLink, DeploymentHandoffMintRequest,
-    DeploymentHandoffMintResponse, DeploymentHandoffPayload, DeploymentHandoffProject,
-    DeploymentHandoffResolveRequest, DeploymentHandoffServer,
+    DeploymentHandoffDeployment, DeploymentHandoffKind, DeploymentHandoffLink,
+    DeploymentHandoffMintRequest, DeploymentHandoffMintResponse, DeploymentHandoffPayload,
+    DeploymentHandoffProject, DeploymentHandoffResolveRequest, DeploymentHandoffServer,
 };
 use crate::helpers::JsonResponse;
 use crate::models;
@@ -20,7 +20,7 @@ use crate::routes::legacy_installations::{
 };
 use crate::services::InMemoryHandoffStore;
 
-const HANDOFF_TTL_MINUTES: i64 = 15;
+const HANDOFF_TTL_HOURS: i64 = 2;
 
 #[post("/mint")]
 pub async fn mint_handler(
@@ -31,7 +31,7 @@ pub async fn mint_handler(
     settings: web::Data<Settings>,
     http_request: actix_web::HttpRequest,
 ) -> Result<impl Responder> {
-    let expires_at = Utc::now() + Duration::minutes(HANDOFF_TTL_MINUTES);
+    let expires_at = Utc::now() + Duration::hours(HANDOFF_TTL_HOURS);
     let payload = match resolve_owned_deployment_for_handoff(
         pg_pool.get_ref(),
         settings.get_ref(),
@@ -82,6 +82,32 @@ pub async fn mint_handler(
             expires_at: link.expires_at,
         })
         .ok("CLI handoff minted"))
+}
+
+#[post("/mint/account")]
+pub async fn mint_account_handler(
+    user: web::ReqData<Arc<models::User>>,
+    handoff_store: web::Data<Arc<InMemoryHandoffStore>>,
+    http_request: actix_web::HttpRequest,
+) -> Result<impl Responder> {
+    let expires_at = Utc::now() + Duration::hours(HANDOFF_TTL_HOURS);
+    let payload = build_account_payload(&http_request, user.as_ref(), expires_at);
+    let token = handoff_store.insert(payload);
+    let base_url = resolve_public_base_url(&http_request);
+    let link = DeploymentHandoffLink {
+        token: token.clone(),
+        url: format!("{}/handoff#{}", base_url.trim_end_matches('/'), token),
+        expires_at,
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(DeploymentHandoffMintResponse {
+            command: format!("stacker connect --handoff {}", token),
+            token: link.token,
+            url: link.url,
+            expires_at: link.expires_at,
+        })
+        .ok("CLI account handoff minted"))
 }
 
 #[post("/resolve")]
@@ -138,6 +164,7 @@ fn build_payload(
 
     let base_url = resolve_public_base_url(http_request);
     DeploymentHandoffPayload {
+        kind: DeploymentHandoffKind::Deployment,
         version: 1,
         expires_at,
         project: DeploymentHandoffProject {
@@ -173,16 +200,7 @@ fn build_payload(
                 deployment_hash: deployment.deployment_hash.clone(),
             })
         }),
-        credentials: user
-            .access_token
-            .clone()
-            .map(|access_token| DeploymentHandoffCredentials {
-                access_token,
-                token_type: "Bearer".to_string(),
-                expires_at,
-                email: Some(user.email.clone()),
-                server_url: Some(base_url),
-            }),
+        credentials: build_handoff_credentials(user, expires_at, base_url),
     }
 }
 
@@ -226,6 +244,7 @@ fn build_legacy_payload(
 
     let base_url = resolve_public_base_url(http_request);
     DeploymentHandoffPayload {
+        kind: DeploymentHandoffKind::Deployment,
         version: 1,
         expires_at,
         project: DeploymentHandoffProject {
@@ -270,17 +289,69 @@ fn build_legacy_payload(
             base_url: format!("http://{}:8080", ip),
             deployment_hash,
         }),
-        credentials: user
-            .access_token
-            .clone()
-            .map(|access_token| DeploymentHandoffCredentials {
-                access_token,
-                token_type: "Bearer".to_string(),
-                expires_at,
-                email: Some(user.email.clone()),
-                server_url: Some(base_url),
-            }),
+        credentials: build_handoff_credentials(user, expires_at, base_url),
     }
+}
+
+fn build_account_payload(
+    http_request: &actix_web::HttpRequest,
+    user: &models::User,
+    expires_at: DateTime<Utc>,
+) -> DeploymentHandoffPayload {
+    let base_url = resolve_public_base_url(http_request);
+
+    DeploymentHandoffPayload {
+        kind: DeploymentHandoffKind::Account,
+        version: 1,
+        expires_at,
+        project: DeploymentHandoffProject {
+            id: 0,
+            name: user.email.clone(),
+            identity: Some(user.email.clone()),
+        },
+        deployment: DeploymentHandoffDeployment {
+            id: 0,
+            hash: String::new(),
+            target: "account".to_string(),
+            status: "ready".to_string(),
+        },
+        server: None,
+        cloud: None,
+        lockfile: serde_json::json!({}),
+        stacker_yml: None,
+        agent: None,
+        credentials: build_handoff_credentials(user, expires_at, base_url),
+    }
+}
+
+fn build_handoff_credentials(
+    user: &models::User,
+    handoff_expires_at: DateTime<Utc>,
+    server_url: String,
+) -> Option<DeploymentHandoffCredentials> {
+    user.access_token
+        .clone()
+        .map(|access_token| DeploymentHandoffCredentials {
+            expires_at: infer_access_token_expiry(&access_token).unwrap_or(handoff_expires_at),
+            access_token,
+            token_type: "Bearer".to_string(),
+            email: Some(user.email.clone()),
+            server_url: Some(server_url),
+        })
+}
+
+fn infer_access_token_expiry(token: &str) -> Option<DateTime<Utc>> {
+    #[derive(serde::Deserialize)]
+    struct JwtExpiryClaims {
+        exp: i64,
+    }
+
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: JwtExpiryClaims = serde_json::from_slice(&decoded).ok()?;
+    Utc.timestamp_opt(claims.exp, 0).single()
 }
 
 fn infer_target(server: Option<&models::Server>) -> String {
@@ -373,5 +444,64 @@ fn resolve_public_base_url(request: &actix_web::HttpRequest) -> String {
         format!("{}://{}", scheme, host)
     } else {
         DEFAULT_STACKER_URL.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test::TestRequest;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use serde_json::json;
+
+    fn test_user_with_token(token: &str) -> models::User {
+        models::User {
+            id: "user-1".to_string(),
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            email: "user@example.com".to_string(),
+            role: "group_user".to_string(),
+            email_confirmed: true,
+            access_token: Some(token.to_string()),
+        }
+    }
+
+    fn create_test_jwt(exp: i64) -> String {
+        let header = json!({"alg": "HS256", "typ": "JWT"});
+        let payload = json!({"sub": "user-1", "email": "user@example.com", "exp": exp});
+        format!(
+            "{}.{}.signature",
+            URL_SAFE_NO_PAD.encode(header.to_string()),
+            URL_SAFE_NO_PAD.encode(payload.to_string()),
+        )
+    }
+
+    #[test]
+    fn infers_access_token_expiry_from_jwt_exp_claim() {
+        let expected = Utc::now() + Duration::hours(6);
+        let token = create_test_jwt(expected.timestamp());
+
+        let inferred = infer_access_token_expiry(&token).expect("jwt expiry should be inferred");
+
+        assert_eq!(inferred.timestamp(), expected.timestamp());
+    }
+
+    #[test]
+    fn account_payload_is_marked_account_scoped() {
+        let request = TestRequest::default()
+            .insert_header(("host", "stacker.try.direct"))
+            .to_http_request();
+        let expires_at = Utc::now() + Duration::hours(2);
+        let payload =
+            build_account_payload(&request, &test_user_with_token("opaque-token"), expires_at);
+
+        assert!(payload.is_account_scoped());
+        assert_eq!(payload.deployment.target, "account");
+        assert_eq!(
+            payload.project.identity.as_deref(),
+            Some("user@example.com")
+        );
+        assert_eq!(payload.lockfile, json!({}));
+        assert!(payload.stacker_yml.is_none());
     }
 }
