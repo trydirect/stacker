@@ -25,6 +25,23 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     let _ = tokio::spawn(mock_auth_server(auth_listener));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+    // Apply CI env overrides (PGHOST, PGPORT, PGUSER, PGPASSWORD) so BDD tests
+    // work with the dynamic postgres port allocated by GitHub Actions services.
+    if let Ok(host) = std::env::var("PGHOST") {
+        configuration.database.host = host;
+    }
+    if let Ok(port) = std::env::var("PGPORT") {
+        if let Ok(parsed) = port.parse::<u16>() {
+            configuration.database.port = parsed;
+        }
+    }
+    if let Ok(username) = std::env::var("PGUSER") {
+        configuration.database.username = username;
+    }
+    if let Ok(password) = std::env::var("PGPASSWORD") {
+        configuration.database.password = password;
+    }
+
     // Unique database per BDD run
     configuration.database.database_name = format!("bdd_{}", uuid::Uuid::new_v4());
 
