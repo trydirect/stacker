@@ -6,7 +6,7 @@ use std::sync::Arc;
 pub async fn health_check(checker: web::Data<Arc<HealthChecker>>) -> HttpResponse {
     let health_response = checker.check_all().await;
 
-    if health_response.is_healthy() {
+    if health_response.is_operational() {
         HttpResponse::Ok().json(health_response)
     } else {
         HttpResponse::ServiceUnavailable().json(health_response)

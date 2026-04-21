@@ -2,17 +2,13 @@ mod common;
 
 #[tokio::test]
 async fn health_check_works() {
-    // 1. Arrange
-    // 2. Act
-    // 3. Assert
-
     println!("Before spawn_app");
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
-    }; // server
+    };
     println!("After spawn_app");
-    let client = reqwest::Client::new(); // client
+    let client = reqwest::Client::new();
 
     let response = client
         .get(&format!("{}/health_check", &app.address))
@@ -20,12 +16,14 @@ async fn health_check_works() {
         .await
         .expect("Failed to execute request.");
 
-    // Health check responds with 200 (all deps up) or 503 (some deps unavailable).
-    // Both are valid responses — the endpoint is reachable and functioning.
-    // In CI, Redis/Vault are not running so 503 is expected.
-    let status = response.status().as_u16();
+    // 200 = Healthy or Degraded (optional services down, but core DB works)
+    // 503 = Unhealthy (core database is unreachable)
+    // In CI only postgres is available; external services (AMQP, Vault, DockerHub,
+    // user_service, install_service) will be Degraded → overall Degraded → 200.
     assert!(
-        status == 200 || status == 503,
-        "health_check should return 200 or 503, got {status}"
+        response.status().is_success(),
+        "health_check should return 200, got {}",
+        response.status()
     );
 }
+
