@@ -108,6 +108,15 @@ pub async fn create_instance_handler(
     req: web::Json<CreatePipeInstanceRequest>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
+    // Reject explicitly-provided but empty deployment_hash (distinct from omitting the field)
+    if let Some(hash) = &req.deployment_hash {
+        if hash.trim().is_empty() {
+            return Err(
+                JsonResponse::<()>::build().bad_request("deployment_hash cannot be empty"),
+            );
+        }
+    }
+
     let deployment_hash = req
         .deployment_hash
         .as_deref()
