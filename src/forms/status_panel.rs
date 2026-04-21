@@ -1192,35 +1192,35 @@ mod tests {
     fn fixture(path: &str) -> serde_json::Value {
         let body = match path {
             "activate_pipe.webhook.command.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/activate_pipe.webhook.command.json"
+                "../../tests/fixtures/pipe-contract/activate_pipe.webhook.command.json"
             ),
             "activate_pipe.rabbitmq.command.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/activate_pipe.rabbitmq.command.json"
+                "../../tests/fixtures/pipe-contract/activate_pipe.rabbitmq.command.json"
             ),
             "deactivate_pipe.command.json" => {
-                include_str!("../../../shared-fixtures/pipe-contract/deactivate_pipe.command.json")
+                include_str!("../../tests/fixtures/pipe-contract/deactivate_pipe.command.json")
             }
-            "trigger_pipe.manual.command.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/trigger_pipe.manual.command.json"
-            ),
-            "trigger_pipe.replay.command.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/trigger_pipe.replay.command.json"
-            ),
-            "activate_pipe.success.report.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/activate_pipe.success.report.json"
-            ),
+            "trigger_pipe.manual.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.manual.command.json")
+            }
+            "trigger_pipe.replay.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.command.json")
+            }
+            "activate_pipe.success.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/activate_pipe.success.report.json")
+            }
             "deactivate_pipe.success.report.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/deactivate_pipe.success.report.json"
+                "../../tests/fixtures/pipe-contract/deactivate_pipe.success.report.json"
             ),
-            "trigger_pipe.success.report.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/trigger_pipe.success.report.json"
-            ),
-            "trigger_pipe.failure.report.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/trigger_pipe.failure.report.json"
-            ),
-            "trigger_pipe.replay.report.json" => include_str!(
-                "../../../shared-fixtures/pipe-contract/trigger_pipe.replay.report.json"
-            ),
+            "trigger_pipe.success.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.success.report.json")
+            }
+            "trigger_pipe.failure.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.failure.report.json")
+            }
+            "trigger_pipe.replay.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.report.json")
+            }
             other => panic!("unknown fixture: {}", other),
         };
 

@@ -5,9 +5,15 @@ use stacker::connectors::config::UserServiceConfig;
 use stacker::forms;
 use stacker::helpers::AgentPgPool;
 use std::net::TcpListener;
+use std::path::Path;
+use std::sync::OnceLock;
 use wiremock::MockServer;
 
+static ACCESS_CONTROL_CONF_READY: OnceLock<()> = OnceLock::new();
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
+    ensure_test_access_control_conf();
+
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
 
     let port = listener.local_addr().unwrap().port();
@@ -39,6 +45,7 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
 
 pub async fn spawn_app() -> Option<TestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
+    apply_test_database_env_overrides(&mut configuration);
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
@@ -66,6 +73,41 @@ pub async fn spawn_app() -> Option<TestApp> {
     }
 
     spawn_app_with_configuration(configuration).await
+}
+
+fn apply_test_database_env_overrides(configuration: &mut Settings) {
+    if let Ok(host) = std::env::var("PGHOST") {
+        configuration.database.host = host;
+    }
+    if let Ok(port) = std::env::var("PGPORT") {
+        if let Ok(parsed) = port.parse::<u16>() {
+            configuration.database.port = parsed;
+        }
+    }
+    if let Ok(username) = std::env::var("PGUSER") {
+        configuration.database.username = username;
+    }
+    if let Ok(password) = std::env::var("PGPASSWORD") {
+        configuration.database.password = password;
+    }
+}
+
+fn ensure_test_access_control_conf() {
+    ACCESS_CONTROL_CONF_READY.get_or_init(|| {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        std::env::set_current_dir(manifest_dir).expect("Failed to switch tests to repo root");
+
+        let primary = manifest_dir.join("access_control.conf");
+        if primary.exists() {
+            return;
+        }
+
+        let dist = manifest_dir.join("access_control.conf.dist");
+        if dist.exists() {
+            std::fs::copy(dist, primary)
+                .expect("Failed to provision access_control.conf for tests");
+        }
+    });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

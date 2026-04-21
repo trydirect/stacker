@@ -31,12 +31,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - name: Fetch shared pipe fixtures
-        run: |
-          rm -rf "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          git clone --depth 1 --branch main https://github.com/trydirect/config.git "${GITHUB_WORKSPACE}/../config"
-          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
       - name: Install protoc
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -100,18 +94,42 @@ jobs:
   test:
     name: Run CLI tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch shared pipe fixtures
+      - name: Export PostgreSQL connection env
         run: |
-          rm -rf "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          git clone --depth 1 --branch main https://github.com/trydirect/config.git "${GITHUB_WORKSPACE}/../config"
-          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
+          echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+          echo "PGUSER=postgres" >> "$GITHUB_ENV"
+          echo "PGPASSWORD=postgres" >> "$GITHUB_ENV"
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
+      - name: Wait for PostgreSQL
+        run: |
+          for _ in $(seq 1 60); do
+            if bash -lc "exec 3<>/dev/tcp/${PGHOST}/${PGPORT}" 2>/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "PostgreSQL did not become ready in time" >&2
+          exit 1
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:

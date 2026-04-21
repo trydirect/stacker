@@ -1,0 +1,14 @@
+{
+  "type": "deactivate_pipe",
+  "deployment_hash": "dep-123",
+  "pipe_instance_id": "11111111-1111-1111-1111-111111111111",
+  "active": false,
+  "removed": true,
+  "lifecycle": {
+    "state": "inactive",
+    "activated_at": "2026-01-01T00:00:00Z",
+    "deactivated_at": "2026-01-01T00:05:00Z",
+    "trigger_count": 3,
+    "last_updated_at": "2026-01-01T00:05:00Z"
+  }
+}

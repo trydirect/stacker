@@ -9,10 +9,10 @@ use std::time::Duration;
 fn fixture(path: &str) -> serde_json::Value {
     let body = match path {
         "activate_pipe.success.report.json" => {
-            include_str!("../../shared-fixtures/pipe-contract/activate_pipe.success.report.json")
+            include_str!("fixtures/pipe-contract/activate_pipe.success.report.json")
         }
         "deactivate_pipe.success.report.json" => {
-            include_str!("../../shared-fixtures/pipe-contract/deactivate_pipe.success.report.json")
+            include_str!("fixtures/pipe-contract/deactivate_pipe.success.report.json")
         }
         other => panic!("unknown fixture: {}", other),
     };
