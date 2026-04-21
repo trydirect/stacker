@@ -95,9 +95,8 @@ async fn test_agent_login_accessible_without_auth() {
     );
 }
 
-/// Test the agent link endpoint:
-/// POST /api/v1/agent/link with session_token + deployment_id
-/// Without a valid session_token, should return 403
+/// Test the agent link endpoint returns the handler-level "deployment not found"
+/// response for a nonexistent deployment.
 #[tokio::test]
 async fn test_agent_link_rejects_invalid_token() {
     let app = match common::spawn_app().await {
@@ -126,21 +125,21 @@ async fn test_agent_link_rejects_invalid_token() {
         .expect("Failed to send link request");
 
     let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .expect("Failed to read link response body");
     println!("Link with invalid token response status: {}", status);
-    // Should be 403 (invalid session token) — not 404 (route not found)
-    assert_ne!(
-        status.as_u16(),
-        404,
-        "Route /api/v1/agent/link should exist"
-    );
+    assert_eq!(status.as_u16(), 404, "Expected missing deployment response");
     assert!(
-        status.is_client_error(),
-        "Expected client error for invalid token, got {}",
-        status
+        body.contains("Deployment not found"),
+        "Expected handler response for missing deployment, got: {}",
+        body
     );
 }
 
-/// Test the agent link endpoint is accessible without auth headers (anonym casbin rule).
+/// Test the agent link endpoint is reachable without auth headers and returns
+/// the handler-level missing deployment response rather than middleware denial.
 #[tokio::test]
 async fn test_agent_link_accessible_without_auth() {
     let app = match common::spawn_app().await {
@@ -163,11 +162,16 @@ async fn test_agent_link_accessible_without_auth() {
         .expect("Failed to send link request");
 
     let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .expect("Failed to read link response body");
     println!("Anonymous link response status: {}", status);
-    assert_ne!(
-        status.as_u16(),
-        404,
-        "Route /api/v1/agent/link should exist"
+    assert_eq!(status.as_u16(), 404, "Expected missing deployment response");
+    assert!(
+        body.contains("Deployment not found"),
+        "Expected handler response for missing deployment, got: {}",
+        body
     );
 }
 
