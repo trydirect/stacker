@@ -57,6 +57,7 @@ const DOCKER_PASSWORD: &str = "**********";
 // }
 
 #[tokio::test]
+#[ignore = "requires real DockerHub credentials (DOCKER_PASSWORD); run manually with --include-ignored"]
 async fn test_docker_hub_successful_login() {
     if common::spawn_app().await.is_none() {
         return;
@@ -76,6 +77,7 @@ async fn test_docker_hub_successful_login() {
 }
 
 #[tokio::test]
+#[ignore = "requires real DockerHub credentials (DOCKER_PASSWORD); run manually with --include-ignored"]
 async fn test_docker_private_exists() {
     if common::spawn_app().await.is_none() {
         return;
