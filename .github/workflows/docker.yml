@@ -35,15 +35,17 @@ jobs:
           --health-retries 5
     env:
       SQLX_OFFLINE: true
-      PGHOST: 127.0.0.1
-      PGPORT: ${{ job.services.postgres.ports[5432] }}
-      PGUSER: postgres
-      PGPASSWORD: postgres
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+      - name: Export PostgreSQL connection env
+        run: |
+          echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+          echo "PGUSER=postgres" >> "$GITHUB_ENV"
+          echo "PGPASSWORD=postgres" >> "$GITHUB_ENV"
 
       - name: Install OpenSSL and protoc build deps
         if: runner.os == 'Linux'

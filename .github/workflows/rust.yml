@@ -110,12 +110,14 @@ jobs:
           --health-retries 5
     env:
       SQLX_OFFLINE: true
-      PGHOST: 127.0.0.1
-      PGPORT: ${{ job.services.postgres.ports[5432] }}
-      PGUSER: postgres
-      PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@v4
+      - name: Export PostgreSQL connection env
+        run: |
+          echo "PGHOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+          echo "PGUSER=postgres" >> "$GITHUB_ENV"
+          echo "PGPASSWORD=postgres" >> "$GITHUB_ENV"
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Wait for PostgreSQL
