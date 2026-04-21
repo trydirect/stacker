@@ -948,23 +948,27 @@ async fn test_authenticated_command_creation() {
         "parameters": {}
     });
 
-    let response_no_auth = client
-        .post(&format!("{}/api/v1/commands", &app.address))
-        .json(&cmd_payload)
-        .send()
-        .await
-        .expect("Failed to send request");
+    // Use a dedicated short-lived client for the unauthenticated sub-test so its
+    // connection pool is never shared with the authenticated requests below.
+    // Sharing a client that received a server-side Connection: close on a 403 can
+    // leave a half-closed connection in the pool, causing hyper::Error(IncompleteMessage)
+    // on the very next request even after draining the 403 body.
+    {
+        let anon_client = reqwest::Client::new();
+        let response_no_auth = anon_client
+            .post(&format!("{}/api/v1/commands", &app.address))
+            .json(&cmd_payload)
+            .send()
+            .await
+            .expect("Failed to send request");
 
-    println!("No auth response status: {}", response_no_auth.status());
-    assert_eq!(
-        response_no_auth.status(),
-        403,
-        "Should return 403 without authentication"
-    );
-    // Drain the response body so hyper closes the connection cleanly before reuse.
-    // Without this, a server-side Connection: close on the 403 can leave the pooled
-    // connection in a half-closed state, causing IncompleteMessage on the next request.
-    let _ = response_no_auth.bytes().await;
+        println!("No auth response status: {}", response_no_auth.status());
+        assert_eq!(
+            response_no_auth.status(),
+            403,
+            "Should return 403 without authentication"
+        );
+    } // anon_client and all its pooled connections are dropped here
 
     println!("\n=== Test 2: Command creation with authentication (should succeed) ===");
     let response_with_auth = client
