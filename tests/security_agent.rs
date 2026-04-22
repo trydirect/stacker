@@ -206,10 +206,12 @@ async fn test_enqueue_rejects_unauthenticated() {
         .await
         .expect("Failed to send request");
 
+    // Unauthenticated requests are handled by the 'anonym' Casbin role, which
+    // Casbin denies with 403 (not 401).
     assert_eq!(
         resp.status(),
-        401,
-        "Unauthenticated enqueue should be 401. Got: {}",
+        403,
+        "Unauthenticated enqueue should be 403. Got: {}",
         resp.status()
     );
 }
@@ -227,10 +229,12 @@ async fn test_commands_list_rejects_unauthenticated() {
         .await
         .expect("Failed to send request");
 
+    // Unauthenticated requests are handled by the 'anonym' Casbin role, which
+    // Casbin denies with 403 (not 401).
     assert_eq!(
         resp.status(),
-        401,
-        "Unauthenticated command list should be 401. Got: {}",
+        403,
+        "Unauthenticated command list should be 403. Got: {}",
         resp.status()
     );
 }
@@ -253,6 +257,23 @@ async fn test_owner_can_enqueue_and_list_commands_for_legacy_installation_hash()
                 "_created": "2026-04-13T10:00:00Z",
                 "_updated": "2026-04-13T10:05:00Z"
             }]
+        })))
+        .mount(&user_service)
+        .await;
+
+    // hydrate_legacy_installation fetches the detail endpoint when _id is set
+    Mock::given(method("GET"))
+        .and(path("/api/1.0/installations/13830"))
+        .and(header("authorization", auth_header.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "_id": 13830,
+            "stack_code": "openclaw",
+            "status": "completed",
+            "cloud": "hetzner",
+            "deployment_hash": "legacy-dep-13830",
+            "domain": "openclawtest1.com",
+            "_created": "2026-04-13T10:00:00Z",
+            "_updated": "2026-04-13T10:05:00Z"
         })))
         .mount(&user_service)
         .await;
