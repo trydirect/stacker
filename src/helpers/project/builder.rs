@@ -212,6 +212,10 @@ impl DcBuilder {
         let serialized = serde_yaml::to_string(&compose_content)
             .map_err(|err| format!("Failed to serialize docker-compose file: {}", err))?;
 
+        if let Some(parent) = target_file.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("Failed to create files directory: {}", err))?;
+        }
         std::fs::write(target_file, serialized.clone()).map_err(|err| format!("{}", err))?;
 
         Ok(serialized)
