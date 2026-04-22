@@ -57,6 +57,9 @@ struct GithubAsset {
 /// Fetch the latest release from GitHub that matches the channel.
 /// - "stable" → non-prerelease releases
 /// - "beta"   → prerelease releases
+///
+/// Returns `Ok(None)` when the GitHub API is unreachable or rate-limited so
+/// that the update command exits 0 instead of failing the CLI.
 fn fetch_latest_release(
     channel: &str,
 ) -> Result<Option<GithubRelease>, Box<dyn std::error::Error>> {
@@ -64,11 +67,18 @@ fn fetch_latest_release(
         .user_agent(format!("stacker-cli/{}", CURRENT_VERSION))
         .build()?;
 
-    let releases: Vec<GithubRelease> = client
-        .get(GITHUB_API_RELEASES)
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let response = client.get(GITHUB_API_RELEASES).send()?;
+
+    if !response.status().is_success() {
+        eprintln!(
+            "Warning: could not check for updates (GitHub API returned {}). \
+             Try again later or set a GITHUB_TOKEN environment variable.",
+            response.status()
+        );
+        return Ok(None);
+    }
+
+    let releases: Vec<GithubRelease> = response.json()?;
 
     let want_prerelease = channel == "beta";
     let release = releases
