@@ -17,7 +17,7 @@ networks:
 
 services:
   stacker:
-    image: trydirect/stacker:0.0.9
+    image: trydirect/stacker:v0.2.6
     container_name: stacker-dev
     restart: always
     networks:
@@ -50,7 +50,7 @@ services:
   # MQ Listener - Consumes deployment progress messages from Install Service
   # and updates deployment status in Stacker database
   stacker-mq-listener:
-    image: trydirect/stacker:0.0.9
+    image: trydirect/stacker:v0.2.6
     container_name: stacker-mq-listener-dev
     restart: always
     networks:
