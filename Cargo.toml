@@ -61,7 +61,7 @@ sqlx-adapter = { version = "1.8.0", default-features = false, features = ["postg
 dotenvy = "0.15"
 
 # dctypes
-derive_builder = "0.12.0"
+derive_builder = "0.20.0"
 indexmap = { version = "2.0.0", features = ["serde"], optional = true }
 serde_yaml = "0.9"
 lapin = { version = "2.3.1", features = ["serde_json"] }
