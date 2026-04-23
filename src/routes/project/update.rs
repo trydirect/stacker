@@ -22,7 +22,7 @@ pub async fn item(
         .map_err(JsonResponse::internal_server_error)
         .and_then(|project| match project {
             Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::bad_request("Project not found"))
+                Err(JsonResponse::not_found("Project not found"))
             }
             Some(project) => Ok(project),
             None => Err(JsonResponse::not_found("Project not found")),

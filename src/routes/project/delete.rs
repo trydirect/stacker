@@ -21,7 +21,7 @@ pub async fn item(
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         .and_then(|project| match project {
             Some(project) if project.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().bad_request("Delete is forbidden"))
+                Err(JsonResponse::<models::Project>::build().not_found(""))
             }
             Some(project) => Ok(project),
             None => Err(JsonResponse::<models::Project>::build().not_found("")),

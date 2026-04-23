@@ -22,7 +22,7 @@ pub async fn item(
         .map_err(|err| JsonResponse::<models::Server>::build().internal_server_error(err))
         .and_then(|server| match server {
             Some(server) if server.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().bad_request("Server not found"))
+                Err(JsonResponse::<models::Project>::build().not_found("Server not found"))
             }
             Some(server) => Ok(server),
             None => Err(JsonResponse::<models::Server>::build().not_found("Server not found")),
