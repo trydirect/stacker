@@ -69,14 +69,14 @@ Feature: Project CRUD Operations
     And I have created a project with stack code "protected-project"
     When I switch to User B
     And I update the stored project with stack code "hijacked"
-    Then the response status should be 400
+    Then the response status should be 404
 
   Scenario: User B cannot delete User A's project
     Given I am authenticated as User A
     And I have created a project with stack code "no-delete"
     When I switch to User B
     And I delete the stored project
-    Then the response status should be one of "400, 403"
+    Then the response status should be 404
 
   Scenario: Each user sees only their own projects
     Given I am authenticated as User A
