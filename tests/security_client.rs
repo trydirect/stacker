@@ -8,8 +8,8 @@ use sqlx::Row;
 
 async fn insert_client(pool: &sqlx::PgPool, user_id: &str) -> i32 {
     let rec = sqlx::query(
-        "INSERT INTO client (user_id, title, secret, enabled) \
-         VALUES ($1, 'test-client', 'secret123', true) RETURNING id",
+        "INSERT INTO client (user_id, secret, created_at, updated_at) \
+         VALUES ($1, 'secret123', NOW(), NOW()) RETURNING id",
     )
     .bind(user_id)
     .fetch_one(pool)
@@ -60,11 +60,11 @@ async fn test_update_client_rejects_other_user() {
         .await
         .expect("Failed to send request");
 
-    // Handler returns 400 Bad Request for non-owner
+    // Handler returns 404 Not Found for non-owner (IDOR protection)
     assert_eq!(
         resp.status().as_u16(),
-        400,
-        "User B updating User A's client should return 400"
+        404,
+        "User B updating User A's client should return 404"
     );
 }
 
@@ -77,8 +77,8 @@ async fn test_enable_client_rejects_other_user() {
 
     // Create a disabled client (secret = NULL) for User A
     let rec = sqlx::query(
-        "INSERT INTO client (user_id, secret, enabled) \
-         VALUES ($1, NULL, false) RETURNING id",
+        "INSERT INTO client (user_id, secret, created_at, updated_at) \
+         VALUES ($1, NULL, NOW(), NOW()) RETURNING id",
     )
     .bind(USER_A_ID)
     .fetch_one(&app.db_pool)
@@ -95,8 +95,8 @@ async fn test_enable_client_rejects_other_user() {
 
     assert_eq!(
         resp.status().as_u16(),
-        400,
-        "User B enabling User A's client should return 400"
+        404,
+        "User B enabling User A's client should return 404"
     );
 }
 
@@ -118,8 +118,8 @@ async fn test_disable_client_rejects_other_user() {
 
     assert_eq!(
         resp.status().as_u16(),
-        400,
-        "User B disabling User A's client should return 400"
+        404,
+        "User B disabling User A's client should return 404"
     );
 }
 
