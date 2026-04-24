@@ -6,11 +6,29 @@ use std::process::Command;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     emit_git_short_hash();
 
+    let proto_includes = collect_proto_include_paths();
+
     tonic_build::configure()
         .build_server(false)
         .build_client(true)
-        .compile(&["proto/pipe.proto"], &["proto"])?;
+        .compile(&["proto/pipe.proto"], &proto_includes)?;
     Ok(())
+}
+
+fn collect_proto_include_paths() -> Vec<PathBuf> {
+    let mut includes = vec![PathBuf::from("proto")];
+
+    for candidate in [
+        PathBuf::from("/usr/include"),
+        PathBuf::from("/usr/local/include"),
+        PathBuf::from("/opt/homebrew/include"),
+    ] {
+        if candidate.join("google/protobuf/struct.proto").exists() {
+            includes.push(candidate);
+        }
+    }
+
+    includes
 }
 
 fn emit_git_short_hash() {

@@ -202,22 +202,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
-      - name: Prepare shared pipe fixtures
+      - name: Verify shared pipe fixtures
         run: |
-          rm -rf "${GITHUB_WORKSPACE}/.ci/config" "${GITHUB_WORKSPACE}/../config" "${GITHUB_WORKSPACE}/../shared-fixtures"
-      - name: Checkout shared fixture repo
-        uses: actions/checkout@v6
-        with:
-          repository: trydirect/config
-          ref: main
-          path: .ci/config
-          token: ${{ secrets.CONFIG_REPO_TOKEN != '' && secrets.CONFIG_REPO_TOKEN || secrets.GITHUB_TOKEN }}
-      - name: Link shared pipe fixtures
-        run: |
-          mkdir -p "${GITHUB_WORKSPACE}/../config"
-          cp -a "${GITHUB_WORKSPACE}/.ci/config/." "${GITHUB_WORKSPACE}/../config/"
-          ln -sfn "${GITHUB_WORKSPACE}/../config/shared-fixtures" "${GITHUB_WORKSPACE}/../shared-fixtures"
-          test -d "${GITHUB_WORKSPACE}/../shared-fixtures/pipe-contract"
+          test -d "${GITHUB_WORKSPACE}/tests/fixtures/pipe-contract"
 
       -
         name: Set up QEMU
@@ -245,7 +232,7 @@ jobs:
         with:
           context: .
           build-contexts: |
-            shared_fixtures=${{ github.workspace }}/../config/shared-fixtures
+            shared_fixtures=${{ github.workspace }}/tests/fixtures
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.docker_tags.outputs.tags }}
 

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 FROM rust:bookworm AS builder
 
-RUN apt-get update && apt-get install --no-install-recommends -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install sqlx-cli
 
@@ -10,11 +10,14 @@ COPY --from=shared_fixtures / /shared-fixtures
 # copy manifests
 COPY ./Cargo.toml .
 COPY ./Cargo.lock .
+COPY ./build.rs .
 COPY ./rustfmt.toml .
 COPY ./Makefile .
 COPY ./docker/local/.env .
 COPY ./docker/local/configuration.yaml .
 COPY .sqlx .sqlx/
+COPY ./proto ./proto
+COPY ./tests/bdd.rs ./tests/bdd.rs
 
 # build this project to cache dependencies
 #RUN sqlx database create && sqlx migrate run
