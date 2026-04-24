@@ -1358,8 +1358,23 @@ mod tests {
 
     // ── AI provider resolution tests ────────────────
 
+    static AI_CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_ai_config_env() {
+        std::env::remove_var("STACKER_AI_PROVIDER");
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("STACKER_AI_MODEL");
+        std::env::remove_var("STACKER_AI_API_KEY");
+        std::env::remove_var("STACKER_AI_ENDPOINT");
+        std::env::remove_var("STACKER_AI_TIMEOUT");
+    }
+
     #[test]
     fn test_resolve_ai_config_defaults_to_ollama() {
+        let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
+        clear_ai_config_env();
+
         let config = resolve_ai_config(None, None, None).unwrap();
         assert!(config.enabled);
         assert_eq!(config.provider, AiProviderType::Ollama);
@@ -1396,6 +1411,9 @@ mod tests {
 
     #[test]
     fn test_resolve_ai_config_env_var_fallback() {
+        let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
+        clear_ai_config_env();
+
         std::env::set_var("STACKER_AI_PROVIDER", "openai");
         std::env::set_var("OPENAI_API_KEY", "sk-from-env");
         std::env::set_var("STACKER_AI_MODEL", "gpt-4o-mini");
@@ -1405,35 +1423,41 @@ mod tests {
         assert_eq!(config.api_key.as_deref(), Some("sk-from-env"));
         assert_eq!(config.model.as_deref(), Some("gpt-4o-mini"));
 
-        std::env::remove_var("STACKER_AI_PROVIDER");
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("STACKER_AI_MODEL");
+        clear_ai_config_env();
     }
 
     #[test]
     fn test_resolve_ai_config_flag_overrides_env() {
+        let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
+        clear_ai_config_env();
+
         std::env::set_var("STACKER_AI_PROVIDER", "openai");
 
         // Flag says ollama, env says openai — flag wins
         let config = resolve_ai_config(Some("ollama"), None, None).unwrap();
         assert_eq!(config.provider, AiProviderType::Ollama);
 
-        std::env::remove_var("STACKER_AI_PROVIDER");
+        clear_ai_config_env();
     }
 
     #[test]
     fn test_resolve_ai_config_timeout_default() {
-        std::env::remove_var("STACKER_AI_TIMEOUT");
+        let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
+        clear_ai_config_env();
+
         let config = resolve_ai_config(None, None, None).unwrap();
         assert_eq!(config.timeout, 300);
     }
 
     #[test]
     fn test_resolve_ai_config_timeout_from_env() {
+        let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
+        clear_ai_config_env();
+
         std::env::set_var("STACKER_AI_TIMEOUT", "900");
         let config = resolve_ai_config(None, None, None).unwrap();
         assert_eq!(config.timeout, 900);
-        std::env::remove_var("STACKER_AI_TIMEOUT");
+        clear_ai_config_env();
     }
 
     #[test]
