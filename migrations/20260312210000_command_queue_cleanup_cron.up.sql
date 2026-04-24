@@ -4,7 +4,7 @@ DO $$
 BEGIN
     CREATE EXTENSION IF NOT EXISTS pg_cron;
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'pg_cron extension not available, skipping: %', SQLERRM;
+    RAISE WARNING 'pg_cron extension not available, skipping: %', SQLERRM;
 END;
 $$;
 
