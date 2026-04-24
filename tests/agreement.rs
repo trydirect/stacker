@@ -106,6 +106,36 @@ async fn user_add() {
     assert!(response.status().is_success());
 }
 
+#[tokio::test]
+async fn user_add_via_api_prefix() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = reqwest::Client::new();
+
+    let agreement_id: i32 = sqlx::query_scalar(
+        "INSERT INTO agreement (name, text, created_at, updated_at) \
+         VALUES ('API Agreement', 'Test text', NOW(), NOW()) RETURNING id",
+    )
+    .fetch_one(&app.db_pool)
+    .await
+    .expect("Failed to insert test agreement");
+
+    let data = serde_json::json!({ "agrt_id": agreement_id });
+
+    let response = client
+        .post(&format!("{}/api/agreement", &app.address))
+        .header("Authorization", "Bearer test_token")
+        .json(&data)
+        .send()
+        .await
+        .expect("Failed to execute request.");
+
+    println!("response: {}", response.status());
+    assert!(response.status().is_success());
+}
+
 // // test me: cargo t --test agreement admin_update -- --nocapture --show-output
 // #[tokio::test]
 // async fn admin_update() {

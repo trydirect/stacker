@@ -205,9 +205,15 @@ pub async fn run(
             )
             .service(
                 web::scope("/api")
+                    .service(
+                        web::scope("/agreement")
+                            .service(crate::routes::agreement::user_add_handler)
+                            .service(crate::routes::agreement::get_handler)
+                            .service(crate::routes::agreement::accept_handler),
+                    )
                     .service(crate::routes::marketplace::categories::list_handler)
                              .service(
-                                 web::scope("/templates")
+                                  web::scope("/templates")
                                      .service(crate::routes::marketplace::public::list_handler)
                                      .service(crate::routes::marketplace::creator::mine_handler)
                                      .service(
