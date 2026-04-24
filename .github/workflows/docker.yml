@@ -17,8 +17,8 @@ jobs:
 
   cicd-docker:
     name: Cargo and npm build
-    #runs-on: ubuntu-latest
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
+    #runs-on: [self-hosted, linux]
     services:
       postgres:
         image: postgres:16
@@ -145,6 +145,14 @@ jobs:
           command: build
           args: --release --bin server
 
+      - name: Set up Node.js
+        if: ${{ hashFiles('web/package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
       - name: npm install, build, and test
         if: ${{ hashFiles('web/package.json') != '' }}
         working-directory: ./web
@@ -186,8 +194,8 @@ jobs:
 
   cicd-linux-docker:
     name: CICD Docker
-    #runs-on: ubuntu-latest
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
+    #runs-on: [self-hosted, linux]
     needs: cicd-docker
     steps:
       - name: Checkout sources
@@ -243,8 +251,8 @@ jobs:
 
   stackerdb-docker:
     name: StackerDB Docker
-    #runs-on: ubuntu-latest
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
+    #runs-on: [self-hosted, linux]
     needs: cicd-docker
     steps:
       - name: Checkout sources
