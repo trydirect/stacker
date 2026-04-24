@@ -79,6 +79,7 @@ pub async fn detail_handler(
 pub struct AdminDecisionRequest {
     pub decision: String, // approved|rejected|needs_changes
     pub reason: Option<String>,
+    pub verifications: Option<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -104,6 +105,7 @@ pub async fn approve_handler(
         &admin.id,
         "approved",
         req.reason.as_deref(),
+        req.verifications.as_ref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
@@ -174,6 +176,7 @@ pub async fn reject_handler(
         &admin.id,
         "rejected",
         req.reason.as_deref(),
+        req.verifications.as_ref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
@@ -258,6 +261,7 @@ pub async fn needs_changes_handler(
         &admin.id,
         "needs_changes",
         req.reason.as_deref(),
+        None,
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;

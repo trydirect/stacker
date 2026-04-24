@@ -673,6 +673,7 @@ pub async fn admin_decide(
     reviewer_user_id: &str,
     decision: &str,
     review_reason: Option<&str>,
+    verifications: Option<&serde_json::Value>,
 ) -> Result<bool, String> {
     let _query_span = tracing::info_span!("marketplace_admin_decide", template_id = %template_id, decision = %decision);
 
@@ -721,6 +722,21 @@ pub async fn admin_decide(
         tracing::error!("update template status error: {:?}", e);
         "Internal Server Error".to_string()
     })?;
+
+    // Merge admin verifications into template.verifications if provided
+    if let Some(v) = verifications {
+        sqlx::query(
+            r#"UPDATE stack_template SET verifications = verifications || $2::jsonb WHERE id = $1::uuid"#,
+        )
+        .bind(template_id)
+        .bind(v)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!("update verifications error: {:?}", e);
+            "Internal Server Error".to_string()
+        })?;
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!("tx commit error: {:?}", e);
