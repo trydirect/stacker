@@ -9,6 +9,7 @@ use std::path::PathBuf;
 const DEFAULT_CHANNEL: &str = "stable";
 const VALID_CHANNELS: &[&str] = &["stable", "beta"];
 const GITHUB_API_RELEASES: &str = "https://api.github.com/repos/trydirect/stacker/releases";
+const RELEASES_URL_ENV: &str = "STACKER_UPDATE_RELEASES_URL";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Parse and validate a release channel string.
@@ -60,6 +61,9 @@ struct GithubAsset {
 ///
 /// Returns `Ok(None)` when the GitHub API is unreachable or rate-limited so
 /// that the update command exits 0 instead of failing the CLI.
+fn releases_api_url() -> String {
+    env::var(RELEASES_URL_ENV).unwrap_or_else(|_| GITHUB_API_RELEASES.to_string())
+}
 fn fetch_latest_release(
     channel: &str,
 ) -> Result<Option<GithubRelease>, Box<dyn std::error::Error>> {
@@ -67,7 +71,7 @@ fn fetch_latest_release(
         .user_agent(format!("stacker-cli/{}", CURRENT_VERSION))
         .build()?;
 
-    let response = client.get(GITHUB_API_RELEASES).send()?;
+    let response = client.get(releases_api_url()).send()?;
 
     if !response.status().is_success() {
         eprintln!(
@@ -272,5 +276,12 @@ mod tests {
     fn test_is_newer_handles_v_prefix() {
         assert!(is_newer("0.2.4", "v0.2.5"));
         assert!(!is_newer("v0.2.5", "v0.2.5"));
+    }
+
+    #[test]
+    fn test_releases_api_url_uses_env_override() {
+        std::env::set_var(RELEASES_URL_ENV, "http://localhost/releases");
+        assert_eq!(releases_api_url(), "http://localhost/releases");
+        std::env::remove_var(RELEASES_URL_ENV);
     }
 }

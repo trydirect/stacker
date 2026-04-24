@@ -26,4 +26,3 @@ async fn health_check_works() {
         response.status()
     );
 }
-
