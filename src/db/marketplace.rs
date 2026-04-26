@@ -309,6 +309,18 @@ pub async fn create_draft(
 
     let price_f64 = price;
 
+    if let Some(category_code) = category_code {
+        sqlx::query(r#"INSERT INTO stack_category (name) VALUES ($1) ON CONFLICT DO NOTHING"#)
+            .bind(category_code)
+            .execute(pool)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("create_draft category upsert error: {:?}", e);
+                CreateDraftError::Internal
+            })?;
+    }
+
     let rec = sqlx::query_as::<_, StackTemplate>(
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
@@ -579,6 +591,18 @@ pub async fn update_metadata(
         return Err("Template not editable in current status".to_string());
     }
 
+    if let Some(category_code) = category_code {
+        sqlx::query(r#"INSERT INTO stack_category (name) VALUES ($1) ON CONFLICT DO NOTHING"#)
+            .bind(category_code)
+            .execute(pool)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("update_metadata category upsert error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
+    }
+
     let res = sqlx::query(
         r#"UPDATE stack_template SET 
             name = COALESCE($2, name),
@@ -655,6 +679,21 @@ pub async fn update_metadata_for_resubmit(
 
     if status != "rejected" && status != "needs_changes" && status != "approved" {
         return Err("Template metadata is not editable in current status".to_string());
+    }
+
+    if let Some(category_code) = category_code {
+        sqlx::query(r#"INSERT INTO stack_category (name) VALUES ($1) ON CONFLICT DO NOTHING"#)
+            .bind(category_code)
+            .execute(pool)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "update_metadata_for_resubmit category upsert error: {:?}",
+                    e
+                );
+                "Internal Server Error".to_string()
+            })?;
     }
 
     let res = sqlx::query(
