@@ -1135,7 +1135,11 @@ async fn approved_template_assets_are_read_only() {
 
 #[tokio::test]
 async fn finalize_asset_rejects_tampered_bucket_or_key() {
-    let app = match common::spawn_app().await {
+    let app = match common::spawn_app_with_test_auth_configuration(
+        marketplace_storage_test_configuration(),
+    )
+    .await
+    {
         Some(app) => app,
         None => return,
     };
