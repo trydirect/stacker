@@ -773,6 +773,18 @@ pub async fn resubmit_with_new_version(
         return Err("Template cannot be resubmitted from its current status".to_string());
     }
 
+    if let Some(category_code) = category_code {
+        sqlx::query(r#"INSERT INTO stack_category (name) VALUES ($1) ON CONFLICT DO NOTHING"#)
+            .bind(category_code)
+            .execute(&mut *tx)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("resubmit category upsert error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
+    }
+
     sqlx::query(
         r#"UPDATE stack_template SET
             name = COALESCE($2, name),
