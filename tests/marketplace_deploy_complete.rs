@@ -65,8 +65,8 @@ async fn deploy_complete_validates_purchase_token_increments_count_and_returns_t
     let _token_guard = EnvGuard::set("STACKER_SERVICE_TOKEN", "test-service-token");
 
     let user_service = MockServer::start().await;
-    let mut configuration = stacker::configuration::get_configuration()
-        .expect("Failed to get configuration");
+    let mut configuration =
+        stacker::configuration::get_configuration().expect("Failed to get configuration");
     configuration.user_service_url = user_service.uri();
 
     let app = match common::spawn_app_with_configuration(configuration).await {
@@ -135,7 +135,10 @@ async fn deploy_complete_validates_purchase_token_increments_count_and_returns_t
         .json()
         .await
         .expect("duplicate deploy-complete response should be valid JSON");
-    assert_eq!(template_id.to_string(), duplicate_body["item"]["template_id"]);
+    assert_eq!(
+        template_id.to_string(),
+        duplicate_body["item"]["template_id"]
+    );
     assert_eq!(false, duplicate_body["item"]["deploy_count_incremented"]);
 
     let deploy_count_after_duplicate =

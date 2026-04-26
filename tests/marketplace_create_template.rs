@@ -455,7 +455,11 @@ async fn list_my_templates_includes_latest_version_contract_fields() {
     let mine = list_my_templates(&client, &app.address, "test-bearer-token").await;
     let template = mine["list"]
         .as_array()
-        .and_then(|templates| templates.iter().find(|template| template["slug"] == "versioned-template"))
+        .and_then(|templates| {
+            templates
+                .iter()
+                .find(|template| template["slug"] == "versioned-template")
+        })
         .expect("Versioned template should be listed");
 
     assert_eq!(json!("1.3.0"), template["version"]);
@@ -464,9 +468,27 @@ async fn list_my_templates_includes_latest_version_contract_fields() {
         json!([{ "path": "/etc/app/config.yaml", "content": "runtimeBundle: enabled" }]),
         template["config_files"]
     );
-    assert_eq!(json!(1), template["assets"].as_array().map(|items| items.len()).unwrap_or(0));
-    assert_eq!(json!(1), template["seed_jobs"].as_array().map(|items| items.len()).unwrap_or(0));
-    assert_eq!(json!(1), template["post_deploy_hooks"].as_array().map(|items| items.len()).unwrap_or(0));
+    assert_eq!(
+        json!(1),
+        template["assets"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0)
+    );
+    assert_eq!(
+        json!(1),
+        template["seed_jobs"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0)
+    );
+    assert_eq!(
+        json!(1),
+        template["post_deploy_hooks"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0)
+    );
     assert_eq!(
         json!({
             "mode_self_managed": true,
@@ -586,7 +608,10 @@ async fn update_template_persists_latest_version_contract_fields_for_drafts() {
 
     assert_eq!(json!("1.2.0"), latest_version["version"]);
     assert_eq!(json!("json"), latest_version["definition_format"]);
-    assert_eq!(json!("Adds draft update persistence"), latest_version["changelog"]);
+    assert_eq!(
+        json!("Adds draft update persistence"),
+        latest_version["changelog"]
+    );
     assert_eq!(
         json!([{ "path": "/etc/app/config.yaml", "content": "runtimeBundle: enabled" }]),
         latest_version["config_files"]

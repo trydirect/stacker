@@ -282,8 +282,9 @@ fn ensure_no_secrets_confirmation(confirmed: Option<bool>) -> Result<(), actix_w
     if confirmed.unwrap_or(false) {
         Ok(())
     } else {
-        Err(JsonResponse::<serde_json::Value>::build()
-            .bad_request("Confirm that the template contains no secrets or API keys before submitting"))
+        Err(JsonResponse::<serde_json::Value>::build().bad_request(
+            "Confirm that the template contains no secrets or API keys before submitting",
+        ))
     }
 }
 
@@ -464,7 +465,10 @@ pub async fn update_handler(
             .definition_format
             .as_deref()
             .or(current_version.definition_format.as_deref());
-        let changelog = req.changelog.as_deref().or(current_version.changelog.as_deref());
+        let changelog = req
+            .changelog
+            .as_deref()
+            .or(current_version.changelog.as_deref());
         let update_mode_capabilities = req
             .update_mode_capabilities
             .clone()
@@ -473,7 +477,11 @@ pub async fn update_handler(
         db::marketplace::upsert_latest_version(
             pg_pool.get_ref(),
             &id,
-            if version.is_empty() { "1.0.0" } else { version.as_str() },
+            if version.is_empty() {
+                "1.0.0"
+            } else {
+                version.as_str()
+            },
             stack_definition,
             definition_format,
             changelog,
@@ -685,8 +693,9 @@ pub async fn submit_handler(
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
         .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build()
-                .bad_request("Template must include a deployable stack definition before submission")
+            JsonResponse::<serde_json::Value>::build().bad_request(
+                "Template must include a deployable stack definition before submission",
+            )
         })?;
     let has_stack_definition = !latest_version.stack_definition.is_null()
         && latest_version

@@ -75,7 +75,9 @@ pub async fn spawn_app() -> Option<TestApp> {
     spawn_app_with_configuration(configuration).await
 }
 
-pub async fn spawn_app_with_test_auth_configuration(mut configuration: Settings) -> Option<TestApp> {
+pub async fn spawn_app_with_test_auth_configuration(
+    mut configuration: Settings,
+) -> Option<TestApp> {
     apply_test_database_env_overrides(&mut configuration);
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")

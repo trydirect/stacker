@@ -1982,7 +1982,7 @@ pub async fn record_deploy_complete_once(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Insert a view event into marketplace_event table
-/// 
+///
 /// TDD stub - unimplemented. Requires:
 /// - marketplace_event table migration
 /// - INSERT query with template_id, event_type='view', viewer_user_id, occurred_at, metadata

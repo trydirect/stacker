@@ -4,11 +4,16 @@ use stacker::configuration::{get_configuration, DatabaseSettings};
 use stacker::forms;
 use stacker::helpers::AgentPgPool;
 use std::net::TcpListener;
+use std::time::Duration;
+use tokio::time::sleep;
 
 pub struct BddTestApp {
     pub address: String,
     pub db_pool: PgPool,
 }
+
+const POSTGRES_STARTUP_MAX_ATTEMPTS: u32 = 15;
+const POSTGRES_STARTUP_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Spawn a test app instance for BDD tests.
 /// Uses the same pattern as the existing integration tests.
@@ -51,7 +56,7 @@ pub async fn spawn_bdd_app() -> Option<BddTestApp> {
     // Set internal services access key for audit ingest tests
     std::env::set_var("INTERNAL_SERVICES_ACCESS_KEY", "bdd-internal-key");
 
-    let connection_pool = match configure_database(&configuration.database).await {
+    let connection_pool = match configure_database_with_retry(&configuration.database).await {
         Ok(pool) => pool,
         Err(err) => {
             eprintln!("BDD: Skipping — failed to connect to postgres: {}", err);
@@ -88,6 +93,53 @@ async fn configure_database(config: &DatabaseSettings) -> Result<PgPool, sqlx::E
     let pool = PgPool::connect(&config.connection_string()).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
+}
+
+async fn configure_database_with_retry(config: &DatabaseSettings) -> Result<PgPool, sqlx::Error> {
+    let mut last_err = None;
+
+    for attempt in 1..=POSTGRES_STARTUP_MAX_ATTEMPTS {
+        match configure_database(config).await {
+            Ok(pool) => return Ok(pool),
+            Err(err) => {
+                if attempt == POSTGRES_STARTUP_MAX_ATTEMPTS
+                    || !is_retryable_postgres_startup_error(&err)
+                {
+                    return Err(err);
+                }
+
+                eprintln!(
+                    "BDD: Waiting for postgres startup (attempt {attempt}/{POSTGRES_STARTUP_MAX_ATTEMPTS}): {err}"
+                );
+                last_err = Some(err);
+                sleep(POSTGRES_STARTUP_RETRY_DELAY).await;
+            }
+        }
+    }
+
+    Err(last_err.expect("BDD configure_database_with_retry exhausted without error"))
+}
+
+fn is_retryable_postgres_startup_error(err: &sqlx::Error) -> bool {
+    if matches!(
+        err,
+        sqlx::Error::Io(_)
+            | sqlx::Error::PoolTimedOut
+            | sqlx::Error::PoolClosed
+            | sqlx::Error::Tls(_)
+            | sqlx::Error::Protocol(_)
+    ) {
+        return true;
+    }
+
+    let message = err.to_string().to_ascii_lowercase();
+    message.contains("connection refused")
+        || message.contains("database system is starting up")
+        || message.contains("the database system is starting up")
+        || message.contains("could not connect")
+        || message.contains("timeout")
+        || message.contains("timed out")
+        || message.contains("server closed the connection unexpectedly")
 }
 
 // Token-aware mock auth server: "user-b" token → User B, anything else → User A
