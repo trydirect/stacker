@@ -261,6 +261,24 @@ pub async fn run(
                             .service(routes::agent::agent_audit_query_handler),
                     )
                     .service(
+                        web::scope("/v1/templates")
+                            .service(crate::routes::marketplace::creator::presign_asset_upload_handler)
+                            .service(crate::routes::marketplace::creator::finalize_asset_upload_handler)
+                            .service(
+                                crate::routes::marketplace::creator::presign_asset_download_handler,
+                            )
+                            .service(crate::routes::marketplace::public::detail_handler),
+                    )
+                    .service(
+                        web::scope("/v1/marketplace")
+                            .service(crate::routes::marketplace::public::install_script_handler)
+                            .service(crate::routes::marketplace::public::download_stack_handler)
+                            .service(crate::routes::marketplace::public::deploy_complete_handler)
+                            .service(web::scope("/agents").service(
+                                crate::routes::marketplace::agent::register_marketplace_agent_handler,
+                            )),
+                    )
+                    .service(
                         web::scope("/v1/deployments")
                             .service(routes::deployment::capabilities_handler)
                             .service(routes::deployment::list_handler)
@@ -349,23 +367,6 @@ pub async fn run(
                                      .service(crate::routes::marketplace::admin::list_plans_handler),
                              ),
                     ),
-            )
-            .service(
-                web::scope("/api/v1/marketplace")
-                    .service(crate::routes::marketplace::public::install_script_handler)
-                    .service(crate::routes::marketplace::public::download_stack_handler)
-                    .service(crate::routes::marketplace::public::deploy_complete_handler)
-                    .service(
-                        web::scope("/agents")
-                            .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),
-                    ),
-            )
-            .service(
-                web::scope("/api/v1/templates")
-                    .service(crate::routes::marketplace::creator::presign_asset_upload_handler)
-                    .service(crate::routes::marketplace::creator::finalize_asset_upload_handler)
-                    .service(crate::routes::marketplace::creator::presign_asset_download_handler)
-                    .service(crate::routes::marketplace::public::detail_handler),
             )
             .service(
                 web::scope("/cloud")
