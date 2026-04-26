@@ -361,6 +361,13 @@ pub async fn run(
                     ),
             )
             .service(
+                web::scope("/api/v1/templates")
+                    .service(crate::routes::marketplace::creator::presign_asset_upload_handler)
+                    .service(crate::routes::marketplace::creator::finalize_asset_upload_handler)
+                    .service(crate::routes::marketplace::creator::presign_asset_download_handler)
+                    .service(crate::routes::marketplace::public::detail_handler),
+            )
+            .service(
                 web::scope("/cloud")
                     .service(crate::routes::cloud::get::item)
                     .service(crate::routes::cloud::get::list)

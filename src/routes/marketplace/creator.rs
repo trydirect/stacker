@@ -702,19 +702,19 @@ pub async fn submit_handler(
     ensure_no_secrets_confirmation(body.into_inner().confirm_no_secrets)?;
     let latest_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
         .await
-        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().bad_request(
-                "Template must include a deployable stack definition before submission",
-            )
-        })?;
-    let has_stack_definition = !latest_version.stack_definition.is_null()
-        && latest_version
-            .stack_definition
-            .as_object()
-            .map(|definition| !definition.is_empty())
-            .unwrap_or(true);
-    if !has_stack_definition {
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let has_empty_stack_definition = latest_version
+        .as_ref()
+        .map(|version| {
+            version.stack_definition.is_null()
+                || version
+                    .stack_definition
+                    .as_object()
+                    .map(|definition| definition.is_empty())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if has_empty_stack_definition {
         return Err(JsonResponse::<serde_json::Value>::build()
             .bad_request("Template must include a deployable stack definition before submission"));
     }
