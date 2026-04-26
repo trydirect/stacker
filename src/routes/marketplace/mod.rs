@@ -9,9 +9,10 @@ pub use admin::{
     security_scan_handler, unapprove_handler, AdminDecisionRequest, UnapproveRequest,
 };
 pub use creator::{
-    create_handler, finalize_asset_upload_handler, mine_handler, my_reviews_handler,
-    presign_asset_download_handler, presign_asset_upload_handler, resubmit_handler, submit_handler,
-    update_handler, CreateTemplateRequest, FinalizeAssetRequest, PresignAssetDownloadRequest,
-    PresignAssetUploadRequest, ResubmitRequest, UpdateTemplateRequest,
+    analytics_handler, create_handler, finalize_asset_upload_handler, mine_handler,
+    my_reviews_handler, presign_asset_download_handler, presign_asset_upload_handler,
+    resubmit_handler, submit_handler, update_handler, AnalyticsQuery, CreateTemplateRequest,
+    FinalizeAssetRequest, PresignAssetDownloadRequest, PresignAssetUploadRequest, ResubmitRequest,
+    UpdateTemplateRequest,
 };
 pub use public::TemplateListQuery;

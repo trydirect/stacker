@@ -1,10 +1,11 @@
 use crate::models::{
-    MarketplaceVendorProfile, StackCategory, StackTemplate, StackTemplateReview,
-    StackTemplateVersion,
+    AnalyticsPeriod, AnalyticsSummary, CloudBreakdown, MarketplaceVendorProfile, SeriesBucket,
+    StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion, TemplateAnalytics,
+    TemplatePerformance, VendorAnalytics,
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde_json::{Map, Value};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tracing::Instrument;
 
 pub const SLUG_UNIQUE_CONSTRAINT: &str = "stack_template_slug_key";
@@ -2019,11 +2020,12 @@ pub async fn insert_deploy_event(
 /// - Cloud breakdown with percentages
 /// - Time series buckets
 pub async fn get_vendor_analytics(
-    _pool: &PgPool,
-    _creator_user_id: &str,
-    _period: Option<&str>,
-) -> Result<crate::models::marketplace::VendorAnalytics, String> {
-    Err("get_vendor_analytics not implemented - requires analytics query logic".to_string())
+    pool: &PgPool,
+    creator_user_id: &str,
+    period: Option<&str>,
+) -> Result<VendorAnalytics, String> {
+    get_vendor_analytics_for_period(pool, creator_user_id, period.unwrap_or("30d"), None, None)
+        .await
 }
 
 /// Get vendor analytics for a specific period with start/end dates
@@ -2034,13 +2036,207 @@ pub async fn get_vendor_analytics(
 /// - Zero-filled time series buckets for missing data
 /// - Bucket granularity calculation (day/week/month based on period)
 pub async fn get_vendor_analytics_for_period(
-    _pool: &PgPool,
-    _creator_user_id: &str,
-    _period_key: &str,
-    _start_date: Option<chrono::DateTime<chrono::Utc>>,
-    _end_date: Option<chrono::DateTime<chrono::Utc>>,
-) -> Result<crate::models::marketplace::VendorAnalytics, String> {
-    Err("get_vendor_analytics_for_period not implemented - requires period filtering".to_string())
+    pool: &PgPool,
+    creator_user_id: &str,
+    period_key: &str,
+    start_date: Option<chrono::DateTime<chrono::Utc>>,
+    end_date: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<VendorAnalytics, String> {
+    let now = Utc::now();
+    let (normalized_period, default_start, bucket) = match period_key {
+        "7d" => ("7d", Some(now - Duration::days(7)), "day"),
+        "30d" => ("30d", Some(now - Duration::days(30)), "day"),
+        "90d" => ("90d", Some(now - Duration::days(90)), "week"),
+        "all" => ("all", None, "all"),
+        "custom" => ("custom", start_date, "day"),
+        _ => ("30d", Some(now - Duration::days(30)), "day"),
+    };
+    let start = start_date.or(default_start);
+    let end = end_date.or(Some(now));
+
+    let query_span = tracing::info_span!(
+        "marketplace_vendor_analytics",
+        creator_user_id = %creator_user_id,
+        period = %normalized_period
+    );
+
+    let templates = sqlx::query(
+        r#"SELECT
+            t.id,
+            t.creator_user_id,
+            t.slug,
+            t.name,
+            t.status,
+            COALESCE(COUNT(e.id) FILTER (WHERE e.event_type = 'view'), 0)::bigint AS views,
+            COALESCE(COUNT(e.id) FILTER (WHERE e.event_type = 'deploy'), 0)::bigint AS deployments
+        FROM stack_template t
+        LEFT JOIN marketplace_template_event e
+            ON e.template_id = t.id
+           AND ($2::timestamptz IS NULL OR e.created_at >= $2)
+           AND ($3::timestamptz IS NULL OR e.created_at <= $3)
+        WHERE t.creator_user_id = $1
+        GROUP BY t.id, t.creator_user_id, t.slug, t.name, t.status, t.created_at
+        ORDER BY deployments DESC, views DESC, t.created_at DESC"#,
+    )
+    .bind(creator_user_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("get_vendor_analytics templates error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    let mut total_views = 0_i64;
+    let mut total_deployments = 0_i64;
+    let mut top_template_id = None;
+    let mut template_items = Vec::with_capacity(templates.len());
+    let mut top_templates = Vec::with_capacity(templates.len());
+
+    for row in templates {
+        let template_id: uuid::Uuid = row.get("id");
+        let views: i64 = row.get("views");
+        let deployments: i64 = row.get("deployments");
+        let conversion_rate = conversion_rate(views, deployments);
+
+        total_views += views;
+        total_deployments += deployments;
+        if top_template_id.is_none() && (views > 0 || deployments > 0) {
+            top_template_id = Some(template_id);
+        }
+
+        let slug: String = row.get("slug");
+        let name: String = row.get("name");
+        let creator_user_id_row: String = row.get("creator_user_id");
+        let status: String = row.get("status");
+
+        template_items.push(TemplateAnalytics {
+            template_id,
+            creator_user_id: creator_user_id_row,
+            slug: slug.clone(),
+            name: name.clone(),
+            status,
+            views,
+            deployments,
+            conversion_rate,
+        });
+        top_templates.push(TemplatePerformance {
+            template_id,
+            slug,
+            name,
+            views,
+            deployments,
+            conversion_rate,
+        });
+    }
+
+    let published_templates: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint
+           FROM stack_template
+           WHERE creator_user_id = $1 AND status = 'approved'"#,
+    )
+    .bind(creator_user_id)
+    .fetch_one(pool)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("get_vendor_analytics published count error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    let cloud_rows = sqlx::query(
+        r#"SELECT
+            COALESCE(e.cloud_provider, 'unknown') AS cloud_provider,
+            COUNT(*)::bigint AS deployments
+        FROM marketplace_template_event e
+        INNER JOIN stack_template t ON t.id = e.template_id
+        WHERE t.creator_user_id = $1
+          AND e.event_type = 'deploy'
+          AND ($2::timestamptz IS NULL OR e.created_at >= $2)
+          AND ($3::timestamptz IS NULL OR e.created_at <= $3)
+        GROUP BY COALESCE(e.cloud_provider, 'unknown')
+        ORDER BY deployments DESC, cloud_provider ASC"#,
+    )
+    .bind(creator_user_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_vendor_analytics cloud breakdown error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    let mut top_cloud = None;
+    let cloud_breakdown = cloud_rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let cloud_provider: String = row.get("cloud_provider");
+            let deployments: i64 = row.get("deployments");
+            if index == 0 {
+                top_cloud = Some(cloud_provider.clone());
+            }
+            CloudBreakdown {
+                cloud_provider,
+                deployments,
+                percentage: percentage(deployments, total_deployments),
+            }
+        })
+        .collect();
+
+    let bucket_start = start.unwrap_or(now);
+    let bucket_end = end.unwrap_or(now);
+
+    Ok(VendorAnalytics {
+        creator_id: creator_user_id.to_string(),
+        period: AnalyticsPeriod {
+            key: normalized_period.to_string(),
+            start_date: start,
+            end_date: end,
+            bucket: bucket.to_string(),
+        },
+        summary: AnalyticsSummary {
+            total_views,
+            total_deployments,
+            conversion_rate: conversion_rate(total_views, total_deployments),
+            published_templates: published_templates.try_into().unwrap_or(i32::MAX),
+            top_cloud,
+            top_template_id,
+        },
+        views_series: vec![SeriesBucket {
+            bucket_start,
+            bucket_end,
+            count: total_views,
+        }],
+        deployments_series: vec![SeriesBucket {
+            bucket_start,
+            bucket_end,
+            count: total_deployments,
+        }],
+        cloud_breakdown,
+        top_templates,
+        templates: template_items,
+    })
+}
+
+fn conversion_rate(views: i64, deployments: i64) -> f64 {
+    if views == 0 {
+        0.0
+    } else {
+        ((deployments as f64 / views as f64) * 10000.0).round() / 100.0
+    }
+}
+
+fn percentage(part: i64, total: i64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        ((part as f64 / total as f64) * 10000.0).round() / 100.0
+    }
 }
 
 /// Get template events filtered by creator_user_id (owner-scoped)

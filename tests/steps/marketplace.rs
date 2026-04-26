@@ -383,6 +383,14 @@ async fn request_my_marketplace_analytics(world: &mut StepWorld, period: String)
 
 #[when("I request analytics for User A template scope")]
 async fn request_analytics_for_user_a_template_scope(world: &mut StepWorld) {
-    // Try to access User A's analytics as User B - should fail
-    world.get("/api/templates/mine/analytics?period=30d").await;
+    let template_id = world
+        .stored_ids
+        .get("template_id")
+        .expect("No stored template_id")
+        .clone();
+    world
+        .get(&format!(
+            "/api/templates/mine/analytics?period=30d&templateId={template_id}"
+        ))
+        .await;
 }
