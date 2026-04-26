@@ -59,6 +59,10 @@ pub struct CreateTemplateRequest {
     /// ISO 4217 currency code, default "USD"
     pub currency: Option<String>,
     pub infrastructure_requirements: Option<serde_json::Value>,
+    /// Public ports: [{"name": "web", "port": 8080}, ...]
+    pub public_ports: Option<serde_json::Value>,
+    /// Vendor's page URL
+    pub vendor_url: Option<String>,
 }
 
 #[tracing::instrument(name = "Create draft template", skip_all)]
@@ -107,6 +111,8 @@ pub async fn create_handler(
             Some(price),
             Some(billing_cycle.as_str()),
             Some(currency.as_str()),
+            req.public_ports.clone(),
+            req.vendor_url.as_deref(),
         )
         .await
         .map_err(|err| JsonResponse::<models::StackTemplate>::build().internal_server_error(err))?;
@@ -143,6 +149,8 @@ pub async fn create_handler(
             price,
             &billing_cycle,
             &currency,
+            req.public_ports.clone(),
+            req.vendor_url.as_deref(),
         )
         .await
         .map_err(|err| match err {
@@ -190,6 +198,8 @@ pub struct UpdateTemplateRequest {
     pub plan_type: Option<String>,
     pub price: Option<f64>,
     pub currency: Option<String>,
+    pub public_ports: Option<serde_json::Value>,
+    pub vendor_url: Option<String>,
 }
 
 #[tracing::instrument(name = "Update template metadata", skip_all)]
@@ -238,6 +248,8 @@ pub async fn update_handler(
         price,
         req.plan_type.as_deref(),
         req.currency.as_deref(),
+        req.public_ports.clone(),
+        req.vendor_url.as_deref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;

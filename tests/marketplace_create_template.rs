@@ -281,6 +281,138 @@ async fn update_template_persists_infrastructure_requirements() {
 }
 
 #[tokio::test]
+async fn create_template_returns_public_ports_when_provided() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Ports Template",
+            "slug": "ports-template",
+            "public_ports": [
+                {"name": "web", "port": 8080},
+                {"name": "https", "port": 443}
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(StatusCode::CREATED, response.status());
+
+    let body: Value = response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+
+    assert_eq!(
+        json!([
+            {"name": "web", "port": 8080},
+            {"name": "https", "port": 443}
+        ]),
+        body["item"]["public_ports"]
+    );
+}
+
+#[tokio::test]
+async fn create_template_returns_vendor_url_when_provided() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Vendor Template",
+            "slug": "vendor-template",
+            "vendor_url": "https://example.com"
+        }),
+    )
+    .await;
+
+    assert_eq!(StatusCode::CREATED, response.status());
+
+    let body: Value = response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+
+    assert_eq!(
+        "https://example.com",
+        body["item"]["vendor_url"].as_str().expect("vendor_url should be a string")
+    );
+}
+
+#[tokio::test]
+async fn update_template_persists_public_ports_and_vendor_url() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let create_response = create_template(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        "Updatable Template",
+        "updatable-ports-template",
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+
+    let template_id = create_response
+        .json::<Value>()
+        .await
+        .expect("Create response should be valid JSON")["item"]["id"]
+        .as_str()
+        .expect("id should be a string")
+        .to_string();
+
+    let update_response = client
+        .put(format!("{}/api/templates/{}", app.address, template_id))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "public_ports": [{"name": "app", "port": 3000}],
+            "vendor_url": "https://app.example.com/docs"
+        }))
+        .send()
+        .await
+        .expect("Failed to send template update request");
+
+    assert_eq!(StatusCode::OK, update_response.status());
+
+    let updated = update_response
+        .json::<Value>()
+        .await
+        .expect("Update response should be valid JSON");
+
+    let response = list_my_templates(&client, &app.address, "test-bearer-token").await;
+    let template = response
+        .get("list")
+        .and_then(|list| list.get(0))
+        .expect("Should return updated template");
+
+    assert_eq!(
+        json!([{"name": "app", "port": 3000}]),
+        template["public_ports"]
+    );
+    assert_eq!(
+        "https://app.example.com/docs",
+        template["vendor_url"].as_str().expect("vendor_url should be a string")
+    );
+}
+
+#[tokio::test]
 async fn submit_template_sends_template_submitted_webhook() {
     let _env_lock = env_lock().lock().expect("env lock should be available");
     let app = match common::spawn_app().await {

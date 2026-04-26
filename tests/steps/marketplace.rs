@@ -298,3 +298,87 @@ async fn list_templates(world: &mut StepWorld) {
 async fn get_template_by_slug(world: &mut StepWorld, slug: String) {
     world.get(&format!("/api/templates/{}", slug)).await;
 }
+
+// ─── Analytics setup steps ───
+
+#[given("the template has usage metrics")]
+async fn given_template_has_usage_metrics(world: &mut StepWorld) {
+    // Insert mock usage metrics into the database for the stored template
+    let template_id = world
+        .stored_ids
+        .get("template_id")
+        .expect("No stored template_id")
+        .clone();
+    let pool = world.db_pool.as_ref().unwrap();
+    
+    // Insert mock view events
+    let _ = sqlx::query(
+        r#"INSERT INTO marketplace_template_event 
+           (template_id, event_type, user_id, created_at)
+           VALUES ($1, 'view', 'viewer-1', NOW() - INTERVAL '5 days'),
+                  ($1, 'view', 'viewer-2', NOW() - INTERVAL '3 days'),
+                  ($1, 'view', 'viewer-3', NOW() - INTERVAL '1 day')"#,
+    )
+    .bind(&template_id)
+    .execute(pool)
+    .await;
+
+    // Insert mock deployment events
+    let _ = sqlx::query(
+        r#"INSERT INTO marketplace_template_event 
+           (template_id, event_type, user_id, cloud_provider, created_at)
+           VALUES ($1, 'deploy', 'deployer-1', 'hetzner', NOW() - INTERVAL '4 days'),
+                  ($1, 'deploy', 'deployer-2', 'digitalocean', NOW() - INTERVAL '2 days')"#,
+    )
+    .bind(&template_id)
+    .execute(pool)
+    .await;
+}
+
+#[given("the template has usage events across periods")]
+async fn given_template_has_usage_events_across_periods(world: &mut StepWorld) {
+    // Insert events across multiple time periods for period filtering test
+    let template_id = world
+        .stored_ids
+        .get("template_id")
+        .expect("No stored template_id")
+        .clone();
+    let pool = world.db_pool.as_ref().unwrap();
+    
+    // Events in last 7 days
+    let _ = sqlx::query(
+        r#"INSERT INTO marketplace_template_event 
+           (template_id, event_type, user_id, created_at)
+           VALUES ($1, 'view', 'viewer-recent-1', NOW() - INTERVAL '2 days'),
+                  ($1, 'view', 'viewer-recent-2', NOW() - INTERVAL '5 days')"#,
+    )
+    .bind(&template_id)
+    .execute(pool)
+    .await;
+
+    // Events beyond 7 days but within 30 days
+    let _ = sqlx::query(
+        r#"INSERT INTO marketplace_template_event 
+           (template_id, event_type, user_id, created_at)
+           VALUES ($1, 'view', 'viewer-old-1', NOW() - INTERVAL '15 days'),
+                  ($1, 'view', 'viewer-old-2', NOW() - INTERVAL '25 days')"#,
+    )
+    .bind(&template_id)
+    .execute(pool)
+    .await;
+}
+
+// ─── Analytics request steps ───
+
+#[when(regex = r#"^I request my marketplace analytics for period "([^"]+)"$"#)]
+async fn request_my_marketplace_analytics(world: &mut StepWorld, period: String) {
+    world
+        .get(&format!("/api/templates/mine/analytics?period={}", period))
+        .await;
+}
+
+#[when("I request analytics for User A template scope")]
+async fn request_analytics_for_user_a_template_scope(world: &mut StepWorld) {
+    // Try to access User A's analytics as User B - should fail
+    world.get("/api/templates/mine/analytics?period=30d").await;
+}

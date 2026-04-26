@@ -36,6 +36,8 @@ pub struct StackTemplate {
     pub approved_at: Option<DateTime<Utc>>,
     pub verifications: serde_json::Value,
     pub infrastructure_requirements: serde_json::Value,
+    pub public_ports: Option<serde_json::Value>,
+    pub vendor_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

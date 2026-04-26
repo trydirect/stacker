@@ -45,6 +45,8 @@ async fn test_deployment_free_template_allowed() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     // Should allow deployment of free template
@@ -86,6 +88,8 @@ async fn test_deployment_plan_requirement_validated() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     // Should allow deployment (mock user has professional plan)
@@ -131,6 +135,8 @@ async fn test_deployment_owned_paid_template_allowed() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
@@ -351,6 +357,8 @@ async fn test_deployment_validation_flow_with_connector() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     let result = validator
@@ -384,6 +392,8 @@ async fn test_deployment_validation_flow_with_connector() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     let result = validator
@@ -498,6 +508,8 @@ async fn test_multiple_deployments_mixed_templates() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     let result = validator
@@ -531,6 +543,8 @@ async fn test_multiple_deployments_mixed_templates() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     let result = validator
@@ -569,6 +583,8 @@ async fn test_multiple_deployments_mixed_templates() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     // The result will depend on whether the validator can verify ownership
@@ -624,6 +640,8 @@ fn test_template_status_values() {
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
         infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
     };
 
     assert_eq!(template.status, "approved");

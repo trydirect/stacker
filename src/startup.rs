@@ -233,7 +233,9 @@ pub async fn run(
                                      .service(crate::routes::marketplace::creator::update_handler)
                                      .service(crate::routes::marketplace::creator::submit_handler)
                                      .service(crate::routes::marketplace::creator::resubmit_handler)
-                                     .service(crate::routes::marketplace::public::detail_handler),
+                                     .service(crate::routes::marketplace::public::detail_handler)
+                                     .service(crate::routes::marketplace::public::increment_view_count_handler)
+                                     .service(crate::routes::marketplace::public::increment_deploy_count_handler),
                     )
                     .service(
                         web::scope("/v1/agent")
@@ -342,6 +344,7 @@ pub async fn run(
                 web::scope("/api/v1/marketplace")
                     .service(crate::routes::marketplace::public::install_script_handler)
                     .service(crate::routes::marketplace::public::download_stack_handler)
+                    .service(crate::routes::marketplace::public::deploy_complete_handler)
                     .service(
                         web::scope("/agents")
                             .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),

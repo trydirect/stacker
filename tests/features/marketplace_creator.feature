@@ -40,3 +40,39 @@ Feature: Marketplace Creator
   Scenario: Create vendor onboarding link
     When I create vendor onboarding link
     Then the response status should be 200
+
+  Scenario: Creator sees marketplace analytics summary for own templates
+    Given I have created a marketplace template with slug "bdd-analytics-summary"
+    And I submit the stored template for review
+    And I switch to admin user
+    And I approve the stored template
+    And I switch to User A
+    And the template has usage metrics
+    When I request my marketplace analytics for period "30d"
+    Then the response status should be 200
+    And the response JSON should have key "summary"
+    And the response JSON should have key "viewsSeries"
+    And the response JSON should have key "deploymentsSeries"
+    And the response JSON should have key "cloudBreakdown"
+    And the response JSON should have key "topTemplates"
+    And the response JSON should have key "templates"
+
+  Scenario: Creator filters analytics by period
+    Given I have created a marketplace template with slug "bdd-analytics-period"
+    And I submit the stored template for review
+    And I switch to admin user
+    And I approve the stored template
+    And I switch to User A
+    And the template has usage events across periods
+    When I request my marketplace analytics for period "7d"
+    Then the response status should be 200
+    And the response JSON at "/period/key" should be "7d"
+
+  Scenario: Creator cannot see another creator analytics
+    Given I have created a marketplace template with slug "bdd-analytics-forbidden"
+    And I submit the stored template for review
+    And I switch to admin user
+    And I approve the stored template
+    When I switch to User B
+    And I request analytics for User A template scope
+    Then the response status should be one of "403, 404"

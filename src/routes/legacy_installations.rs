@@ -99,15 +99,25 @@ pub async fn resolve_owned_deployment_by_hash(
     let client = build_user_service_client(settings)
         .ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
 
-    let installation = client
-        .list_installations(token)
-        .await
-        .map_err(map_installation_error)?
-        .into_iter()
-        .find(|item| item.deployment_hash.as_deref() == Some(deployment_hash))
-        .ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
+    match client.get_installation_by_hash(token, deployment_hash).await {
+        Ok(installation) => Ok(OwnedDeployment::Legacy(installation)),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                deployment_hash = deployment_hash,
+                "Direct legacy deployment lookup failed; falling back to installation list"
+            );
+            let installation = client
+                .list_installations(token)
+                .await
+                .map_err(map_installation_error)?
+                .into_iter()
+                .find(|item| item.deployment_hash.as_deref() == Some(deployment_hash))
+                .ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
 
-    hydrate_legacy_installation(&client, token, installation).await
+            hydrate_legacy_installation(&client, token, installation).await
+        }
+    }
 }
 
 pub async fn resolve_owned_deployment_for_handoff(

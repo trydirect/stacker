@@ -1025,6 +1025,8 @@ mod tests {
             approved_at: None,
             verifications: json!({}),
             infrastructure_requirements: json!({}),
+            public_ports: None,
+            vendor_url: None,
         }
     }
 

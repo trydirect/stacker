@@ -46,7 +46,9 @@ pub async fn list_approved(
             t.updated_at,
             t.approved_at,
             t.verifications,
-            t.infrastructure_requirements
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved'"#,
@@ -139,7 +141,9 @@ pub async fn get_by_slug_and_user(
             t.updated_at,
             t.approved_at,
             t.verifications,
-            t.infrastructure_requirements
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.creator_user_id = $2"#,
@@ -186,7 +190,9 @@ pub async fn get_by_slug_with_latest(
             t.updated_at,
             t.approved_at,
             t.verifications,
-            t.infrastructure_requirements
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.slug = $1 AND t.status = 'approved'"#,
@@ -256,7 +262,9 @@ pub async fn get_by_id(
             t.billing_cycle,
             t.currency,
             t.verifications,
-            t.infrastructure_requirements
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.id = $1"#,
@@ -288,6 +296,8 @@ pub async fn create_draft(
     price: f64,
     billing_cycle: &str,
     currency: &str,
+    public_ports: Option<serde_json::Value>,
+    vendor_url: Option<&str>,
 ) -> Result<StackTemplate, CreateDraftError> {
     let query_span = tracing::info_span!("marketplace_create_draft", slug = %slug);
 
@@ -297,8 +307,9 @@ pub async fn create_draft(
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
-            tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, currency
-        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13)
+            tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, currency,
+            public_ports, vendor_url
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13,$14,$15)
         RETURNING 
             id,
             creator_user_id,
@@ -323,7 +334,9 @@ pub async fn create_draft(
             updated_at,
             approved_at,
             verifications,
-            infrastructure_requirements
+            infrastructure_requirements,
+            public_ports,
+            vendor_url
         "#,
     )
     .bind(creator_user_id)
@@ -339,6 +352,8 @@ pub async fn create_draft(
     .bind(price_f64)
     .bind(billing_cycle)
     .bind(currency)
+    .bind(public_ports)
+    .bind(vendor_url)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -421,6 +436,8 @@ pub async fn update_metadata(
     price: Option<f64>,
     billing_cycle: Option<&str>,
     currency: Option<&str>,
+    public_ports: Option<serde_json::Value>,
+    vendor_url: Option<&str>,
 ) -> Result<bool, String> {
     let query_span = tracing::info_span!("marketplace_update_metadata", template_id = %template_id);
 
@@ -452,7 +469,9 @@ pub async fn update_metadata(
             infrastructure_requirements = COALESCE($8, infrastructure_requirements),
             price = COALESCE($9, price),
             billing_cycle = COALESCE($10, billing_cycle),
-            currency = COALESCE($11, currency)
+            currency = COALESCE($11, currency),
+            public_ports = COALESCE($12, public_ports),
+            vendor_url = COALESCE($13, vendor_url)
         WHERE id = $1::uuid"#,
     )
     .bind(template_id)
@@ -466,6 +485,8 @@ pub async fn update_metadata(
     .bind(price)
     .bind(billing_cycle)
     .bind(currency)
+    .bind(public_ports)
+    .bind(vendor_url)
     .execute(pool)
     .instrument(query_span)
     .await
@@ -647,7 +668,9 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
             t.updated_at,
             t.approved_at,
             t.verifications,
-            t.infrastructure_requirements
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status IN ('submitted', 'approved')
@@ -1306,4 +1329,139 @@ pub async fn update_verifications(
     })?;
 
     Ok(res.rows_affected() > 0)
+}
+
+/// Increment view_count for a marketplace template
+pub async fn increment_view_count(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+) -> Result<bool, String> {
+    let query_span =
+        tracing::info_span!("marketplace_increment_view_count", template_id = %template_id);
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template SET view_count = COALESCE(view_count, 0) + 1 WHERE id = $1"#,
+    )
+    .bind(*template_id)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("increment_view_count error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
+
+/// Increment deploy_count for a marketplace template
+pub async fn increment_deploy_count(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+) -> Result<bool, String> {
+    let query_span =
+        tracing::info_span!("marketplace_increment_deploy_count", template_id = %template_id);
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template SET deploy_count = COALESCE(deploy_count, 0) + 1 WHERE id = $1"#,
+    )
+    .bind(*template_id)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("increment_deploy_count error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
+
+/// Record a successful marketplace deployment and increment deploy_count only once.
+///
+/// Returns:
+/// - Ok(None) when the template does not exist
+/// - Ok(Some(true)) when a new deployment_hash was recorded and deploy_count incremented
+/// - Ok(Some(false)) when deployment_hash was already recorded
+pub async fn record_deploy_complete_once(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    deployment_hash: &str,
+    server_ip: Option<&str>,
+) -> Result<Option<bool>, String> {
+    let query_span = tracing::info_span!(
+        "marketplace_record_deploy_complete_once",
+        template_id = %template_id,
+        deployment_hash = %deployment_hash
+    );
+
+    let mut tx = pool.begin().await.map_err(|e| {
+        tracing::error!("record_deploy_complete_once begin error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    let template_exists: Option<i32> = sqlx::query_scalar(
+        r#"SELECT 1 FROM stack_template WHERE id = $1"#,
+    )
+    .bind(*template_id)
+    .fetch_optional(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("record_deploy_complete_once template lookup error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    if template_exists.is_none() {
+        tx.rollback().await.map_err(|e| {
+            tracing::error!("record_deploy_complete_once rollback error: {:?}", e);
+            "Internal Server Error".to_string()
+        })?;
+        return Ok(None);
+    }
+
+    let insert_res = sqlx::query(
+        r#"INSERT INTO stack_template_deployment (template_id, deployment_hash, server_ip)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (deployment_hash) DO NOTHING"#,
+    )
+    .bind(*template_id)
+    .bind(deployment_hash)
+    .bind(server_ip)
+    .execute(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("record_deploy_complete_once insert error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    if insert_res.rows_affected() == 0 {
+        tx.commit().await.map_err(|e| {
+            tracing::error!("record_deploy_complete_once duplicate commit error: {:?}", e);
+            "Internal Server Error".to_string()
+        })?;
+        return Ok(Some(false));
+    }
+
+    sqlx::query(
+        r#"UPDATE stack_template
+           SET deploy_count = COALESCE(deploy_count, 0) + 1
+           WHERE id = $1"#,
+    )
+    .bind(*template_id)
+    .execute(&mut *tx)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("record_deploy_complete_once increment error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("record_deploy_complete_once commit error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(Some(true))
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use urlencoding::encode;
 
 use crate::connectors::errors::ConnectorError;
 
@@ -92,6 +93,41 @@ impl UserServiceClient {
         let url = format!(
             "{}/api/1.0/installations/{}",
             self.base_url, installation_id
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", bearer_token))
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ConnectorError::HttpError(format!(
+                "User Service error ({}): {}",
+                status, body
+            )));
+        }
+
+        response
+            .json::<InstallationDetails>()
+            .await
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    /// Get installation details by deployment hash via the lightweight Flask route.
+    pub async fn get_installation_by_hash(
+        &self,
+        bearer_token: &str,
+        deployment_hash: &str,
+    ) -> Result<InstallationDetails, ConnectorError> {
+        let url = format!(
+            "{}/install/by-deployment-hash/{}",
+            self.base_url,
+            encode(deployment_hash)
         );
 
         let response = self

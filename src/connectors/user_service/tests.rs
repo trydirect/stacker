@@ -1,9 +1,10 @@
 use serde_json::json;
 use uuid::Uuid;
+use mockito::{Matcher, Server};
 
 use super::mock;
 use super::utils::is_plan_higher_tier;
-use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceConnector};
+use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceClient, UserServiceConnector};
 
 /// Test that get_user_profile returns user with products list
 #[tokio::test]
@@ -220,6 +221,43 @@ async fn test_mock_list_stacks() {
     let stacks = connector.list_stacks("user_123").await.unwrap();
     assert!(!stacks.is_empty());
     assert_eq!(stacks[0].user_id, "user_123");
+}
+
+#[tokio::test]
+async fn test_get_installation_by_hash_uses_lightweight_route() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/install/by-deployment-hash/dep-hash-123")
+        .match_header("authorization", "Bearer test_token")
+        .match_header("accept", Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_id": 13876,
+                "stack_code": "caddy",
+                "status": "completed",
+                "cloud": "htz",
+                "deployment_hash": "dep-hash-123",
+                "domain": "example.com",
+                "server_ip": "192.0.2.10",
+                "_created": "2026-04-25T08:53:54+00:00",
+                "_updated": "2026-04-25T08:54:04+00:00"
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let installation = client
+        .get_installation_by_hash("test_token", "dep-hash-123")
+        .await
+        .unwrap();
+
+    assert_eq!(installation.id, Some(13876));
+    assert_eq!(installation.stack_code.as_deref(), Some("caddy"));
+    assert_eq!(installation.deployment_hash.as_deref(), Some("dep-hash-123"));
 }
 
 /// Test plan hierarchy comparison
