@@ -3,6 +3,7 @@ mod common;
 use reqwest::{Client, Response, StatusCode};
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
+use uuid::Uuid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -78,6 +79,20 @@ impl Drop for EnvGuard {
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn marketplace_storage_test_configuration() -> stacker::configuration::Settings {
+    let mut configuration =
+        stacker::configuration::get_configuration().expect("Failed to get configuration");
+    configuration.marketplace_assets.enabled = true;
+    configuration.marketplace_assets.current_env = "test".to_string();
+    configuration.marketplace_assets.endpoint_url = "https://objects.trydirect.test".to_string();
+    configuration.marketplace_assets.region = "eu-central".to_string();
+    configuration.marketplace_assets.access_key_id = "marketplace-test-access".to_string();
+    configuration.marketplace_assets.secret_access_key = "marketplace-test-secret".to_string();
+    configuration.marketplace_assets.bucket_test = "marketplace-assets-test".to_string();
+    configuration.marketplace_assets.server_side_encryption = Some("AES256".to_string());
+    configuration
 }
 
 #[tokio::test]
@@ -480,4 +495,271 @@ async fn submit_template_sends_template_submitted_webhook() {
     assert_eq!("template_submitted", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
     assert_eq!("submit-notification-template", payload["code"]);
+}
+
+#[tokio::test]
+async fn asset_presign_and_finalize_persist_marketplace_asset_metadata() {
+    let app = match common::spawn_app_with_test_auth_configuration(
+        marketplace_storage_test_configuration(),
+    )
+    .await
+    {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Asset Template",
+            "slug": "asset-template",
+            "version": "1.0.0",
+            "stack_definition": {
+                "services": {
+                    "web": { "image": "nginx:1.27" }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string();
+
+    let presign_response = client
+        .post(format!(
+            "{}/api/v1/templates/{}/assets/presign",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "filename": "bundle.tgz",
+            "sha256": "abc12345",
+            "size": 2048,
+            "content_type": "application/gzip",
+            "fetch_target": "/bootstrap/bundle.tgz",
+            "immutable": true
+        }))
+        .send()
+        .await
+        .expect("Failed to presign asset upload");
+    assert_eq!(StatusCode::OK, presign_response.status());
+
+    let presign_body: Value = presign_response
+        .json()
+        .await
+        .expect("Presign response should be valid JSON");
+    let asset = presign_body["item"]["asset"].clone();
+    let asset_key = asset["key"]
+        .as_str()
+        .expect("Asset key should be returned")
+        .to_string();
+
+    assert_eq!("PUT", presign_body["item"]["method"]);
+    assert_eq!(
+        Some("AES256"),
+        presign_body["item"]["headers"]["x-amz-server-side-encryption"].as_str()
+    );
+    assert!(
+        presign_body["item"]["url"]
+            .as_str()
+            .expect("Presigned upload URL should be a string")
+            .contains("X-Amz-Signature=")
+    );
+    assert!(
+        asset_key.contains("/versions/1.0.0/assets/abc12345/bundle.tgz"),
+        "Asset key should use the immutable versioned layout"
+    );
+
+    let finalize_response = client
+        .post(format!(
+            "{}/api/v1/templates/{}/assets/finalize",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "bucket": asset["bucket"],
+            "key": asset["key"],
+            "filename": asset["filename"],
+            "sha256": asset["sha256"],
+            "size": asset["size"],
+            "content_type": asset["content_type"],
+            "fetch_target": asset["fetch_target"],
+            "immutable": true
+        }))
+        .send()
+        .await
+        .expect("Failed to finalize asset upload");
+    assert_eq!(StatusCode::OK, finalize_response.status());
+
+    let finalize_body: Value = finalize_response
+        .json()
+        .await
+        .expect("Finalize response should be valid JSON");
+    let persisted_assets = finalize_body["item"]
+        .as_array()
+        .expect("Finalize should return the latest version asset list");
+    assert_eq!(1, persisted_assets.len());
+    assert_eq!(asset_key, persisted_assets[0]["key"]);
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to mark template approved");
+
+    let detail_response = client
+        .get(format!("{}/api/v1/templates/asset-template", app.address))
+        .send()
+        .await
+        .expect("Failed to fetch template detail");
+    assert_eq!(StatusCode::OK, detail_response.status());
+
+    let detail_body: Value = detail_response
+        .json()
+        .await
+        .expect("Detail response should be valid JSON");
+    let detail_assets = detail_body["item"]["latest_version"]["assets"]
+        .as_array()
+        .expect("Approved template detail should expose latest version assets");
+    assert_eq!(1, detail_assets.len());
+    assert_eq!(asset_key, detail_assets[0]["key"]);
+
+    let download_response = client
+        .post(format!(
+            "{}/api/v1/templates/{}/assets/presign-download",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({ "key": asset_key }))
+        .send()
+        .await
+        .expect("Failed to presign asset download");
+    assert_eq!(StatusCode::OK, download_response.status());
+
+    let download_body: Value = download_response
+        .json()
+        .await
+        .expect("Download presign response should be valid JSON");
+    assert_eq!("GET", download_body["item"]["method"]);
+    assert!(
+        download_body["item"]["url"]
+            .as_str()
+            .expect("Presigned download URL should be a string")
+            .contains("X-Amz-Signature=")
+    );
+}
+
+#[tokio::test]
+async fn approved_template_assets_are_read_only() {
+    let app = match common::spawn_app_with_test_auth_configuration(
+        marketplace_storage_test_configuration(),
+    )
+    .await
+    {
+        Some(app) => app,
+        None => return,
+    };
+    let client = Client::new();
+
+    let create_response = create_template_with_body(
+        &client,
+        &app.address,
+        "test-bearer-token",
+        json!({
+            "name": "Approved Asset Template",
+            "slug": "approved-asset-template",
+            "version": "1.0.0",
+            "stack_definition": {
+                "services": {
+                    "web": { "image": "nginx:1.27" }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(StatusCode::CREATED, create_response.status());
+
+    let create_body: Value = create_response
+        .json()
+        .await
+        .expect("Create response should be valid JSON");
+    let template_id = create_body["item"]["id"]
+        .as_str()
+        .expect("Created template should include an id")
+        .to_string();
+
+    sqlx::query(
+        r#"UPDATE stack_template SET status = 'approved', approved_at = NOW() WHERE id = $1"#,
+    )
+    .bind(Uuid::parse_str(&template_id).expect("Template id should be a UUID"))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to mark template approved");
+
+    let presign_response = client
+        .post(format!(
+            "{}/api/v1/templates/{}/assets/presign",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "filename": "bundle.tgz",
+            "sha256": "abc12345",
+            "size": 2048
+        }))
+        .send()
+        .await
+        .expect("Failed to presign asset upload");
+    assert_eq!(StatusCode::BAD_REQUEST, presign_response.status());
+    let presign_body: Value = presign_response
+        .json()
+        .await
+        .expect("Presign error should be valid JSON");
+    assert!(
+        presign_body["message"]
+            .as_str()
+            .expect("Error response should include a message")
+            .contains("read-only")
+    );
+
+    let finalize_response = client
+        .post(format!(
+            "{}/api/v1/templates/{}/assets/finalize",
+            app.address, template_id
+        ))
+        .bearer_auth("test-bearer-token")
+        .json(&json!({
+            "bucket": "marketplace-assets-test",
+            "key": "templates/fake/versions/1.0.0/assets/abc12345/bundle.tgz",
+            "filename": "bundle.tgz",
+            "sha256": "abc12345",
+            "size": 2048
+        }))
+        .send()
+        .await
+        .expect("Failed to finalize asset upload");
+    assert_eq!(StatusCode::BAD_REQUEST, finalize_response.status());
+    let finalize_body: Value = finalize_response
+        .json()
+        .await
+        .expect("Finalize error should be valid JSON");
+    assert!(
+        finalize_body["message"]
+            .as_str()
+            .expect("Error response should include a message")
+            .contains("read-only")
+    );
 }

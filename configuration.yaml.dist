@@ -73,3 +73,19 @@ connectors:
 #   # Base path for app config files on the deployment server
 #   # Can also be set via DEFAULT_DEPLOY_DIR environment variable
 #   config_base_path: /home/trydirect
+
+# Marketplace asset storage (Hetzner Object Storage / S3-compatible)
+# marketplace_assets:
+#   enabled: true
+#   current_env: dev
+#   endpoint_url: https://eu-central.objects.hetzner.com
+#   region: eu-central
+#   access_key_id: your-access-key
+#   secret_access_key: your-secret-key
+#   bucket_dev: marketplace-assets-dev
+#   bucket_test: marketplace-assets-test
+#   bucket_staging: marketplace-assets-staging
+#   bucket_prod: marketplace-assets-prod
+#   server_side_encryption: AES256
+#   presign_put_ttl_secs: 900
+#   presign_get_ttl_secs: 300

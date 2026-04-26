@@ -1,7 +1,9 @@
 use crate::connectors::{MarketplaceWebhookSender, WebhookSenderConfig};
+use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::services;
 use actix_web::{get, post, put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -202,6 +204,118 @@ pub struct UpdateTemplateRequest {
     pub vendor_url: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct PresignAssetUploadRequest {
+    pub filename: String,
+    pub sha256: String,
+    pub size: i64,
+    pub content_type: Option<String>,
+    pub mount_path: Option<String>,
+    pub fetch_target: Option<String>,
+    pub decompress: Option<bool>,
+    pub executable: Option<bool>,
+    pub immutable: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct FinalizeAssetRequest {
+    pub storage_provider: Option<String>,
+    pub bucket: String,
+    pub key: String,
+    pub filename: String,
+    pub sha256: String,
+    pub size: i64,
+    pub content_type: Option<String>,
+    pub mount_path: Option<String>,
+    pub fetch_target: Option<String>,
+    pub decompress: Option<bool>,
+    pub executable: Option<bool>,
+    pub immutable: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PresignAssetDownloadRequest {
+    pub key: String,
+}
+
+fn ensure_template_owner(
+    template: &models::StackTemplate,
+    user_id: &str,
+) -> Result<(), actix_web::Error> {
+    if template.creator_user_id == user_id {
+        Ok(())
+    } else {
+        Err(JsonResponse::<serde_json::Value>::build().forbidden("Forbidden"))
+    }
+}
+
+fn ensure_template_assets_editable(template: &models::StackTemplate) -> Result<(), actix_web::Error> {
+    if matches!(template.status.as_str(), "draft" | "rejected" | "needs_changes") {
+        Ok(())
+    } else {
+        Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("Template assets are read-only in the current status"))
+    }
+}
+
+fn map_storage_error(error: services::MarketplaceAssetStorageError) -> actix_web::Error {
+    match error {
+        services::MarketplaceAssetStorageError::NotConfigured => {
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Marketplace asset storage is not configured")
+        }
+        other => JsonResponse::<serde_json::Value>::build().bad_request(other.to_string()),
+    }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|entry| {
+        let trimmed = entry.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn build_marketplace_asset(
+    request: FinalizeAssetRequest,
+) -> Result<models::MarketplaceAsset, actix_web::Error> {
+    if request.size <= 0 {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("Asset size must be a positive integer"));
+    }
+
+    let bucket = request.bucket.trim().to_string();
+    let key = request.key.trim().to_string();
+    let filename = request.filename.trim().to_string();
+    let sha256 = request.sha256.trim().to_string();
+
+    if bucket.is_empty() || key.is_empty() || filename.is_empty() || sha256.is_empty() {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("bucket, key, filename, and sha256 are required"));
+    }
+
+    Ok(models::MarketplaceAsset {
+        storage_provider: request
+            .storage_provider
+            .unwrap_or_else(|| services::MARKETPLACE_ASSET_STORAGE_PROVIDER.to_string()),
+        bucket,
+        key,
+        filename,
+        sha256,
+        size: request.size,
+        content_type: normalize_optional_text(request.content_type)
+            .unwrap_or_else(|| "application/octet-stream".to_string()),
+        mount_path: normalize_optional_text(request.mount_path),
+        fetch_target: normalize_optional_text(request.fetch_target),
+        decompress: request.decompress.unwrap_or(false),
+        executable: request.executable.unwrap_or(false),
+        immutable: request.immutable.unwrap_or(true),
+    })
+}
+
 #[tracing::instrument(name = "Update template metadata", skip_all)]
 #[put("/{id}")]
 pub async fn update_handler(
@@ -259,6 +373,156 @@ pub async fn update_handler(
     } else {
         Err(JsonResponse::<serde_json::Value>::build().not_found("Not Found"))
     }
+}
+
+#[tracing::instrument(name = "Presign marketplace asset upload", skip_all)]
+#[post("/{id}/assets/presign")]
+pub async fn presign_asset_upload_handler(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
+    body: web::Json<PresignAssetUploadRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+
+    ensure_template_owner(&template, &user.id)?;
+    ensure_template_assets_editable(&template)?;
+
+    let latest_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .bad_request("Create a template version before uploading assets")
+        })?;
+
+    let presigned = services::presign_asset_upload(
+        &settings.marketplace_assets,
+        &id,
+        &latest_version.version,
+        services::MarketplaceAssetUploadRequest {
+            filename: body.filename.clone(),
+            sha256: body.sha256.clone(),
+            size: body.size,
+            content_type: body.content_type.clone(),
+            mount_path: body.mount_path.clone(),
+            fetch_target: body.fetch_target.clone(),
+            decompress: body.decompress.unwrap_or(false),
+            executable: body.executable.unwrap_or(false),
+            immutable: body.immutable.unwrap_or(true),
+        },
+    )
+    .map_err(map_storage_error)?;
+
+    let payload = serde_json::to_value(presigned).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(payload)
+        .ok("OK"))
+}
+
+#[tracing::instrument(name = "Finalize marketplace asset upload", skip_all)]
+#[post("/{id}/assets/finalize")]
+pub async fn finalize_asset_upload_handler(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<FinalizeAssetRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+
+    ensure_template_owner(&template, &user.id)?;
+    ensure_template_assets_editable(&template)?;
+
+    let latest_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .bad_request("Create a template version before finalizing assets")
+        })?;
+
+    let asset = build_marketplace_asset(body.into_inner())?;
+    if !asset
+        .key
+        .contains(&format!("/versions/{}/", latest_version.version))
+    {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("Asset key does not match the latest template version"));
+    }
+
+    let persisted = db::marketplace::upsert_latest_version_asset(
+        pg_pool.get_ref(),
+        id,
+        &serde_json::to_value(&asset).map_err(|err| {
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+        })?,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(persisted)
+        .ok("OK"))
+}
+
+#[tracing::instrument(name = "Presign marketplace asset download", skip_all)]
+#[post("/{id}/assets/presign-download")]
+pub async fn presign_asset_download_handler(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
+    body: web::Json<PresignAssetDownloadRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+
+    ensure_template_owner(&template, &user.id)?;
+
+    let asset_value = db::marketplace::get_latest_version_asset_by_key(
+        pg_pool.get_ref(),
+        id,
+        body.key.trim(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+    .ok_or_else(|| {
+        JsonResponse::<serde_json::Value>::build().not_found("Asset not found for latest version")
+    })?;
+
+    let asset: models::MarketplaceAsset = serde_json::from_value(asset_value).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    let presigned =
+        services::presign_asset_download(&settings.marketplace_assets, &asset).map_err(map_storage_error)?;
+    let payload = serde_json::to_value(presigned).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(payload)
+        .ok("OK"))
 }
 
 #[tracing::instrument(name = "Submit template for review", skip_all)]

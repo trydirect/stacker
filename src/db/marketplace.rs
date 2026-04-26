@@ -206,20 +206,20 @@ pub async fn get_by_slug_with_latest(
         "Not Found".to_string()
     })?;
 
-    let version = sqlx::query_as!(
-        StackTemplateVersion,
+    let version = sqlx::query_as::<_, StackTemplateVersion>(
         r#"SELECT 
             id,
             template_id,
             version,
             stack_definition,
+            assets,
             definition_format,
             changelog,
             is_latest,
             created_at
         FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
-        template.id
     )
+    .bind(template.id)
     .fetch_optional(pool)
     .instrument(query_span)
     .await
@@ -400,18 +400,17 @@ pub async fn set_latest_version(
         "Internal Server Error".to_string()
     })?;
 
-    let rec = sqlx::query_as!(
-        StackTemplateVersion,
+    let rec = sqlx::query_as::<_, StackTemplateVersion>(
         r#"INSERT INTO stack_template_version (
-            template_id, version, stack_definition, definition_format, changelog, is_latest
-        ) VALUES ($1,$2,$3,$4,$5,true)
-        RETURNING id, template_id, version, stack_definition, definition_format, changelog, is_latest, created_at"#,
-        template_id,
-        version,
-        stack_definition,
-        definition_format,
-        changelog
+            template_id, version, stack_definition, assets, definition_format, changelog, is_latest
+        ) VALUES ($1,$2,$3,'[]'::jsonb,$4,$5,true)
+        RETURNING id, template_id, version, stack_definition, assets, definition_format, changelog, is_latest, created_at"#,
     )
+    .bind(template_id)
+    .bind(version)
+    .bind(stack_definition)
+    .bind(definition_format)
+    .bind(changelog)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -568,18 +567,17 @@ pub async fn resubmit_with_new_version(
     })?;
 
     // Insert new version
-    let ver = sqlx::query_as!(
-        StackTemplateVersion,
+    let ver = sqlx::query_as::<_, StackTemplateVersion>(
         r#"INSERT INTO stack_template_version (
-            template_id, version, stack_definition, definition_format, changelog, is_latest
-        ) VALUES ($1,$2,$3,$4,$5,true)
-        RETURNING id, template_id, version, stack_definition, definition_format, changelog, is_latest, created_at"#,
-        template_id,
-        version,
-        stack_definition,
-        definition_format,
-        changelog
+            template_id, version, stack_definition, assets, definition_format, changelog, is_latest
+        ) VALUES ($1,$2,$3,'[]'::jsonb,$4,$5,true)
+        RETURNING id, template_id, version, stack_definition, assets, definition_format, changelog, is_latest, created_at"#,
     )
+    .bind(template_id)
+    .bind(version)
+    .bind(stack_definition)
+    .bind(definition_format)
+    .bind(changelog)
     .fetch_one(&mut *tx)
     .instrument(query_span)
     .await
@@ -936,7 +934,7 @@ pub async fn list_versions_by_template(
 
     sqlx::query_as::<_, StackTemplateVersion>(
         r#"
-        SELECT id, template_id, version, stack_definition, definition_format,
+        SELECT id, template_id, version, stack_definition, assets, definition_format,
                changelog, is_latest, created_at
         FROM stack_template_version
         WHERE template_id = $1
@@ -951,6 +949,138 @@ pub async fn list_versions_by_template(
         tracing::error!("list_versions_by_template error: {:?}", e);
         "Internal Server Error".to_string()
     })
+}
+
+pub async fn get_latest_version_by_template(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Option<StackTemplateVersion>, String> {
+    let query_span =
+        tracing::info_span!("get_latest_version_by_template", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateVersion>(
+        r#"
+        SELECT id, template_id, version, stack_definition, assets, definition_format,
+               changelog, is_latest, created_at
+        FROM stack_template_version
+        WHERE template_id = $1 AND is_latest = true
+        LIMIT 1
+        "#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_latest_version_by_template error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+pub async fn upsert_latest_version_asset(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+    asset: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let query_span = tracing::info_span!("upsert_latest_version_asset", template_id = %template_id);
+
+    let existing_assets: serde_json::Value = sqlx::query_scalar(
+        r#"
+        SELECT assets
+        FROM stack_template_version
+        WHERE template_id = $1 AND is_latest = true
+        LIMIT 1
+        "#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("load_latest_version_assets error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?
+    .ok_or_else(|| "Latest template version not found".to_string())?;
+
+    let asset_key = asset
+        .get("key")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Asset key is required".to_string())?;
+
+    let mut assets = existing_assets.as_array().cloned().unwrap_or_default();
+    if let Some(index) = assets.iter().position(|item| {
+        item.get("key")
+            .and_then(|value| value.as_str())
+            .map(|key| key == asset_key)
+            .unwrap_or(false)
+    }) {
+        assets[index] = asset.clone();
+    } else {
+        assets.push(asset.clone());
+    }
+
+    let updated_assets = serde_json::Value::Array(assets);
+
+    sqlx::query(
+        r#"
+        UPDATE stack_template_version
+        SET assets = $2
+        WHERE template_id = $1 AND is_latest = true
+        "#,
+    )
+    .bind(template_id)
+    .bind(&updated_assets)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("upsert_latest_version_asset error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(updated_assets)
+}
+
+pub async fn get_latest_version_asset_by_key(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+    asset_key: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let query_span = tracing::info_span!(
+        "get_latest_version_asset_by_key",
+        template_id = %template_id,
+        asset_key = %asset_key
+    );
+
+    let assets: serde_json::Value = sqlx::query_scalar(
+        r#"
+        SELECT assets
+        FROM stack_template_version
+        WHERE template_id = $1 AND is_latest = true
+        LIMIT 1
+        "#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_latest_version_asset_by_key error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?
+    .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+
+    Ok(assets.as_array().and_then(|items| {
+        items
+            .iter()
+            .find(|item| {
+                item.get("key")
+                    .and_then(|value| value.as_str())
+                    .map(|key| key == asset_key)
+                    .unwrap_or(false)
+            })
+            .cloned()
+    }))
 }
 
 /// List all reviews for a template, ordered by submission date descending

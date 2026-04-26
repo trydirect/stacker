@@ -75,6 +75,23 @@ pub async fn spawn_app() -> Option<TestApp> {
     spawn_app_with_configuration(configuration).await
 }
 
+pub async fn spawn_app_with_test_auth_configuration(mut configuration: Settings) -> Option<TestApp> {
+    apply_test_database_env_overrides(&mut configuration);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("Failed to bind port for testing auth server");
+
+    configuration.auth_url = format!(
+        "http://127.0.0.1:{}/me",
+        listener.local_addr().unwrap().port()
+    );
+
+    let _ = tokio::spawn(mock_auth_server(listener));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    spawn_app_with_configuration(configuration).await
+}
+
 fn apply_test_database_env_overrides(configuration: &mut Settings) {
     if let Ok(host) = std::env::var("PGHOST") {
         configuration.database.host = host;

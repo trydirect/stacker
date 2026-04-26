@@ -5,6 +5,7 @@ pub mod deployment_identifier;
 pub mod grpc_pipe;
 pub mod handoff;
 pub mod log_cache;
+pub mod marketplace_assets;
 pub mod project;
 pub mod project_app_service;
 mod rating;
@@ -20,5 +21,10 @@ pub use deployment_identifier::{
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;
+pub use marketplace_assets::{
+    build_asset_key, presign_asset_download, presign_asset_upload,
+    MarketplaceAssetStorageError, MarketplaceAssetUploadRequest,
+    PresignedMarketplaceAssetResponse, MARKETPLACE_ASSET_STORAGE_PROVIDER,
+};
 pub use project_app_service::{ProjectAppError, ProjectAppService, SyncSummary};
 pub use vault_service::{AppConfig, VaultError, VaultService};

@@ -60,10 +60,36 @@ pub struct StackTemplateVersion {
     pub template_id: Uuid,
     pub version: String,
     pub stack_definition: serde_json::Value,
+    pub assets: serde_json::Value,
     pub definition_format: Option<String>,
     pub changelog: Option<String>,
     pub is_latest: Option<bool>,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MarketplaceAsset {
+    pub storage_provider: String,
+    pub bucket: String,
+    pub key: String,
+    pub filename: String,
+    pub sha256: String,
+    pub size: i64,
+    pub content_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mount_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetch_target: Option<String>,
+    #[serde(default)]
+    pub decompress: bool,
+    #[serde(default)]
+    pub executable: bool,
+    #[serde(default = "default_true")]
+    pub immutable: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
