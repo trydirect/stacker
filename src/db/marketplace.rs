@@ -212,7 +212,11 @@ pub async fn get_by_slug_with_latest(
             template_id,
             version,
             stack_definition,
+            config_files,
             assets,
+            seed_jobs,
+            post_deploy_hooks,
+            update_mode_capabilities,
             definition_format,
             changelog,
             is_latest,
@@ -295,6 +299,7 @@ pub async fn create_draft(
     infrastructure_requirements: serde_json::Value,
     price: f64,
     billing_cycle: &str,
+    required_plan_name: Option<&str>,
     currency: &str,
     public_ports: Option<serde_json::Value>,
     vendor_url: Option<&str>,
@@ -307,9 +312,9 @@ pub async fn create_draft(
         r#"INSERT INTO stack_template (
             creator_user_id, creator_name, name, slug,
             short_description, long_description, category_id,
-            tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, currency,
+            tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, required_plan_name, currency,
             public_ports, vendor_url
-        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13,$14,$15)
+        ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13,$14,$15,$16)
         RETURNING 
             id,
             creator_user_id,
@@ -351,6 +356,7 @@ pub async fn create_draft(
     .bind(infrastructure_requirements)
     .bind(price_f64)
     .bind(billing_cycle)
+    .bind(required_plan_name)
     .bind(currency)
     .bind(public_ports)
     .bind(vendor_url)
@@ -383,6 +389,11 @@ pub async fn set_latest_version(
     stack_definition: serde_json::Value,
     definition_format: Option<&str>,
     changelog: Option<&str>,
+    config_files: serde_json::Value,
+    assets: serde_json::Value,
+    seed_jobs: serde_json::Value,
+    post_deploy_hooks: serde_json::Value,
+    update_mode_capabilities: Option<serde_json::Value>,
 ) -> Result<StackTemplateVersion, String> {
     let query_span =
         tracing::info_span!("marketplace_set_latest_version", template_id = %template_id);
@@ -402,13 +413,41 @@ pub async fn set_latest_version(
 
     let rec = sqlx::query_as::<_, StackTemplateVersion>(
         r#"INSERT INTO stack_template_version (
-            template_id, version, stack_definition, assets, definition_format, changelog, is_latest
-        ) VALUES ($1,$2,$3,'[]'::jsonb,$4,$5,true)
-        RETURNING id, template_id, version, stack_definition, assets, definition_format, changelog, is_latest, created_at"#,
+            template_id,
+            version,
+            stack_definition,
+            config_files,
+            assets,
+            seed_jobs,
+            post_deploy_hooks,
+            update_mode_capabilities,
+            definition_format,
+            changelog,
+            is_latest
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+        RETURNING
+            id,
+            template_id,
+            version,
+            stack_definition,
+            config_files,
+            assets,
+            seed_jobs,
+            post_deploy_hooks,
+            update_mode_capabilities,
+            definition_format,
+            changelog,
+            is_latest,
+            created_at"#,
     )
     .bind(template_id)
     .bind(version)
     .bind(stack_definition)
+    .bind(config_files)
+    .bind(assets)
+    .bind(seed_jobs)
+    .bind(post_deploy_hooks)
+    .bind(update_mode_capabilities)
     .bind(definition_format)
     .bind(changelog)
     .fetch_one(pool)
@@ -420,6 +459,87 @@ pub async fn set_latest_version(
     })?;
 
     Ok(rec)
+}
+
+pub async fn upsert_latest_version(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    version: &str,
+    stack_definition: serde_json::Value,
+    definition_format: Option<&str>,
+    changelog: Option<&str>,
+    config_files: serde_json::Value,
+    assets: serde_json::Value,
+    seed_jobs: serde_json::Value,
+    post_deploy_hooks: serde_json::Value,
+    update_mode_capabilities: Option<serde_json::Value>,
+) -> Result<StackTemplateVersion, String> {
+    let query_span =
+        tracing::info_span!("marketplace_upsert_latest_version", template_id = %template_id);
+
+    let updated = sqlx::query_as::<_, StackTemplateVersion>(
+        r#"UPDATE stack_template_version
+           SET version = $2,
+               stack_definition = $3,
+               config_files = $4,
+               assets = $5,
+               seed_jobs = $6,
+               post_deploy_hooks = $7,
+               update_mode_capabilities = $8,
+               definition_format = $9,
+               changelog = $10
+           WHERE template_id = $1 AND is_latest = true
+           RETURNING
+               id,
+               template_id,
+               version,
+               stack_definition,
+               config_files,
+               assets,
+               seed_jobs,
+               post_deploy_hooks,
+               update_mode_capabilities,
+               definition_format,
+               changelog,
+               is_latest,
+               created_at"#,
+    )
+    .bind(template_id)
+    .bind(version)
+    .bind(stack_definition.clone())
+    .bind(config_files.clone())
+    .bind(assets.clone())
+    .bind(seed_jobs.clone())
+    .bind(post_deploy_hooks.clone())
+    .bind(update_mode_capabilities.clone())
+    .bind(definition_format)
+    .bind(changelog)
+    .fetch_optional(pool)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("upsert_latest_version update error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    if let Some(version_row) = updated {
+        return Ok(version_row);
+    }
+
+    set_latest_version(
+        pool,
+        template_id,
+        version,
+        stack_definition,
+        definition_format,
+        changelog,
+        config_files,
+        assets,
+        seed_jobs,
+        post_deploy_hooks,
+        update_mode_capabilities,
+    )
+    .await
 }
 
 pub async fn update_metadata(
@@ -434,6 +554,7 @@ pub async fn update_metadata(
     infrastructure_requirements: Option<serde_json::Value>,
     price: Option<f64>,
     billing_cycle: Option<&str>,
+    required_plan_name: Option<&str>,
     currency: Option<&str>,
     public_ports: Option<serde_json::Value>,
     vendor_url: Option<&str>,
@@ -453,7 +574,7 @@ pub async fn update_metadata(
         "Not Found".to_string()
     })?;
 
-    if status != "draft" && status != "rejected" {
+    if status != "draft" && status != "rejected" && status != "needs_changes" {
         return Err("Template not editable in current status".to_string());
     }
 
@@ -468,9 +589,10 @@ pub async fn update_metadata(
             infrastructure_requirements = COALESCE($8, infrastructure_requirements),
             price = COALESCE($9, price),
             billing_cycle = COALESCE($10, billing_cycle),
-            currency = COALESCE($11, currency),
-            public_ports = COALESCE($12, public_ports),
-            vendor_url = COALESCE($13, vendor_url)
+            required_plan_name = COALESCE($11, required_plan_name),
+            currency = COALESCE($12, currency),
+            public_ports = COALESCE($13, public_ports),
+            vendor_url = COALESCE($14, vendor_url)
         WHERE id = $1::uuid"#,
     )
     .bind(template_id)
@@ -483,6 +605,7 @@ pub async fn update_metadata(
     .bind(infrastructure_requirements)
     .bind(price)
     .bind(billing_cycle)
+    .bind(required_plan_name)
     .bind(currency)
     .bind(public_ports)
     .bind(vendor_url)
@@ -491,6 +614,84 @@ pub async fn update_metadata(
     .await
     .map_err(|e| {
         tracing::error!("update_metadata error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn update_metadata_for_resubmit(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+    name: Option<&str>,
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+    category_code: Option<&str>,
+    tags: Option<serde_json::Value>,
+    tech_stack: Option<serde_json::Value>,
+    infrastructure_requirements: Option<serde_json::Value>,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    required_plan_name: Option<&str>,
+    currency: Option<&str>,
+    public_ports: Option<serde_json::Value>,
+    vendor_url: Option<&str>,
+) -> Result<bool, String> {
+    let query_span =
+        tracing::info_span!("marketplace_update_metadata_for_resubmit", template_id = %template_id);
+
+    let status = sqlx::query_scalar!(
+        r#"SELECT status FROM stack_template WHERE id = $1::uuid"#,
+        template_id
+    )
+    .fetch_one(pool)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("get status for resubmit error: {:?}", e);
+        "Not Found".to_string()
+    })?;
+
+    if status != "rejected" && status != "needs_changes" && status != "approved" {
+        return Err("Template metadata is not editable in current status".to_string());
+    }
+
+    let res = sqlx::query(
+        r#"UPDATE stack_template SET
+            name = COALESCE($2, name),
+            short_description = COALESCE($3, short_description),
+            long_description = COALESCE($4, long_description),
+            category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
+            tags = COALESCE($6, tags),
+            tech_stack = COALESCE($7, tech_stack),
+            infrastructure_requirements = COALESCE($8, infrastructure_requirements),
+            price = COALESCE($9, price),
+            billing_cycle = COALESCE($10, billing_cycle),
+            required_plan_name = COALESCE($11, required_plan_name),
+            currency = COALESCE($12, currency),
+            public_ports = COALESCE($13, public_ports),
+            vendor_url = COALESCE($14, vendor_url)
+        WHERE id = $1::uuid"#,
+    )
+    .bind(template_id)
+    .bind(name)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags)
+    .bind(tech_stack)
+    .bind(infrastructure_requirements)
+    .bind(price)
+    .bind(billing_cycle)
+    .bind(required_plan_name)
+    .bind(currency)
+    .bind(public_ports)
+    .bind(vendor_url)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("update_metadata_for_resubmit error: {:?}", e);
         "Internal Server Error".to_string()
     })?;
 
@@ -522,10 +723,28 @@ pub async fn submit_for_review(pool: &PgPool, template_id: &uuid::Uuid) -> Resul
 pub async fn resubmit_with_new_version(
     pool: &PgPool,
     template_id: &uuid::Uuid,
+    name: Option<&str>,
+    short_description: Option<&str>,
+    long_description: Option<&str>,
+    category_code: Option<&str>,
+    tags: Option<serde_json::Value>,
+    tech_stack: Option<serde_json::Value>,
+    infrastructure_requirements: Option<serde_json::Value>,
+    price: Option<f64>,
+    billing_cycle: Option<&str>,
+    required_plan_name: Option<&str>,
+    currency: Option<&str>,
+    public_ports: Option<serde_json::Value>,
+    vendor_url: Option<&str>,
     version: &str,
     stack_definition: serde_json::Value,
     definition_format: Option<&str>,
     changelog: Option<&str>,
+    config_files: serde_json::Value,
+    assets: serde_json::Value,
+    seed_jobs: serde_json::Value,
+    post_deploy_hooks: serde_json::Value,
+    update_mode_capabilities: Option<serde_json::Value>,
 ) -> Result<StackTemplateVersion, String> {
     let query_span =
         tracing::info_span!("marketplace_resubmit_with_new_version", template_id = %template_id);
@@ -553,6 +772,128 @@ pub async fn resubmit_with_new_version(
         return Err("Template cannot be resubmitted from its current status".to_string());
     }
 
+    sqlx::query(
+        r#"UPDATE stack_template SET
+            name = COALESCE($2, name),
+            short_description = COALESCE($3, short_description),
+            long_description = COALESCE($4, long_description),
+            category_id = COALESCE((SELECT id FROM stack_category WHERE name = $5), category_id),
+            tags = COALESCE($6, tags),
+            tech_stack = COALESCE($7, tech_stack),
+            infrastructure_requirements = COALESCE($8, infrastructure_requirements),
+            price = COALESCE($9, price),
+            billing_cycle = COALESCE($10, billing_cycle),
+            required_plan_name = COALESCE($11, required_plan_name),
+            currency = COALESCE($12, currency),
+            public_ports = COALESCE($13, public_ports),
+            vendor_url = COALESCE($14, vendor_url)
+         WHERE id = $1::uuid"#,
+    )
+    .bind(template_id)
+    .bind(name)
+    .bind(short_description)
+    .bind(long_description)
+    .bind(category_code)
+    .bind(tags.clone())
+    .bind(tech_stack.clone())
+    .bind(infrastructure_requirements.clone())
+    .bind(price)
+    .bind(billing_cycle)
+    .bind(required_plan_name)
+    .bind(currency)
+    .bind(public_ports.clone())
+    .bind(vendor_url)
+    .execute(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("resubmit metadata update error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    let current_latest = sqlx::query_as::<_, StackTemplateVersion>(
+        r#"SELECT
+                id,
+                template_id,
+                version,
+                stack_definition,
+                config_files,
+                assets,
+                seed_jobs,
+                post_deploy_hooks,
+                update_mode_capabilities,
+                definition_format,
+                changelog,
+                is_latest,
+                created_at
+           FROM stack_template_version
+           WHERE template_id = $1 AND is_latest = true
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(&mut *tx)
+    .instrument(query_span.clone())
+    .await
+    .map_err(|e| {
+        tracing::error!("load current latest version error: {:?}", e);
+        "Internal Server Error".to_string()
+    })?;
+
+    if let Some(current_latest) = current_latest {
+        if current_latest.version == version {
+            let ver = sqlx::query_as::<_, StackTemplateVersion>(
+                r#"UPDATE stack_template_version
+                   SET stack_definition = $2,
+                       config_files = $3,
+                       assets = $4,
+                       seed_jobs = $5,
+                       post_deploy_hooks = $6,
+                       update_mode_capabilities = $7,
+                       definition_format = $8,
+                       changelog = $9,
+                       is_latest = true
+                   WHERE id = $1
+                   RETURNING
+                       id,
+                       template_id,
+                       version,
+                       stack_definition,
+                       config_files,
+                       assets,
+                       seed_jobs,
+                       post_deploy_hooks,
+                       update_mode_capabilities,
+                       definition_format,
+                       changelog,
+                       is_latest,
+                       created_at"#,
+            )
+            .bind(current_latest.id)
+            .bind(stack_definition.clone())
+            .bind(config_files.clone())
+            .bind(assets.clone())
+            .bind(seed_jobs.clone())
+            .bind(post_deploy_hooks.clone())
+            .bind(update_mode_capabilities.clone())
+            .bind(definition_format)
+            .bind(changelog)
+            .fetch_one(&mut *tx)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("update same-version resubmit error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
+
+            tx.commit().await.map_err(|e| {
+                tracing::error!("tx commit error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
+
+            return Ok(ver);
+        }
+    }
+
     // Clear previous latest version
     sqlx::query!(
         r#"UPDATE stack_template_version SET is_latest = false WHERE template_id = $1 AND is_latest = true"#,
@@ -569,13 +910,41 @@ pub async fn resubmit_with_new_version(
     // Insert new version
     let ver = sqlx::query_as::<_, StackTemplateVersion>(
         r#"INSERT INTO stack_template_version (
-            template_id, version, stack_definition, assets, definition_format, changelog, is_latest
-        ) VALUES ($1,$2,$3,'[]'::jsonb,$4,$5,true)
-        RETURNING id, template_id, version, stack_definition, assets, definition_format, changelog, is_latest, created_at"#,
+            template_id,
+            version,
+            stack_definition,
+            config_files,
+            assets,
+            seed_jobs,
+            post_deploy_hooks,
+            update_mode_capabilities,
+            definition_format,
+            changelog,
+            is_latest
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
+        RETURNING
+            id,
+            template_id,
+            version,
+            stack_definition,
+            config_files,
+            assets,
+            seed_jobs,
+            post_deploy_hooks,
+            update_mode_capabilities,
+            definition_format,
+            changelog,
+            is_latest,
+            created_at"#,
     )
     .bind(template_id)
     .bind(version)
     .bind(stack_definition)
+    .bind(config_files)
+    .bind(assets)
+    .bind(seed_jobs)
+    .bind(post_deploy_hooks)
+    .bind(update_mode_capabilities)
     .bind(definition_format)
     .bind(changelog)
     .fetch_one(&mut *tx)
@@ -622,8 +991,18 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
             t.updated_at,
             t.approved_at,
             t.verifications,
-            t.infrastructure_requirements
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url,
+            v.version,
+            v.changelog,
+            COALESCE(v.config_files, '[]'::jsonb) AS config_files,
+            COALESCE(v.assets, '[]'::jsonb) AS assets,
+            COALESCE(v.seed_jobs, '[]'::jsonb) AS seed_jobs,
+            COALESCE(v.post_deploy_hooks, '[]'::jsonb) AS post_deploy_hooks,
+            v.update_mode_capabilities
         FROM stack_template t
+        LEFT JOIN stack_template_version v ON v.template_id = t.id AND v.is_latest = true
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.creator_user_id = $1
         ORDER BY t.created_at DESC"#,
@@ -934,8 +1313,9 @@ pub async fn list_versions_by_template(
 
     sqlx::query_as::<_, StackTemplateVersion>(
         r#"
-        SELECT id, template_id, version, stack_definition, assets, definition_format,
-               changelog, is_latest, created_at
+        SELECT id, template_id, version, stack_definition, config_files, assets, seed_jobs,
+               post_deploy_hooks, update_mode_capabilities, definition_format, changelog,
+               is_latest, created_at
         FROM stack_template_version
         WHERE template_id = $1
         ORDER BY created_at DESC
@@ -960,8 +1340,9 @@ pub async fn get_latest_version_by_template(
 
     sqlx::query_as::<_, StackTemplateVersion>(
         r#"
-        SELECT id, template_id, version, stack_definition, assets, definition_format,
-               changelog, is_latest, created_at
+        SELECT id, template_id, version, stack_definition, config_files, assets, seed_jobs,
+               post_deploy_hooks, update_mode_capabilities, definition_format, changelog,
+               is_latest, created_at
         FROM stack_template_version
         WHERE template_id = $1 AND is_latest = true
         LIMIT 1
@@ -1462,10 +1843,7 @@ pub async fn update_verifications(
 }
 
 /// Increment view_count for a marketplace template
-pub async fn increment_view_count(
-    pool: &PgPool,
-    template_id: &uuid::Uuid,
-) -> Result<bool, String> {
+pub async fn increment_view_count(pool: &PgPool, template_id: &uuid::Uuid) -> Result<bool, String> {
     let query_span =
         tracing::info_span!("marketplace_increment_view_count", template_id = %template_id);
 
@@ -1530,17 +1908,16 @@ pub async fn record_deploy_complete_once(
         "Internal Server Error".to_string()
     })?;
 
-    let template_exists: Option<i32> = sqlx::query_scalar(
-        r#"SELECT 1 FROM stack_template WHERE id = $1"#,
-    )
-    .bind(*template_id)
-    .fetch_optional(&mut *tx)
-    .instrument(query_span.clone())
-    .await
-    .map_err(|e| {
-        tracing::error!("record_deploy_complete_once template lookup error: {:?}", e);
-        "Internal Server Error".to_string()
-    })?;
+    let template_exists: Option<i32> =
+        sqlx::query_scalar(r#"SELECT 1 FROM stack_template WHERE id = $1"#)
+            .bind(*template_id)
+            .fetch_optional(&mut *tx)
+            .instrument(query_span.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("record_deploy_complete_once template lookup error: {:?}", e);
+                "Internal Server Error".to_string()
+            })?;
 
     if template_exists.is_none() {
         tx.rollback().await.map_err(|e| {
@@ -1568,7 +1945,10 @@ pub async fn record_deploy_complete_once(
 
     if insert_res.rows_affected() == 0 {
         tx.commit().await.map_err(|e| {
-            tracing::error!("record_deploy_complete_once duplicate commit error: {:?}", e);
+            tracing::error!(
+                "record_deploy_complete_once duplicate commit error: {:?}",
+                e
+            );
             "Internal Server Error".to_string()
         })?;
         return Ok(Some(false));
@@ -1594,4 +1974,86 @@ pub async fn record_deploy_complete_once(
     })?;
 
     Ok(Some(true))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TDD Stub Functions for Metrics/Analytics
+// These are intentionally unimplemented - tests will FAIL until implemented
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Insert a view event into marketplace_event table
+/// 
+/// TDD stub - unimplemented. Requires:
+/// - marketplace_event table migration
+/// - INSERT query with template_id, event_type='view', viewer_user_id, occurred_at, metadata
+pub async fn insert_view_event(
+    _pool: &PgPool,
+    _template_id: uuid::Uuid,
+    _viewer_user_id: &str,
+    _metadata: serde_json::Value,
+) -> Result<(), String> {
+    Err("insert_view_event not implemented - requires marketplace_event table".to_string())
+}
+
+/// Insert a deploy event into marketplace_event table
+///
+/// TDD stub - unimplemented. Requires:
+/// - marketplace_event table migration with cloud_provider column
+/// - INSERT query with template_id, event_type='deploy', deployer_user_id, cloud_provider, occurred_at, metadata
+pub async fn insert_deploy_event(
+    _pool: &PgPool,
+    _template_id: uuid::Uuid,
+    _deployer_user_id: &str,
+    _cloud_provider: &str,
+    _metadata: serde_json::Value,
+) -> Result<(), String> {
+    Err("insert_deploy_event not implemented - requires marketplace_event table".to_string())
+}
+
+/// Get vendor analytics for all templates owned by creator_user_id
+///
+/// TDD stub - unimplemented. Requires:
+/// - Query logic to aggregate events by template.creator_user_id
+/// - Owner-scoped filtering (only templates where creator_user_id matches)
+/// - Fallback to stack_template.view_count/deploy_count when no events exist
+/// - Cloud breakdown with percentages
+/// - Time series buckets
+pub async fn get_vendor_analytics(
+    _pool: &PgPool,
+    _creator_user_id: &str,
+    _period: Option<&str>,
+) -> Result<crate::models::marketplace::VendorAnalytics, String> {
+    Err("get_vendor_analytics not implemented - requires analytics query logic".to_string())
+}
+
+/// Get vendor analytics for a specific period with start/end dates
+///
+/// TDD stub - unimplemented. Requires:
+/// - Period filtering logic (7d, 30d, 90d, all, custom)
+/// - Date range filtering with start_date/end_date for custom period
+/// - Zero-filled time series buckets for missing data
+/// - Bucket granularity calculation (day/week/month based on period)
+pub async fn get_vendor_analytics_for_period(
+    _pool: &PgPool,
+    _creator_user_id: &str,
+    _period_key: &str,
+    _start_date: Option<chrono::DateTime<chrono::Utc>>,
+    _end_date: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<crate::models::marketplace::VendorAnalytics, String> {
+    Err("get_vendor_analytics_for_period not implemented - requires period filtering".to_string())
+}
+
+/// Get template events filtered by creator_user_id (owner-scoped)
+///
+/// TDD stub - unimplemented. Requires:
+/// - JOIN marketplace_event with stack_template on template_id
+/// - Filter WHERE stack_template.creator_user_id = $creator_user_id
+/// - Optional date range filtering
+pub async fn get_template_events_by_creator(
+    _pool: &PgPool,
+    _creator_user_id: &str,
+    _start_date: Option<chrono::DateTime<chrono::Utc>>,
+    _end_date: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<crate::models::marketplace::MarketplaceEvent>, String> {
+    Err("get_template_events_by_creator not implemented - requires owner-scoped query".to_string())
 }

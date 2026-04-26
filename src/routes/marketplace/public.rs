@@ -1,5 +1,5 @@
-use crate::db;
 use crate::configuration::Settings;
+use crate::db;
 use crate::helpers::JsonResponse;
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Result};
 use sqlx::PgPool;
@@ -215,15 +215,22 @@ async fn validate_purchase_token_with_user_service(
             .forbidden("Purchase token validation failed"));
     }
 
-    let payload = response.json::<PurchaseTokenValidationResponse>().await.map_err(|err| {
-        tracing::error!("purchase-token validation response decode failed: {:?}", err);
-        JsonResponse::<serde_json::Value>::build()
-            .internal_server_error("Invalid purchase token validation response")
-    })?;
+    let payload = response
+        .json::<PurchaseTokenValidationResponse>()
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                "purchase-token validation response decode failed: {:?}",
+                err
+            );
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Invalid purchase token validation response")
+        })?;
 
     if !payload.valid {
-        return Err(JsonResponse::<serde_json::Value>::build()
-            .forbidden("Purchase token is not valid"));
+        return Err(
+            JsonResponse::<serde_json::Value>::build().forbidden("Purchase token is not valid")
+        );
     }
 
     Ok(payload)
@@ -275,8 +282,9 @@ pub async fn deploy_complete_handler(
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     let Some(deploy_count_incremented) = deploy_count_incremented else {
-        return Err(JsonResponse::<serde_json::Value>::build()
-            .not_found("Marketplace template not found"));
+        return Err(
+            JsonResponse::<serde_json::Value>::build().not_found("Marketplace template not found")
+        );
     };
 
     let response = DeployCompleteResponse {
@@ -286,7 +294,9 @@ pub async fn deploy_complete_handler(
         deploy_count_incremented,
     };
 
-    Ok(JsonResponse::build().set_item(response).ok("Deploy complete processed"))
+    Ok(JsonResponse::build()
+        .set_item(response)
+        .ok("Deploy complete processed"))
 }
 
 #[tracing::instrument(name = "Get template by slug (public)", skip_all)]
@@ -327,9 +337,7 @@ pub async fn increment_view_count_handler(
 
     db::marketplace::increment_view_count(pg_pool.get_ref(), &template_id)
         .await
-        .map_err(|err| {
-            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
-        })
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
         .map(|_| JsonResponse::<serde_json::Value>::build().ok("View count incremented"))
 }
 
@@ -346,8 +354,6 @@ pub async fn increment_deploy_count_handler(
 
     db::marketplace::increment_deploy_count(pg_pool.get_ref(), &template_id)
         .await
-        .map_err(|err| {
-            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
-        })
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
         .map(|_| JsonResponse::<serde_json::Value>::build().ok("Deploy count incremented"))
 }

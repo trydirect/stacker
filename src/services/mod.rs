@@ -22,9 +22,9 @@ pub use deployment_identifier::{
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;
 pub use marketplace_assets::{
-    build_asset_key, presign_asset_download, presign_asset_upload,
-    MarketplaceAssetStorageError, MarketplaceAssetUploadRequest,
-    PresignedMarketplaceAssetResponse, MARKETPLACE_ASSET_STORAGE_PROVIDER,
+    build_asset_key, presign_asset_download, presign_asset_upload, MarketplaceAssetStorageError,
+    MarketplaceAssetUploadRequest, PresignedMarketplaceAssetResponse,
+    MARKETPLACE_ASSET_STORAGE_PROVIDER,
 };
 pub use project_app_service::{ProjectAppError, ProjectAppService, SyncSummary};
 pub use vault_service::{AppConfig, VaultError, VaultService};

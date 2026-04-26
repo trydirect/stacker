@@ -38,6 +38,27 @@ pub struct StackTemplate {
     pub infrastructure_requirements: serde_json::Value,
     pub public_ports: Option<serde_json::Value>,
     pub vendor_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub changelog: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub config_files: serde_json::Value,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub assets: serde_json::Value,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub seed_jobs: serde_json::Value,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub post_deploy_hooks: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub update_mode_capabilities: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -60,7 +81,15 @@ pub struct StackTemplateVersion {
     pub template_id: Uuid,
     pub version: String,
     pub stack_definition: serde_json::Value,
+    #[serde(default)]
+    pub config_files: serde_json::Value,
     pub assets: serde_json::Value,
+    #[serde(default)]
+    pub seed_jobs: serde_json::Value,
+    #[serde(default)]
+    pub post_deploy_hooks: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_mode_capabilities: Option<serde_json::Value>,
     pub definition_format: Option<String>,
     pub changelog: Option<String>,
     pub is_latest: Option<bool>,
@@ -131,6 +160,101 @@ impl MarketplaceVendorProfile {
             updated_at: None,
         }
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Analytics Models (TDD: defined for test compilation)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Marketplace event for analytics tracking
+/// Tracks view and deploy events with template_id, user, cloud_provider, timestamp, metadata
+/// NOTE: Does NOT include finance fields (no amount, revenue, payout, withdrawal, balance)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
+pub struct MarketplaceEvent {
+    pub id: Uuid,
+    pub template_id: Uuid,
+    pub event_type: String, // "view" or "deploy"
+    pub viewer_user_id: Option<String>,
+    pub deployer_user_id: Option<String>,
+    pub cloud_provider: Option<String>,
+    pub occurred_at: DateTime<Utc>,
+    pub metadata: serde_json::Value,
+}
+
+/// Vendor analytics response model
+/// Contains usage metrics only - NO finance fields
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VendorAnalytics {
+    pub creator_id: String,
+    pub period: AnalyticsPeriod,
+    pub summary: AnalyticsSummary,
+    pub views_series: Vec<SeriesBucket>,
+    pub deployments_series: Vec<SeriesBucket>,
+    pub cloud_breakdown: Vec<CloudBreakdown>,
+    pub top_templates: Vec<TemplatePerformance>,
+    pub templates: Vec<TemplateAnalytics>,
+}
+
+/// Analytics period definition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnalyticsPeriod {
+    pub key: String, // "7d", "30d", "90d", "all", "custom"
+    pub start_date: Option<DateTime<Utc>>,
+    pub end_date: Option<DateTime<Utc>>,
+    pub bucket: String, // "day", "week", "month", "all"
+}
+
+/// Analytics summary metrics
+/// NOTE: Does NOT include finance fields (no totalEarnings, revenue, earnings, payout)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnalyticsSummary {
+    pub total_views: i64,
+    pub total_deployments: i64,
+    pub conversion_rate: f64,
+    pub published_templates: i32,
+    pub top_cloud: Option<String>,
+    pub top_template_id: Option<Uuid>,
+}
+
+/// Time series bucket for views/deployments
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesBucket {
+    pub bucket_start: DateTime<Utc>,
+    pub bucket_end: DateTime<Utc>,
+    pub count: i64,
+}
+
+/// Cloud provider deployment breakdown
+/// NOTE: Does NOT include finance fields (no revenue, earnings)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudBreakdown {
+    pub cloud_provider: String,
+    pub deployments: i64,
+    pub percentage: f64,
+}
+
+/// Template performance metrics for top templates
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplatePerformance {
+    pub template_id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub views: i64,
+    pub deployments: i64,
+    pub conversion_rate: f64,
+}
+
+/// Template analytics with full details
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplateAnalytics {
+    pub template_id: Uuid,
+    pub creator_user_id: String,
+    pub slug: String,
+    pub name: String,
+    pub status: String,
+    pub views: i64,
+    pub deployments: i64,
+    pub conversion_rate: f64,
 }
 
 #[cfg(test)]

@@ -95,7 +95,10 @@ async fn submit_template(world: &mut StepWorld) {
         .expect("No stored template_id")
         .clone();
     world
-        .post_json(&format!("/api/templates/{}/submit", id), &json!({}))
+        .post_json(
+            &format!("/api/templates/{}/submit", id),
+            &json!({ "confirm_no_secrets": true }),
+        )
         .await;
 }
 
@@ -133,7 +136,8 @@ async fn resubmit_template(world: &mut StepWorld, version: String) {
                 }
             }
         },
-        "changelog": "Updated for BDD resubmit test"
+        "changelog": "Updated for BDD resubmit test",
+        "confirm_no_secrets": true
     });
     world
         .post_json(&format!("/api/templates/{}/resubmit", id), &body)
@@ -310,7 +314,7 @@ async fn given_template_has_usage_metrics(world: &mut StepWorld) {
         .expect("No stored template_id")
         .clone();
     let pool = world.db_pool.as_ref().unwrap();
-    
+
     // Insert mock view events
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 
@@ -344,7 +348,7 @@ async fn given_template_has_usage_events_across_periods(world: &mut StepWorld) {
         .expect("No stored template_id")
         .clone();
     let pool = world.db_pool.as_ref().unwrap();
-    
+
     // Events in last 7 days
     let _ = sqlx::query(
         r#"INSERT INTO marketplace_template_event 

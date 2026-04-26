@@ -47,6 +47,13 @@ async fn test_deployment_free_template_allowed() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // Should allow deployment of free template
@@ -90,6 +97,13 @@ async fn test_deployment_plan_requirement_validated() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // Should allow deployment (mock user has professional plan)
@@ -137,6 +151,13 @@ async fn test_deployment_owned_paid_template_allowed() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
@@ -359,6 +380,13 @@ async fn test_deployment_validation_flow_with_connector() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -394,6 +422,13 @@ async fn test_deployment_validation_flow_with_connector() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -510,6 +545,13 @@ async fn test_multiple_deployments_mixed_templates() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -545,6 +587,13 @@ async fn test_multiple_deployments_mixed_templates() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -585,6 +634,13 @@ async fn test_multiple_deployments_mixed_templates() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // The result will depend on whether the validator can verify ownership
@@ -642,6 +698,13 @@ fn test_template_status_values() {
         infrastructure_requirements: serde_json::json!({}),
         public_ports: None,
         vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     assert_eq!(template.status, "approved");

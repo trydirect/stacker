@@ -2,6 +2,7 @@ use crate::configuration::MarketplaceAssetSettings;
 use crate::models::marketplace::MarketplaceAsset;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use reqwest::StatusCode;
 use reqwest::Url;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -49,6 +50,10 @@ pub enum MarketplaceAssetStorageError {
     InvalidSize,
     #[error("unsupported server-side encryption mode: {0}")]
     UnsupportedServerSideEncryption(String),
+    #[error("uploaded asset could not be verified in object storage")]
+    VerificationFailed,
+    #[error("uploaded asset size does not match expected size")]
+    SizeMismatch,
 }
 
 pub fn build_asset_key(template_id: &Uuid, version: &str, sha256: &str, filename: &str) -> String {
@@ -91,14 +96,19 @@ pub fn presign_asset_upload(
         size: request.size,
         content_type: content_type.clone(),
         mount_path: request.mount_path.as_deref().and_then(normalize_non_empty),
-        fetch_target: request.fetch_target.as_deref().and_then(normalize_non_empty),
+        fetch_target: request
+            .fetch_target
+            .as_deref()
+            .and_then(normalize_non_empty),
         decompress: request.decompress,
         executable: request.executable,
         immutable: request.immutable,
     };
 
     let mut headers = BTreeMap::from([("content-type".to_string(), content_type)]);
-    if let Some(sse) = normalize_server_side_encryption(settings.server_side_encryption.as_deref())? {
+    headers.insert("x-amz-meta-sha256".to_string(), request.sha256.clone());
+    if let Some(sse) = normalize_server_side_encryption(settings.server_side_encryption.as_deref())?
+    {
         headers.insert("x-amz-server-side-encryption".to_string(), sse);
     }
 
@@ -144,6 +154,53 @@ pub fn presign_asset_download(
     })
 }
 
+pub async fn verify_asset_upload(
+    settings: &MarketplaceAssetSettings,
+    asset: &MarketplaceAsset,
+) -> Result<(), MarketplaceAssetStorageError> {
+    ensure_storage_configured(settings)?;
+
+    if settings.current_env == "test" {
+        return Ok(());
+    }
+
+    let url = presign_request(
+        settings,
+        "HEAD",
+        &asset.bucket,
+        &asset.key,
+        settings.presign_get_ttl_secs,
+        &BTreeMap::new(),
+    )?;
+
+    let response = reqwest::Client::new()
+        .head(url)
+        .send()
+        .await
+        .map_err(|_| MarketplaceAssetStorageError::VerificationFailed)?;
+
+    if response.status() != StatusCode::OK {
+        return Err(MarketplaceAssetStorageError::VerificationFailed);
+    }
+
+    if let Some(length) = response.content_length() {
+        if length as i64 != asset.size {
+            return Err(MarketplaceAssetStorageError::SizeMismatch);
+        }
+    }
+
+    let checksum = response
+        .headers()
+        .get("x-amz-meta-sha256")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+    if checksum != Some(asset.sha256.as_str()) {
+        return Err(MarketplaceAssetStorageError::VerificationFailed);
+    }
+
+    Ok(())
+}
+
 fn presign_request(
     settings: &MarketplaceAssetSettings,
     method: &str,
@@ -183,10 +240,7 @@ fn presign_request(
         ),
         ("X-Amz-Credential".to_string(), credential),
         ("X-Amz-Date".to_string(), amz_date.clone()),
-        (
-            "X-Amz-Expires".to_string(),
-            expires_in_seconds.to_string(),
-        ),
+        ("X-Amz-Expires".to_string(), expires_in_seconds.to_string()),
         ("X-Amz-SignedHeaders".to_string(), signed_headers.clone()),
     ]);
     let canonical_query_string = build_canonical_query_string(&query_params);
@@ -246,9 +300,9 @@ fn normalize_server_side_encryption(
     match value.map(str::trim).filter(|entry| !entry.is_empty()) {
         None => Ok(None),
         Some("AES256") => Ok(Some("AES256".to_string())),
-        Some(other) => Err(MarketplaceAssetStorageError::UnsupportedServerSideEncryption(
-            other.to_string(),
-        )),
+        Some(other) => {
+            Err(MarketplaceAssetStorageError::UnsupportedServerSideEncryption(other.to_string()))
+        }
     }
 }
 
@@ -271,7 +325,10 @@ fn build_canonical_query_string(params: &BTreeMap<String, String>) -> String {
 }
 
 fn build_signing_key(secret_access_key: &str, date: &str, region: &str) -> Vec<u8> {
-    let k_date = hmac_bytes(format!("AWS4{secret_access_key}").as_bytes(), date.as_bytes());
+    let k_date = hmac_bytes(
+        format!("AWS4{secret_access_key}").as_bytes(),
+        date.as_bytes(),
+    );
     let k_region = hmac_bytes(&k_date, region.as_bytes());
     let k_service = hmac_bytes(&k_region, b"s3");
     hmac_bytes(&k_service, b"aws4_request")
@@ -370,15 +427,17 @@ mod tests {
             Some(&"AES256".to_string()),
             response.headers.get("x-amz-server-side-encryption")
         );
+        assert_eq!(
+            Some(&"abc12345".to_string()),
+            response.headers.get("x-amz-meta-sha256")
+        );
         assert!(
             response.url.contains("X-Amz-Signature="),
             "presigned url should contain a SigV4 signature"
         );
-        assert!(
-            response
-                .asset
-                .key
-                .contains("/versions/1.0.0/assets/abc12345/bundle.tgz")
-        );
+        assert!(response
+            .asset
+            .key
+            .contains("/versions/1.0.0/assets/abc12345/bundle.tgz"));
     }
 }

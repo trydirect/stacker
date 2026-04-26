@@ -8,11 +8,13 @@ use crate::forms;
 use crate::helpers::project::builder::DcBuilder;
 use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::models;
+use crate::services;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde::Deserialize;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -256,17 +258,284 @@ fn build_rollback_deploy_form(template_stack_code: String) -> forms::project::De
     }
 }
 
+fn is_non_empty_json(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Array(items) => !items.is_empty(),
+        serde_json::Value::Object(map) => !map.is_empty(),
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        _ => true,
+    }
+}
+
+fn ensure_root_object(
+    value: &mut serde_json::Value,
+) -> &mut serde_json::Map<String, serde_json::Value> {
+    if !value.is_object() {
+        *value = serde_json::json!({});
+    }
+
+    value
+        .as_object_mut()
+        .expect("root value should be normalized to object")
+}
+
+fn ensure_custom_object(
+    value: &mut serde_json::Value,
+) -> &mut serde_json::Map<String, serde_json::Value> {
+    let root = ensure_root_object(value);
+    let custom = root
+        .entry("custom".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !custom.is_object() {
+        *custom = serde_json::json!({});
+    }
+
+    custom
+        .as_object_mut()
+        .expect("custom value should be normalized to object")
+}
+
+fn custom_field(value: &serde_json::Value, field: &str) -> Option<serde_json::Value> {
+    value.get("custom")
+        .and_then(|custom| custom.get(field))
+        .cloned()
+}
+
+fn template_version_field(
+    template_version: &models::StackTemplateVersion,
+    field: &str,
+) -> Option<serde_json::Value> {
+    let value = match field {
+        "marketplace_config_files" => &template_version.config_files,
+        "marketplace_assets" => &template_version.assets,
+        "marketplace_seed_jobs" => &template_version.seed_jobs,
+        "marketplace_post_deploy_hooks" => &template_version.post_deploy_hooks,
+        _ => &serde_json::Value::Null,
+    };
+
+    is_non_empty_json(value).then(|| value.clone())
+}
+
+fn upsert_custom_field(
+    target: &mut serde_json::Value,
+    field: &str,
+    value: &serde_json::Value,
+) {
+    let custom = ensure_custom_object(target);
+    if !custom.contains_key(field) {
+        custom.insert(field.to_string(), value.clone());
+    }
+}
+
+fn sanitize_runtime_bundle_filename(raw_filename: &str) -> Option<String> {
+    let normalized = raw_filename.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Path::new(&normalized)
+        .file_name()
+        .and_then(|filename| filename.to_str())
+        .map(str::trim)
+        .filter(|filename| !filename.is_empty() && *filename != "." && *filename != "..")
+        .map(|filename| filename.to_string())
+}
+
+fn select_runtime_bundle_asset(
+    custom: &serde_json::Value,
+) -> Option<models::MarketplaceAsset> {
+    custom
+        .get("marketplace_assets")
+        .and_then(|assets| assets.as_array())
+        .and_then(|assets| {
+            assets.iter().find_map(|asset| {
+                let parsed = serde_json::from_value::<models::MarketplaceAsset>(asset.clone()).ok()?;
+                let filename = parsed.filename.to_ascii_lowercase();
+                let content_type = parsed.content_type.to_ascii_lowercase();
+                if filename.ends_with(".tgz")
+                    || filename.ends_with(".tar.gz")
+                    || content_type == "application/gzip"
+                    || content_type == "application/x-gzip"
+                    || content_type == "application/x-tar"
+                {
+                    Some(parsed)
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn preserve_marketplace_runtime_artifacts(
+    project: &mut models::Project,
+    template_version: Option<&models::StackTemplateVersion>,
+) -> Result<(), String> {
+    for field in [
+        "marketplace_config_files",
+        "marketplace_assets",
+        "marketplace_seed_jobs",
+        "marketplace_post_deploy_hooks",
+    ] {
+        let value = custom_field(&project.metadata, field)
+            .or_else(|| custom_field(&project.request_json, field))
+            .or_else(|| template_version.and_then(|version| template_version_field(version, field)));
+
+        if let Some(value) = value {
+            upsert_custom_field(&mut project.metadata, field, &value);
+            upsert_custom_field(&mut project.request_json, field, &value);
+        }
+    }
+
+    Ok(())
+}
+
+fn build_runtime_artifact_bundle(
+    settings: &Settings,
+    custom: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    let config_files = custom
+        .get("marketplace_config_files")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let assets = custom
+        .get("marketplace_assets")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let seed_jobs = custom
+        .get("marketplace_seed_jobs")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let post_deploy_hooks = custom
+        .get("marketplace_post_deploy_hooks")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+
+    if !is_non_empty_json(&config_files)
+        && !is_non_empty_json(&assets)
+        && !is_non_empty_json(&seed_jobs)
+        && !is_non_empty_json(&post_deploy_hooks)
+    {
+        return Ok(None);
+    }
+
+    let mut bundle = serde_json::json!({
+        "archive_format": "tar.gz",
+        "config_files_count": config_files.as_array().map(|items| items.len()).unwrap_or(0),
+        "asset_count": assets.as_array().map(|items| items.len()).unwrap_or(0),
+        "seed_jobs_count": seed_jobs.as_array().map(|items| items.len()).unwrap_or(0),
+        "post_deploy_hooks_count": post_deploy_hooks.as_array().map(|items| items.len()).unwrap_or(0),
+        "seed_jobs_execution": "deferred",
+        "post_deploy_execution": "deferred",
+    });
+
+    if let Some(asset) = select_runtime_bundle_asset(custom) {
+        let safe_filename = sanitize_runtime_bundle_filename(&asset.filename)
+            .unwrap_or_else(|| "runtime-artifacts.tar.gz".to_string());
+        if let Some(bundle_object) = bundle.as_object_mut() {
+            bundle_object.insert("filename".to_string(), serde_json::json!(safe_filename));
+            bundle_object.insert("sha256".to_string(), serde_json::json!(asset.sha256));
+            bundle_object.insert("size".to_string(), serde_json::json!(asset.size));
+            bundle_object.insert(
+                "content_type".to_string(),
+                serde_json::json!(asset.content_type),
+            );
+            bundle_object.insert("decompress".to_string(), serde_json::json!(asset.decompress));
+            if let Some(fetch_target) = asset.fetch_target.clone() {
+                bundle_object.insert("fetch_target".to_string(), serde_json::json!(fetch_target));
+            }
+            if let Some(mount_path) = asset.mount_path.clone() {
+                bundle_object.insert("mount_path".to_string(), serde_json::json!(mount_path));
+            }
+        }
+
+        match services::presign_asset_download(&settings.marketplace_assets, &asset) {
+            Ok(presigned) => {
+                if let Some(bundle_object) = bundle.as_object_mut() {
+                    bundle_object.insert("download_url".to_string(), serde_json::json!(presigned.url));
+                    bundle_object.insert(
+                        "download_method".to_string(),
+                        serde_json::json!(presigned.method),
+                    );
+                    bundle_object.insert(
+                        "expires_in_seconds".to_string(),
+                        serde_json::json!(presigned.expires_in_seconds),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Failed to presign runtime artifact bundle download: {}", err);
+                if let Some(bundle_object) = bundle.as_object_mut() {
+                    bundle_object.insert(
+                        "download_url_error".to_string(),
+                        serde_json::json!(err.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(Some(bundle))
+}
+
+fn sync_runtime_artifact_bundle(
+    settings: &Settings,
+    project: &mut models::Project,
+) -> Result<(), String> {
+    match build_runtime_artifact_bundle(settings, &project.metadata["custom"])? {
+        Some(runtime_bundle) => {
+            ensure_root_object(&mut project.metadata)
+                .insert("runtime_artifact_bundle".to_string(), runtime_bundle.clone());
+            ensure_root_object(&mut project.request_json)
+                .insert("runtime_artifact_bundle".to_string(), runtime_bundle);
+        }
+        None => {
+            ensure_root_object(&mut project.metadata).remove("runtime_artifact_bundle");
+            ensure_root_object(&mut project.request_json).remove("runtime_artifact_bundle");
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_project_template_version(
+    pg_pool: &PgPool,
+    project: &models::Project,
+) -> Result<Option<models::StackTemplateVersion>, String> {
+    let Some(template_id) = project.source_template_id else {
+        return Ok(None);
+    };
+
+    let versions = db::marketplace::list_versions_by_template(pg_pool, template_id).await?;
+    if let Some(target_version) = project.template_version.as_deref() {
+        Ok(versions
+            .into_iter()
+            .find(|version| version.version == target_version))
+    } else {
+        Ok(versions.into_iter().find(|version| version.is_latest.unwrap_or(false)))
+    }
+}
+
 async fn execute_deployment(
     user: &models::User,
-    project: models::Project,
+    mut project: models::Project,
     form: &forms::project::Deploy,
     pg_pool: &PgPool,
     mq_manager: &MqManager,
     install_service: &Arc<dyn InstallServiceConnector>,
     vault_client: &VaultClient,
+    settings: &Settings,
     cloud: models::Cloud,
     server: models::Server,
 ) -> Result<(i32, i32)> {
+    let template_version = load_project_template_version(pg_pool, &project)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    preserve_marketplace_runtime_artifacts(&mut project, template_version.as_ref())
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    sync_runtime_artifact_bundle(settings, &mut project)
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
     let id = project.id;
     let dc = DcBuilder::new(project);
     let fc = dc
@@ -431,7 +700,7 @@ pub async fn item(
     mut form: web::Json<forms::project::Deploy>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
-    _sets: Data<Settings>,
+    sets: Data<Settings>,
     user_service: Data<Arc<dyn UserServiceConnector>>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
     vault_client: Data<VaultClient>,
@@ -636,6 +905,7 @@ pub async fn item(
         mq_manager.get_ref(),
         install_service.get_ref(),
         vault_client.get_ref(),
+        sets.get_ref(),
         cloud_creds,
         server,
     )
@@ -654,7 +924,7 @@ pub async fn saved_item(
     path: web::Path<(i32, i32)>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
-    _sets: Data<Settings>,
+    sets: Data<Settings>,
     user_service: Data<Arc<dyn UserServiceConnector>>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
     vault_client: Data<VaultClient>,
@@ -864,6 +1134,7 @@ pub async fn saved_item(
         mq_manager.get_ref(),
         install_service.get_ref(),
         vault_client.get_ref(),
+        sets.get_ref(),
         cloud,
         server,
     )
@@ -883,6 +1154,7 @@ pub async fn rollback(
     request: web::Json<RollbackRequest>,
     pg_pool: Data<PgPool>,
     mq_manager: Data<MqManager>,
+    sets: Data<Settings>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
     vault_client: Data<VaultClient>,
 ) -> Result<impl Responder> {
@@ -974,6 +1246,7 @@ pub async fn rollback(
         mq_manager.get_ref(),
         install_service.get_ref(),
         vault_client.get_ref(),
+        sets.get_ref(),
         cloud,
         server,
     )
@@ -992,10 +1265,13 @@ pub async fn rollback(
 #[cfg(test)]
 mod tests {
     use super::{
+        build_runtime_artifact_bundle, preserve_marketplace_runtime_artifacts,
+        sync_runtime_artifact_bundle,
         validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
     };
+    use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
-    use crate::models;
+    use crate::models::{self, StackTemplateVersion};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -1027,6 +1303,13 @@ mod tests {
             infrastructure_requirements: json!({}),
             public_ports: None,
             vendor_url: None,
+            version: None,
+            changelog: None,
+            config_files: json!(null),
+            assets: json!(null),
+            seed_jobs: json!(null),
+            post_deploy_hooks: json!(null),
+            update_mode_capabilities: None,
         }
     }
 
@@ -1130,5 +1413,260 @@ mod tests {
         assert!(err.contains("minimum CPU requirement"));
         assert!(err.contains("4"));
         assert!(err.contains("2"));
+    }
+
+    #[test]
+    fn preserve_marketplace_runtime_artifacts_backfills_from_request_json_and_version() {
+        let mut project = models::Project::new(
+            "user-1".to_string(),
+            "runtime-artifacts".to_string(),
+            json!({
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "runtime-artifacts"
+                }
+            }),
+            json!({
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "runtime-artifacts",
+                    "marketplace_config_files": [
+                        {"path": "config/app.env", "content": "APP_ENV=prod"}
+                    ]
+                }
+            }),
+        );
+        let latest_version = StackTemplateVersion {
+            config_files: json!([
+                {"path": "config/app.env", "content": "APP_ENV=prod"}
+            ]),
+            assets: json!([
+                {
+                    "storage_provider": "hetzner-object-storage",
+                    "bucket": "runtime-assets",
+                    "key": "templates/runtime/runtime-bundle.tgz",
+                    "filename": "runtime-bundle.tgz",
+                    "sha256": "abc123",
+                    "size": 42,
+                    "content_type": "application/gzip",
+                    "decompress": true
+                }
+            ]),
+            seed_jobs: json!([{ "name": "seed-admin" }]),
+            post_deploy_hooks: json!([{ "name": "notify" }]),
+            ..StackTemplateVersion::default()
+        };
+
+        preserve_marketplace_runtime_artifacts(&mut project, Some(&latest_version))
+            .expect("artifact preservation should succeed");
+
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["path"],
+            json!("config/app.env")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_assets"][0]["filename"],
+            json!("runtime-bundle.tgz")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_seed_jobs"][0]["name"],
+            json!("seed-admin")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_post_deploy_hooks"][0]["name"],
+            json!("notify")
+        );
+    }
+
+    #[test]
+    fn preserve_marketplace_runtime_artifacts_keeps_explicitly_cleared_fields() {
+        let mut project = models::Project::new(
+            "user-1".to_string(),
+            "runtime-artifacts".to_string(),
+            json!({
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "runtime-artifacts",
+                    "marketplace_assets": [],
+                    "marketplace_seed_jobs": [],
+                    "marketplace_post_deploy_hooks": []
+                }
+            }),
+            json!({
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "runtime-artifacts",
+                    "marketplace_config_files": [],
+                    "marketplace_assets": [],
+                    "marketplace_seed_jobs": [],
+                    "marketplace_post_deploy_hooks": []
+                }
+            }),
+        );
+        let latest_version = StackTemplateVersion {
+            config_files: json!([
+                {"path": "config/app.env", "content": "APP_ENV=prod"}
+            ]),
+            assets: json!([
+                {
+                    "storage_provider": "hetzner-object-storage",
+                    "bucket": "runtime-assets",
+                    "key": "templates/runtime/runtime-bundle.tgz",
+                    "filename": "runtime-bundle.tgz",
+                    "sha256": "abc123",
+                    "size": 42,
+                    "content_type": "application/gzip",
+                    "decompress": true
+                }
+            ]),
+            seed_jobs: json!([{ "name": "seed-admin" }]),
+            post_deploy_hooks: json!([{ "name": "notify" }]),
+            ..StackTemplateVersion::default()
+        };
+
+        preserve_marketplace_runtime_artifacts(&mut project, Some(&latest_version))
+            .expect("artifact preservation should succeed");
+
+        assert_eq!(project.metadata["custom"]["marketplace_config_files"], json!([]));
+        assert_eq!(project.metadata["custom"]["marketplace_assets"], json!([]));
+        assert_eq!(project.metadata["custom"]["marketplace_seed_jobs"], json!([]));
+        assert_eq!(
+            project.metadata["custom"]["marketplace_post_deploy_hooks"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn build_runtime_artifact_bundle_selects_archive_and_defers_execution() {
+        let mut settings = Settings::default();
+        settings.marketplace_assets.enabled = true;
+        settings.marketplace_assets.endpoint_url = "https://objects.trydirect.test".to_string();
+        settings.marketplace_assets.region = "eu-central".to_string();
+        settings.marketplace_assets.current_env = "test".to_string();
+        settings.marketplace_assets.access_key_id = "marketplace-test-access".to_string();
+        settings.marketplace_assets.secret_access_key = "marketplace-test-secret".to_string();
+        settings.marketplace_assets.bucket_test = "marketplace-assets-test".to_string();
+
+        let custom = json!({
+            "marketplace_config_files": [
+                {"path": "config/app.env", "content": "APP_ENV=prod"}
+            ],
+            "marketplace_assets": [
+                {
+                    "storage_provider": "hetzner-object-storage",
+                    "bucket": "marketplace-assets-test",
+                    "key": "templates/runtime/runtime-bundle.tgz",
+                    "filename": "runtime-bundle.tgz",
+                    "sha256": "abc123",
+                    "size": 42,
+                    "content_type": "application/gzip",
+                    "decompress": true,
+                    "fetch_target": "/opt/runtime"
+                },
+                {
+                    "storage_provider": "hetzner-object-storage",
+                    "bucket": "marketplace-assets-test",
+                    "key": "templates/runtime/logo.png",
+                    "filename": "logo.png",
+                    "sha256": "def456",
+                    "size": 7,
+                    "content_type": "image/png",
+                    "decompress": false
+                }
+            ],
+            "marketplace_seed_jobs": [
+                {"name": "seed-admin"}
+            ],
+            "marketplace_post_deploy_hooks": [
+                {"name": "notify"}
+            ]
+        });
+
+        let bundle = build_runtime_artifact_bundle(&settings, &custom)
+            .expect("bundle build should succeed")
+            .expect("bundle metadata should exist");
+
+        assert_eq!(bundle["filename"], json!("runtime-bundle.tgz"));
+        assert_eq!(bundle["config_files_count"], json!(1));
+        assert_eq!(bundle["seed_jobs_execution"], json!("deferred"));
+        assert_eq!(bundle["post_deploy_execution"], json!("deferred"));
+        assert!(bundle["download_url"]
+            .as_str()
+            .expect("download url should exist")
+            .contains("runtime-bundle.tgz"));
+    }
+
+    #[test]
+    fn build_runtime_artifact_bundle_sanitizes_archive_filename() {
+        let mut settings = Settings::default();
+        settings.marketplace_assets.enabled = true;
+        settings.marketplace_assets.endpoint_url = "https://objects.trydirect.test".to_string();
+        settings.marketplace_assets.region = "eu-central".to_string();
+        settings.marketplace_assets.current_env = "test".to_string();
+        settings.marketplace_assets.access_key_id = "marketplace-test-access".to_string();
+        settings.marketplace_assets.secret_access_key = "marketplace-test-secret".to_string();
+        settings.marketplace_assets.bucket_test = "marketplace-assets-test".to_string();
+
+        let custom = json!({
+            "marketplace_assets": [
+                {
+                    "storage_provider": "hetzner-object-storage",
+                    "bucket": "marketplace-assets-test",
+                    "key": "templates/runtime/runtime-bundle.tgz",
+                    "filename": "../../runtime-bundle.tgz",
+                    "sha256": "abc123",
+                    "size": 42,
+                    "content_type": "application/gzip",
+                    "decompress": true
+                }
+            ]
+        });
+
+        let bundle = build_runtime_artifact_bundle(&settings, &custom)
+            .expect("bundle build should succeed")
+            .expect("bundle metadata should exist");
+
+        assert_eq!(bundle["filename"], json!("runtime-bundle.tgz"));
+    }
+
+    #[test]
+    fn sync_runtime_artifact_bundle_removes_stale_bundle_when_artifacts_are_cleared() {
+        let settings = Settings::default();
+        let mut project = models::Project::new(
+            "user-1".to_string(),
+            "runtime-artifacts".to_string(),
+            json!({
+                "runtime_artifact_bundle": {
+                    "filename": "stale-runtime-bundle.tgz"
+                },
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "runtime-artifacts",
+                    "marketplace_config_files": [],
+                    "marketplace_assets": [],
+                    "marketplace_seed_jobs": [],
+                    "marketplace_post_deploy_hooks": []
+                }
+            }),
+            json!({
+                "runtime_artifact_bundle": {
+                    "filename": "stale-runtime-bundle.tgz"
+                },
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "runtime-artifacts",
+                    "marketplace_config_files": [],
+                    "marketplace_assets": [],
+                    "marketplace_seed_jobs": [],
+                    "marketplace_post_deploy_hooks": []
+                }
+            }),
+        );
+
+        sync_runtime_artifact_bundle(&settings, &mut project)
+            .expect("runtime artifact sync should succeed");
+
+        assert!(project.metadata.get("runtime_artifact_bundle").is_none());
+        assert!(project.request_json.get("runtime_artifact_bundle").is_none());
     }
 }

@@ -3,6 +3,7 @@ use crate::forms::project::Network;
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use serde_valid::Validate;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
@@ -27,6 +28,18 @@ pub struct Custom {
     pub project_name: Option<String>,
     pub project_overview: Option<String>,
     pub project_description: Option<String>,
+    pub marketplace_version: Option<String>,
+    pub marketplace_changelog: Option<String>,
+    #[serde(default)]
+    pub marketplace_update_mode_capabilities: JsonValue,
+    #[serde(default)]
+    pub marketplace_config_files: JsonValue,
+    #[serde(default)]
+    pub marketplace_assets: JsonValue,
+    #[serde(default)]
+    pub marketplace_seed_jobs: JsonValue,
+    #[serde(default)]
+    pub marketplace_post_deploy_hooks: JsonValue,
     #[serde(flatten)]
     pub networks: forms::project::ComposeNetworks, // all networks
 }
@@ -110,5 +123,38 @@ impl Custom {
         }
 
         Ok(named_volumes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Custom;
+    use serde_json::json;
+
+    #[test]
+    fn custom_form_preserves_marketplace_release_fields() {
+        let parsed: Custom = serde_json::from_value(json!({
+            "web": [],
+            "custom_stack_code": "runtime-artifacts",
+            "marketplace_version": "1.2.3",
+            "marketplace_changelog": "Adds managed updates",
+            "marketplace_update_mode_capabilities": {
+                "mode_self_managed": true,
+                "mode_managed_status_panel": true
+            }
+        }))
+        .expect("custom form should deserialize");
+
+        let serialized = serde_json::to_value(parsed).expect("custom form should serialize");
+
+        assert_eq!(serialized["marketplace_version"], json!("1.2.3"));
+        assert_eq!(
+            serialized["marketplace_changelog"],
+            json!("Adds managed updates")
+        );
+        assert_eq!(
+            serialized["marketplace_update_mode_capabilities"]["mode_managed_status_panel"],
+            json!(true)
+        );
     }
 }
