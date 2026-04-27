@@ -63,12 +63,21 @@ pub async fn detail_handler(
         models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id)
     });
 
-    let detail = serde_json::json!({
-        "template": template,
-        "versions": versions,
-        "reviews": reviews,
-        "vendor_profile": vendor_profile,
-    });
+    let mut detail = serde_json::to_value(&template).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["template"] = serde_json::to_value(template).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["versions"] = serde_json::to_value(versions).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["reviews"] = serde_json::to_value(reviews).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["vendor_profile"] = serde_json::to_value(vendor_profile).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
 
     Ok(JsonResponse::<serde_json::Value>::build()
         .set_item(detail)

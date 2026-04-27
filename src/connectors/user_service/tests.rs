@@ -1,6 +1,6 @@
+use mockito::{Matcher, Server};
 use serde_json::json;
 use uuid::Uuid;
-use mockito::{Matcher, Server};
 
 use super::mock;
 use super::utils::is_plan_higher_tier;
@@ -257,7 +257,10 @@ async fn test_get_installation_by_hash_uses_lightweight_route() {
 
     assert_eq!(installation.id, Some(13876));
     assert_eq!(installation.stack_code.as_deref(), Some("caddy"));
-    assert_eq!(installation.deployment_hash.as_deref(), Some("dep-hash-123"));
+    assert_eq!(
+        installation.deployment_hash.as_deref(),
+        Some("dep-hash-123")
+    );
 }
 
 /// Test plan hierarchy comparison

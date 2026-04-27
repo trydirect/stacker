@@ -297,7 +297,8 @@ fn ensure_custom_object(
 }
 
 fn custom_field(value: &serde_json::Value, field: &str) -> Option<serde_json::Value> {
-    value.get("custom")
+    value
+        .get("custom")
         .and_then(|custom| custom.get(field))
         .cloned()
 }
@@ -317,11 +318,7 @@ fn template_version_field(
     is_non_empty_json(value).then(|| value.clone())
 }
 
-fn upsert_custom_field(
-    target: &mut serde_json::Value,
-    field: &str,
-    value: &serde_json::Value,
-) {
+fn upsert_custom_field(target: &mut serde_json::Value, field: &str, value: &serde_json::Value) {
     let custom = ensure_custom_object(target);
     if !custom.contains_key(field) {
         custom.insert(field.to_string(), value.clone());
@@ -342,15 +339,14 @@ fn sanitize_runtime_bundle_filename(raw_filename: &str) -> Option<String> {
         .map(|filename| filename.to_string())
 }
 
-fn select_runtime_bundle_asset(
-    custom: &serde_json::Value,
-) -> Option<models::MarketplaceAsset> {
+fn select_runtime_bundle_asset(custom: &serde_json::Value) -> Option<models::MarketplaceAsset> {
     custom
         .get("marketplace_assets")
         .and_then(|assets| assets.as_array())
         .and_then(|assets| {
             assets.iter().find_map(|asset| {
-                let parsed = serde_json::from_value::<models::MarketplaceAsset>(asset.clone()).ok()?;
+                let parsed =
+                    serde_json::from_value::<models::MarketplaceAsset>(asset.clone()).ok()?;
                 let filename = parsed.filename.to_ascii_lowercase();
                 let content_type = parsed.content_type.to_ascii_lowercase();
                 if filename.ends_with(".tgz")
@@ -379,7 +375,9 @@ fn preserve_marketplace_runtime_artifacts(
     ] {
         let value = custom_field(&project.metadata, field)
             .or_else(|| custom_field(&project.request_json, field))
-            .or_else(|| template_version.and_then(|version| template_version_field(version, field)));
+            .or_else(|| {
+                template_version.and_then(|version| template_version_field(version, field))
+            });
 
         if let Some(value) = value {
             upsert_custom_field(&mut project.metadata, field, &value);
@@ -440,7 +438,10 @@ fn build_runtime_artifact_bundle(
                 "content_type".to_string(),
                 serde_json::json!(asset.content_type),
             );
-            bundle_object.insert("decompress".to_string(), serde_json::json!(asset.decompress));
+            bundle_object.insert(
+                "decompress".to_string(),
+                serde_json::json!(asset.decompress),
+            );
             if let Some(fetch_target) = asset.fetch_target.clone() {
                 bundle_object.insert("fetch_target".to_string(), serde_json::json!(fetch_target));
             }
@@ -452,7 +453,8 @@ fn build_runtime_artifact_bundle(
         match services::presign_asset_download(&settings.marketplace_assets, &asset) {
             Ok(presigned) => {
                 if let Some(bundle_object) = bundle.as_object_mut() {
-                    bundle_object.insert("download_url".to_string(), serde_json::json!(presigned.url));
+                    bundle_object
+                        .insert("download_url".to_string(), serde_json::json!(presigned.url));
                     bundle_object.insert(
                         "download_method".to_string(),
                         serde_json::json!(presigned.method),
@@ -464,7 +466,10 @@ fn build_runtime_artifact_bundle(
                 }
             }
             Err(err) => {
-                tracing::warn!("Failed to presign runtime artifact bundle download: {}", err);
+                tracing::warn!(
+                    "Failed to presign runtime artifact bundle download: {}",
+                    err
+                );
                 if let Some(bundle_object) = bundle.as_object_mut() {
                     bundle_object.insert(
                         "download_url_error".to_string(),
@@ -484,8 +489,10 @@ fn sync_runtime_artifact_bundle(
 ) -> Result<(), String> {
     match build_runtime_artifact_bundle(settings, &project.metadata["custom"])? {
         Some(runtime_bundle) => {
-            ensure_root_object(&mut project.metadata)
-                .insert("runtime_artifact_bundle".to_string(), runtime_bundle.clone());
+            ensure_root_object(&mut project.metadata).insert(
+                "runtime_artifact_bundle".to_string(),
+                runtime_bundle.clone(),
+            );
             ensure_root_object(&mut project.request_json)
                 .insert("runtime_artifact_bundle".to_string(), runtime_bundle);
         }
@@ -512,7 +519,9 @@ async fn load_project_template_version(
             .into_iter()
             .find(|version| version.version == target_version))
     } else {
-        Ok(versions.into_iter().find(|version| version.is_latest.unwrap_or(false)))
+        Ok(versions
+            .into_iter()
+            .find(|version| version.is_latest.unwrap_or(false)))
     }
 }
 
@@ -1266,8 +1275,8 @@ pub async fn rollback(
 mod tests {
     use super::{
         build_runtime_artifact_bundle, preserve_marketplace_runtime_artifacts,
-        sync_runtime_artifact_bundle,
-        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
+        sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
+        validate_min_ram_requirement,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
@@ -1527,9 +1536,15 @@ mod tests {
         preserve_marketplace_runtime_artifacts(&mut project, Some(&latest_version))
             .expect("artifact preservation should succeed");
 
-        assert_eq!(project.metadata["custom"]["marketplace_config_files"], json!([]));
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"],
+            json!([])
+        );
         assert_eq!(project.metadata["custom"]["marketplace_assets"], json!([]));
-        assert_eq!(project.metadata["custom"]["marketplace_seed_jobs"], json!([]));
+        assert_eq!(
+            project.metadata["custom"]["marketplace_seed_jobs"],
+            json!([])
+        );
         assert_eq!(
             project.metadata["custom"]["marketplace_post_deploy_hooks"],
             json!([])
@@ -1667,6 +1682,9 @@ mod tests {
             .expect("runtime artifact sync should succeed");
 
         assert!(project.metadata.get("runtime_artifact_bundle").is_none());
-        assert!(project.request_json.get("runtime_artifact_bundle").is_none());
+        assert!(project
+            .request_json
+            .get("runtime_artifact_bundle")
+            .is_none());
     }
 }

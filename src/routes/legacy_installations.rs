@@ -99,7 +99,10 @@ pub async fn resolve_owned_deployment_by_hash(
     let client = build_user_service_client(settings)
         .ok_or_else(|| JsonResponse::<String>::not_found("Deployment not found"))?;
 
-    match client.get_installation_by_hash(token, deployment_hash).await {
+    match client
+        .get_installation_by_hash(token, deployment_hash)
+        .await
+    {
         Ok(installation) => Ok(OwnedDeployment::Legacy(installation)),
         Err(err) => {
             tracing::warn!(

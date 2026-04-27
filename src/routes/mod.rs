@@ -28,8 +28,9 @@ pub use deployment::{
     status_handler, DeploymentListQuery, DeploymentStatusResponse,
 };
 pub use marketplace::{
-    approve_handler, create_handler, list_plans_handler, list_submitted_handler, mine_handler,
-    my_reviews_handler, reject_handler, resubmit_handler, security_scan_handler, submit_handler,
-    unapprove_handler, update_handler, AdminDecisionRequest, CreateTemplateRequest,
-    ResubmitRequest, TemplateListQuery, UnapproveRequest, UpdateTemplateRequest,
+    analytics_handler, approve_handler, create_handler, list_plans_handler, list_submitted_handler,
+    mine_handler, my_reviews_handler, reject_handler, resubmit_handler, security_scan_handler,
+    submit_handler, unapprove_handler, update_handler, AdminDecisionRequest, AnalyticsQuery,
+    CreateTemplateRequest, ResubmitRequest, TemplateListQuery, UnapproveRequest,
+    UpdateTemplateRequest,
 };

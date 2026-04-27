@@ -184,6 +184,7 @@ pub struct MarketplaceEvent {
 /// Vendor analytics response model
 /// Contains usage metrics only - NO finance fields
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VendorAnalytics {
     pub creator_id: String,
     pub period: AnalyticsPeriod,
@@ -197,6 +198,7 @@ pub struct VendorAnalytics {
 
 /// Analytics period definition
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnalyticsPeriod {
     pub key: String, // "7d", "30d", "90d", "all", "custom"
     pub start_date: Option<DateTime<Utc>>,
@@ -207,6 +209,7 @@ pub struct AnalyticsPeriod {
 /// Analytics summary metrics
 /// NOTE: Does NOT include finance fields (no totalEarnings, revenue, earnings, payout)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnalyticsSummary {
     pub total_views: i64,
     pub total_deployments: i64,
@@ -218,6 +221,7 @@ pub struct AnalyticsSummary {
 
 /// Time series bucket for views/deployments
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SeriesBucket {
     pub bucket_start: DateTime<Utc>,
     pub bucket_end: DateTime<Utc>,
@@ -227,6 +231,7 @@ pub struct SeriesBucket {
 /// Cloud provider deployment breakdown
 /// NOTE: Does NOT include finance fields (no revenue, earnings)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudBreakdown {
     pub cloud_provider: String,
     pub deployments: i64,
@@ -235,6 +240,7 @@ pub struct CloudBreakdown {
 
 /// Template performance metrics for top templates
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TemplatePerformance {
     pub template_id: Uuid,
     pub slug: String,
@@ -246,6 +252,7 @@ pub struct TemplatePerformance {
 
 /// Template analytics with full details
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TemplateAnalytics {
     pub template_id: Uuid,
     pub creator_user_id: String,

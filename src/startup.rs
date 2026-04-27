@@ -214,11 +214,12 @@ pub async fn run(
                     .service(crate::routes::marketplace::categories::list_handler)
                              .service(
                                   web::scope("/templates")
-                                     .service(crate::routes::marketplace::public::list_handler)
-                                     .service(crate::routes::marketplace::creator::mine_handler)
-                                     .service(
-                                         crate::routes::marketplace::creator::self_vendor_profile_handler,
-                                     )
+                                      .service(crate::routes::marketplace::public::list_handler)
+                                      .service(crate::routes::marketplace::creator::mine_handler)
+                                      .service(crate::routes::marketplace::creator::analytics_handler)
+                                      .service(
+                                          crate::routes::marketplace::creator::self_vendor_profile_handler,
+                                      )
                                      .service(
                                          crate::routes::marketplace::creator::create_onboarding_link_handler,
                                      )
@@ -258,6 +259,24 @@ pub async fn run(
                             .service(routes::agent::link_handler)
                             .service(routes::agent::agent_audit_ingest_handler)
                             .service(routes::agent::agent_audit_query_handler),
+                    )
+                    .service(
+                        web::scope("/v1/templates")
+                            .service(crate::routes::marketplace::creator::presign_asset_upload_handler)
+                            .service(crate::routes::marketplace::creator::finalize_asset_upload_handler)
+                            .service(
+                                crate::routes::marketplace::creator::presign_asset_download_handler,
+                            )
+                            .service(crate::routes::marketplace::public::detail_handler),
+                    )
+                    .service(
+                        web::scope("/v1/marketplace")
+                            .service(crate::routes::marketplace::public::install_script_handler)
+                            .service(crate::routes::marketplace::public::download_stack_handler)
+                            .service(crate::routes::marketplace::public::deploy_complete_handler)
+                            .service(web::scope("/agents").service(
+                                crate::routes::marketplace::agent::register_marketplace_agent_handler,
+                            )),
                     )
                     .service(
                         web::scope("/v1/deployments")
@@ -347,16 +366,6 @@ pub async fn run(
                                  web::scope("/marketplace")
                                      .service(crate::routes::marketplace::admin::list_plans_handler),
                              ),
-                    ),
-            )
-            .service(
-                web::scope("/api/v1/marketplace")
-                    .service(crate::routes::marketplace::public::install_script_handler)
-                    .service(crate::routes::marketplace::public::download_stack_handler)
-                    .service(crate::routes::marketplace::public::deploy_complete_handler)
-                    .service(
-                        web::scope("/agents")
-                            .service(crate::routes::marketplace::agent::register_marketplace_agent_handler),
                     ),
             )
             .service(

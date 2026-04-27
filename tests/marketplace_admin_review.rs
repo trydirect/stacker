@@ -571,10 +571,16 @@ async fn admin_detail_lists_extended_version_contract_for_resubmitted_templates(
         json!("Updated long description"),
         detail_body["item"]["long_description"]
     );
-    assert_eq!(json!("developer-tools"), detail_body["item"]["category_code"]);
+    assert_eq!(
+        json!("developer-tools"),
+        detail_body["item"]["category_code"]
+    );
     assert_eq!(json!(29.0), detail_body["item"]["price"]);
     assert_eq!(json!("subscription"), detail_body["item"]["billing_cycle"]);
-    assert_eq!(json!("professional"), detail_body["item"]["required_plan_name"]);
+    assert_eq!(
+        json!("professional"),
+        detail_body["item"]["required_plan_name"]
+    );
     assert_eq!(json!("USD"), detail_body["item"]["currency"]);
     let versions = detail_body["item"]["versions"]
         .as_array()
@@ -742,14 +748,16 @@ async fn resubmit_same_version_updates_latest_version_in_place() {
         .expect("Failed to resubmit marketplace template");
     assert_eq!(StatusCode::OK, resubmit_response.status());
 
-    let version_count: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*) FROM stack_template_version WHERE template_id = $1"#,
-    )
-    .bind(template_uuid)
-    .fetch_one(&app.db_pool)
-    .await
-    .expect("Failed to count template versions");
-    assert_eq!(1, version_count, "Same-version resubmit should update in place");
+    let version_count: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*) FROM stack_template_version WHERE template_id = $1"#)
+            .bind(template_uuid)
+            .fetch_one(&app.db_pool)
+            .await
+            .expect("Failed to count template versions");
+    assert_eq!(
+        1, version_count,
+        "Same-version resubmit should update in place"
+    );
 
     let detail_response = client
         .get(format!(

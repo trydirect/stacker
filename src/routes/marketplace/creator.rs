@@ -10,6 +10,17 @@ use std::sync::Arc;
 use tracing::Instrument;
 use uuid;
 
+#[derive(Debug, serde::Deserialize)]
+pub struct AnalyticsQuery {
+    pub period: Option<String>,
+    #[serde(rename = "startDate")]
+    pub start_date: Option<String>,
+    #[serde(rename = "endDate")]
+    pub end_date: Option<String>,
+    #[serde(rename = "templateId")]
+    pub template_id: Option<String>,
+}
+
 fn build_vendor_profile_status_item(
     creator_user_id: &str,
     template_id: Option<uuid::Uuid>,
@@ -282,8 +293,9 @@ fn ensure_no_secrets_confirmation(confirmed: Option<bool>) -> Result<(), actix_w
     if confirmed.unwrap_or(false) {
         Ok(())
     } else {
-        Err(JsonResponse::<serde_json::Value>::build()
-            .bad_request("Confirm that the template contains no secrets or API keys before submitting"))
+        Err(JsonResponse::<serde_json::Value>::build().bad_request(
+            "Confirm that the template contains no secrets or API keys before submitting",
+        ))
     }
 }
 
@@ -464,7 +476,10 @@ pub async fn update_handler(
             .definition_format
             .as_deref()
             .or(current_version.definition_format.as_deref());
-        let changelog = req.changelog.as_deref().or(current_version.changelog.as_deref());
+        let changelog = req
+            .changelog
+            .as_deref()
+            .or(current_version.changelog.as_deref());
         let update_mode_capabilities = req
             .update_mode_capabilities
             .clone()
@@ -473,7 +488,11 @@ pub async fn update_handler(
         db::marketplace::upsert_latest_version(
             pg_pool.get_ref(),
             &id,
-            if version.is_empty() { "1.0.0" } else { version.as_str() },
+            if version.is_empty() {
+                "1.0.0"
+            } else {
+                version.as_str()
+            },
             stack_definition,
             definition_format,
             changelog,
@@ -683,18 +702,19 @@ pub async fn submit_handler(
     ensure_no_secrets_confirmation(body.into_inner().confirm_no_secrets)?;
     let latest_version = db::marketplace::get_latest_version_by_template(pg_pool.get_ref(), id)
         .await
-        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build()
-                .bad_request("Template must include a deployable stack definition before submission")
-        })?;
-    let has_stack_definition = !latest_version.stack_definition.is_null()
-        && latest_version
-            .stack_definition
-            .as_object()
-            .map(|definition| !definition.is_empty())
-            .unwrap_or(true);
-    if !has_stack_definition {
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let has_empty_stack_definition = latest_version
+        .as_ref()
+        .map(|version| {
+            version.stack_definition.is_null()
+                || version
+                    .stack_definition
+                    .as_object()
+                    .map(|definition| definition.is_empty())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if has_empty_stack_definition {
         return Err(JsonResponse::<serde_json::Value>::build()
             .bad_request("Template must include a deployable stack definition before submission"));
     }
@@ -919,6 +939,71 @@ pub async fn mine_handler(
             JsonResponse::<Vec<models::StackTemplate>>::build().internal_server_error(err)
         })
         .map(|templates| JsonResponse::build().set_list(templates).ok("OK"))
+}
+
+#[tracing::instrument(name = "Get my marketplace analytics", skip_all)]
+#[get("/mine/analytics")]
+pub async fn analytics_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    query: web::Query<AnalyticsQuery>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<web::Json<models::VendorAnalytics>> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+    let start_date = parse_optional_analytics_date(query.start_date.as_deref())?;
+    let end_date = parse_optional_analytics_date(query.end_date.as_deref())?;
+    validate_optional_template_scope(pg_pool.get_ref(), &user.id, query.template_id.as_deref())
+        .await?;
+
+    db::marketplace::get_vendor_analytics_for_period(
+        pg_pool.get_ref(),
+        &user.id,
+        query.period.as_deref().unwrap_or("30d"),
+        start_date,
+        end_date,
+    )
+    .await
+    .map(web::Json)
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))
+}
+
+async fn validate_optional_template_scope(
+    pool: &PgPool,
+    user_id: &str,
+    template_id: Option<&str>,
+) -> Result<()> {
+    let Some(template_id) = template_id else {
+        return Ok(());
+    };
+    let template_id = uuid::Uuid::parse_str(template_id).map_err(|_| {
+        JsonResponse::<serde_json::Value>::build().bad_request("Invalid templateId")
+    })?;
+    let template = db::marketplace::get_by_id(pool, template_id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    if template.creator_user_id != user_id {
+        return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));
+    }
+
+    Ok(())
+}
+
+fn parse_optional_analytics_date(
+    value: Option<&str>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    value
+        .map(|raw| {
+            chrono::DateTime::parse_from_rfc3339(raw)
+                .map(|date| date.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    JsonResponse::<serde_json::Value>::build()
+                        .bad_request("Invalid analytics date format")
+                })
+        })
+        .transpose()
 }
 
 #[tracing::instrument(name = "List reviews for my template", skip_all)]

@@ -93,6 +93,10 @@ async fn get_shared_app() -> &'static Option<(String, PgPool)> {
         .await
 }
 
+pub async fn ensure_shared_app_available() -> bool {
+    get_shared_app().await.is_some()
+}
+
 impl StepWorld {
     async fn new() -> Self {
         let shared = get_shared_app().await;
