@@ -264,6 +264,7 @@ pub struct TemplateAnalytics {
     pub conversion_rate: f64,
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::{InfrastructureRequirements, MarketplaceVendorProfile};
