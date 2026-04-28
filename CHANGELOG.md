@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — Server bootstrap SSH key handling
+
+- `stacker deploy --target server` now treats a user-provided `deploy.server.ssh_key` as a
+  **transient bootstrap credential** for first SSH contact only.
+- Stacker now persists only a **Stacker-managed generated deploy key** in Vault for ongoing
+  server-side automation and later redeploys.
+- The user-provided bootstrap key is still sent for the live bootstrap run, but it is no longer
+  stored as the server's long-term key material on the Stacker side.
+
 ### Added — Local Pipe Mode
 
 - **`stacker target [local|cloud|server]`** — switch deployment target mode; persists in `.stacker/active-target`
