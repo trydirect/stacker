@@ -263,7 +263,9 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
         )));
     }
 
-    let config = StackerConfig::from_file(&config_path)?;
+    let config = StackerConfig::from_file(&config_path)?
+        .with_resolved_deploy_target(None)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
 
     let project_name = resolve_project_name(&config);
 
@@ -487,8 +489,10 @@ fn is_remote_deployment(project_dir: &Path) -> bool {
         return false;
     }
 
-    let config: StackerConfig = match StackerConfig::from_file(&config_path) {
-        Ok(c) => c,
+    let config = match StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+    {
+        Ok(config) => config,
         Err(_) => return false,
     };
 
@@ -645,6 +649,31 @@ mod tests {
         std::fs::write(
             dir.path().join(DEFAULT_CONFIG_FILE),
             "name: demo\ndeploy:\n  target: server\n  server:\n    host: 203.0.113.10\n    user: root\n    port: 22\n",
+        )
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_named_server_target_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            r#"name: demo
+app:
+  type: static
+deploy:
+  default_target: prod
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#,
         )
         .unwrap();
 

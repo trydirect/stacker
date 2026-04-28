@@ -55,8 +55,8 @@ impl CallableTrait for RollbackCommand {
             )));
         }
 
-        let config_str = std::fs::read_to_string(&config_path)?;
-        let config: StackerConfig = serde_yaml::from_str(&config_str)
+        let config = StackerConfig::from_file(&config_path)?
+            .with_resolved_deploy_target(None)
             .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
 
         let project_name = resolve_project_name(&config);

