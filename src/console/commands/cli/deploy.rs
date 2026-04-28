@@ -930,14 +930,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let mut config = StackerConfig::from_file(&config_path)?;
+    let mut config =
+        StackerConfig::from_file(&config_path)?.with_resolved_deploy_target(target_override)?;
     ensure_env_file_if_needed(&config, project_dir)?;
 
-    // 2. Resolve deploy target (flag > config)
-    let mut deploy_target = match target_override {
-        Some(t) => parse_deploy_target(t)?,
-        None => config.deploy.target,
-    };
+    // 2. Resolve deploy target/profile (flag > config default)
+    let mut deploy_target = config.deploy.target;
 
     // 2b. Server pre-check: when target is Cloud but deploy.server section
     //     is defined with a host, try SSH connectivity first.
@@ -1294,7 +1292,11 @@ impl CallableTrait for DeployCommand {
             DeployTarget::Local => {
                 // Always do a quick health check for local deploy unless --no-watch
                 if self.watch != Some(false) {
-                    watch_local_containers(&project_dir, self.file.as_deref())?;
+                    watch_local_containers(
+                        &project_dir,
+                        self.file.as_deref(),
+                        self.target.as_deref(),
+                    )?;
                 }
             }
             DeployTarget::Cloud if should_watch => {
@@ -1579,6 +1581,7 @@ fn fetch_server_for_project(
 fn watch_local_containers(
     project_dir: &Path,
     config_file: Option<&str>,
+    target_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
@@ -1588,8 +1591,11 @@ fn watch_local_containers(
             Some(f) => project_dir.join(f),
             None => project_dir.join(DEFAULT_CONFIG_FILE),
         };
-        // Try to read compose_file from config; fall back to .stacker/docker-compose.yml
-        if let Ok(config) = StackerConfig::from_file(&config_path) {
+        // Try to read compose_file from the resolved local target; fall back to
+        // .stacker/docker-compose.yml.
+        if let Ok(config) = StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(target_override))
+        {
             if let Some(ref existing) = config.deploy.compose_file {
                 let p = project_dir.join(existing);
                 if p.exists() {

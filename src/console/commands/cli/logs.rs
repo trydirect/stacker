@@ -158,15 +158,15 @@ fn is_remote_deployment(project_dir: &Path) -> bool {
 
     // 2. stacker.yml declares cloud/server target
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_yaml::from_str::<StackerConfig>(&content) {
-            if config.deploy.target == DeployTarget::Cloud {
+    if let Ok(config) = StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+    {
+        if config.deploy.target == DeployTarget::Cloud {
+            return true;
+        }
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
                 return true;
-            }
-            if let Some(cloud_cfg) = &config.deploy.cloud {
-                if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
-                    return true;
-                }
             }
         }
     }
@@ -191,7 +191,9 @@ fn resolve_deployment_hash(ctx: &CliRuntime) -> Result<String, CliError> {
     // 2. stacker.yml explicit deployment hash
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(None))
+        {
             if let Some(hash) = config.deploy.deployment_hash.as_ref() {
                 if !hash.trim().is_empty() {
                     return Ok(hash.clone());
@@ -534,6 +536,29 @@ mod tests {
             deployed_at: Utc::now().to_rfc3339(),
         }
         .save(dir.path())
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_named_cloud_target_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            r#"name: demo
+app:
+  type: static
+deploy:
+  default_target: prod
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      cloud:
+        provider: aws
+"#,
+        )
         .unwrap();
 
         assert!(is_remote_deployment(dir.path()));

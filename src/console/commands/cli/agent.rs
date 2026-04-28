@@ -50,7 +50,9 @@ fn resolve_deployment_hash(
     // have been redeployed since, leaving the lock pointing at a stale hash.
     let config_path = project_dir.join("stacker.yml");
     if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(None))
+        {
             if let Some(ref project_name) = config.project.identity {
                 if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name))
                 {

@@ -45,7 +45,7 @@ impl CallableTrait for CiExportCommand {
             }));
         }
 
-        let config = StackerConfig::from_file(path)?;
+        let config = StackerConfig::from_file(path)?.with_resolved_deploy_target(None)?;
         let exporter = CiExporter::new(config);
 
         let (output_content, output_path) = match self.platform.to_lowercase().as_str() {
@@ -173,7 +173,8 @@ impl CiValidateCommand {
 
 impl CallableTrait for CiValidateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let config = StackerConfig::from_file(Path::new(DEFAULT_CONFIG_FILE))?;
+        let config = StackerConfig::from_file(Path::new(DEFAULT_CONFIG_FILE))?
+            .with_resolved_deploy_target(None)?;
 
         let pipeline_path = match self.platform.to_lowercase().as_str() {
             "github" | "github-actions" | "gha" => {

@@ -130,7 +130,13 @@ fn resolve_deployment_context(
     // 4. stacker.yml project → active agent (most recent heartbeat)
     let config_path = project_dir.join("stacker.yml");
     if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(None))
+        {
+            if config.deploy.target == crate::cli::config_parser::DeployTarget::Local {
+                return Ok(DeploymentContext::Local);
+            }
+
             if let Some(ref project_name) = config.project.identity {
                 let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
                 if let Some(proj) = project {
