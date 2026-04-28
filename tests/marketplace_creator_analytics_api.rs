@@ -191,7 +191,11 @@ async fn analytics_returns_empty_state_for_new_creator() {
         .get("templates")
         .and_then(|t| t.as_array())
         .expect("templates should be an array");
-    assert_eq!(0, templates.len(), "New creator should have empty templates array");
+    assert_eq!(
+        0,
+        templates.len(),
+        "New creator should have empty templates array"
+    );
 
     println!("✓ Empty state returns zeros without error");
 }
@@ -416,13 +420,7 @@ async fn analytics_sorts_top_templates_by_deployments() {
     let template_popular = Uuid::new_v4();
     let template_less_popular = Uuid::new_v4();
 
-    seed_template_with_events(
-        &app.db_pool,
-        template_popular,
-        MOCK_USER_A_ID,
-        "approved",
-    )
-    .await;
+    seed_template_with_events(&app.db_pool, template_popular, MOCK_USER_A_ID, "approved").await;
     seed_template_with_events(
         &app.db_pool,
         template_less_popular,

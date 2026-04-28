@@ -1041,11 +1041,66 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     }
 
     // 3. Cloud/server prerequisites — verify login and keep credentials for later use.
-    let cloud_creds: Option<StoredCredentials> = if deploy_target == DeployTarget::Cloud {
-        Some(cred_manager.require_valid_token("cloud deploy")?)
-    } else {
-        None
-    };
+    let cloud_creds: Option<StoredCredentials> =
+        if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
+            let purpose = if deploy_target == DeployTarget::Cloud {
+                "cloud deploy"
+            } else {
+                "server deploy"
+            };
+            Some(cred_manager.require_valid_token(purpose)?)
+        } else {
+            None
+        };
+
+    if deploy_target == DeployTarget::Server {
+        if let Some(ref server_cfg) = config.deploy.server {
+            eprintln!(
+                "  Validating SSH connectivity to {} before bootstrap deploy...",
+                server_cfg.host
+            );
+
+            match try_ssh_server_check(server_cfg) {
+                Some(check) if check.connected && check.authenticated => {
+                    eprintln!(
+                        "  ✓ Server {} is reachable ({})",
+                        server_cfg.host,
+                        check.summary()
+                    );
+
+                    if !check.docker_installed {
+                        return Err(CliError::DeployFailed {
+                            target: DeployTarget::Server,
+                            reason: format!(
+                                "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
+                                server_cfg.host
+                            ),
+                        });
+                    }
+                }
+                Some(check) => {
+                    print_server_unreachable_hint(server_cfg, &check);
+                    return Err(CliError::DeployFailed {
+                        target: DeployTarget::Server,
+                        reason: format!(
+                            "Failed to connect to {} over SSH: {}",
+                            server_cfg.host,
+                            check.error.as_deref().unwrap_or("unknown error")
+                        ),
+                    });
+                }
+                None => {
+                    return Err(CliError::DeployFailed {
+                        target: DeployTarget::Server,
+                        reason: format!(
+                            "Could not verify SSH connectivity to {}. Check deploy.server.ssh_key and retry.",
+                            server_cfg.host
+                        ),
+                    });
+                }
+            }
+        }
+    }
 
     // 3b. If cloud target but no cloud section in stacker.yml, prompt to select a saved credential.
     if deploy_target == DeployTarget::Cloud && config.deploy.cloud.is_none() {
@@ -1297,7 +1352,7 @@ impl CallableTrait for DeployCommand {
                     watch_local_containers(&project_dir, self.file.as_deref())?;
                 }
             }
-            DeployTarget::Cloud if should_watch => {
+            DeployTarget::Cloud | DeployTarget::Server if should_watch => {
                 watch_cloud_deployment(&result)?;
             }
             _ => {}
@@ -1327,20 +1382,61 @@ impl DeployCommand {
         let mut lock = match result.target {
             DeployTarget::Local => DeploymentLock::for_local(),
             DeployTarget::Server => {
-                // For server deploys, read server config from stacker.yml
+                let mut l = DeploymentLock::from_result(result)
+                    .with_project_name(self.project_name.clone());
+
                 let config_path = match &self.file {
                     Some(f) => project_dir.join(f),
                     None => project_dir.join(DEFAULT_CONFIG_FILE),
                 };
                 if let Ok(config) = StackerConfig::from_file(&config_path) {
-                    if let Some(ref server_cfg) = config.deploy.server {
-                        DeploymentLock::for_server(server_cfg)
-                    } else {
-                        DeploymentLock::from_result(result)
+                    if l.project_name.is_none() {
+                        let name = config
+                            .project
+                            .identity
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(config.name);
+                        l = l.with_project_name(Some(name));
                     }
-                } else {
-                    DeploymentLock::from_result(result)
+
+                    if let Some(ref server_cfg) = config.deploy.server {
+                        if l.server_ip.is_none() {
+                            l.server_ip = Some(server_cfg.host.clone());
+                        }
+                        if l.ssh_user.is_none() {
+                            l.ssh_user = Some(server_cfg.user.clone());
+                        }
+                        if l.ssh_port.is_none() {
+                            l.ssh_port = Some(server_cfg.port);
+                        }
+                    }
                 }
+
+                if let Some(project_id) = result.project_id {
+                    match fetch_server_for_project(project_id as i32) {
+                        Ok(Some(info)) => {
+                            l = l.with_server_info(
+                                info.srv_ip.clone(),
+                                info.ssh_user.clone(),
+                                info.ssh_port.map(|p| p as u16),
+                                info.name.clone(),
+                                info.cloud_id,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("  ⚠ Could not fetch server details: {}", e);
+                        }
+                    }
+                }
+
+                if l.server_name.is_none() {
+                    if let Some(ref name) = result.server_name {
+                        l.server_name = Some(name.clone());
+                    }
+                }
+
+                l
             }
             DeployTarget::Cloud => {
                 let mut l = DeploymentLock::from_result(result)

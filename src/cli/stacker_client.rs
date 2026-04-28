@@ -2612,7 +2612,7 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
 ///   - must start with a letter
 ///   - must not end with `-`
 ///   - max 63 characters total
-fn generate_server_name(project_name: &str) -> String {
+pub fn generate_server_name(project_name: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Sanitise project name: lowercase, replace non-alnum with hyphen, collapse runs
@@ -2790,6 +2790,107 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     form
 }
 
+pub fn build_server_deploy_form(
+    config: &StackerConfig,
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    server_name: &str,
+    force_status_panel: bool,
+) -> serde_json::Value {
+    let project_name = config
+        .project
+        .identity
+        .clone()
+        .unwrap_or_else(|| config.name.clone());
+
+    let mut form = serde_json::json!({
+        "cloud": {
+            "provider": "own",
+            "save_token": false,
+        },
+        "server": {
+            "name": server_name,
+            "srv_ip": server_cfg.host,
+            "ssh_user": server_cfg.user,
+            "ssh_port": server_cfg.port,
+        },
+        "stack": {
+            "stack_code": project_name,
+            "vars": [],
+            "integrated_features": [],
+            "extended_features": [],
+            "subscriptions": [],
+        }
+    });
+
+    let registry_creds = super::install_runner::resolve_docker_registry_credentials(config);
+    if !registry_creds.is_empty() {
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert(
+                "registry".to_string(),
+                serde_json::Value::Object(registry_creds),
+            );
+        }
+    }
+
+    match config.proxy.proxy_type {
+        crate::cli::config_parser::ProxyType::Nginx
+        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                    if !arr.contains(&npm) {
+                        arr.push(npm);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if config.monitoring.status_panel || force_status_panel {
+        let vault_url =
+            std::env::var("STACKER_VAULT_URL").unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
+
+        if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+            let features = stack_obj
+                .entry("integrated_features")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = features.as_array_mut() {
+                let sp = serde_json::Value::String("statuspanel".to_string());
+                if !arr.contains(&sp) {
+                    arr.push(sp);
+                }
+            }
+
+            let vars = stack_obj
+                .entry("vars")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = vars.as_array_mut() {
+                arr.push(serde_json::json!({
+                    "key": "vault_url",
+                    "value": vault_url
+                }));
+                arr.push(serde_json::json!({
+                    "key": "status_panel_port",
+                    "value": "5000"
+                }));
+            }
+        }
+
+        if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+            server_obj.insert(
+                "connection_mode".to_string(),
+                serde_json::Value::String("status_panel".to_string()),
+            );
+        }
+    }
+
+    form
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2830,6 +2931,38 @@ mod tests {
             "myproject-".len() + 4,
             "suffix should be 4 hex chars"
         );
+    }
+
+    #[test]
+    fn test_build_server_deploy_form_uses_existing_server_settings() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "deploy".to_string(),
+                ssh_key: Some(std::path::PathBuf::from("/tmp/id_ed25519")),
+                port: 2222,
+            })
+            .build()
+            .unwrap();
+        let server_cfg = config.deploy.server.as_ref().unwrap();
+
+        let form = build_server_deploy_form(&config, server_cfg, "edge-box", true);
+
+        assert_eq!(form["cloud"]["provider"], "own");
+        assert_eq!(form["cloud"]["save_token"], false);
+        assert_eq!(form["server"]["name"], "edge-box");
+        assert_eq!(form["server"]["srv_ip"], "203.0.113.10");
+        assert_eq!(form["server"]["ssh_user"], "deploy");
+        assert_eq!(form["server"]["ssh_port"], 2222);
+        assert_eq!(form["server"]["connection_mode"], "status_panel");
+        assert_eq!(form["stack"]["stack_code"], "myproject");
+        assert!(form["stack"]["integrated_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "statuspanel"));
     }
 
     #[test]

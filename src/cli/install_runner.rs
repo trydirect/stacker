@@ -1262,39 +1262,176 @@ impl DeployStrategy for ServerDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
-        let action = if context.dry_run {
-            InstallAction::Plan
-        } else {
-            InstallAction::Apply
-        };
+        if context.dry_run {
+            let action = InstallAction::Plan;
+            let cmd = InstallContainerCommand::from_config(config, context, action);
+            let args = cmd.build_args();
+            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-        let cmd = InstallContainerCommand::from_config(config, context, action);
-        let args = cmd.build_args();
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let output = executor.execute("docker", &args_refs)?;
 
-        let output = executor.execute("docker", &args_refs)?;
+            if !output.success() {
+                return Err(CliError::DeployFailed {
+                    target: DeployTarget::Server,
+                    reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                });
+            }
 
-        if !output.success() {
-            return Err(CliError::DeployFailed {
+            let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
+
+            return Ok(DeployResult {
                 target: DeployTarget::Server,
-                reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                message: "Server deployment plan completed".to_string(),
+                server_ip: server_host,
+                deployment_id: None,
+                project_id: None,
+                server_name: None,
             });
         }
 
-        let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
+        let creds =
+            CredentialsManager::with_default_store().require_valid_token("server deploy")?;
+        let base_url = normalize_stacker_server_url(
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
+        );
+        let server_cfg = config
+            .deploy
+            .server
+            .as_ref()
+            .ok_or(CliError::ServerHostMissing)?;
+        let project_name = resolve_remote_project_name(config, context);
+        let project_body = stacker_client::build_project_body(config);
+        let bootstrap_status_panel = true;
 
-        let action_str = if context.dry_run {
-            "plan completed"
-        } else {
-            "deployed"
-        };
+        let (response, effective_server_name) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to initialize async runtime: {}", e),
+            })?
+            .block_on(async {
+                let client = StackerClient::new(&base_url, &creds.access_token);
+
+                let project = match client.find_project_by_name(&project_name).await? {
+                    Some(existing) => {
+                        let _ = client
+                            .update_project(existing.id, project_body.clone())
+                            .await;
+                        existing
+                    }
+                    None => {
+                        let created = client
+                            .create_project(&project_name, project_body.clone())
+                            .await?;
+                        eprintln!("  Created project '{}' (id={})", created.name, created.id);
+                        created
+                    }
+                };
+
+                let existing_server = client.list_servers().await?.into_iter().find(|server| {
+                    server.project_id == project.id
+                        && (server.srv_ip.as_deref() == Some(server_cfg.host.as_str())
+                            || context
+                                .server_name_override
+                                .as_deref()
+                                .is_some_and(|name| server.name.as_deref() == Some(name)))
+                });
+
+                let effective_server_name = context
+                    .server_name_override
+                    .clone()
+                    .or_else(|| {
+                        existing_server
+                            .as_ref()
+                            .and_then(|server| server.name.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}-server",
+                            sanitize_stack_code(
+                                &config
+                                    .project
+                                    .identity
+                                    .clone()
+                                    .unwrap_or_else(|| config.name.clone())
+                            )
+                        )
+                    });
+
+                let mut deploy_form = stacker_client::build_server_deploy_form(
+                    config,
+                    server_cfg,
+                    &effective_server_name,
+                    bootstrap_status_panel,
+                );
+
+                if let Some(server_obj) = deploy_form
+                    .get_mut("server")
+                    .and_then(|v| v.as_object_mut())
+                {
+                    if let Some(existing) = existing_server.as_ref() {
+                        server_obj.insert("server_id".to_string(), serde_json::json!(existing.id));
+                    }
+
+                    if let Some((private_key, public_key)) =
+                        load_existing_server_ssh_key(server_cfg)?
+                    {
+                        server_obj.insert(
+                            "ssh_private_key".to_string(),
+                            serde_json::Value::String(private_key),
+                        );
+                        if let Some(public_key) = public_key {
+                            server_obj.insert(
+                                "public_key".to_string(),
+                                serde_json::Value::String(public_key),
+                            );
+                        }
+                    }
+                }
+
+                if let Some(form_obj) = deploy_form.as_object_mut() {
+                    form_obj.insert("runtime".to_string(), serde_json::json!(context.runtime));
+                }
+
+                eprintln!(
+                    "  Deploying project '{}' to {} via Stacker server...",
+                    project_name, server_cfg.host
+                );
+                let response = client.deploy(project.id, None, deploy_form).await?;
+                Ok::<_, CliError>((response, effective_server_name))
+            })?;
+
+        let deploy_id = response
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("deployment_id"))
+            .and_then(|v| v.as_i64());
+        let project_id = response.id;
+
+        let mut message = format!(
+            "Server deployment requested via Stacker server (project='{}'",
+            project_name
+        );
+        if let Some(pid) = project_id {
+            message.push_str(&format!(", project_id={}", pid));
+        }
+        if let Some(did) = deploy_id {
+            message.push_str(&format!(", deployment_id={}", did));
+        }
+        message.push(')');
+        message.push_str(&format!("; server='{}'", effective_server_name));
+
         Ok(DeployResult {
             target: DeployTarget::Server,
-            message: format!("Server deployment {}", action_str),
-            server_ip: server_host,
-            deployment_id: None,
-            project_id: None,
-            server_name: None,
+            message,
+            server_ip: Some(server_cfg.host.clone()),
+            deployment_id: deploy_id,
+            project_id: project_id.map(|id| id as i64),
+            server_name: Some(effective_server_name),
         })
     }
 
@@ -1304,7 +1441,12 @@ impl DeployStrategy for ServerDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<(), CliError> {
-        let cmd = InstallContainerCommand::from_config(config, context, InstallAction::Destroy);
+        let action = if context.dry_run {
+            InstallAction::Plan
+        } else {
+            InstallAction::Destroy
+        };
+        let cmd = InstallContainerCommand::from_config(config, context, action);
         let args = cmd.build_args();
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
@@ -1319,6 +1461,48 @@ impl DeployStrategy for ServerDeploy {
 
         Ok(())
     }
+}
+
+fn resolve_remote_project_name(config: &StackerConfig, context: &DeployContext) -> String {
+    context.project_name_override.clone().unwrap_or_else(|| {
+        config
+            .project
+            .identity
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| config.name.clone())
+    })
+}
+
+fn load_existing_server_ssh_key(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+) -> Result<Option<(String, Option<String>)>, CliError> {
+    let Some(path) = server_cfg.ssh_key.as_ref() else {
+        return Ok(None);
+    };
+
+    let private_key = std::fs::read_to_string(path).map_err(|e| CliError::DeployFailed {
+        target: DeployTarget::Server,
+        reason: format!("Failed to read SSH private key {}: {}", path.display(), e),
+    })?;
+
+    let public_key_path = PathBuf::from(format!("{}.pub", path.display()));
+    let public_key = match std::fs::read_to_string(&public_key_path) {
+        Ok(key) => Some(key),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!(
+                    "Failed to read SSH public key {}: {}",
+                    public_key_path.display(),
+                    e
+                ),
+            });
+        }
+    };
+
+    Ok(Some((private_key, public_key)))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

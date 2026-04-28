@@ -90,7 +90,10 @@ async fn test_persist_view_event() {
             assert_eq!(viewer.as_deref(), Some(viewer_user_id));
         }
         Err(e) => {
-            eprintln!("Expected failure: marketplace_event table does not exist yet: {}", e);
+            eprintln!(
+                "Expected failure: marketplace_event table does not exist yet: {}",
+                e
+            );
             panic!("TEST FAILED AS EXPECTED: marketplace_event table not implemented");
         }
     }
@@ -636,7 +639,11 @@ async fn test_time_series_zero_fill_missing_buckets() {
     );
 
     // Count how many buckets have zero views
-    let zero_buckets = analytics.views_series.iter().filter(|b| b.count == 0).count();
+    let zero_buckets = analytics
+        .views_series
+        .iter()
+        .filter(|b| b.count == 0)
+        .count();
 
     assert_eq!(
         zero_buckets, 6,
@@ -774,13 +781,10 @@ async fn test_cloud_breakdown_groups_by_provider() {
         .await;
     }
 
-    let analytics = stacker::db::marketplace::get_vendor_analytics(
-        &app.db_pool,
-        "vendor-alice",
-        None,
-    )
-    .await
-    .expect("Should fetch analytics");
+    let analytics =
+        stacker::db::marketplace::get_vendor_analytics(&app.db_pool, "vendor-alice", None)
+            .await
+            .expect("Should fetch analytics");
 
     // Should have 3 cloud providers in breakdown
     assert_eq!(
@@ -868,13 +872,10 @@ async fn test_cloud_breakdown_calculates_percentages() {
         .await;
     }
 
-    let analytics = stacker::db::marketplace::get_vendor_analytics(
-        &app.db_pool,
-        "vendor-alice",
-        None,
-    )
-    .await
-    .expect("Should fetch analytics");
+    let analytics =
+        stacker::db::marketplace::get_vendor_analytics(&app.db_pool, "vendor-alice", None)
+            .await
+            .expect("Should fetch analytics");
 
     let hetzner = analytics
         .cloud_breakdown
@@ -916,11 +917,7 @@ async fn test_cloud_breakdown_calculates_percentages() {
     );
 
     // All percentages should sum to ~100%
-    let total_percentage: f64 = analytics
-        .cloud_breakdown
-        .iter()
-        .map(|c| c.percentage)
-        .sum();
+    let total_percentage: f64 = analytics.cloud_breakdown.iter().map(|c| c.percentage).sum();
 
     assert!(
         (total_percentage - 100.0).abs() < 0.1,
@@ -980,13 +977,10 @@ async fn test_cloud_breakdown_sorted_by_deployments_desc() {
         .await;
     }
 
-    let analytics = stacker::db::marketplace::get_vendor_analytics(
-        &app.db_pool,
-        "vendor-alice",
-        None,
-    )
-    .await
-    .expect("Should fetch analytics");
+    let analytics =
+        stacker::db::marketplace::get_vendor_analytics(&app.db_pool, "vendor-alice", None)
+            .await
+            .expect("Should fetch analytics");
 
     // Should be sorted: hetzner(10), digitalocean(5), aws(2)
     assert_eq!(analytics.cloud_breakdown[0].cloud_provider, "hetzner");
@@ -1034,13 +1028,10 @@ async fn test_aggregate_fallback_when_no_events() {
     .expect("Should update counters");
 
     // Query analytics with no events in event table
-    let analytics = stacker::db::marketplace::get_vendor_analytics(
-        &app.db_pool,
-        "vendor-alice",
-        None,
-    )
-    .await
-    .expect("Should fetch analytics");
+    let analytics =
+        stacker::db::marketplace::get_vendor_analytics(&app.db_pool, "vendor-alice", None)
+            .await
+            .expect("Should fetch analytics");
 
     // Should fall back to aggregate counters
     assert_eq!(
@@ -1105,13 +1096,10 @@ async fn test_events_take_precedence_over_aggregates() {
         .await;
     }
 
-    let analytics = stacker::db::marketplace::get_vendor_analytics(
-        &app.db_pool,
-        "vendor-alice",
-        None,
-    )
-    .await
-    .expect("Should fetch analytics");
+    let analytics =
+        stacker::db::marketplace::get_vendor_analytics(&app.db_pool, "vendor-alice", None)
+            .await
+            .expect("Should fetch analytics");
 
     // Should use event data (5 views, 3 deploys) instead of aggregates (100, 50)
     assert_eq!(

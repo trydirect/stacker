@@ -268,6 +268,36 @@ fn is_non_empty_json(value: &serde_json::Value) -> bool {
     }
 }
 
+fn normalize_optional_secret(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_provided_ssh_keypair(
+    form: &forms::server::ServerForm,
+) -> Result<Option<(String, String)>, String> {
+    let private_key = match normalize_optional_secret(&form.ssh_private_key) {
+        Some(key) => key,
+        None => return Ok(None),
+    };
+
+    let public_key = match normalize_optional_secret(&form.public_key) {
+        Some(key) => key,
+        None => {
+            let private = ssh_key::PrivateKey::from_openssh(&private_key)
+                .map_err(|err| format!("Invalid SSH private key: {}", err))?;
+            private
+                .public_key()
+                .to_openssh()
+                .map_err(|err| format!("Failed to derive SSH public key: {}", err))?
+        }
+    };
+
+    Ok(Some((public_key, private_key)))
+}
+
 fn ensure_root_object(
     value: &mut serde_json::Value,
 ) -> &mut serde_json::Map<String, serde_json::Value> {
@@ -552,7 +582,17 @@ async fn execute_deployment(
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     let mut new_public_key: Option<String> = None;
-    let mut captured_private_key: Option<String> = None;
+    let mut bootstrap_private_key: Option<String> = None;
+    let provided_keypair = resolve_provided_ssh_keypair(&form.server)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    if let Some((_, private_key)) = provided_keypair.as_ref() {
+        bootstrap_private_key = Some(private_key.clone());
+        tracing::info!(
+            "Using provided SSH private key transiently for bootstrap on server {}",
+            server.id
+        );
+    }
+
     let server = if server.key_status != "active" {
         match VaultClient::generate_ssh_keypair() {
             Ok((public_key, private_key)) => {
@@ -567,7 +607,6 @@ async fn execute_deployment(
                             vault_path
                         );
                         new_public_key = Some(public_key);
-                        captured_private_key = Some(private_key);
                         db::server::update_ssh_key_status(
                             pg_pool,
                             server.id,
@@ -653,26 +692,24 @@ async fn execute_deployment(
 
     let deployment_id = saved_deployment.id;
 
-    let new_private_key = if server.vault_key_path.is_some() {
-        if let Some(pk) = captured_private_key {
-            Some(pk)
-        } else {
-            match vault_client.fetch_ssh_key(&user.id, server.id).await {
-                Ok(pk) => {
-                    tracing::info!(
-                        "Fetched SSH private key from Vault for server {}",
-                        server.id
-                    );
-                    Some(pk)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch SSH private key from Vault for server {}: {}",
-                        server.id,
-                        e
-                    );
-                    None
-                }
+    let new_private_key = if let Some(pk) = bootstrap_private_key {
+        Some(pk)
+    } else if server.vault_key_path.is_some() {
+        match vault_client.fetch_ssh_key(&user.id, server.id).await {
+            Ok(pk) => {
+                tracing::info!(
+                    "Fetched SSH private key from Vault for server {}",
+                    server.id
+                );
+                Some(pk)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch SSH private key from Vault for server {}: {}",
+                    server.id,
+                    e
+                );
+                None
             }
         }
     } else {
@@ -1275,11 +1312,12 @@ pub async fn rollback(
 mod tests {
     use super::{
         build_runtime_artifact_bundle, preserve_marketplace_runtime_artifacts,
-        sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
-        validate_min_ram_requirement,
+        resolve_provided_ssh_keypair, sync_runtime_artifact_bundle, validate_min_cpu_requirement,
+        validate_min_disk_requirement, validate_min_ram_requirement,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
+    use crate::forms;
     use crate::models::{self, StackTemplateVersion};
     use serde_json::json;
     use uuid::Uuid;
@@ -1686,5 +1724,22 @@ mod tests {
             .request_json
             .get("runtime_artifact_bundle")
             .is_none());
+    }
+
+    #[test]
+    fn resolve_provided_ssh_keypair_derives_public_key_when_missing() {
+        let (public_key, private_key) =
+            crate::helpers::vault::VaultClient::generate_ssh_keypair().expect("test keypair");
+        let form = forms::server::ServerForm {
+            ssh_private_key: Some(private_key.clone()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_provided_ssh_keypair(&form)
+            .expect("valid keypair")
+            .expect("keypair should be present");
+
+        assert_eq!(resolved.0, public_key);
+        assert_eq!(resolved.1.trim(), private_key.trim());
     }
 }

@@ -1,11 +1,10 @@
+use chrono::Utc;
+use serde_json::json;
 /// Compile-time check that analytics models are defined correctly and exclude finance fields
 ///
 /// This is a minimal test to verify the model structure compiles before running DB tests
-
 use stacker::models::marketplace::*;
 use uuid::Uuid;
-use chrono::Utc;
-use serde_json::json;
 
 #[test]
 fn test_marketplace_event_model_compiles() {
@@ -21,7 +20,7 @@ fn test_marketplace_event_model_compiles() {
     };
 
     assert_eq!(event.event_type, "view");
-    
+
     // These should NOT compile if added (finance fields):
     // let _ = event.amount;
     // let _ = event.revenue;
@@ -53,7 +52,7 @@ fn test_vendor_analytics_model_compiles() {
     };
 
     assert_eq!(analytics.creator_id, "vendor-1");
-    
+
     // These should NOT compile if added (finance fields):
     // let _ = analytics.total_earnings;
     // let _ = analytics.withdrawable_balance;
@@ -68,7 +67,7 @@ fn test_cloud_breakdown_model_compiles() {
     };
 
     assert_eq!(breakdown.cloud_provider, "hetzner");
-    
+
     // These should NOT compile if added (finance fields):
     // let _ = breakdown.revenue;
     // let _ = breakdown.earnings;
@@ -86,7 +85,7 @@ fn test_analytics_summary_model_compiles() {
     };
 
     assert_eq!(summary.total_views, 100);
-    
+
     // These should NOT compile if added (finance fields):
     // let _ = summary.total_earnings;
     // let _ = summary.revenue;
