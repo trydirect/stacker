@@ -235,7 +235,8 @@ fn resolve_project_name(config: &StackerConfig) -> String {
 fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
     creds
         .server_url
-        .clone()
+        .as_deref()
+        .map(crate::cli::install_runner::normalize_stacker_server_url)
         .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string())
 }
 
@@ -710,6 +711,25 @@ deploy:
             expires_at: Utc::now() + Duration::minutes(10),
             email: None,
             server_url: Some("https://custom.stacker.example".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_stacker_base_url(&creds),
+            "https://custom.stacker.example"
+        );
+    }
+
+    #[test]
+    fn test_resolve_stacker_base_url_normalizes_api_v1_suffix() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: Utc::now() + Duration::minutes(10),
+            email: None,
+            server_url: Some("https://custom.stacker.example/api/v1".to_string()),
             org: None,
             domain: None,
         };

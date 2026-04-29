@@ -869,6 +869,7 @@ pub fn normalize_stacker_server_url(raw: &str) -> String {
     let mut url = raw.trim_end_matches('/').to_string();
     // Strip known auth endpoints that might be stored as server_url
     for suffix in [
+        "/api/v1",
         "/oauth_server/token",
         "/auth/login",
         "/server/user/auth/login",
@@ -2000,6 +2001,18 @@ mod tests {
         let config = sample_cloud_config();
         let strategy = CloudDeploy;
         assert!(strategy.validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_strips_api_v1_suffix() {
+        assert_eq!(
+            normalize_stacker_server_url("https://stacker.example.com/api/v1"),
+            "https://stacker.example.com"
+        );
+        assert_eq!(
+            normalize_stacker_server_url("https://stacker.example.com/api/v1/"),
+            "https://stacker.example.com"
+        );
     }
 
     #[test]
