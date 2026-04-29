@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use std::sync::{Mutex, OnceLock};
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 fn create_admin_jwt() -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -79,6 +79,20 @@ impl Drop for EnvGuard {
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn find_marketplace_sync_payload<'a>(
+    requests: &'a [Request],
+    expected_action: &str,
+) -> Option<Value> {
+    requests.iter().find_map(|request| {
+        if request.url.path() != "/marketplace/sync" {
+            return None;
+        }
+
+        let payload: Value = serde_json::from_slice(&request.body).ok()?;
+        (payload["action"] == expected_action).then_some(payload)
+    })
 }
 
 #[tokio::test]
@@ -241,12 +255,8 @@ async fn admin_approval_sends_template_published_webhook() {
         .received_requests()
         .await
         .expect("Should capture webhook request");
-    let webhook_request = requests
-        .iter()
-        .find(|request| request.url.path() == "/marketplace/sync")
-        .expect("Approval should send marketplace webhook");
-    let payload: Value =
-        serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
+    let payload = find_marketplace_sync_payload(&requests, "template_published")
+        .expect("Approval should send template_published marketplace webhook");
 
     assert_eq!("template_published", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
@@ -306,12 +316,8 @@ async fn admin_rejection_sends_template_review_rejected_webhook() {
         .received_requests()
         .await
         .expect("Should capture webhook request");
-    let webhook_request = requests
-        .iter()
-        .find(|request| request.url.path() == "/marketplace/sync")
-        .expect("Rejection should send marketplace webhook");
-    let payload: Value =
-        serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
+    let payload = find_marketplace_sync_payload(&requests, "template_review_rejected")
+        .expect("Rejection should send template_review_rejected marketplace webhook");
 
     assert_eq!("template_review_rejected", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
@@ -373,12 +379,8 @@ async fn admin_unapprove_sends_template_unpublished_webhook() {
         .received_requests()
         .await
         .expect("Should capture webhook request");
-    let webhook_request = requests
-        .iter()
-        .find(|request| request.url.path() == "/marketplace/sync")
-        .expect("Unapprove should send marketplace webhook");
-    let payload: Value =
-        serde_json::from_slice(&webhook_request.body).expect("Webhook body should be valid JSON");
+    let payload = find_marketplace_sync_payload(&requests, "template_unpublished")
+        .expect("Unapprove should send template_unpublished marketplace webhook");
 
     assert_eq!("template_unpublished", payload["action"]);
     assert_eq!(template_id, payload["stack_template_id"]);
