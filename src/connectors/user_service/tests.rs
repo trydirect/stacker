@@ -264,6 +264,56 @@ async fn test_get_installation_by_hash_uses_lightweight_route() {
 }
 
 #[tokio::test]
+async fn test_get_installation_falls_back_to_legacy_install_route() {
+    let mut server = Server::new_async().await;
+    let _api_mock = server
+        .mock("GET", "/api/1.0/installations/66")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(404)
+        .with_header("content-type", "application/json")
+        .with_body(json!({ "_status": "ERR" }).to_string())
+        .create_async()
+        .await;
+    let _legacy_mock = server
+        .mock("GET", "/install/66")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_status": "OK",
+                "installation": {
+                    "id": 66,
+                    "status": "completed",
+                    "deployment_hash": "dep-hash-66",
+                    "request_dump": {
+                        "stack_code": "coolify",
+                        "provider": "htz",
+                        "commonDomain": "example.com",
+                        "server_ip": "192.0.2.66"
+                    }
+                },
+                "agent_config": {
+                    "token": "agent-token"
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let installation = client.get_installation("test_token", 66).await.unwrap();
+
+    assert_eq!(installation.id, Some(66));
+    assert_eq!(installation.stack_code.as_deref(), Some("coolify"));
+    assert_eq!(installation.cloud.as_deref(), Some("htz"));
+    assert_eq!(installation.domain.as_deref(), Some("example.com"));
+    assert_eq!(installation.server_ip.as_deref(), Some("192.0.2.66"));
+    assert!(installation.agent_config.is_some());
+}
+
+#[tokio::test]
 async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
     let mut server = Server::new_async().await;
     let _mock = server

@@ -21,7 +21,7 @@ pub struct Installation {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallationDetails {
-    #[serde(rename = "_id")]
+    #[serde(rename = "_id", alias = "id")]
     pub id: Option<i64>,
     pub stack_code: Option<String>,
     pub status: Option<String>,
@@ -48,6 +48,62 @@ pub struct InstallationApp {
 #[derive(Debug, Deserialize)]
 struct InstallationsResponse {
     _items: Vec<Installation>,
+}
+
+fn parse_installation_details_payload(
+    mut payload: serde_json::Value,
+) -> Result<InstallationDetails, ConnectorError> {
+    if let Some(wrapper) = payload.as_object_mut() {
+        if let Some(mut installation) = wrapper.remove("installation") {
+            if let Some(agent_config) = wrapper.remove("agent_config") {
+                if let Some(installation_obj) = installation.as_object_mut() {
+                    installation_obj.insert("agent_config".to_string(), agent_config);
+                }
+            }
+            payload = installation;
+        }
+    }
+
+    if let Some(installation_obj) = payload.as_object_mut() {
+        if !installation_obj.contains_key("_id") {
+            if let Some(id) = installation_obj.remove("id") {
+                installation_obj.insert("_id".to_string(), id);
+            }
+        }
+        if !installation_obj.contains_key("_created") {
+            if let Some(created_at) = installation_obj.get("date_created").cloned() {
+                installation_obj.insert("_created".to_string(), created_at);
+            }
+        }
+
+        if let Some(request_dump) = installation_obj
+            .get("request_dump")
+            .and_then(|value| value.as_object())
+            .cloned()
+        {
+            let field_mappings = [
+                ("stack_code", "stack_code"),
+                ("provider", "cloud"),
+                ("cloud", "cloud"),
+                ("commonDomain", "domain"),
+                ("domain", "domain"),
+                ("server_ip", "server_ip"),
+                ("deployment_hash", "deployment_hash"),
+            ];
+
+            for (source, target) in field_mappings {
+                if installation_obj.contains_key(target) {
+                    continue;
+                }
+                if let Some(value) = request_dump.get(source).cloned() {
+                    installation_obj.insert(target.to_string(), value);
+                }
+            }
+        }
+    }
+
+    serde_json::from_value::<InstallationDetails>(payload)
+        .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
 }
 
 impl UserServiceClient {
@@ -95,13 +151,24 @@ impl UserServiceClient {
             self.base_url, installation_id
         );
 
-        let response = self
+        let mut response = self
             .http_client
             .get(&url)
             .header("Authorization", format!("Bearer {}", bearer_token))
             .send()
             .await
             .map_err(ConnectorError::from)?;
+
+        if response.status().as_u16() == 404 {
+            let fallback_url = format!("{}/install/{}", self.base_url, installation_id);
+            response = self
+                .http_client
+                .get(&fallback_url)
+                .header("Authorization", format!("Bearer {}", bearer_token))
+                .send()
+                .await
+                .map_err(ConnectorError::from)?;
+        }
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -112,10 +179,12 @@ impl UserServiceClient {
             )));
         }
 
-        response
-            .json::<InstallationDetails>()
+        let payload = response
+            .json::<serde_json::Value>()
             .await
-            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))?;
+
+        parse_installation_details_payload(payload)
     }
 
     /// Get installation details by deployment hash via the lightweight Flask route.
