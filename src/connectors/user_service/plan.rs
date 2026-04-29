@@ -12,8 +12,8 @@ pub struct SubscriptionPlan {
     /// Plan code (e.g., "plan-free-periodically", "plan-basic-monthly")
     pub code: Option<String>,
 
-    /// Plan features and limits (array of strings)
-    pub includes: Option<Vec<String>>,
+    /// Plan features and limits. User Service may return strings or structured objects.
+    pub includes: Option<serde_json::Value>,
 
     /// Expiration date (null for active subscriptions)
     pub date_end: Option<String>,
@@ -69,8 +69,19 @@ impl UserServiceClient {
             .await
             .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))?;
 
-        // Extract the "plan" field from the user profile
-        let plan_value = user_profile.get("plan").ok_or_else(|| {
+        let plan_value = [
+            user_profile.get("plan"),
+            user_profile.pointer("/item/plan"),
+            user_profile.pointer("/user/plan"),
+            user_profile.pointer("/profile/plan"),
+            user_profile.pointer("/data/plan"),
+            user_profile.pointer("/result/plan"),
+            user_profile.pointer("/_items/0/plan"),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_null())
+        .ok_or_else(|| {
             ConnectorError::InvalidResponse("No plan field in user profile".to_string())
         })?;
 

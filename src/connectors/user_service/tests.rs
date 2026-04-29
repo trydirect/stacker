@@ -263,6 +263,42 @@ async fn test_get_installation_by_hash_uses_lightweight_route() {
     );
 }
 
+#[tokio::test]
+async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/oauth_server/api/me")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "item": {
+                    "_id": "user-1",
+                    "plan": {
+                        "name": "Free",
+                        "code": "plan-free-periodically",
+                        "includes": [
+                            { "code": "deploys-20", "name": "20 deploys per month" }
+                        ],
+                        "active": true,
+                        "price": "0.00"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let plan = client.get_subscription_plan("test_token").await.unwrap();
+
+    assert_eq!(plan.name.as_deref(), Some("Free"));
+    assert_eq!(plan.code.as_deref(), Some("plan-free-periodically"));
+    assert!(plan.includes.unwrap().is_array());
+}
+
 /// Test plan hierarchy comparison
 #[test]
 fn test_is_plan_higher_tier_hierarchy() {
