@@ -357,7 +357,7 @@ When local scan succeeds, expect output like:
 [local] ✓ 1 container(s) discovered
 
   Containers matched: 1
-    local-device-api-1  [syncopia] syncopia/device-api:local
+    local-device-api-1  [app-network] example/device-api:local
       addresses: 172.18.0.20:5050
 
   App: device-api

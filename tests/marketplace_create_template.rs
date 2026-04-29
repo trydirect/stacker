@@ -1280,7 +1280,7 @@ async fn create_template_persists_extended_version_contract_in_public_detail() {
                 "mode_managed_status_panel": true,
                 "supports_rollback": true,
                 "requires_backup": true,
-                "backup_providers": ["syncopia", "snapshot"]
+                "backup_providers": ["managed", "snapshot"]
             }
         }),
     )
@@ -1376,7 +1376,7 @@ async fn create_template_persists_extended_version_contract_in_public_detail() {
             "mode_managed_status_panel": true,
             "supports_rollback": true,
             "requires_backup": true,
-            "backup_providers": ["syncopia", "snapshot"]
+            "backup_providers": ["managed", "snapshot"]
         }),
         latest_version["update_mode_capabilities"]
     );

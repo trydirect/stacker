@@ -463,6 +463,114 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     Ok(())
 }
 
+fn validate_compose_for_deploy(compose_path: &Path) -> Result<(), CliError> {
+    let raw = std::fs::read_to_string(compose_path)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+
+    let root = match doc {
+        serde_yaml::Value::Mapping(m) => m,
+        _ => {
+            return Err(CliError::ConfigValidation(
+                "Compose file must be a YAML mapping at the top level".to_string(),
+            ))
+        }
+    };
+
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let services = match root.get(&services_key) {
+        Some(serde_yaml::Value::Mapping(m)) => m,
+        _ => {
+            return Err(CliError::ConfigValidation(
+                "Compose file must define a top-level services mapping".to_string(),
+            ))
+        }
+    };
+
+    let mut published_ports: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+
+    for (service_key, service_value) in services {
+        let service_name = service_key.as_str().unwrap_or("<unknown>").to_string();
+        let service_map = match service_value {
+            serde_yaml::Value::Mapping(m) => m,
+            _ => continue,
+        };
+
+        let ports_key = serde_yaml::Value::String("ports".to_string());
+        let Some(serde_yaml::Value::Sequence(ports)) = service_map.get(&ports_key) else {
+            continue;
+        };
+
+        for port in ports {
+            if let Some(host_port) = extract_published_host_port(port) {
+                published_ports
+                    .entry(host_port)
+                    .or_default()
+                    .push(service_name.clone());
+            }
+        }
+    }
+
+    let collisions: Vec<String> = published_ports
+        .into_iter()
+        .filter_map(|(port, services)| {
+            if services.len() > 1 {
+                Some(format!(
+                    "port {} is published by {}",
+                    port,
+                    services.join(", ")
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if collisions.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::ConfigValidation(format!(
+            "Compose file has conflicting published host ports: {}",
+            collisions.join("; ")
+        )))
+    }
+}
+
+fn extract_published_host_port(port: &serde_yaml::Value) -> Option<String> {
+    match port {
+        serde_yaml::Value::String(spec) => extract_host_port_from_string(spec),
+        serde_yaml::Value::Mapping(m) => {
+            let published_key = serde_yaml::Value::String("published".to_string());
+            m.get(&published_key).and_then(|value| match value {
+                serde_yaml::Value::String(s) => Some(s.clone()),
+                serde_yaml::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn extract_host_port_from_string(spec: &str) -> Option<String> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_protocol = trimmed.split('/').next().unwrap_or(trimmed);
+    let parts: Vec<&str> = without_protocol.split(':').collect();
+
+    if parts.len() < 2 {
+        return None;
+    }
+
+    parts
+        .get(parts.len().saturating_sub(2))
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+}
+
 fn compose_app_build_source(compose_path: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(compose_path).ok()?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
@@ -1230,6 +1338,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     };
 
     normalize_generated_compose_paths(&compose_path)?;
+    validate_compose_for_deploy(&compose_path)?;
 
     // 5b.1 Surface build source paths to avoid confusion.
     if let Some(image) = &config.app.image {
@@ -2421,6 +2530,59 @@ services:
         let normalized = std::fs::read_to_string(&compose_path).unwrap();
         assert!(normalized.contains("context: .."));
         assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_allows_unique_published_ports() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "80:80"
+  api:
+    image: ghcr.io/example/api:latest
+    ports:
+      - published: 8080
+        target: 8080
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        validate_compose_for_deploy(&compose_path).unwrap();
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_rejects_duplicate_published_ports() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+services:
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - published: 80
+        target: 80
+      - published: 81
+        target: 81
+      - published: 443
+        target: 443
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        let err = validate_compose_for_deploy(&compose_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("conflicting published host ports"));
+        assert!(msg.contains("port 80"));
+        assert!(msg.contains("nginx-proxy-manager"));
+        assert!(msg.contains("nginx_proxy_manager"));
     }
 
     #[test]

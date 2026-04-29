@@ -3175,8 +3175,8 @@ mod tests {
         let container = LocalContainerInfo {
             id: "abc".to_string(),
             name: "local-device-api-1".to_string(),
-            image: "syncopia/device-api:local".to_string(),
-            network: "syncopia".to_string(),
+            image: "example/device-api:local".to_string(),
+            network: "app-network".to_string(),
             addresses: vec!["172.18.0.20".to_string()],
             ports: vec![
                 LocalPortBinding {
@@ -3214,7 +3214,7 @@ mod tests {
             "State": {"Status": "running"},
             "NetworkSettings": {
                 "Networks": {
-                    "syncopia": {
+                    "app-network": {
                         "IPAddress": "172.18.0.10"
                     }
                 },
@@ -3226,7 +3226,7 @@ mod tests {
 
         let container = parse_local_container_inspect(&inspect).unwrap();
         assert_eq!(container.name, "local-postgres-1");
-        assert_eq!(container.network, "syncopia");
+        assert_eq!(container.network, "app-network");
         assert_eq!(container.addresses, vec!["172.18.0.10".to_string()]);
         assert_eq!(
             container.env.get("POSTGRES_USER").map(String::as_str),
@@ -3242,7 +3242,7 @@ mod tests {
             id: "pg".to_string(),
             name: "local-postgres-1".to_string(),
             image: "postgres:17-alpine".to_string(),
-            network: "syncopia".to_string(),
+            network: "app-network".to_string(),
             addresses: vec!["172.18.0.10".to_string()],
             ports: vec![LocalPortBinding {
                 container_port: 5432,
@@ -3257,7 +3257,7 @@ mod tests {
             id: "rmq".to_string(),
             name: "local-rabbitmq-1".to_string(),
             image: "rabbitmq:3-management".to_string(),
-            network: "syncopia".to_string(),
+            network: "app-network".to_string(),
             addresses: vec!["172.18.0.11".to_string()],
             ports: vec![LocalPortBinding {
                 container_port: 5672,
@@ -3283,7 +3283,7 @@ mod tests {
                 id: "one".to_string(),
                 name: "local-api-1".to_string(),
                 image: "example/api:latest".to_string(),
-                network: "syncopia".to_string(),
+                network: "app-network".to_string(),
                 addresses: vec![],
                 ports: vec![],
                 status: "running".to_string(),
@@ -3294,7 +3294,7 @@ mod tests {
                 id: "two".to_string(),
                 name: "local-web-1".to_string(),
                 image: "example/web:latest".to_string(),
-                network: "syncopia".to_string(),
+                network: "app-network".to_string(),
                 addresses: vec![],
                 ports: vec![],
                 status: "running".to_string(),
