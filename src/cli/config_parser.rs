@@ -731,8 +731,7 @@ impl StackerConfig {
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
         resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
-        let config: StackerConfig = serde_yaml::from_value(parsed)?;
-        Ok(config)
+        deserialize_config_value(parsed)
     }
 
     /// Load config from a file path **without** resolving `${VAR}` placeholders.
@@ -749,16 +748,15 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
-        let config: StackerConfig = serde_yaml::from_str(&raw_content)?;
-        Ok(config)
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+        deserialize_config_value(parsed)
     }
 
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
-        let config: StackerConfig = serde_yaml::from_value(parsed)?;
-        Ok(config)
+        deserialize_config_value(parsed)
     }
 
     /// Return a cloned config with `deploy` flattened to one selected target.
@@ -895,6 +893,53 @@ impl StackerConfig {
 
         issues
     }
+}
+
+fn deserialize_config_value(parsed: serde_yaml::Value) -> Result<StackerConfig, CliError> {
+    let rendered = serde_yaml::to_string(&parsed)?;
+    let deserializer = serde_yaml::Deserializer::from_str(&rendered);
+
+    serde_path_to_error::deserialize::<_, StackerConfig>(deserializer).map_err(|err| {
+        let field_path = err.path().to_string();
+        let source = err.into_inner();
+        let message = format_config_parse_message(&field_path, &source);
+        CliError::ConfigParseFailed {
+            source: <serde_yaml::Error as serde::de::Error>::custom(message),
+        }
+    })
+}
+
+fn format_config_parse_message(field_path: &str, source: &serde_yaml::Error) -> String {
+    let source_message = source.to_string();
+    let normalized_field = if field_path.is_empty() || field_path == "." {
+        None
+    } else {
+        Some(field_path)
+    };
+
+    if let Some(field) = normalized_field {
+        if source_message.contains("expected path string") {
+            let example = if field == "app.path" {
+                "`.` or `./app`"
+            } else {
+                "`./path/to/file`"
+            };
+
+            if source_message.contains("invalid type: unit value") {
+                return format!(
+                    "invalid empty path at `{field}`. Remove the key or set it to a quoted path string like {example}"
+                );
+            }
+
+            return format!(
+                "invalid path at `{field}`. Expected a quoted path string like {example}. Original parser error: {source_message}"
+            );
+        }
+
+        return format!("invalid value at `{field}`: {source_message}");
+    }
+
+    source_message
 }
 
 fn validate_deploy_semantics(
@@ -1670,6 +1715,20 @@ ai:
             matches!(err, CliError::ConfigParseFailed { .. }),
             "Expected ConfigParseFailed, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn test_config_invalid_path_reports_field_name() {
+        let yaml = r#"
+name: bad-path
+app:
+  type: custom
+  path: {}
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("app.path"), "unexpected message: {msg}");
+        assert!(msg.contains("quoted path string"), "unexpected message: {msg}");
     }
 
     #[test]

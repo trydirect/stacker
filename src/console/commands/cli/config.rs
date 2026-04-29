@@ -11,9 +11,159 @@ use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawPathIssueKind {
+    Empty,
+    NonString(&'static str),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawPathIssue {
+    field: String,
+    kind: RawPathIssueKind,
+}
+
 /// Resolve config path from optional override.
 fn resolve_config_path(file: &Option<String>) -> String {
     file.as_deref().unwrap_or(DEFAULT_CONFIG_FILE).to_string()
+}
+
+fn is_path_like_field(field: &str) -> bool {
+    matches!(
+        field,
+        "path"
+            | "dockerfile"
+            | "config"
+            | "compose_file"
+            | "remote_payload_file"
+            | "ssh_key"
+            | "pre_build"
+            | "post_deploy"
+            | "on_failure"
+            | "env_file"
+    )
+}
+
+fn yaml_value_kind(value: &serde_yaml::Value) -> &'static str {
+    match value {
+        serde_yaml::Value::Null => "empty",
+        serde_yaml::Value::Bool(_) => "boolean",
+        serde_yaml::Value::Number(_) => "number",
+        serde_yaml::Value::String(_) => "string",
+        serde_yaml::Value::Sequence(_) => "sequence",
+        serde_yaml::Value::Mapping(_) => "map",
+        serde_yaml::Value::Tagged(_) => "tagged value",
+    }
+}
+
+fn collect_raw_path_issues(
+    value: &serde_yaml::Value,
+    prefix: Option<&str>,
+    issues: &mut Vec<RawPathIssue>,
+) {
+    if let serde_yaml::Value::Mapping(map) = value {
+        for (key, child) in map {
+            let Some(key_str) = key.as_str() else {
+                continue;
+            };
+
+            let field = match prefix {
+                Some(parent) if !parent.is_empty() => format!("{parent}.{key_str}"),
+                _ => key_str.to_string(),
+            };
+
+            if is_path_like_field(key_str) {
+                match child {
+                    serde_yaml::Value::Null => issues.push(RawPathIssue {
+                        field: field.clone(),
+                        kind: RawPathIssueKind::Empty,
+                    }),
+                    serde_yaml::Value::String(_) => {}
+                    other => issues.push(RawPathIssue {
+                        field: field.clone(),
+                        kind: RawPathIssueKind::NonString(yaml_value_kind(other)),
+                    }),
+                }
+            }
+
+            collect_raw_path_issues(child, Some(&field), issues);
+        }
+    }
+}
+
+fn load_raw_path_issues(path: &Path) -> Result<Vec<RawPathIssue>, CliError> {
+    let raw = std::fs::read_to_string(path)?;
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&raw)?;
+    let mut issues = Vec::new();
+    collect_raw_path_issues(&parsed, None, &mut issues);
+    Ok(issues)
+}
+
+fn remove_empty_path_fields(value: &mut serde_yaml::Value, prefix: Option<&str>, applied: &mut Vec<String>) {
+    if let serde_yaml::Value::Mapping(map) = value {
+        let keys_to_remove: Vec<serde_yaml::Value> = map
+            .iter()
+            .filter_map(|(key, child)| {
+                let key_str = key.as_str()?;
+                if !is_path_like_field(key_str) || !matches!(child, serde_yaml::Value::Null) {
+                    return None;
+                }
+
+                let field = match prefix {
+                    Some(parent) if !parent.is_empty() => format!("{parent}.{key_str}"),
+                    _ => key_str.to_string(),
+                };
+                applied.push(format!("Removed empty path field `{field}`"));
+                Some(key.clone())
+            })
+            .collect();
+
+        for key in keys_to_remove {
+            map.remove(&key);
+        }
+
+        for (key, child) in map.iter_mut() {
+            if let Some(key_str) = key.as_str() {
+                let field = match prefix {
+                    Some(parent) if !parent.is_empty() => format!("{parent}.{key_str}"),
+                    _ => key_str.to_string(),
+                };
+                remove_empty_path_fields(child, Some(&field), applied);
+            }
+        }
+    }
+}
+
+fn try_fix_raw_path_issues(config_path: &str) -> Result<Vec<String>, CliError> {
+    let raw = std::fs::read_to_string(config_path)?;
+    let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw)?;
+    let mut applied = Vec::new();
+    remove_empty_path_fields(&mut parsed, None, &mut applied);
+
+    if applied.is_empty() {
+        return Ok(applied);
+    }
+
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(config_path, &backup_path)?;
+    let yaml = serde_yaml::to_string(&parsed)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, yaml)?;
+    applied.push(format!("Backup written to {}", backup_path));
+    Ok(applied)
+}
+
+fn render_raw_path_issue(issue: &RawPathIssue) -> String {
+    match issue.kind {
+        RawPathIssueKind::Empty => format!(
+            "`{}` is empty. Remove the key or set it to a quoted path string",
+            issue.field
+        ),
+        RawPathIssueKind::NonString(kind) => format!(
+            "`{}` must be a quoted path string, but found {}",
+            issue.field, kind
+        ),
+    }
 }
 
 fn prompt_line(prompt: &str) -> Result<String, CliError> {
@@ -444,7 +594,32 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
         });
     }
 
-    let mut config = StackerConfig::from_file_raw(path)?;
+    let raw_applied = try_fix_raw_path_issues(config_path)?;
+    if !raw_applied.is_empty() {
+        return Ok(raw_applied);
+    }
+
+    let mut config = match StackerConfig::from_file_raw(path) {
+        Ok(config) => config,
+        Err(CliError::ConfigParseFailed { .. }) => {
+            let issues = load_raw_path_issues(path)?;
+            if !issues.is_empty() {
+                let details = issues
+                    .iter()
+                    .map(render_raw_path_issue)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(CliError::ConfigValidation(format!(
+                    "Cannot auto-fix stacker.yml yet: {details}"
+                )));
+            }
+
+            return Err(CliError::ConfigValidation(
+                "Cannot auto-fix stacker.yml because it contains parse errors outside the supported path-field recovery".to_string(),
+            ));
+        }
+        Err(err) => return Err(err),
+    };
     let issues = config.validate_semantics();
     let mut applied = Vec::new();
 
@@ -605,9 +780,14 @@ pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
         });
     }
 
+    let mut messages = match load_raw_path_issues(path) {
+        Ok(issues) => issues.iter().map(render_raw_path_issue).collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+
     let config = StackerConfig::from_file(path)?;
     let issues = config.validate_semantics();
-    let messages: Vec<String> = issues.iter().map(|i| format!("{:?}", i)).collect();
+    messages.extend(issues.iter().map(|i| format!("{:?}", i)));
     Ok(messages)
 }
 
@@ -953,6 +1133,24 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_reports_empty_path_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_config(
+            dir.path(),
+            r#"
+name: empty-paths
+app:
+  type: static
+  path:
+"#,
+        );
+
+        let issues = run_validate(&path).unwrap();
+        assert!(issues.iter().any(|issue| issue.contains("app.path")));
+        assert!(issues.iter().any(|issue| issue.contains("quoted path string")));
+    }
+
+    #[test]
     fn test_show_returns_yaml_string() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = write_config(dir.path(), minimal_config_yaml());
@@ -1051,5 +1249,51 @@ mod tests {
             cloud.remote_payload_file.as_deref(),
             Some(Path::new("stacker.remote.deploy.json"))
         );
+    }
+
+    #[test]
+    fn test_try_fix_raw_path_issues_removes_empty_path_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = write_config(
+            dir.path(),
+            r#"
+name: broken-paths
+app:
+  type: static
+  path:
+deploy:
+  target: server
+  server:
+    host: example.com
+    ssh_key:
+"#,
+        );
+
+        let applied = try_fix_raw_path_issues(&config_path).unwrap();
+        assert!(applied.iter().any(|item| item.contains("app.path")));
+        assert!(applied.iter().any(|item| item.contains("deploy.server.ssh_key")));
+
+        let fixed = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!fixed.contains("path: null"));
+        assert!(!fixed.contains("ssh_key: null"));
+    }
+
+    #[test]
+    fn test_run_fix_interactive_reports_non_string_path_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = write_config(
+            dir.path(),
+            r#"
+name: broken-paths
+app:
+  type: static
+  path: {}
+"#,
+        );
+
+        let err = run_fix_interactive(&config_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("app.path"), "unexpected message: {msg}");
+        assert!(msg.contains("quoted path string"), "unexpected message: {msg}");
     }
 }
