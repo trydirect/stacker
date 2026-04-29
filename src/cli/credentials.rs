@@ -5,6 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::error::CliError;
+use crate::cli::stacker_client::DEFAULT_STACKER_URL;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StoredCredentials — what we persist to disk
@@ -261,6 +262,53 @@ fn is_direct_login_endpoint(auth_url: &str) -> bool {
         || url.ends_with("/login")
 }
 
+fn infer_stacker_server_url(auth_url: &str) -> String {
+    let trimmed = auth_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return DEFAULT_STACKER_URL.to_string();
+    }
+
+    if let Ok(mut url) = reqwest::Url::parse(trimmed) {
+        let path = url.path().trim_end_matches('/').to_string();
+        let host = url.host_str().map(|value| value.to_ascii_lowercase());
+
+        if path.starts_with("/server/user") {
+            url.set_path("/stacker");
+            url.set_query(None);
+            url.set_fragment(None);
+            return url.to_string().trim_end_matches('/').to_string();
+        }
+
+        for suffix in [
+            "/oauth_server/token",
+            "/auth/login",
+            "/login",
+            "/api/v1",
+            "/api",
+        ] {
+            if path.ends_with(suffix) {
+                let normalized = path.trim_end_matches(suffix);
+                url.set_path(if normalized.is_empty() {
+                    "/"
+                } else {
+                    normalized
+                });
+                url.set_query(None);
+                url.set_fragment(None);
+                break;
+            }
+        }
+
+        if host.as_deref() == Some("api.try.direct") && url.path() == "/" {
+            return DEFAULT_STACKER_URL.to_string();
+        }
+
+        return url.to_string().trim_end_matches('/').to_string();
+    }
+
+    trimmed.to_string()
+}
+
 /// Parameters for a login request.
 #[derive(Debug, Clone)]
 pub struct LoginRequest {
@@ -371,7 +419,7 @@ pub fn login<S: CredentialStore, O: OAuthClient>(
     let token_resp = oauth.request_token(auth_url, &request.email, &request.password)?;
     let mut creds = StoredCredentials::from(token_resp);
     creds.email = Some(request.email.clone());
-    creds.server_url = Some(auth_url.to_string());
+    creds.server_url = Some(infer_stacker_server_url(auth_url));
     creds.org = request.org.clone();
     creds.domain = request.domain.clone();
 
@@ -770,7 +818,7 @@ mod tests {
         let creds = login(&manager, &oauth, &request).unwrap();
         assert_eq!(creds.access_token, "mock-access-token");
         assert_eq!(creds.email.as_deref(), Some("user@example.com"));
-        assert_eq!(creds.server_url.as_deref(), Some(DEFAULT_API_URL));
+        assert_eq!(creds.server_url.as_deref(), Some(DEFAULT_STACKER_URL));
 
         // Verify persisted
         let loaded = manager.load().unwrap().unwrap();
@@ -841,6 +889,25 @@ mod tests {
 
         let creds = login(&manager, &oauth, &request).unwrap();
         assert_eq!(creds.server_url.as_deref(), Some("https://custom.api"));
+    }
+
+    #[test]
+    fn test_login_direct_auth_url_override_maps_to_stacker_route() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://dev.try.direct/stacker")
+        );
     }
 
     #[test]

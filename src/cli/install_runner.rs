@@ -413,7 +413,8 @@ impl InstallContainerCommand {
 
             // Mount SSH key if specified
             if let Some(ref ssh_key) = cloud.ssh_key {
-                cmd = cmd.mount(ssh_key, CONTAINER_SSH_KEY_PATH);
+                let resolved_ssh_key = resolve_ssh_key_path(ssh_key);
+                cmd = cmd.mount(&resolved_ssh_key, CONTAINER_SSH_KEY_PATH);
             }
         }
 
@@ -424,7 +425,8 @@ impl InstallContainerCommand {
             cmd = cmd.env("SERVER_PORT", &server.port.to_string());
 
             if let Some(ref ssh_key) = server.ssh_key {
-                cmd = cmd.mount(ssh_key, CONTAINER_SSH_KEY_PATH);
+                let resolved_ssh_key = resolve_ssh_key_path(ssh_key);
+                cmd = cmd.mount(&resolved_ssh_key, CONTAINER_SSH_KEY_PATH);
             }
         }
 
@@ -501,7 +503,11 @@ impl DeployStrategy for CloudDeploy {
                     })?;
 
                 let (response, effective_server_name) = rt.block_on(async {
-                    let client = StackerClient::new(&base_url, &creds.access_token);
+                    let client = StackerClient::new_for_target(
+                        &base_url,
+                        &creds.access_token,
+                        DeployTarget::Server,
+                    );
 
                     // Step 1: Resolve or auto-create project
                     eprintln!("  Resolving project '{}'...", project_name);
@@ -866,23 +872,50 @@ fn normalize_user_service_base_url(raw: &str) -> String {
 /// Normalize the Stacker server URL from stored credentials.
 /// Strips trailing slashes and known auth path suffixes to get the base API URL.
 pub fn normalize_stacker_server_url(raw: &str) -> String {
-    let mut url = raw.trim_end_matches('/').to_string();
-    // Strip known auth endpoints that might be stored as server_url
-    for suffix in [
-        "/api/v1",
-        "/oauth_server/token",
-        "/auth/login",
-        "/server/user/auth/login",
-        "/login",
-        "/api",
-    ] {
-        if url.ends_with(suffix) {
-            let len = url.len() - suffix.len();
-            url = url[..len].to_string();
-            break;
-        }
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return stacker_client::DEFAULT_STACKER_URL.to_string();
     }
-    url
+
+    if let Ok(mut url) = reqwest::Url::parse(trimmed) {
+        let path = url.path().trim_end_matches('/').to_string();
+        let host = url.host_str().map(|value| value.to_ascii_lowercase());
+
+        if path.starts_with("/server/user") {
+            url.set_path("/stacker");
+            url.set_query(None);
+            url.set_fragment(None);
+            return url.to_string().trim_end_matches('/').to_string();
+        }
+
+        for suffix in [
+            "/api/v1",
+            "/oauth_server/token",
+            "/auth/login",
+            "/login",
+            "/api",
+        ] {
+            if path.ends_with(suffix) {
+                let normalized = path.trim_end_matches(suffix);
+                url.set_path(if normalized.is_empty() {
+                    "/"
+                } else {
+                    normalized
+                });
+                url.set_query(None);
+                url.set_fragment(None);
+                break;
+            }
+        }
+
+        if host.as_deref() == Some("api.try.direct") && url.path() == "/" {
+            return stacker_client::DEFAULT_STACKER_URL.to_string();
+        }
+
+        return url.to_string().trim_end_matches('/').to_string();
+    }
+
+    trimmed.to_string()
 }
 
 #[allow(dead_code)]
@@ -1315,7 +1348,11 @@ impl DeployStrategy for ServerDeploy {
                 reason: format!("Failed to initialize async runtime: {}", e),
             })?
             .block_on(async {
-                let client = StackerClient::new(&base_url, &creds.access_token);
+                let client = StackerClient::new_for_target(
+                    &base_url,
+                    &creds.access_token,
+                    DeployTarget::Server,
+                );
 
                 let project = match client.find_project_by_name(&project_name).await? {
                     Some(existing) => {
@@ -1482,12 +1519,19 @@ fn load_existing_server_ssh_key(
         return Ok(None);
     };
 
-    let private_key = std::fs::read_to_string(path).map_err(|e| CliError::DeployFailed {
-        target: DeployTarget::Server,
-        reason: format!("Failed to read SSH private key {}: {}", path.display(), e),
-    })?;
+    let resolved_path = resolve_ssh_key_path(path);
 
-    let public_key_path = PathBuf::from(format!("{}.pub", path.display()));
+    let private_key =
+        std::fs::read_to_string(&resolved_path).map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "Failed to read SSH private key {}: {}",
+                resolved_path.display(),
+                e
+            ),
+        })?;
+
+    let public_key_path = PathBuf::from(format!("{}.pub", resolved_path.display()));
     let public_key = match std::fs::read_to_string(&public_key_path) {
         Ok(key) => Some(key),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -1504,6 +1548,22 @@ fn load_existing_server_ssh_key(
     };
 
     Ok(Some((private_key, public_key)))
+}
+
+fn resolve_ssh_key_path_with_home(path: &Path, home_dir: Option<&Path>) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if let Some(relative_path) = path_str.strip_prefix("~/") {
+        if let Some(home_dir) = home_dir {
+            return home_dir.join(relative_path);
+        }
+    }
+
+    path.to_path_buf()
+}
+
+fn resolve_ssh_key_path(path: &Path) -> PathBuf {
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+    resolve_ssh_key_path_with_home(path, home_dir.as_deref())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1830,6 +1890,29 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_ssh_key_path_expands_tilde_with_explicit_home() {
+        let resolved = resolve_ssh_key_path_with_home(
+            Path::new("~/.ssh/website-deploy-key"),
+            Some(Path::new("/tmp/test-home")),
+        );
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/test-home/.ssh/website-deploy-key")
+        );
+    }
+
+    #[test]
+    fn test_resolve_ssh_key_path_keeps_absolute_path() {
+        let resolved = resolve_ssh_key_path_with_home(
+            Path::new("/var/keys/website-deploy-key"),
+            Some(Path::new("/tmp/test-home")),
+        );
+
+        assert_eq!(resolved, PathBuf::from("/var/keys/website-deploy-key"));
+    }
+
+    #[test]
     fn test_run_command_plan_mode() {
         let config = sample_cloud_config();
         let context = sample_context(true);
@@ -2012,6 +2095,22 @@ mod tests {
         assert_eq!(
             normalize_stacker_server_url("https://stacker.example.com/api/v1/"),
             "https://stacker.example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_maps_direct_login_path_to_stacker_route() {
+        assert_eq!(
+            normalize_stacker_server_url("https://dev.try.direct/server/user/auth/login"),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_maps_api_host_to_default_stacker_host() {
+        assert_eq!(
+            normalize_stacker_server_url("https://api.try.direct"),
+            stacker_client::DEFAULT_STACKER_URL
         );
     }
 

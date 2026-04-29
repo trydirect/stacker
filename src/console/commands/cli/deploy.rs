@@ -1415,7 +1415,7 @@ impl DeployCommand {
                 }
 
                 if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(project_id as i32) {
+                    match fetch_server_for_project(project_id as i32, DeployTarget::Server) {
                         Ok(Some(info)) => {
                             l = l.with_server_info(
                                 info.srv_ip.clone(),
@@ -1463,7 +1463,7 @@ impl DeployCommand {
 
                 // Try to fetch provisioned server details from the Stacker API
                 if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(project_id as i32) {
+                    match fetch_server_for_project(project_id as i32, DeployTarget::Cloud) {
                         Ok(Some(info)) => {
                             l = l.with_server_info(
                                 info.srv_ip.clone(),
@@ -1566,24 +1566,31 @@ impl DeployCommand {
 /// timeout is reached), then retries fetching the server IP — because the IP
 /// may be assigned a few seconds after the deployment status flips to
 /// "completed".
+fn resolve_saved_stacker_base_url(context: &str) -> Result<(String, StoredCredentials), CliError> {
+    let cred_manager = CredentialsManager::with_default_store();
+    let creds = cred_manager.require_valid_token(context)?;
+    let raw_base_url = creds
+        .server_url
+        .as_deref()
+        .unwrap_or(stacker_client::DEFAULT_STACKER_URL);
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(raw_base_url);
+    Ok((base_url, creds))
+}
+
 fn fetch_server_for_project(
     project_id: i32,
+    target: DeployTarget,
 ) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
-    let cred_manager = CredentialsManager::with_default_store();
-    let creds = cred_manager.require_valid_token("server lookup")?;
-
-    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-        stacker_client::DEFAULT_STACKER_URL,
-    );
+    let (base_url, creds) = resolve_saved_stacker_base_url("server lookup")?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        let client = StackerClient::new(&base_url, &creds.access_token);
+        let client = StackerClient::new_for_target(&base_url, &creds.access_token, target.clone());
 
         // Phase 1: wait for the deployment to reach a terminal state.
         // The watch_cloud_deployment may have timed out, so the deployment
@@ -1803,23 +1810,18 @@ fn is_terminal(status: &str) -> bool {
     TERMINAL_STATUSES.iter().any(|s| *s == status)
 }
 
-/// Watch cloud deployment status until it reaches a terminal state.
+/// Watch remote deployment status until it reaches a terminal state.
 fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
-    let cred_manager = CredentialsManager::with_default_store();
-    let creds = match cred_manager.require_valid_token("deployment status") {
-        Ok(c) => c,
+    let (base_url, creds) = match resolve_saved_stacker_base_url("deployment status") {
+        Ok(values) => values,
         Err(e) => {
             eprintln!("  Cannot watch deployment status: {}", e);
             eprintln!("  Run `stacker status --watch` later to check progress.");
             return Ok(());
         }
     };
-
-    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-        stacker_client::DEFAULT_STACKER_URL,
-    );
 
     let project_id = match result.project_id {
         Some(id) => id as i32,
@@ -1840,7 +1842,8 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
         .build()?;
 
     rt.block_on(async {
-        let client = StackerClient::new(&base_url, &creds.access_token);
+        let client =
+            StackerClient::new_for_target(&base_url, &creds.access_token, result.target.clone());
         let start = std::time::Instant::now();
         let mut last_status = String::new();
         let mut last_message: Option<String> = None;
@@ -1892,7 +1895,12 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                     }
                 }
                 Err(e) => {
-                    progress::finish_error(&spin, &format!("Error polling status: {}", e));
+                    progress::finish_success(
+                        &spin,
+                        "Deployment request accepted; live status polling unavailable",
+                    );
+                    eprintln!("  ⚠ Could not poll live deployment status: {}", e);
+                    eprintln!("  Installation may still be in progress.");
                     eprintln!("  Run `stacker status --watch` to retry.");
                     return Ok(());
                 }
