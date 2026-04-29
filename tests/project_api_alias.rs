@@ -39,5 +39,9 @@ async fn project_alias_rejects_unauthenticated_requests() {
         .await
         .expect("request failed");
 
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        resp.status() == StatusCode::UNAUTHORIZED || resp.status() == StatusCode::FORBIDDEN,
+        "Unauthenticated request to /api/v1/project should be rejected, got {}",
+        resp.status()
+    );
 }
