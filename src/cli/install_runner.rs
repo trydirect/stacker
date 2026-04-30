@@ -98,6 +98,9 @@ pub struct DeployContext {
 
     /// Container runtime preference ("runc" or "kata").
     pub runtime: String,
+
+    /// Environment-specific config files collected from compose env_file and bind mounts.
+    pub config_bundle: Option<crate::cli::config_bundle::ConfigBundleArtifacts>,
 }
 
 impl DeployContext {
@@ -511,7 +514,13 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 1: Resolve or auto-create project
                     eprintln!("  Resolving project '{}'...", project_name);
-                    let project_body = stacker_client::build_project_body(config);
+                    let mut project_body = stacker_client::build_project_body(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_project_body(
+                            &mut project_body,
+                            bundle,
+                        );
+                    }
                     let project = match client.find_project_by_name(&project_name).await? {
                         Some(p) => {
                             eprintln!("  Found project '{}' (id={}), syncing metadata...", p.name, p.id);
@@ -669,6 +678,12 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 4: Build deploy form
                     let mut deploy_form = stacker_client::build_deploy_form(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_deploy_form(
+                            &mut deploy_form,
+                            bundle,
+                        );
+                    }
 
                     // Capture the server name from the form (auto-generated or overridden)
                     // so we can persist it in the deployment lock even if the API fetch
@@ -1366,7 +1381,10 @@ impl DeployStrategy for ServerDeploy {
             .as_ref()
             .ok_or(CliError::ServerHostMissing)?;
         let project_name = resolve_remote_project_name(config, context);
-        let project_body = stacker_client::build_project_body(config);
+        let mut project_body = stacker_client::build_project_body(config);
+        if let Some(bundle) = &context.config_bundle {
+            stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
+        }
         let bootstrap_status_panel = true;
 
         let (response, effective_server_name) = tokio::runtime::Builder::new_current_thread()
@@ -1435,6 +1453,9 @@ impl DeployStrategy for ServerDeploy {
                     &effective_server_name,
                     bootstrap_status_panel,
                 );
+                if let Some(bundle) = &context.config_bundle {
+                    stacker_client::attach_config_bundle_to_deploy_form(&mut deploy_form, bundle);
+                }
 
                 if let Some(server_obj) = deploy_form
                     .get_mut("server")
@@ -1624,8 +1645,7 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, RegistryConfig,
-        ServerConfig,
+        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, RegistryConfig, ServerConfig,
     };
     use std::sync::Mutex;
 
@@ -1878,6 +1898,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         }
     }
 
@@ -2004,6 +2025,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }

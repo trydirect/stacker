@@ -40,6 +40,8 @@ pub struct Custom {
     pub marketplace_seed_jobs: JsonValue,
     #[serde(default)]
     pub marketplace_post_deploy_hooks: JsonValue,
+    #[serde(default)]
+    pub deployment_artifacts: JsonValue,
     #[serde(flatten)]
     pub networks: forms::project::ComposeNetworks, // all networks
 }
@@ -141,6 +143,11 @@ mod tests {
             "marketplace_update_mode_capabilities": {
                 "mode_self_managed": true,
                 "mode_managed_status_panel": true
+            },
+            "deployment_artifacts": {
+                "config_bundle": {
+                    "environment": "production"
+                }
             }
         }))
         .expect("custom form should deserialize");
@@ -155,6 +162,10 @@ mod tests {
         assert_eq!(
             serialized["marketplace_update_mode_capabilities"]["mode_managed_status_panel"],
             json!(true)
+        );
+        assert_eq!(
+            serialized["deployment_artifacts"]["config_bundle"]["environment"],
+            json!("production")
         );
     }
 }

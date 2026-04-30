@@ -99,7 +99,11 @@ fn load_raw_path_issues(path: &Path) -> Result<Vec<RawPathIssue>, CliError> {
     Ok(issues)
 }
 
-fn remove_empty_path_fields(value: &mut serde_yaml::Value, prefix: Option<&str>, applied: &mut Vec<String>) {
+fn remove_empty_path_fields(
+    value: &mut serde_yaml::Value,
+    prefix: Option<&str>,
+    applied: &mut Vec<String>,
+) {
     if let serde_yaml::Value::Mapping(map) = value {
         let keys_to_remove: Vec<serde_yaml::Value> = map
             .iter()
@@ -1147,7 +1151,9 @@ app:
 
         let issues = run_validate(&path).unwrap();
         assert!(issues.iter().any(|issue| issue.contains("app.path")));
-        assert!(issues.iter().any(|issue| issue.contains("quoted path string")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("quoted path string")));
     }
 
     #[test]
@@ -1271,7 +1277,9 @@ deploy:
 
         let applied = try_fix_raw_path_issues(&config_path).unwrap();
         assert!(applied.iter().any(|item| item.contains("app.path")));
-        assert!(applied.iter().any(|item| item.contains("deploy.server.ssh_key")));
+        assert!(applied
+            .iter()
+            .any(|item| item.contains("deploy.server.ssh_key")));
 
         let fixed = std::fs::read_to_string(&config_path).unwrap();
         assert!(!fixed.contains("path: null"));
@@ -1294,6 +1302,9 @@ app:
         let err = run_fix_interactive(&config_path).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("app.path"), "unexpected message: {msg}");
-        assert!(msg.contains("quoted path string"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("quoted path string"),
+            "unexpected message: {msg}"
+        );
     }
 }
