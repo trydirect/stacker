@@ -3,6 +3,7 @@ pub mod ai_field_matcher;
 pub mod ai_pipe_suggest;
 pub mod ai_scanner;
 pub mod ci_export;
+pub mod config_bundle;
 pub mod config_parser;
 pub mod credentials;
 pub mod deployment_lock;

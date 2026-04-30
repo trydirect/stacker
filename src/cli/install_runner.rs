@@ -98,6 +98,9 @@ pub struct DeployContext {
 
     /// Container runtime preference ("runc" or "kata").
     pub runtime: String,
+
+    /// Environment-specific config files collected from compose env_file and bind mounts.
+    pub config_bundle: Option<crate::cli::config_bundle::ConfigBundleArtifacts>,
 }
 
 impl DeployContext {
@@ -511,7 +514,13 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 1: Resolve or auto-create project
                     eprintln!("  Resolving project '{}'...", project_name);
-                    let project_body = stacker_client::build_project_body(config);
+                    let mut project_body = stacker_client::build_project_body(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_project_body(
+                            &mut project_body,
+                            bundle,
+                        );
+                    }
                     let project = match client.find_project_by_name(&project_name).await? {
                         Some(p) => {
                             eprintln!("  Found project '{}' (id={}), syncing metadata...", p.name, p.id);
@@ -669,6 +678,12 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 4: Build deploy form
                     let mut deploy_form = stacker_client::build_deploy_form(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_deploy_form(
+                            &mut deploy_form,
+                            bundle,
+                        );
+                    }
 
                     // Capture the server name from the form (auto-generated or overridden)
                     // so we can persist it in the deployment lock even if the API fetch
@@ -1055,7 +1070,15 @@ pub(crate) fn resolve_docker_registry_credentials(
 
     // Registry server: env var > config > default "docker.io"
     let server = first_non_empty_env(&["STACKER_DOCKER_REGISTRY", "DOCKER_REGISTRY"])
-        .or_else(|| registry.and_then(|r| r.server.clone()));
+        .or_else(|| registry.and_then(|r| r.server.clone()))
+        .or_else(|| {
+            if username.is_some() || password.is_some() {
+                Some("docker.io".to_string())
+            } else {
+                None
+            }
+        })
+        .map(canonicalize_registry_server);
 
     if let Some(u) = username {
         creds.insert("docker_username".to_string(), serde_json::Value::String(u));
@@ -1068,6 +1091,27 @@ pub(crate) fn resolve_docker_registry_credentials(
     }
 
     creds
+}
+
+fn canonicalize_registry_server(server: String) -> String {
+    let trimmed = server.trim().trim_end_matches('/').to_string();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower == "docker.io"
+        || lower == "hub.docker.com"
+        || lower == "index.docker.io"
+        || lower == "registry-1.docker.io"
+        || lower == "https://docker.io"
+        || lower == "https://hub.docker.com"
+        || lower == "https://index.docker.io"
+        || lower == "https://index.docker.io/v1"
+        || lower == "https://index.docker.io/v1/"
+        || lower == "https://registry-1.docker.io"
+    {
+        "docker.io".to_string()
+    } else {
+        trimmed
+    }
 }
 
 #[allow(dead_code)]
@@ -1337,7 +1381,10 @@ impl DeployStrategy for ServerDeploy {
             .as_ref()
             .ok_or(CliError::ServerHostMissing)?;
         let project_name = resolve_remote_project_name(config, context);
-        let project_body = stacker_client::build_project_body(config);
+        let mut project_body = stacker_client::build_project_body(config);
+        if let Some(bundle) = &context.config_bundle {
+            stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
+        }
         let bootstrap_status_panel = true;
 
         let (response, effective_server_name) = tokio::runtime::Builder::new_current_thread()
@@ -1406,6 +1453,9 @@ impl DeployStrategy for ServerDeploy {
                     &effective_server_name,
                     bootstrap_status_panel,
                 );
+                if let Some(bundle) = &context.config_bundle {
+                    stacker_client::attach_config_bundle_to_deploy_form(&mut deploy_form, bundle);
+                }
 
                 if let Some(server_obj) = deploy_form
                     .get_mut("server")
@@ -1595,7 +1645,7 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig,
+        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, RegistryConfig, ServerConfig,
     };
     use std::sync::Mutex;
 
@@ -1848,6 +1898,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         }
     }
 
@@ -1974,6 +2025,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }
@@ -2111,6 +2163,49 @@ mod tests {
         assert_eq!(
             normalize_stacker_server_url("https://api.try.direct"),
             stacker_client::DEFAULT_STACKER_URL
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_registry_server_maps_docker_hub_urls_to_docker_io() {
+        assert_eq!(
+            canonicalize_registry_server("https://index.docker.io/v1/".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("https://registry-1.docker.io".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("hub.docker.com".to_string()),
+            "docker.io"
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_registry_credentials_defaults_to_docker_io_when_auth_present() {
+        let config = ConfigBuilder::new()
+            .name("private-app")
+            .registry(RegistryConfig {
+                username: Some("syncopia-user".to_string()),
+                password: Some("secret".to_string()),
+                server: None,
+            })
+            .build()
+            .unwrap();
+
+        let creds = resolve_docker_registry_credentials(&config);
+        assert_eq!(
+            creds.get("docker_username").and_then(|v| v.as_str()),
+            Some("syncopia-user")
+        );
+        assert_eq!(
+            creds.get("docker_password").and_then(|v| v.as_str()),
+            Some("secret")
+        );
+        assert_eq!(
+            creds.get("docker_registry").and_then(|v| v.as_str()),
+            Some("docker.io")
         );
     }
 

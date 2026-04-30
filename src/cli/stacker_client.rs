@@ -2633,6 +2633,45 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
     })
 }
 
+pub fn attach_config_bundle_to_project_body(
+    project_body: &mut serde_json::Value,
+    artifacts: &crate::cli::config_bundle::ConfigBundleArtifacts,
+) {
+    if let Some(custom) = project_body
+        .get_mut("custom")
+        .and_then(|custom| custom.as_object_mut())
+    {
+        custom.insert(
+            "deployment_artifacts".to_string(),
+            serde_json::json!({
+                "config_bundle": artifacts.artifact_metadata(),
+            }),
+        );
+    }
+}
+
+pub fn attach_config_bundle_to_deploy_form(
+    deploy_form: &mut serde_json::Value,
+    artifacts: &crate::cli::config_bundle::ConfigBundleArtifacts,
+) {
+    if let Some(obj) = deploy_form.as_object_mut() {
+        obj.insert(
+            "environment".to_string(),
+            serde_json::Value::String(artifacts.environment.clone()),
+        );
+        obj.insert(
+            "config_files".to_string(),
+            serde_json::Value::Array(artifacts.config_files.clone()),
+        );
+        obj.insert(
+            "config_bundle".to_string(),
+            serde_json::json!({
+                "manifest": artifacts.artifact_metadata(),
+            }),
+        );
+    }
+}
+
 /// Build the deploy form payload that matches the Stacker server's
 /// `forms::project::Deploy` structure.
 /// Generate a deterministic but unique server name from the project name.
@@ -2965,6 +3004,69 @@ mod tests {
             name.len(),
             "myproject-".len() + 4,
             "suffix should be 4 hex chars"
+        );
+    }
+
+    #[test]
+    fn test_attach_config_bundle_adds_deploy_files_and_stack_builder_metadata() {
+        let artifacts = crate::cli::config_bundle::ConfigBundleArtifacts {
+            environment: "production".to_string(),
+            manifest_path: std::path::PathBuf::from(
+                ".stacker/deploy/production/config-bundle.manifest.json",
+            ),
+            archive_path: std::path::PathBuf::from(
+                ".stacker/deploy/production/config-bundle.tar.zst",
+            ),
+            remote_compose_path: std::path::PathBuf::from(
+                ".stacker/deploy/production/docker-compose.remote.yml",
+            ),
+            manifest: crate::cli::config_bundle::ConfigBundleManifest {
+                version: 1,
+                environment: "production".to_string(),
+                files: vec![crate::cli::config_bundle::ConfigBundleFile {
+                    source_path: "docker/production/.env".to_string(),
+                    destination_path:
+                        "/opt/stacker/deployments/production/files/docker/production/.env"
+                            .to_string(),
+                    mode: "0644".to_string(),
+                    size: 17,
+                    sha256: "abc123".to_string(),
+                }],
+            },
+            config_files: vec![serde_json::json!({
+                "name": ".env",
+                "content": "RUST_LOG=warning\n",
+                "destination_path": "/opt/stacker/deployments/production/files/docker/production/.env",
+            })],
+        };
+
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("device-api")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+        let mut project_body = build_project_body(&config);
+        let mut deploy_form = build_deploy_form(&config);
+
+        attach_config_bundle_to_project_body(&mut project_body, &artifacts);
+        attach_config_bundle_to_deploy_form(&mut deploy_form, &artifacts);
+
+        assert_eq!(deploy_form["environment"], "production");
+        assert_eq!(deploy_form["config_files"][0]["name"], ".env");
+        assert_eq!(
+            project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
+                ["source_path"],
+            "docker/production/.env"
+        );
+        assert_eq!(
+            project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
+                ["content_hidden"],
+            true
+        );
+        assert!(
+            project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
+                .get("content")
+                .is_none()
         );
     }
 

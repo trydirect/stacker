@@ -367,6 +367,9 @@ pub struct RegistryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeployProfileConfig {
     #[serde(default)]
+    pub environment: Option<String>,
+
+    #[serde(default)]
     pub compose_file: Option<PathBuf>,
 
     #[serde(default)]
@@ -400,6 +403,9 @@ impl DeployProfileConfig {
 pub struct DeployConfig {
     #[serde(default)]
     pub target: DeployTarget,
+
+    #[serde(default)]
+    pub environment: Option<String>,
 
     #[serde(default)]
     pub compose_file: Option<PathBuf>,
@@ -501,6 +507,10 @@ impl DeployConfig {
 
         Ok(DeployConfig {
             target: inferred_target,
+            environment: profile
+                .environment
+                .clone()
+                .or_else(|| self.environment.clone()),
             compose_file: profile.compose_file.clone(),
             deployment_hash: profile.deployment_hash.clone(),
             cloud: profile.cloud.clone(),
@@ -510,6 +520,15 @@ impl DeployConfig {
             targets: self.targets.clone(),
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EnvironmentConfig {
+    #[serde(default)]
+    pub compose_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub env_file: Option<PathBuf>,
 }
 
 /// Cloud provider settings for cloud deployments.
@@ -697,6 +716,9 @@ pub struct StackerConfig {
     pub deploy: DeployConfig,
 
     #[serde(default)]
+    pub environments: BTreeMap<String, EnvironmentConfig>,
+
+    #[serde(default)]
     pub ai: AiConfig,
 
     #[serde(default, alias = "monitors")]
@@ -769,6 +791,42 @@ impl StackerConfig {
         Ok(config)
     }
 
+    pub fn selected_environment(&self, override_environment: Option<&str>) -> Option<String> {
+        override_environment
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.deploy.environment.clone())
+    }
+
+    pub fn resolve_environment_config(
+        &self,
+        override_environment: Option<&str>,
+    ) -> Result<Option<(String, EnvironmentConfig)>, CliError> {
+        let Some(environment) = self.selected_environment(override_environment) else {
+            return Ok(None);
+        };
+
+        let configured = self.environments.get(&environment).cloned();
+        let compose_file = configured
+            .as_ref()
+            .and_then(|config| config.compose_file.clone())
+            .or_else(|| self.deploy.compose_file.clone())
+            .or_else(|| Some(PathBuf::from(format!("docker/{environment}/compose.yml"))));
+        let env_file = configured
+            .as_ref()
+            .and_then(|config| config.env_file.clone())
+            .or_else(|| self.env_file.clone());
+
+        Ok(Some((
+            environment,
+            EnvironmentConfig {
+                compose_file,
+                env_file,
+            },
+        )))
+    }
+
     /// Validate cross-field semantic constraints beyond serde deserialization.
     /// Returns a list of issues (errors, warnings, info).
     pub fn validate_semantics(&self) -> Vec<ValidationIssue> {
@@ -818,6 +876,7 @@ impl StackerConfig {
                     Ok(target) => {
                         let deploy = DeployConfig {
                             target,
+                            environment: profile.environment.clone(),
                             compose_file: profile.compose_file.clone(),
                             deployment_hash: profile.deployment_hash.clone(),
                             cloud: profile.cloud.clone(),
@@ -1291,6 +1350,7 @@ impl ConfigBuilder {
             proxy: self.proxy.unwrap_or_default(),
             deploy: DeployConfig {
                 target: self.deploy_target.unwrap_or_default(),
+                environment: None,
                 compose_file: None,
                 deployment_hash: None,
                 cloud: self.cloud,
@@ -1299,6 +1359,7 @@ impl ConfigBuilder {
                 default_target: None,
                 targets: BTreeMap::new(),
             },
+            environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
             hooks: self.hooks.unwrap_or_default(),
@@ -1425,6 +1486,7 @@ deploy:
 
         let resolved = config.with_resolved_deploy_target(None).unwrap();
         assert_eq!(resolved.deploy.target, DeployTarget::Server);
+        assert!(resolved.deploy.environment.is_none());
         assert_eq!(
             resolved
                 .deploy
@@ -1460,6 +1522,69 @@ deploy:
             Some(CloudProvider::Aws)
         );
         assert!(resolved.deploy.compose_file.is_none());
+    }
+
+    #[test]
+    fn test_parse_environment_config_and_default_selection() {
+        let yaml = r#"
+name: environment-app
+app:
+  type: static
+deploy:
+  target: cloud
+  environment: production
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: docker/production/.env
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.deploy.environment.as_deref(), Some("production"));
+        assert_eq!(
+            config
+                .environments
+                .get("production")
+                .and_then(|environment| environment.compose_file.as_ref()),
+            Some(&PathBuf::from("docker/production/compose.yml"))
+        );
+
+        let (environment, environment_config) = config
+            .resolve_environment_config(None)
+            .unwrap()
+            .expect("environment should resolve");
+        assert_eq!(environment, "production");
+        assert_eq!(
+            environment_config.compose_file,
+            Some(PathBuf::from("docker/production/compose.yml"))
+        );
+        assert_eq!(
+            environment_config.env_file,
+            Some(PathBuf::from("docker/production/.env"))
+        );
+    }
+
+    #[test]
+    fn test_environment_override_uses_conventional_compose_path() {
+        let yaml = r#"
+name: environment-app
+app:
+  type: static
+deploy:
+  target: cloud
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let (environment, environment_config) = config
+            .resolve_environment_config(Some("staging"))
+            .unwrap()
+            .expect("environment should resolve");
+
+        assert_eq!(environment, "staging");
+        assert_eq!(
+            environment_config.compose_file,
+            Some(PathBuf::from("docker/staging/compose.yml"))
+        );
     }
 
     #[test]
@@ -1728,7 +1853,10 @@ app:
         let err = StackerConfig::from_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("app.path"), "unexpected message: {msg}");
-        assert!(msg.contains("quoted path string"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("quoted path string"),
+            "unexpected message: {msg}"
+        );
     }
 
     #[test]

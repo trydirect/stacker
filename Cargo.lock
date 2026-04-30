@@ -6355,6 +6355,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wiremock",
+ "zstd",
 ]
 
 [[package]]

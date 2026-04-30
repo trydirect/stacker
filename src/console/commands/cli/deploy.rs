@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
+use crate::cli::config_bundle::build_config_bundle;
 use crate::cli::config_parser::{
     AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
     StackerConfig,
@@ -478,14 +479,26 @@ fn validate_compose_for_deploy(compose_path: &Path) -> Result<(), CliError> {
     };
 
     let services_key = serde_yaml::Value::String("services".to_string());
+    let include_key = serde_yaml::Value::String("include".to_string());
     let services = match root.get(&services_key) {
-        Some(serde_yaml::Value::Mapping(m)) => m,
-        _ => {
-            return Err(CliError::ConfigValidation(
-                "Compose file must define a top-level services mapping".to_string(),
-            ))
-        }
+        Some(serde_yaml::Value::Mapping(m)) => Some(m),
+        _ => None,
     };
+
+    if services.is_none() {
+        match root.get(&include_key) {
+            Some(serde_yaml::Value::Sequence(_)) | Some(serde_yaml::Value::String(_)) => {
+                return Ok(());
+            }
+            _ => {
+                return Err(CliError::ConfigValidation(
+                    "Compose file must define a top-level services mapping".to_string(),
+                ))
+            }
+        }
+    }
+
+    let services = services.expect("services checked above");
 
     let mut published_ports: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -866,6 +879,7 @@ fn prompt_select_cloud(access_token: &str) -> Result<Option<stacker_client::Clou
 ///   4. Calls `POST /project/{id}/deploy[/{cloud_id}]`
 pub struct DeployCommand {
     pub target: Option<String>,
+    pub environment: Option<String>,
     pub file: Option<String>,
     pub dry_run: bool,
     pub force_rebuild: bool,
@@ -897,6 +911,7 @@ impl DeployCommand {
     ) -> Self {
         Self {
             target,
+            environment: None,
             file,
             dry_run,
             force_rebuild,
@@ -909,6 +924,11 @@ impl DeployCommand {
             force_new: false,
             runtime: "runc".to_string(),
         }
+    }
+
+    pub fn with_environment(mut self, environment: Option<String>) -> Self {
+        self.environment = environment;
+        self
     }
 
     /// Builder method to set remote override flags from CLI args.
@@ -972,6 +992,7 @@ impl DeployCommand {
 }
 
 /// Parse a deploy target string into `DeployTarget`.
+#[cfg(test)]
 fn parse_deploy_target(s: &str) -> Result<DeployTarget, CliError> {
     let json = format!("\"{}\"", s.to_lowercase());
     serde_json::from_str::<DeployTarget>(&json).map_err(|_| {
@@ -994,10 +1015,38 @@ pub struct RemoteDeployOverrides {
 /// Core deploy logic, extracted for testability.
 ///
 /// Takes injectable `CommandExecutor` so tests can mock shell calls.
+#[allow(clippy::too_many_arguments)]
 pub fn run_deploy(
     project_dir: &Path,
     config_file: Option<&str>,
     target_override: Option<&str>,
+    dry_run: bool,
+    force_rebuild: bool,
+    force_new: bool,
+    executor: &dyn CommandExecutor,
+    remote_overrides: &RemoteDeployOverrides,
+    runtime: &str,
+) -> Result<DeployResult, CliError> {
+    run_deploy_for_environment(
+        project_dir,
+        config_file,
+        target_override,
+        None,
+        dry_run,
+        force_rebuild,
+        force_new,
+        executor,
+        remote_overrides,
+        runtime,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_deploy_for_environment(
+    project_dir: &Path,
+    config_file: Option<&str>,
+    target_override: Option<&str>,
+    environment_override: Option<&str>,
     dry_run: bool,
     force_rebuild: bool,
     force_new: bool,
@@ -1010,6 +1059,7 @@ pub fn run_deploy(
         project_dir,
         config_file,
         target_override,
+        environment_override,
         dry_run,
         force_rebuild,
         force_new,
@@ -1020,10 +1070,12 @@ pub fn run_deploy(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_deploy_with_credentials_manager<S: CredentialStore>(
     project_dir: &Path,
     config_file: Option<&str>,
     target_override: Option<&str>,
+    environment_override: Option<&str>,
     dry_run: bool,
     force_rebuild: bool,
     force_new: bool,
@@ -1040,6 +1092,20 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     let mut config =
         StackerConfig::from_file(&config_path)?.with_resolved_deploy_target(target_override)?;
+    let selected_environment = if let Some((environment, environment_config)) =
+        config.resolve_environment_config(environment_override)?
+    {
+        config.deploy.environment = Some(environment.clone());
+        if let Some(compose_file) = environment_config.compose_file {
+            config.deploy.compose_file = Some(compose_file);
+        }
+        if let Some(env_file) = environment_config.env_file {
+            config.env_file = Some(env_file);
+        }
+        Some(environment)
+    } else {
+        None
+    };
     ensure_env_file_if_needed(&config, project_dir)?;
 
     // 2. Resolve deploy target/profile (flag > config default)
@@ -1362,6 +1428,29 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         );
     }
     eprintln!("  Compose file: {}", compose_path.display());
+    if let Some(environment) = &selected_environment {
+        eprintln!(
+            "  Environment: {} -> Target: {}",
+            environment, deploy_target
+        );
+    }
+
+    let config_bundle = if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
+        if let Some(environment) = selected_environment.as_deref() {
+            let bundle = build_config_bundle(
+                project_dir,
+                environment,
+                &compose_path,
+                config.env_file.as_deref(),
+            )?;
+            eprintln!("  Config bundle: {}", bundle.archive_path.display());
+            Some(bundle)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 5c. Report hooks (dry-run)
     if dry_run {
@@ -1386,6 +1475,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         key_id_override: remote_overrides.key_id,
         server_name_override: remote_overrides.server_name.clone().or(lock_server_name),
         runtime: runtime.to_string(),
+        config_bundle,
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -1409,10 +1499,11 @@ impl CallableTrait for DeployCommand {
         // ── Spinner while deploying ──────────────────
         let spin = progress::deploy_spinner("starting...");
 
-        let result = run_deploy(
+        let result = run_deploy_for_environment(
             &project_dir,
             self.file.as_deref(),
             self.target.as_deref(),
+            self.environment.as_deref(),
             self.dry_run,
             self.force_rebuild,
             self.force_new,
@@ -2055,10 +2146,6 @@ mod tests {
                 },
             }
         }
-
-        fn recorded_calls(&self) -> Vec<(String, Vec<String>)> {
-            self.calls.lock().unwrap().clone()
-        }
     }
 
     impl CommandExecutor for MockExecutor {
@@ -2213,6 +2300,50 @@ mod tests {
     }
 
     #[test]
+    fn test_deploy_environment_override_uses_environment_compose() {
+        let config = r#"
+name: device-api
+app:
+  type: static
+  path: .
+deploy:
+  target: local
+"#;
+        let compose = r#"
+services:
+  api:
+    image: device-api:latest
+    environment:
+      RUST_LOG: warning
+"#;
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            ("docker/production/compose.yml", compose),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy_for_environment(
+            dir.path(),
+            None,
+            Some("local"),
+            Some("production"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            !dir.path().join(".stacker/docker-compose.yml").exists(),
+            "environment compose should be used instead of generating .stacker/docker-compose.yml"
+        );
+    }
+
+    #[test]
     fn test_deploy_local_with_image_skips_build() {
         let config = "name: test-app\napp:\n  type: static\n  path: .\n  image: nginx:latest\n";
         let dir = setup_local_project(&[("stacker.yml", config)]);
@@ -2244,6 +2375,7 @@ mod tests {
 
         let result = run_deploy_with_credentials_manager(
             dir.path(),
+            None,
             None,
             None,
             true,
@@ -2583,6 +2715,20 @@ services:
         assert!(msg.contains("port 80"));
         assert!(msg.contains("nginx-proxy-manager"));
         assert!(msg.contains("nginx_proxy_manager"));
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_allows_include_only_compose() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+include:
+  - ../../postgres/docker/local/compose.yml
+  - ../../website/docker/local/compose.yml
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        validate_compose_for_deploy(&compose_path).unwrap();
     }
 
     #[test]
