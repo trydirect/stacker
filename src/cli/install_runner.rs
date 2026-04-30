@@ -1055,7 +1055,15 @@ pub(crate) fn resolve_docker_registry_credentials(
 
     // Registry server: env var > config > default "docker.io"
     let server = first_non_empty_env(&["STACKER_DOCKER_REGISTRY", "DOCKER_REGISTRY"])
-        .or_else(|| registry.and_then(|r| r.server.clone()));
+        .or_else(|| registry.and_then(|r| r.server.clone()))
+        .or_else(|| {
+            if username.is_some() || password.is_some() {
+                Some("docker.io".to_string())
+            } else {
+                None
+            }
+        })
+        .map(canonicalize_registry_server);
 
     if let Some(u) = username {
         creds.insert("docker_username".to_string(), serde_json::Value::String(u));
@@ -1068,6 +1076,27 @@ pub(crate) fn resolve_docker_registry_credentials(
     }
 
     creds
+}
+
+fn canonicalize_registry_server(server: String) -> String {
+    let trimmed = server.trim().trim_end_matches('/').to_string();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower == "docker.io"
+        || lower == "hub.docker.com"
+        || lower == "index.docker.io"
+        || lower == "registry-1.docker.io"
+        || lower == "https://docker.io"
+        || lower == "https://hub.docker.com"
+        || lower == "https://index.docker.io"
+        || lower == "https://index.docker.io/v1"
+        || lower == "https://index.docker.io/v1/"
+        || lower == "https://registry-1.docker.io"
+    {
+        "docker.io".to_string()
+    } else {
+        trimmed
+    }
 }
 
 #[allow(dead_code)]
@@ -1595,7 +1624,8 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig,
+        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, RegistryConfig,
+        ServerConfig,
     };
     use std::sync::Mutex;
 
@@ -2111,6 +2141,49 @@ mod tests {
         assert_eq!(
             normalize_stacker_server_url("https://api.try.direct"),
             stacker_client::DEFAULT_STACKER_URL
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_registry_server_maps_docker_hub_urls_to_docker_io() {
+        assert_eq!(
+            canonicalize_registry_server("https://index.docker.io/v1/".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("https://registry-1.docker.io".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("hub.docker.com".to_string()),
+            "docker.io"
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_registry_credentials_defaults_to_docker_io_when_auth_present() {
+        let config = ConfigBuilder::new()
+            .name("private-app")
+            .registry(RegistryConfig {
+                username: Some("syncopia-user".to_string()),
+                password: Some("secret".to_string()),
+                server: None,
+            })
+            .build()
+            .unwrap();
+
+        let creds = resolve_docker_registry_credentials(&config);
+        assert_eq!(
+            creds.get("docker_username").and_then(|v| v.as_str()),
+            Some("syncopia-user")
+        );
+        assert_eq!(
+            creds.get("docker_password").and_then(|v| v.as_str()),
+            Some("secret")
+        );
+        assert_eq!(
+            creds.get("docker_registry").and_then(|v| v.as_str()),
+            Some("docker.io")
         );
     }
 

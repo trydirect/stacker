@@ -606,7 +606,7 @@ deploy:
   registry:
     username: "${DOCKER_USERNAME}"
     password: "${DOCKER_PASSWORD}"
-    # server: "https://index.docker.io/v1/"  # Docker Hub (default)
+    # server: "docker.io"  # Docker Hub (default)
 ```
 
 > **Security tip:** Use environment variables or `${VAR}` syntax to keep credentials out of version control.

@@ -98,7 +98,7 @@ pub fn full_config_reference_example() -> &'static str {
 #   # registry:                          # Docker registry credentials for private images
 #   #   username: "${DOCKER_USERNAME}"
 #   #   password: "${DOCKER_PASSWORD}"
-#   #   server: "https://index.docker.io/v1/"  # optional, defaults to Docker Hub
+#   #   server: "docker.io"  # optional, defaults to Docker Hub
 #
 # ai:
 #   enabled: true

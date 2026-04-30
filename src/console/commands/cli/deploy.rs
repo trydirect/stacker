@@ -478,14 +478,26 @@ fn validate_compose_for_deploy(compose_path: &Path) -> Result<(), CliError> {
     };
 
     let services_key = serde_yaml::Value::String("services".to_string());
+    let include_key = serde_yaml::Value::String("include".to_string());
     let services = match root.get(&services_key) {
-        Some(serde_yaml::Value::Mapping(m)) => m,
-        _ => {
-            return Err(CliError::ConfigValidation(
-                "Compose file must define a top-level services mapping".to_string(),
-            ))
-        }
+        Some(serde_yaml::Value::Mapping(m)) => Some(m),
+        _ => None,
     };
+
+    if services.is_none() {
+        match root.get(&include_key) {
+            Some(serde_yaml::Value::Sequence(_)) | Some(serde_yaml::Value::String(_)) => {
+                return Ok(());
+            }
+            _ => {
+                return Err(CliError::ConfigValidation(
+                    "Compose file must define a top-level services mapping".to_string(),
+                ))
+            }
+        }
+    }
+
+    let services = services.expect("services checked above");
 
     let mut published_ports: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -2583,6 +2595,20 @@ services:
         assert!(msg.contains("port 80"));
         assert!(msg.contains("nginx-proxy-manager"));
         assert!(msg.contains("nginx_proxy_manager"));
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_allows_include_only_compose() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+include:
+  - ../../postgres/docker/local/compose.yml
+  - ../../website/docker/local/compose.yml
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        validate_compose_for_deploy(&compose_path).unwrap();
     }
 
     #[test]
