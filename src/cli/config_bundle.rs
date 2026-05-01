@@ -89,10 +89,13 @@ pub fn build_config_bundle(
     let mut compose_yaml: serde_yaml::Value = serde_yaml::from_str(&compose_content)?;
     let mut collected = BTreeMap::<PathBuf, CollectedFile>::new();
 
-    if let Some(env_file) = env_file {
+    let selected_env_file = if let Some(env_file) = env_file {
         let resolved = resolve_reference_path(&project_root, &project_root, env_file)?;
-        collect_file(&project_root, environment, resolved, &mut collected)?;
-    }
+        collect_file(&project_root, environment, resolved.clone(), &mut collected)?;
+        Some(resolved)
+    } else {
+        None
+    };
 
     rewrite_compose_references(
         &project_root,
@@ -138,6 +141,29 @@ pub fn build_config_bundle(
         "owner": "root",
         "group": "root"
     }));
+
+    if let Some(selected_env_file) = selected_env_file.as_ref() {
+        let canonical = selected_env_file.canonicalize()?;
+        let collected_env_file = collected
+            .get(&canonical)
+            .expect("selected env file should be present in collected bundle");
+        let compose_env_content =
+            String::from_utf8(collected_env_file.bytes.clone()).map_err(|_| {
+                validation_error(format!(
+                    "config file '{}' must be UTF-8 text to upload in the deploy payload",
+                    collected_env_file.source_path
+                ))
+            })?;
+        config_files.push(json!({
+            "name": ".env",
+            "content": compose_env_content,
+            "content_type": "text/plain",
+            "destination_path": ".env",
+            "file_mode": collected_env_file.mode,
+            "owner": "root",
+            "group": "root"
+        }));
+    }
 
     for file in collected.values() {
         let content = String::from_utf8(file.bytes.clone()).map_err(|_| {
@@ -496,7 +522,7 @@ services:
             dir.path(),
             "production",
             &compose_dir.join("compose.yml"),
-            None,
+            Some(&compose_dir.join(".env")),
         )
         .expect("bundle should be built");
 
@@ -536,6 +562,17 @@ services:
         assert!(names.contains(&"docker-compose.yml"));
         assert!(names.contains(&".env"));
         assert!(names.contains(&"nginx.conf"));
+
+        let root_env = artifacts
+            .config_files
+            .iter()
+            .find(|file| {
+                file.get("destination_path")
+                    .and_then(|value| value.as_str())
+                    == Some(".env")
+            })
+            .expect("selected env file should also be uploaded as compose root .env");
+        assert_eq!(root_env["content"], "RUST_LOG=warning\n");
     }
 
     #[test]
