@@ -4,6 +4,123 @@
 
 ---
 
+## Planned Feature: resumable deployments from the last checkpoint
+
+**Problem**
+
+`stacker deploy` can pause or fail after completing expensive remote work, but the
+current deployment model only persists coarse status plus a single
+`status_message`. There is no durable ordered step journal, so the CLI cannot
+safely continue from the last successful phase and instead repeats work that may
+already have completed.
+
+**Default behavior**
+
+- Add a dedicated `stacker resume` command.
+- Default behavior: auto-resume from the last completed resumable checkpoint.
+- Manual override: `stacker resume --from <step>`.
+- Keep `stacker resolve` separate as the emergency force-complete escape hatch.
+
+### Proposed architecture
+
+#### Phase A — persist deployment checkpoints
+
+- Add a durable `deployment_step` journal instead of relying only on
+  `deployment.metadata`.
+- Persist:
+  - `deployment_id`
+  - `attempt`
+  - `step_key`
+  - `step_order`
+  - `status`
+  - `resumable`
+  - `started_at`
+  - `completed_at`
+  - `failed_at`
+  - `error_message`
+  - `step_context`
+
+#### Phase B — define resumable step boundaries
+
+- Introduce explicit named deploy checkpoints, for example:
+  1. `request_validated`
+  2. `project_synced`
+  3. `server_resolved`
+  4. `infra_provisioned`
+  5. `ssh_ready`
+  6. `artifacts_uploaded`
+  7. `remote_bootstrap_started`
+  8. `compose_applied`
+  9. `healthcheck_completed`
+- Rules:
+  - completed checkpoints are skipped on default resume
+  - failed resumable checkpoints are retried
+  - non-resumable checkpoints stop resume with a clear operator error
+
+#### Phase C — add resume API support
+
+- Add `POST /api/v1/deployments/{id}/resume`
+- Request fields:
+  - optional `from_step`
+  - optional `force`
+- Extend deployment status responses with:
+  - `current_step`
+  - `last_completed_step`
+  - `resume_allowed`
+  - `resume_from_step`
+  - `resume_reason`
+
+#### Phase D — add CLI UX
+
+- Add:
+  - `stacker resume`
+  - `stacker resume --deployment <hash>`
+  - `stacker resume --from <step>`
+  - `stacker resume --watch`
+- Update `stacker status` to print a targeted resume hint for paused/failed
+  deployments.
+
+#### Phase E — backward compatibility
+
+- Deployments created before checkpoint support must remain readable.
+- Resume on old deployments should fail clearly:
+  - `This deployment predates resumable checkpoints; run a fresh deploy.`
+
+### Files likely affected
+
+- CLI
+  - `src/bin/stacker.rs`
+  - `src/console/commands/cli/deploy.rs`
+  - `src/console/commands/cli/status.rs`
+  - `src/console/commands/cli/resolve.rs`
+  - `src/cli/stacker_client.rs`
+- API / persistence
+  - `src/models/deployment.rs`
+  - `src/db/deployment.rs`
+  - `src/routes/deployment/status.rs`
+  - `src/routes/deployment/mod.rs`
+  - new `src/routes/deployment/resume.rs`
+  - new migration under `migrations/`
+- External dependency
+  - Install Service deploy worker / MQ progress contract
+
+### Testing
+
+- Unit tests for checkpoint ordering, next-step resolution, allowed resume
+  transitions, and `--from <step>` validation.
+- Integration tests for paused/failed deployment resume, unauthorized resume
+  attempts, and backwards compatibility for deployments without checkpoint data.
+- Cross-repo tests to confirm infra/bootstrap phases are not repeated after the
+  matching checkpoint is already completed.
+
+### Risks
+
+- Real resume is blocked on Install Service support because execution is delegated
+  over RabbitMQ today.
+- Resume is only safe if checkpoint boundaries are truly idempotent.
+- A metadata-only solution would be faster but weaker than a dedicated
+  `deployment_step` table for querying and auditing.
+
 ## Marketplace Developer Flow: `stacker submit` → review → auto-publish
 
 ### CLI Commands (v0.2.6)
