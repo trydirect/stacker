@@ -148,6 +148,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                     };
 
                     let statuses = vec![
+                        "complete",
                         "completed",
                         "paused",
                         "failed",
@@ -164,6 +165,11 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                             println!("message {:?}", s);
 
                             if statuses.contains(&(msg.status.as_ref())) {
+                                let normalized_status = if msg.status == "complete" {
+                                    "completed".to_string()
+                                } else {
+                                    msg.status.clone()
+                                };
                                 // Try to find deployment by deploy_id or deployment_hash
                                 let deployment_result = if let Some(ref deploy_id_str) = msg.deploy_id {
                                     // Try deploy_id first (numeric ID)
@@ -190,7 +196,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
 
                                 match deployment_result {
                                     Ok(Some(mut row)) => {
-                                        row.status = msg.status;
+                                        row.status = normalized_status;
                                         row.updated_at = Utc::now();
 
                                         // Persist the progress message in metadata so the
