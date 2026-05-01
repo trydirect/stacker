@@ -2123,8 +2123,8 @@ pub async fn get_vendor_analytics_for_period(
         FROM stack_template t
         LEFT JOIN marketplace_template_event e
             ON e.template_id = t.id
-           AND ($2::timestamptz IS NULL OR e.created_at >= $2)
-           AND ($3::timestamptz IS NULL OR e.created_at <= $3)
+           AND ($2::timestamptz IS NULL OR e.occurred_at >= $2)
+           AND ($3::timestamptz IS NULL OR e.occurred_at <= $3)
         WHERE t.creator_user_id = $1
         GROUP BY t.id, t.creator_user_id, t.slug, t.name, t.status, t.created_at
         ORDER BY deployments DESC, views DESC, t.created_at DESC"#,
@@ -2205,8 +2205,8 @@ pub async fn get_vendor_analytics_for_period(
         INNER JOIN stack_template t ON t.id = e.template_id
         WHERE t.creator_user_id = $1
           AND e.event_type = 'deploy'
-          AND ($2::timestamptz IS NULL OR e.created_at >= $2)
-          AND ($3::timestamptz IS NULL OR e.created_at <= $3)
+          AND ($2::timestamptz IS NULL OR e.occurred_at >= $2)
+          AND ($3::timestamptz IS NULL OR e.occurred_at <= $3)
         GROUP BY COALESCE(e.cloud_provider, 'unknown')
         ORDER BY deployments DESC, cloud_provider ASC"#,
     )

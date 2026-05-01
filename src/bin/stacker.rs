@@ -96,6 +96,9 @@ enum StackerCommands {
         /// Deployment target: local, cloud, server
         #[arg(long, value_name = "TARGET")]
         target: Option<String>,
+        /// Deploy environment/profile, e.g. development, staging, production
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
         /// Path to stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
@@ -1086,6 +1089,7 @@ fn get_command(
         }
         StackerCommands::Deploy {
             target,
+            environment,
             file,
             dry_run,
             force_rebuild,
@@ -1105,6 +1109,7 @@ fn get_command(
                 dry_run,
                 force_rebuild,
             )
+            .with_environment(environment)
             .with_remote_overrides(project, key, server)
             .with_key_id(key_id)
             .with_watch(watch, no_watch)
@@ -1562,6 +1567,51 @@ fn get_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_deploy_parses_environment_alias() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "deploy",
+            "--target",
+            "cloud",
+            "--env",
+            "production",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Deploy {
+                target,
+                environment,
+                ..
+            } => {
+                assert_eq!(target.as_deref(), Some("cloud"));
+                assert_eq!(environment.as_deref(), Some("production"));
+            }
+            _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn test_deploy_parses_environment_long_alias() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "deploy",
+            "--target",
+            "cloud",
+            "--environment",
+            "staging",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Deploy { environment, .. } => {
+                assert_eq!(environment.as_deref(), Some("staging"));
+            }
+            _ => panic!("expected deploy command"),
+        }
+    }
 
     #[test]
     fn test_pipe_scan_parses_without_selector() {

@@ -76,6 +76,7 @@ fn is_terminal(status: &str) -> bool {
 struct StatusContext<'a> {
     server: Option<&'a ServerInfo>,
     config: Option<&'a StackerConfig>,
+    live_containers: Option<&'a [serde_json::Value]>,
 }
 
 /// Pretty-print a deployment status with optional server/config context.
@@ -139,6 +140,23 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
         }
     }
 
+    if let Some(containers) = ctx.live_containers {
+        if !containers.is_empty() {
+            println!("\n── Live Containers ────────────────────────");
+            println!("  {:<24} {:<12} {:<30}", "CONTAINER", "STATE", "IMAGE");
+            for c in containers {
+                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                let state = c
+                    .get("state")
+                    .or_else(|| c.get("status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+                println!("  {:<24} {:<12} {:<30}", name, state, image);
+            }
+        }
+    }
+
     // ── Deployed apps / domains ─────────────────
     if let Some(config) = ctx.config {
         let srv_ip = ctx.server.and_then(|s| s.srv_ip.as_deref());
@@ -193,7 +211,10 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
             if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
                 println!("  • Manage proxy:           stacker proxy");
             }
-            println!("  • Redeploy:               stacker deploy --target cloud");
+            println!(
+                "  • Redeploy:               stacker deploy --target {}",
+                config.deploy.target
+            );
             println!("\n── Documentation ──────────────────────────");
             println!("  https://try.direct/docs");
         }
@@ -214,8 +235,21 @@ fn resolve_project_name(config: &StackerConfig) -> String {
 fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
     creds
         .server_url
-        .clone()
+        .as_deref()
+        .map(crate::cli::install_runner::normalize_stacker_server_url)
         .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string())
+}
+
+fn snapshot_containers(snapshot: &serde_json::Value) -> Vec<serde_json::Value> {
+    snapshot
+        .get("containers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn containers_signature(containers: &[serde_json::Value]) -> String {
+    serde_json::to_string(containers).unwrap_or_default()
 }
 
 /// Query remote deployment status from the Stacker server, optionally watching.
@@ -230,8 +264,8 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
         )));
     }
 
-    let config_str = std::fs::read_to_string(&config_path)?;
-    let config: StackerConfig = serde_yaml::from_str(&config_str)
+    let config = StackerConfig::from_file(&config_path)?
+        .with_resolved_deploy_target(None)
         .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
 
     let project_name = resolve_project_name(&config);
@@ -258,6 +292,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                 let ctx = StatusContext {
                     server: None,
                     config: Some(&config),
+                    live_containers: None,
                 };
                 if !watch {
                     let status = client.get_deployment_by_hash(deployment_hash).await?;
@@ -277,18 +312,38 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                 let poll_interval = std::time::Duration::from_secs(5);
                 let mut last_status = String::new();
                 let mut last_message: Option<String> = None;
+                let mut last_containers = String::new();
 
                 loop {
                     let status = client.get_deployment_by_hash(deployment_hash).await?;
 
                     match status {
                         Some(info) => {
+                            let live_containers = if info.status == "completed" {
+                                client
+                                    .agent_snapshot_by_project(info.project_id)
+                                    .await
+                                    .ok()
+                                    .map(|(snapshot, _)| snapshot_containers(&snapshot))
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                            let container_sig = containers_signature(&live_containers);
                             let status_changed = info.status != last_status;
                             let message_changed = info.status_message != last_message;
-                            if status_changed || message_changed {
+                            let containers_changed = container_sig != last_containers;
+                            if status_changed || message_changed || containers_changed {
+                                let ctx = StatusContext {
+                                    server: None,
+                                    config: Some(&config),
+                                    live_containers: (!live_containers.is_empty())
+                                        .then_some(live_containers.as_slice()),
+                                };
                                 print_deployment_status_rich(&info, json, &ctx);
                                 last_status = info.status.clone();
                                 last_message = info.status_message.clone();
+                                last_containers = container_sig;
                             }
 
                             if is_terminal(&info.status) {
@@ -332,11 +387,6 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                     .find(|s| s.project_id == project.id)
             });
 
-        let ctx = StatusContext {
-            server: server.as_ref(),
-            config: Some(&config),
-        };
-
         if !watch {
             // Single query
             let status = client
@@ -344,6 +394,18 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                 .await?;
             match status {
                 Some(info) => {
+                    let live_containers = client
+                        .agent_snapshot_by_project(project.id)
+                        .await
+                        .ok()
+                        .map(|(snapshot, _)| snapshot_containers(&snapshot))
+                        .unwrap_or_default();
+                    let ctx = StatusContext {
+                        server: server.as_ref(),
+                        config: Some(&config),
+                        live_containers: (!live_containers.is_empty())
+                            .then_some(live_containers.as_slice()),
+                    };
                     print_deployment_status_rich(&info, json, &ctx);
                     Ok(())
                 }
@@ -362,6 +424,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
             let poll_interval = std::time::Duration::from_secs(5);
             let mut last_status = String::new();
             let mut last_message: Option<String> = None;
+            let mut last_containers = String::new();
 
             loop {
                 let status = client
@@ -370,12 +433,27 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
 
                 match status {
                     Some(info) => {
+                        let live_containers = client
+                            .agent_snapshot_by_project(project.id)
+                            .await
+                            .ok()
+                            .map(|(snapshot, _)| snapshot_containers(&snapshot))
+                            .unwrap_or_default();
+                        let container_sig = containers_signature(&live_containers);
                         let status_changed = info.status != last_status;
                         let message_changed = info.status_message != last_message;
-                        if status_changed || message_changed {
+                        let containers_changed = container_sig != last_containers;
+                        if status_changed || message_changed || containers_changed {
+                            let ctx = StatusContext {
+                                server: server.as_ref(),
+                                config: Some(&config),
+                                live_containers: (!live_containers.is_empty())
+                                    .then_some(live_containers.as_slice()),
+                            };
                             print_deployment_status_rich(&info, json, &ctx);
                             last_status = info.status.clone();
                             last_message = info.status_message.clone();
+                            last_containers = container_sig;
                         }
 
                         if is_terminal(&info.status) {
@@ -412,13 +490,10 @@ fn is_remote_deployment(project_dir: &Path) -> bool {
         return false;
     }
 
-    let config_str = match std::fs::read_to_string(&config_path) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    let config: StackerConfig = match serde_yaml::from_str(&config_str) {
-        Ok(c) => c,
+    let config = match StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+    {
+        Ok(config) => config,
         Err(_) => return false,
     };
 
@@ -582,6 +657,31 @@ mod tests {
     }
 
     #[test]
+    fn test_is_remote_deployment_for_named_server_target_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            r#"name: demo
+app:
+  type: static
+deploy:
+  default_target: prod
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#,
+        )
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
+    }
+
+    #[test]
     fn test_is_remote_deployment_for_hydrated_lock() {
         let dir = tempfile::TempDir::new().unwrap();
         DeploymentLock {
@@ -611,6 +711,25 @@ mod tests {
             expires_at: Utc::now() + Duration::minutes(10),
             email: None,
             server_url: Some("https://custom.stacker.example".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_stacker_base_url(&creds),
+            "https://custom.stacker.example"
+        );
+    }
+
+    #[test]
+    fn test_resolve_stacker_base_url_normalizes_api_v1_suffix() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: Utc::now() + Duration::minutes(10),
+            email: None,
+            server_url: Some("https://custom.stacker.example/api/v1".to_string()),
             org: None,
             domain: None,
         };

@@ -268,6 +268,36 @@ fn is_non_empty_json(value: &serde_json::Value) -> bool {
     }
 }
 
+fn normalize_optional_secret(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_provided_ssh_keypair(
+    form: &forms::server::ServerForm,
+) -> Result<Option<(String, String)>, String> {
+    let private_key = match normalize_optional_secret(&form.ssh_private_key) {
+        Some(key) => key,
+        None => return Ok(None),
+    };
+
+    let public_key = match normalize_optional_secret(&form.public_key) {
+        Some(key) => key,
+        None => {
+            let private = ssh_key::PrivateKey::from_openssh(&private_key)
+                .map_err(|err| format!("Invalid SSH private key: {}", err))?;
+            private
+                .public_key()
+                .to_openssh()
+                .map_err(|err| format!("Failed to derive SSH public key: {}", err))?
+        }
+    };
+
+    Ok(Some((public_key, private_key)))
+}
+
 fn ensure_root_object(
     value: &mut serde_json::Value,
 ) -> &mut serde_json::Map<String, serde_json::Value> {
@@ -505,6 +535,126 @@ fn sync_runtime_artifact_bundle(
     Ok(())
 }
 
+fn upsert_root_field(target: &mut serde_json::Value, field: &str, value: &serde_json::Value) {
+    ensure_root_object(target).insert(field.to_string(), value.clone());
+}
+
+fn upsert_deployment_artifact(
+    target: &mut serde_json::Value,
+    field: &str,
+    value: &serde_json::Value,
+) {
+    let custom = ensure_custom_object(target);
+    let deployment_artifacts = custom
+        .entry("deployment_artifacts".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !deployment_artifacts.is_object() {
+        *deployment_artifacts = serde_json::json!({});
+    }
+
+    deployment_artifacts
+        .as_object_mut()
+        .expect("deployment_artifacts should be normalized to an object")
+        .insert(field.to_string(), value.clone());
+}
+
+fn basename_from_path(path: &str) -> Option<&str> {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
+fn compose_content_from_config_files(
+    config_files: &serde_json::Value,
+) -> Result<Option<String>, String> {
+    let files = config_files
+        .as_array()
+        .ok_or_else(|| "config_files must be an array".to_string())?;
+
+    for file in files {
+        let file_name = file
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                file.get("destination_path")
+                    .and_then(|value| value.as_str())
+                    .and_then(basename_from_path)
+            });
+
+        if let Some(file_name) = file_name {
+            if crate::project_app::is_compose_filename(file_name) {
+                let content = file
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "compose config file '{}' is missing string content",
+                            file_name
+                        )
+                    })?;
+                return Ok(Some(content.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn apply_deploy_bundle(
+    project: &mut models::Project,
+    form: &forms::project::Deploy,
+) -> Result<Option<String>, String> {
+    if let Some(environment) = form
+        .environment
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        let environment_value = serde_json::Value::String(environment.to_string());
+        upsert_root_field(&mut project.metadata, "environment", &environment_value);
+        upsert_root_field(&mut project.request_json, "environment", &environment_value);
+    }
+
+    let compose_content = match form
+        .config_files
+        .as_ref()
+        .filter(|value| is_non_empty_json(value))
+    {
+        Some(config_files) => {
+            upsert_root_field(&mut project.metadata, "config_files", config_files);
+            upsert_root_field(&mut project.request_json, "config_files", config_files);
+            compose_content_from_config_files(config_files)?
+        }
+        None => None,
+    };
+
+    if let Some(config_bundle) = form
+        .config_bundle
+        .as_ref()
+        .filter(|value| is_non_empty_json(value))
+    {
+        upsert_root_field(&mut project.metadata, "config_bundle", config_bundle);
+        upsert_root_field(&mut project.request_json, "config_bundle", config_bundle);
+
+        let artifact_metadata = config_bundle
+            .get("manifest")
+            .cloned()
+            .unwrap_or_else(|| config_bundle.clone());
+        upsert_deployment_artifact(&mut project.metadata, "config_bundle", &artifact_metadata);
+        upsert_deployment_artifact(
+            &mut project.request_json,
+            "config_bundle",
+            &artifact_metadata,
+        );
+    }
+
+    Ok(compose_content)
+}
+
 async fn load_project_template_version(
     pg_pool: &PgPool,
     project: &models::Project,
@@ -537,6 +687,8 @@ async fn execute_deployment(
     cloud: models::Cloud,
     server: models::Server,
 ) -> Result<(i32, i32)> {
+    let deploy_compose = apply_deploy_bundle(&mut project, form)
+        .map_err(|err| JsonResponse::<models::Project>::build().bad_request(err))?;
     let template_version = load_project_template_version(pg_pool, &project)
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
@@ -547,12 +699,25 @@ async fn execute_deployment(
 
     let id = project.id;
     let dc = DcBuilder::new(project);
-    let fc = dc
-        .build()
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    let fc = match deploy_compose {
+        Some(compose) => compose,
+        None => dc
+            .build()
+            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?,
+    };
 
     let mut new_public_key: Option<String> = None;
-    let mut captured_private_key: Option<String> = None;
+    let mut bootstrap_private_key: Option<String> = None;
+    let provided_keypair = resolve_provided_ssh_keypair(&form.server)
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+    if let Some((_, private_key)) = provided_keypair.as_ref() {
+        bootstrap_private_key = Some(private_key.clone());
+        tracing::info!(
+            "Using provided SSH private key transiently for bootstrap on server {}",
+            server.id
+        );
+    }
+
     let server = if server.key_status != "active" {
         match VaultClient::generate_ssh_keypair() {
             Ok((public_key, private_key)) => {
@@ -567,7 +732,6 @@ async fn execute_deployment(
                             vault_path
                         );
                         new_public_key = Some(public_key);
-                        captured_private_key = Some(private_key);
                         db::server::update_ssh_key_status(
                             pg_pool,
                             server.id,
@@ -653,26 +817,24 @@ async fn execute_deployment(
 
     let deployment_id = saved_deployment.id;
 
-    let new_private_key = if server.vault_key_path.is_some() {
-        if let Some(pk) = captured_private_key {
-            Some(pk)
-        } else {
-            match vault_client.fetch_ssh_key(&user.id, server.id).await {
-                Ok(pk) => {
-                    tracing::info!(
-                        "Fetched SSH private key from Vault for server {}",
-                        server.id
-                    );
-                    Some(pk)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fetch SSH private key from Vault for server {}: {}",
-                        server.id,
-                        e
-                    );
-                    None
-                }
+    let new_private_key = if let Some(pk) = bootstrap_private_key {
+        Some(pk)
+    } else if server.vault_key_path.is_some() {
+        match vault_client.fetch_ssh_key(&user.id, server.id).await {
+            Ok(pk) => {
+                tracing::info!(
+                    "Fetched SSH private key from Vault for server {}",
+                    server.id
+                );
+                Some(pk)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch SSH private key from Vault for server {}: {}",
+                    server.id,
+                    e
+                );
+                None
             }
         }
     } else {
@@ -1274,12 +1436,14 @@ pub async fn rollback(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_runtime_artifact_bundle, preserve_marketplace_runtime_artifacts,
+        apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
+        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
         sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
         validate_min_ram_requirement,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
+    use crate::forms;
     use crate::models::{self, StackTemplateVersion};
     use serde_json::json;
     use uuid::Uuid;
@@ -1422,6 +1586,91 @@ mod tests {
         assert!(err.contains("minimum CPU requirement"));
         assert!(err.contains("4"));
         assert!(err.contains("2"));
+    }
+
+    #[test]
+    fn compose_content_from_config_files_prefers_uploaded_compose() {
+        let compose = compose_content_from_config_files(&json!([
+            {
+                "name": ".env",
+                "content": "APP_ENV=production"
+            },
+            {
+                "name": "docker-compose.yml",
+                "content": "services:\n  website:\n    image: syncopiaapp/website:latest\n"
+            }
+        ]))
+        .expect("config files should be valid")
+        .expect("compose should be discovered");
+
+        assert!(compose.contains("syncopiaapp/website:latest"));
+    }
+
+    #[test]
+    fn apply_deploy_bundle_merges_runtime_fields_and_returns_compose() {
+        let mut project = models::Project::new(
+            "user-1".to_string(),
+            "syncopia".to_string(),
+            json!({
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "syncopia"
+                }
+            }),
+            json!({
+                "custom": {
+                    "web": [],
+                    "custom_stack_code": "syncopia"
+                }
+            }),
+        );
+        let form = forms::project::Deploy {
+            environment: Some("prod".to_string()),
+            config_files: Some(json!([
+                {
+                    "name": "docker-compose.yml",
+                    "content": "services:\n  website:\n    image: syncopiaapp/website:latest\n",
+                    "destination_path": "docker-compose.yml"
+                },
+                {
+                    "name": ".env",
+                    "content": "WEBSITE_IMAGE=syncopiaapp/website:latest\n",
+                    "destination_path": "/opt/stacker/deployments/prod/files/.env"
+                }
+            ])),
+            config_bundle: Some(json!({
+                "manifest": {
+                    "environment": "prod",
+                    "config_files": [
+                        {
+                            "destination_path": "/opt/stacker/deployments/prod/files/.env"
+                        }
+                    ]
+                }
+            })),
+            ..Default::default()
+        };
+
+        let compose = apply_deploy_bundle(&mut project, &form)
+            .expect("bundle application should succeed")
+            .expect("compose should be available");
+
+        assert!(compose.contains("syncopiaapp/website:latest"));
+        assert_eq!(project.metadata["environment"], json!("prod"));
+        assert_eq!(project.request_json["environment"], json!("prod"));
+        assert_eq!(
+            project.metadata["config_files"][0]["name"],
+            json!("docker-compose.yml")
+        );
+        assert_eq!(
+            project.metadata["custom"]["deployment_artifacts"]["config_bundle"]["environment"],
+            json!("prod")
+        );
+        assert_eq!(
+            project.request_json["custom"]["deployment_artifacts"]["config_bundle"]["config_files"]
+                [0]["destination_path"],
+            json!("/opt/stacker/deployments/prod/files/.env")
+        );
     }
 
     #[test]
@@ -1686,5 +1935,22 @@ mod tests {
             .request_json
             .get("runtime_artifact_bundle")
             .is_none());
+    }
+
+    #[test]
+    fn resolve_provided_ssh_keypair_derives_public_key_when_missing() {
+        let (public_key, private_key) =
+            crate::helpers::vault::VaultClient::generate_ssh_keypair().expect("test keypair");
+        let form = forms::server::ServerForm {
+            ssh_private_key: Some(private_key.clone()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_provided_ssh_keypair(&form)
+            .expect("valid keypair")
+            .expect("keypair should be present");
+
+        assert_eq!(resolved.0, public_key);
+        assert_eq!(resolved.1.trim(), private_key.trim());
     }
 }

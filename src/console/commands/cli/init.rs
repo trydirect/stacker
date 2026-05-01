@@ -98,7 +98,7 @@ pub fn full_config_reference_example() -> &'static str {
 #   # registry:                          # Docker registry credentials for private images
 #   #   username: "${DOCKER_USERNAME}"
 #   #   password: "${DOCKER_PASSWORD}"
-#   #   server: "https://index.docker.io/v1/"  # optional, defaults to Docker Hub
+#   #   server: "docker.io"  # optional, defaults to Docker Hub
 #
 # ai:
 #   enabled: true
@@ -1292,7 +1292,7 @@ mod tests {
             ),
             (
                 "upload/docker/local/compose.yml",
-                "services:\n  upload:\n    build: .\n    image: ${UPLOAD_IMAGE:-syncopia/upload:local}\n    ports:\n      - \"8080:8080\"\n  redis:\n    image: redis:7\n  grafana:\n    image: grafana/grafana:latest\n    environment:\n      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}\n",
+                "services:\n  upload:\n    build: .\n    image: ${UPLOAD_IMAGE:-upload:local}\n    ports:\n      - \"8080:8080\"\n  redis:\n    image: redis:7\n  grafana:\n    image: grafana/grafana:latest\n    environment:\n      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}\n",
             ),
         ]);
 
@@ -1321,7 +1321,7 @@ mod tests {
             .iter()
             .find(|service| service.name == "upload")
             .unwrap();
-        assert_eq!(upload.image, "syncopia/upload:local");
+        assert_eq!(upload.image, "upload:local");
         assert_eq!(upload.ports, vec!["8080:8080"]);
         let grafana = config
             .services

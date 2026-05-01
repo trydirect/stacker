@@ -98,6 +98,9 @@ pub struct DeployContext {
 
     /// Container runtime preference ("runc" or "kata").
     pub runtime: String,
+
+    /// Environment-specific config files collected from compose env_file and bind mounts.
+    pub config_bundle: Option<crate::cli::config_bundle::ConfigBundleArtifacts>,
 }
 
 impl DeployContext {
@@ -413,7 +416,8 @@ impl InstallContainerCommand {
 
             // Mount SSH key if specified
             if let Some(ref ssh_key) = cloud.ssh_key {
-                cmd = cmd.mount(ssh_key, CONTAINER_SSH_KEY_PATH);
+                let resolved_ssh_key = resolve_ssh_key_path(ssh_key);
+                cmd = cmd.mount(&resolved_ssh_key, CONTAINER_SSH_KEY_PATH);
             }
         }
 
@@ -424,7 +428,8 @@ impl InstallContainerCommand {
             cmd = cmd.env("SERVER_PORT", &server.port.to_string());
 
             if let Some(ref ssh_key) = server.ssh_key {
-                cmd = cmd.mount(ssh_key, CONTAINER_SSH_KEY_PATH);
+                let resolved_ssh_key = resolve_ssh_key_path(ssh_key);
+                cmd = cmd.mount(&resolved_ssh_key, CONTAINER_SSH_KEY_PATH);
             }
         }
 
@@ -501,11 +506,21 @@ impl DeployStrategy for CloudDeploy {
                     })?;
 
                 let (response, effective_server_name) = rt.block_on(async {
-                    let client = StackerClient::new(&base_url, &creds.access_token);
+                    let client = StackerClient::new_for_target(
+                        &base_url,
+                        &creds.access_token,
+                        DeployTarget::Server,
+                    );
 
                     // Step 1: Resolve or auto-create project
                     eprintln!("  Resolving project '{}'...", project_name);
-                    let project_body = stacker_client::build_project_body(config);
+                    let mut project_body = stacker_client::build_project_body(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_project_body(
+                            &mut project_body,
+                            bundle,
+                        );
+                    }
                     let project = match client.find_project_by_name(&project_name).await? {
                         Some(p) => {
                             eprintln!("  Found project '{}' (id={}), syncing metadata...", p.name, p.id);
@@ -663,6 +678,12 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 4: Build deploy form
                     let mut deploy_form = stacker_client::build_deploy_form(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_deploy_form(
+                            &mut deploy_form,
+                            bundle,
+                        );
+                    }
 
                     // Capture the server name from the form (auto-generated or overridden)
                     // so we can persist it in the deployment lock even if the API fetch
@@ -866,22 +887,50 @@ fn normalize_user_service_base_url(raw: &str) -> String {
 /// Normalize the Stacker server URL from stored credentials.
 /// Strips trailing slashes and known auth path suffixes to get the base API URL.
 pub fn normalize_stacker_server_url(raw: &str) -> String {
-    let mut url = raw.trim_end_matches('/').to_string();
-    // Strip known auth endpoints that might be stored as server_url
-    for suffix in [
-        "/oauth_server/token",
-        "/auth/login",
-        "/server/user/auth/login",
-        "/login",
-        "/api",
-    ] {
-        if url.ends_with(suffix) {
-            let len = url.len() - suffix.len();
-            url = url[..len].to_string();
-            break;
-        }
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return stacker_client::DEFAULT_STACKER_URL.to_string();
     }
-    url
+
+    if let Ok(mut url) = reqwest::Url::parse(trimmed) {
+        let path = url.path().trim_end_matches('/').to_string();
+        let host = url.host_str().map(|value| value.to_ascii_lowercase());
+
+        if path.starts_with("/server/user") {
+            url.set_path("/stacker");
+            url.set_query(None);
+            url.set_fragment(None);
+            return url.to_string().trim_end_matches('/').to_string();
+        }
+
+        for suffix in [
+            "/api/v1",
+            "/oauth_server/token",
+            "/auth/login",
+            "/login",
+            "/api",
+        ] {
+            if path.ends_with(suffix) {
+                let normalized = path.trim_end_matches(suffix);
+                url.set_path(if normalized.is_empty() {
+                    "/"
+                } else {
+                    normalized
+                });
+                url.set_query(None);
+                url.set_fragment(None);
+                break;
+            }
+        }
+
+        if host.as_deref() == Some("api.try.direct") && url.path() == "/" {
+            return stacker_client::DEFAULT_STACKER_URL.to_string();
+        }
+
+        return url.to_string().trim_end_matches('/').to_string();
+    }
+
+    trimmed.to_string()
 }
 
 #[allow(dead_code)]
@@ -1021,7 +1070,15 @@ pub(crate) fn resolve_docker_registry_credentials(
 
     // Registry server: env var > config > default "docker.io"
     let server = first_non_empty_env(&["STACKER_DOCKER_REGISTRY", "DOCKER_REGISTRY"])
-        .or_else(|| registry.and_then(|r| r.server.clone()));
+        .or_else(|| registry.and_then(|r| r.server.clone()))
+        .or_else(|| {
+            if username.is_some() || password.is_some() {
+                Some("docker.io".to_string())
+            } else {
+                None
+            }
+        })
+        .map(canonicalize_registry_server);
 
     if let Some(u) = username {
         creds.insert("docker_username".to_string(), serde_json::Value::String(u));
@@ -1034,6 +1091,27 @@ pub(crate) fn resolve_docker_registry_credentials(
     }
 
     creds
+}
+
+fn canonicalize_registry_server(server: String) -> String {
+    let trimmed = server.trim().trim_end_matches('/').to_string();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower == "docker.io"
+        || lower == "hub.docker.com"
+        || lower == "index.docker.io"
+        || lower == "registry-1.docker.io"
+        || lower == "https://docker.io"
+        || lower == "https://hub.docker.com"
+        || lower == "https://index.docker.io"
+        || lower == "https://index.docker.io/v1"
+        || lower == "https://index.docker.io/v1/"
+        || lower == "https://registry-1.docker.io"
+    {
+        "docker.io".to_string()
+    } else {
+        trimmed
+    }
 }
 
 #[allow(dead_code)]
@@ -1262,39 +1340,186 @@ impl DeployStrategy for ServerDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
-        let action = if context.dry_run {
-            InstallAction::Plan
-        } else {
-            InstallAction::Apply
-        };
+        if context.dry_run {
+            let action = InstallAction::Plan;
+            let cmd = InstallContainerCommand::from_config(config, context, action);
+            let args = cmd.build_args();
+            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-        let cmd = InstallContainerCommand::from_config(config, context, action);
-        let args = cmd.build_args();
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let output = executor.execute("docker", &args_refs)?;
 
-        let output = executor.execute("docker", &args_refs)?;
+            if !output.success() {
+                return Err(CliError::DeployFailed {
+                    target: DeployTarget::Server,
+                    reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                });
+            }
 
-        if !output.success() {
-            return Err(CliError::DeployFailed {
+            let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
+
+            return Ok(DeployResult {
                 target: DeployTarget::Server,
-                reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                message: "Server deployment plan completed".to_string(),
+                server_ip: server_host,
+                deployment_id: None,
+                project_id: None,
+                server_name: None,
             });
         }
 
-        let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
+        let creds =
+            CredentialsManager::with_default_store().require_valid_token("server deploy")?;
+        let base_url = normalize_stacker_server_url(
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
+        );
+        let server_cfg = config
+            .deploy
+            .server
+            .as_ref()
+            .ok_or(CliError::ServerHostMissing)?;
+        let project_name = resolve_remote_project_name(config, context);
+        let mut project_body = stacker_client::build_project_body(config);
+        if let Some(bundle) = &context.config_bundle {
+            stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
+        }
+        let bootstrap_status_panel = true;
 
-        let action_str = if context.dry_run {
-            "plan completed"
-        } else {
-            "deployed"
-        };
+        let (response, effective_server_name) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to initialize async runtime: {}", e),
+            })?
+            .block_on(async {
+                let client = StackerClient::new_for_target(
+                    &base_url,
+                    &creds.access_token,
+                    DeployTarget::Server,
+                );
+
+                let project = match client.find_project_by_name(&project_name).await? {
+                    Some(existing) => {
+                        let _ = client
+                            .update_project(existing.id, project_body.clone())
+                            .await;
+                        existing
+                    }
+                    None => {
+                        let created = client
+                            .create_project(&project_name, project_body.clone())
+                            .await?;
+                        eprintln!("  Created project '{}' (id={})", created.name, created.id);
+                        created
+                    }
+                };
+
+                let existing_server = client.list_servers().await?.into_iter().find(|server| {
+                    server.project_id == project.id
+                        && (server.srv_ip.as_deref() == Some(server_cfg.host.as_str())
+                            || context
+                                .server_name_override
+                                .as_deref()
+                                .is_some_and(|name| server.name.as_deref() == Some(name)))
+                });
+
+                let effective_server_name = context
+                    .server_name_override
+                    .clone()
+                    .or_else(|| {
+                        existing_server
+                            .as_ref()
+                            .and_then(|server| server.name.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}-server",
+                            sanitize_stack_code(
+                                &config
+                                    .project
+                                    .identity
+                                    .clone()
+                                    .unwrap_or_else(|| config.name.clone())
+                            )
+                        )
+                    });
+
+                let mut deploy_form = stacker_client::build_server_deploy_form(
+                    config,
+                    server_cfg,
+                    &effective_server_name,
+                    bootstrap_status_panel,
+                );
+                if let Some(bundle) = &context.config_bundle {
+                    stacker_client::attach_config_bundle_to_deploy_form(&mut deploy_form, bundle);
+                }
+
+                if let Some(server_obj) = deploy_form
+                    .get_mut("server")
+                    .and_then(|v| v.as_object_mut())
+                {
+                    if let Some(existing) = existing_server.as_ref() {
+                        server_obj.insert("server_id".to_string(), serde_json::json!(existing.id));
+                    }
+
+                    if let Some((private_key, public_key)) =
+                        load_existing_server_ssh_key(server_cfg)?
+                    {
+                        server_obj.insert(
+                            "ssh_private_key".to_string(),
+                            serde_json::Value::String(private_key),
+                        );
+                        if let Some(public_key) = public_key {
+                            server_obj.insert(
+                                "public_key".to_string(),
+                                serde_json::Value::String(public_key),
+                            );
+                        }
+                    }
+                }
+
+                if let Some(form_obj) = deploy_form.as_object_mut() {
+                    form_obj.insert("runtime".to_string(), serde_json::json!(context.runtime));
+                }
+
+                eprintln!(
+                    "  Deploying project '{}' to {} via Stacker server...",
+                    project_name, server_cfg.host
+                );
+                let response = client.deploy(project.id, None, deploy_form).await?;
+                Ok::<_, CliError>((response, effective_server_name))
+            })?;
+
+        let deploy_id = response
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("deployment_id"))
+            .and_then(|v| v.as_i64());
+        let project_id = response.id;
+
+        let mut message = format!(
+            "Server deployment requested via Stacker server (project='{}'",
+            project_name
+        );
+        if let Some(pid) = project_id {
+            message.push_str(&format!(", project_id={}", pid));
+        }
+        if let Some(did) = deploy_id {
+            message.push_str(&format!(", deployment_id={}", did));
+        }
+        message.push(')');
+        message.push_str(&format!("; server='{}'", effective_server_name));
+
         Ok(DeployResult {
             target: DeployTarget::Server,
-            message: format!("Server deployment {}", action_str),
-            server_ip: server_host,
-            deployment_id: None,
-            project_id: None,
-            server_name: None,
+            message,
+            server_ip: Some(server_cfg.host.clone()),
+            deployment_id: deploy_id,
+            project_id: project_id.map(|id| id as i64),
+            server_name: Some(effective_server_name),
         })
     }
 
@@ -1304,7 +1529,12 @@ impl DeployStrategy for ServerDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<(), CliError> {
-        let cmd = InstallContainerCommand::from_config(config, context, InstallAction::Destroy);
+        let action = if context.dry_run {
+            InstallAction::Plan
+        } else {
+            InstallAction::Destroy
+        };
+        let cmd = InstallContainerCommand::from_config(config, context, action);
         let args = cmd.build_args();
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
@@ -1319,6 +1549,71 @@ impl DeployStrategy for ServerDeploy {
 
         Ok(())
     }
+}
+
+fn resolve_remote_project_name(config: &StackerConfig, context: &DeployContext) -> String {
+    context.project_name_override.clone().unwrap_or_else(|| {
+        config
+            .project
+            .identity
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| config.name.clone())
+    })
+}
+
+fn load_existing_server_ssh_key(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+) -> Result<Option<(String, Option<String>)>, CliError> {
+    let Some(path) = server_cfg.ssh_key.as_ref() else {
+        return Ok(None);
+    };
+
+    let resolved_path = resolve_ssh_key_path(path);
+
+    let private_key =
+        std::fs::read_to_string(&resolved_path).map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "Failed to read SSH private key {}: {}",
+                resolved_path.display(),
+                e
+            ),
+        })?;
+
+    let public_key_path = PathBuf::from(format!("{}.pub", resolved_path.display()));
+    let public_key = match std::fs::read_to_string(&public_key_path) {
+        Ok(key) => Some(key),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!(
+                    "Failed to read SSH public key {}: {}",
+                    public_key_path.display(),
+                    e
+                ),
+            });
+        }
+    };
+
+    Ok(Some((private_key, public_key)))
+}
+
+fn resolve_ssh_key_path_with_home(path: &Path, home_dir: Option<&Path>) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if let Some(relative_path) = path_str.strip_prefix("~/") {
+        if let Some(home_dir) = home_dir {
+            return home_dir.join(relative_path);
+        }
+    }
+
+    path.to_path_buf()
+}
+
+fn resolve_ssh_key_path(path: &Path) -> PathBuf {
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+    resolve_ssh_key_path_with_home(path, home_dir.as_deref())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1350,7 +1645,7 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig,
+        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, RegistryConfig, ServerConfig,
     };
     use std::sync::Mutex;
 
@@ -1603,6 +1898,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         }
     }
 
@@ -1642,6 +1938,29 @@ mod tests {
         let args = args_as_string(&cmd.build_args());
 
         assert!(args.contains("-v /home/user/.ssh/id_ed25519:/root/.ssh/id_rsa"));
+    }
+
+    #[test]
+    fn test_resolve_ssh_key_path_expands_tilde_with_explicit_home() {
+        let resolved = resolve_ssh_key_path_with_home(
+            Path::new("~/.ssh/website-deploy-key"),
+            Some(Path::new("/tmp/test-home")),
+        );
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/test-home/.ssh/website-deploy-key")
+        );
+    }
+
+    #[test]
+    fn test_resolve_ssh_key_path_keeps_absolute_path() {
+        let resolved = resolve_ssh_key_path_with_home(
+            Path::new("/var/keys/website-deploy-key"),
+            Some(Path::new("/tmp/test-home")),
+        );
+
+        assert_eq!(resolved, PathBuf::from("/var/keys/website-deploy-key"));
     }
 
     #[test]
@@ -1706,6 +2025,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }
@@ -1816,6 +2136,77 @@ mod tests {
         let config = sample_cloud_config();
         let strategy = CloudDeploy;
         assert!(strategy.validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_strips_api_v1_suffix() {
+        assert_eq!(
+            normalize_stacker_server_url("https://stacker.example.com/api/v1"),
+            "https://stacker.example.com"
+        );
+        assert_eq!(
+            normalize_stacker_server_url("https://stacker.example.com/api/v1/"),
+            "https://stacker.example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_maps_direct_login_path_to_stacker_route() {
+        assert_eq!(
+            normalize_stacker_server_url("https://dev.try.direct/server/user/auth/login"),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_maps_api_host_to_default_stacker_host() {
+        assert_eq!(
+            normalize_stacker_server_url("https://api.try.direct"),
+            stacker_client::DEFAULT_STACKER_URL
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_registry_server_maps_docker_hub_urls_to_docker_io() {
+        assert_eq!(
+            canonicalize_registry_server("https://index.docker.io/v1/".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("https://registry-1.docker.io".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("hub.docker.com".to_string()),
+            "docker.io"
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_registry_credentials_defaults_to_docker_io_when_auth_present() {
+        let config = ConfigBuilder::new()
+            .name("private-app")
+            .registry(RegistryConfig {
+                username: Some("syncopia-user".to_string()),
+                password: Some("secret".to_string()),
+                server: None,
+            })
+            .build()
+            .unwrap();
+
+        let creds = resolve_docker_registry_credentials(&config);
+        assert_eq!(
+            creds.get("docker_username").and_then(|v| v.as_str()),
+            Some("syncopia-user")
+        );
+        assert_eq!(
+            creds.get("docker_password").and_then(|v| v.as_str()),
+            Some("secret")
+        );
+        assert_eq!(
+            creds.get("docker_registry").and_then(|v| v.as_str()),
+            Some("docker.io")
+        );
     }
 
     #[test]

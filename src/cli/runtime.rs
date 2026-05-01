@@ -32,7 +32,8 @@ impl CliRuntime {
         let base_url = creds
             .server_url
             .as_deref()
-            .unwrap_or(stacker_client::DEFAULT_STACKER_URL);
+            .map(crate::cli::install_runner::normalize_stacker_server_url)
+            .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string());
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -41,7 +42,7 @@ impl CliRuntime {
                 CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
             })?;
 
-        let client = StackerClient::new(base_url, &creds.access_token);
+        let client = StackerClient::new(&base_url, &creds.access_token);
 
         Ok(Self { creds, client, rt })
     }

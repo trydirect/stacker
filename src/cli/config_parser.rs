@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -363,11 +363,49 @@ pub struct RegistryConfig {
     pub server: Option<String>,
 }
 
+/// Per-target deployment profile in multi-target configs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeployProfileConfig {
+    #[serde(default)]
+    pub environment: Option<String>,
+
+    #[serde(default)]
+    pub compose_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub deployment_hash: Option<String>,
+
+    #[serde(default)]
+    pub cloud: Option<CloudConfig>,
+
+    #[serde(default)]
+    pub server: Option<ServerConfig>,
+
+    #[serde(default)]
+    pub registry: Option<RegistryConfig>,
+}
+
+impl DeployProfileConfig {
+    fn inferred_target(&self, profile_name: &str) -> Result<DeployTarget, CliError> {
+        match (self.server.is_some(), self.cloud.is_some()) {
+            (true, true) => Err(CliError::ConfigValidation(format!(
+                "deploy.targets.{profile_name} cannot define both 'server' and 'cloud'"
+            ))),
+            (true, false) => Ok(DeployTarget::Server),
+            (false, true) => Ok(DeployTarget::Cloud),
+            (false, false) => Ok(DeployTarget::Local),
+        }
+    }
+}
+
 /// Deployment target configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeployConfig {
     #[serde(default)]
     pub target: DeployTarget,
+
+    #[serde(default)]
+    pub environment: Option<String>,
 
     #[serde(default)]
     pub compose_file: Option<PathBuf>,
@@ -384,6 +422,113 @@ pub struct DeployConfig {
     /// Docker registry credentials for pulling private images.
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+
+    /// Default named target when `deploy.targets` is used.
+    #[serde(default)]
+    pub default_target: Option<String>,
+
+    /// Named deploy profiles. When present, commands resolve one target profile
+    /// to the legacy single-target shape before executing.
+    #[serde(default)]
+    pub targets: BTreeMap<String, DeployProfileConfig>,
+}
+
+impl DeployConfig {
+    pub fn uses_named_targets(&self) -> bool {
+        !self.targets.is_empty()
+    }
+
+    fn parse_legacy_target_override(value: &str) -> Result<DeployTarget, CliError> {
+        let json = format!("\"{}\"", value.trim().to_lowercase());
+        serde_json::from_str::<DeployTarget>(&json).map_err(|_| {
+            CliError::ConfigValidation(format!(
+                "Unknown deploy target '{}'. Valid targets: local, cloud, server",
+                value
+            ))
+        })
+    }
+
+    fn resolve_named_target_name(&self, requested: Option<&str>) -> Result<String, CliError> {
+        if let Some(requested_name) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+            if self.targets.contains_key(requested_name) {
+                return Ok(requested_name.to_string());
+            }
+
+            return Err(CliError::ConfigValidation(format!(
+                "Unknown deploy target profile '{}'. Available targets: {}",
+                requested_name,
+                self.targets.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+
+        if let Some(default_target) = self
+            .default_target
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if self.targets.contains_key(default_target) {
+                return Ok(default_target.to_string());
+            }
+
+            return Err(CliError::ConfigValidation(format!(
+                "deploy.default_target '{}' does not match any entry in deploy.targets",
+                default_target
+            )));
+        }
+
+        if self.targets.len() == 1 {
+            return Ok(self
+                .targets
+                .keys()
+                .next()
+                .expect("single target must have a name")
+                .clone());
+        }
+
+        Err(CliError::ConfigValidation(
+            "deploy.default_target is required when deploy.targets defines multiple entries"
+                .to_string(),
+        ))
+    }
+
+    pub fn resolve(&self, requested: Option<&str>) -> Result<DeployConfig, CliError> {
+        if !self.uses_named_targets() {
+            let mut resolved = self.clone();
+            if let Some(target_name) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+                resolved.target = Self::parse_legacy_target_override(target_name)?;
+            }
+            return Ok(resolved);
+        }
+
+        let profile_name = self.resolve_named_target_name(requested)?;
+        let profile = self.targets.get(&profile_name).expect("target exists");
+        let inferred_target = profile.inferred_target(&profile_name)?;
+
+        Ok(DeployConfig {
+            target: inferred_target,
+            environment: profile
+                .environment
+                .clone()
+                .or_else(|| self.environment.clone()),
+            compose_file: profile.compose_file.clone(),
+            deployment_hash: profile.deployment_hash.clone(),
+            cloud: profile.cloud.clone(),
+            server: profile.server.clone(),
+            registry: profile.registry.clone(),
+            default_target: self.default_target.clone(),
+            targets: self.targets.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EnvironmentConfig {
+    #[serde(default)]
+    pub compose_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub env_file: Option<PathBuf>,
 }
 
 /// Cloud provider settings for cloud deployments.
@@ -571,6 +716,9 @@ pub struct StackerConfig {
     pub deploy: DeployConfig,
 
     #[serde(default)]
+    pub environments: BTreeMap<String, EnvironmentConfig>,
+
+    #[serde(default)]
     pub ai: AiConfig,
 
     #[serde(default, alias = "monitors")]
@@ -605,8 +753,7 @@ impl StackerConfig {
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
         resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
-        let config: StackerConfig = serde_yaml::from_value(parsed)?;
-        Ok(config)
+        deserialize_config_value(parsed)
     }
 
     /// Load config from a file path **without** resolving `${VAR}` placeholders.
@@ -623,16 +770,61 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
-        let config: StackerConfig = serde_yaml::from_str(&raw_content)?;
-        Ok(config)
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+        deserialize_config_value(parsed)
     }
 
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
-        let config: StackerConfig = serde_yaml::from_value(parsed)?;
+        deserialize_config_value(parsed)
+    }
+
+    /// Return a cloned config with `deploy` flattened to one selected target.
+    ///
+    /// Legacy configs keep working as before. Multi-target configs resolve one
+    /// named profile into the existing single-target fields.
+    pub fn with_resolved_deploy_target(&self, requested: Option<&str>) -> Result<Self, CliError> {
+        let mut config = self.clone();
+        config.deploy = self.deploy.resolve(requested)?;
         Ok(config)
+    }
+
+    pub fn selected_environment(&self, override_environment: Option<&str>) -> Option<String> {
+        override_environment
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.deploy.environment.clone())
+    }
+
+    pub fn resolve_environment_config(
+        &self,
+        override_environment: Option<&str>,
+    ) -> Result<Option<(String, EnvironmentConfig)>, CliError> {
+        let Some(environment) = self.selected_environment(override_environment) else {
+            return Ok(None);
+        };
+
+        let configured = self.environments.get(&environment).cloned();
+        let compose_file = configured
+            .as_ref()
+            .and_then(|config| config.compose_file.clone())
+            .or_else(|| self.deploy.compose_file.clone())
+            .or_else(|| Some(PathBuf::from(format!("docker/{environment}/compose.yml"))));
+        let env_file = configured
+            .as_ref()
+            .and_then(|config| config.env_file.clone())
+            .or_else(|| self.env_file.clone());
+
+        Ok(Some((
+            environment,
+            EnvironmentConfig {
+                compose_file,
+                env_file,
+            },
+        )))
     }
 
     /// Validate cross-field semantic constraints beyond serde deserialization.
@@ -640,49 +832,83 @@ impl StackerConfig {
     pub fn validate_semantics(&self) -> Vec<ValidationIssue> {
         let mut issues = Vec::new();
 
-        // Cloud target requires a provider
-        if self.deploy.target == DeployTarget::Cloud && self.deploy.cloud.is_none() {
-            issues.push(ValidationIssue {
-                severity: Severity::Error,
-                code: "E001".to_string(),
-                message: "Cloud provider configuration is required for cloud deployment"
-                    .to_string(),
-                field: Some("deploy.cloud.provider".to_string()),
-            });
-        }
-
-        // Server target requires a host
-        if self.deploy.target == DeployTarget::Server {
-            if self.deploy.server.is_none() {
+        if self.deploy.uses_named_targets() {
+            if self.deploy.targets.len() > 1
+                && self
+                    .deploy
+                    .default_target
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            {
                 issues.push(ValidationIssue {
                     severity: Severity::Error,
-                    code: "E002".to_string(),
-                    message: "Server host is required for server deployment".to_string(),
-                    field: Some("deploy.server.host".to_string()),
+                    code: "E004".to_string(),
+                    message: "deploy.default_target is required when deploy.targets defines multiple entries".to_string(),
+                    field: Some("deploy.default_target".to_string()),
                 });
             }
-        }
 
-        if self.deploy.target == DeployTarget::Cloud {
-            if let Some(cloud) = &self.deploy.cloud {
-                if cloud.orchestrator == CloudOrchestrator::Remote {
-                    let identity_empty = self
-                        .project
-                        .identity
-                        .as_ref()
-                        .map(|v| v.trim().is_empty())
-                        .unwrap_or(true);
-
-                    if identity_empty {
-                        issues.push(ValidationIssue {
-                            severity: Severity::Info,
-                            code: "I001".to_string(),
-                            message: "project.identity is not set; remote deploy will use default stack_code 'custom-stack'".to_string(),
-                            field: Some("project.identity".to_string()),
-                        });
-                    }
+            if let Some(default_target) = self
+                .deploy
+                .default_target
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if !self.deploy.targets.contains_key(default_target) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E005".to_string(),
+                        message: format!(
+                            "deploy.default_target '{}' does not match any entry in deploy.targets",
+                            default_target
+                        ),
+                        field: Some("deploy.default_target".to_string()),
+                    });
                 }
             }
+
+            for (name, profile) in &self.deploy.targets {
+                let field_prefix = format!("deploy.targets.{name}");
+                match profile.inferred_target(name) {
+                    Ok(target) => {
+                        let deploy = DeployConfig {
+                            target,
+                            environment: profile.environment.clone(),
+                            compose_file: profile.compose_file.clone(),
+                            deployment_hash: profile.deployment_hash.clone(),
+                            cloud: profile.cloud.clone(),
+                            server: profile.server.clone(),
+                            registry: profile.registry.clone(),
+                            default_target: None,
+                            targets: BTreeMap::new(),
+                        };
+                        validate_deploy_semantics(
+                            &mut issues,
+                            &self.project,
+                            &deploy,
+                            Some(field_prefix),
+                        );
+                    }
+                    Err(_) => issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E006".to_string(),
+                        message: format!(
+                            "deploy.targets.{name} cannot define both 'server' and 'cloud'"
+                        ),
+                        field: Some(field_prefix),
+                    }),
+                }
+            }
+        } else {
+            validate_deploy_semantics(
+                &mut issues,
+                &self.project,
+                &self.deploy,
+                Some("deploy".into()),
+            );
         }
 
         // Custom app type with no image and no dockerfile
@@ -725,6 +951,106 @@ impl StackerConfig {
         }
 
         issues
+    }
+}
+
+fn deserialize_config_value(parsed: serde_yaml::Value) -> Result<StackerConfig, CliError> {
+    let rendered = serde_yaml::to_string(&parsed)?;
+    let deserializer = serde_yaml::Deserializer::from_str(&rendered);
+
+    serde_path_to_error::deserialize::<_, StackerConfig>(deserializer).map_err(|err| {
+        let field_path = err.path().to_string();
+        let source = err.into_inner();
+        let message = format_config_parse_message(&field_path, &source);
+        CliError::ConfigParseFailed {
+            source: <serde_yaml::Error as serde::de::Error>::custom(message),
+        }
+    })
+}
+
+fn format_config_parse_message(field_path: &str, source: &serde_yaml::Error) -> String {
+    let source_message = source.to_string();
+    let normalized_field = if field_path.is_empty() || field_path == "." {
+        None
+    } else {
+        Some(field_path)
+    };
+
+    if let Some(field) = normalized_field {
+        if source_message.contains("expected path string") {
+            let example = if field == "app.path" {
+                "`.` or `./app`"
+            } else {
+                "`./path/to/file`"
+            };
+
+            if source_message.contains("invalid type: unit value") {
+                return format!(
+                    "invalid empty path at `{field}`. Remove the key or set it to a quoted path string like {example}"
+                );
+            }
+
+            return format!(
+                "invalid path at `{field}`. Expected a quoted path string like {example}. Original parser error: {source_message}"
+            );
+        }
+
+        return format!("invalid value at `{field}`: {source_message}");
+    }
+
+    source_message
+}
+
+fn validate_deploy_semantics(
+    issues: &mut Vec<ValidationIssue>,
+    project: &ProjectConfig,
+    deploy: &DeployConfig,
+    field_prefix: Option<String>,
+) {
+    let field = |suffix: &str| -> String {
+        match &field_prefix {
+            Some(prefix) => format!("{prefix}.{suffix}"),
+            None => suffix.to_string(),
+        }
+    };
+
+    if deploy.target == DeployTarget::Cloud && deploy.cloud.is_none() {
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            code: "E001".to_string(),
+            message: "Cloud provider configuration is required for cloud deployment".to_string(),
+            field: Some(field("cloud.provider")),
+        });
+    }
+
+    if deploy.target == DeployTarget::Server && deploy.server.is_none() {
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            code: "E002".to_string(),
+            message: "Server host is required for server deployment".to_string(),
+            field: Some(field("server.host")),
+        });
+    }
+
+    if deploy.target == DeployTarget::Cloud {
+        if let Some(cloud) = &deploy.cloud {
+            if cloud.orchestrator == CloudOrchestrator::Remote {
+                let identity_empty = project
+                    .identity
+                    .as_ref()
+                    .map(|v| v.trim().is_empty())
+                    .unwrap_or(true);
+
+                if identity_empty {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Info,
+                        code: "I001".to_string(),
+                        message: "project.identity is not set; remote deploy will use default stack_code 'custom-stack'".to_string(),
+                        field: Some("project.identity".to_string()),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -1024,12 +1350,16 @@ impl ConfigBuilder {
             proxy: self.proxy.unwrap_or_default(),
             deploy: DeployConfig {
                 target: self.deploy_target.unwrap_or_default(),
+                environment: None,
                 compose_file: None,
                 deployment_hash: None,
                 cloud: self.cloud,
                 server: self.server,
                 registry: self.registry,
+                default_target: None,
+                targets: BTreeMap::new(),
             },
+            environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
             hooks: self.hooks.unwrap_or_default(),
@@ -1130,6 +1460,131 @@ env:
         assert_eq!(config.ai.provider, AiProviderType::Ollama);
         assert!(config.monitoring.status_panel);
         assert_eq!(config.env.get("APP_PORT").unwrap(), "3000");
+    }
+
+    #[test]
+    fn test_parse_multi_target_config_and_resolve_default() {
+        let yaml = r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  default_target: dev-server
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    dev-server:
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert!(config.deploy.uses_named_targets());
+        assert_eq!(config.deploy.targets.len(), 2);
+
+        let resolved = config.with_resolved_deploy_target(None).unwrap();
+        assert_eq!(resolved.deploy.target, DeployTarget::Server);
+        assert!(resolved.deploy.environment.is_none());
+        assert_eq!(
+            resolved
+                .deploy
+                .server
+                .as_ref()
+                .map(|server| server.host.as_str()),
+            Some("10.0.0.8")
+        );
+    }
+
+    #[test]
+    fn test_resolve_named_target_override() {
+        let yaml = r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  default_target: local
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      cloud:
+        provider: aws
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let resolved = config.with_resolved_deploy_target(Some("prod")).unwrap();
+
+        assert_eq!(resolved.deploy.target, DeployTarget::Cloud);
+        assert_eq!(
+            resolved.deploy.cloud.as_ref().map(|cloud| cloud.provider),
+            Some(CloudProvider::Aws)
+        );
+        assert!(resolved.deploy.compose_file.is_none());
+    }
+
+    #[test]
+    fn test_parse_environment_config_and_default_selection() {
+        let yaml = r#"
+name: environment-app
+app:
+  type: static
+deploy:
+  target: cloud
+  environment: production
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: docker/production/.env
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        assert_eq!(config.deploy.environment.as_deref(), Some("production"));
+        assert_eq!(
+            config
+                .environments
+                .get("production")
+                .and_then(|environment| environment.compose_file.as_ref()),
+            Some(&PathBuf::from("docker/production/compose.yml"))
+        );
+
+        let (environment, environment_config) = config
+            .resolve_environment_config(None)
+            .unwrap()
+            .expect("environment should resolve");
+        assert_eq!(environment, "production");
+        assert_eq!(
+            environment_config.compose_file,
+            Some(PathBuf::from("docker/production/compose.yml"))
+        );
+        assert_eq!(
+            environment_config.env_file,
+            Some(PathBuf::from("docker/production/.env"))
+        );
+    }
+
+    #[test]
+    fn test_environment_override_uses_conventional_compose_path() {
+        let yaml = r#"
+name: environment-app
+app:
+  type: static
+deploy:
+  target: cloud
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+        let (environment, environment_config) = config
+            .resolve_environment_config(Some("staging"))
+            .unwrap()
+            .expect("environment should resolve");
+
+        assert_eq!(environment, "staging");
+        assert_eq!(
+            environment_config.compose_file,
+            Some(PathBuf::from("docker/staging/compose.yml"))
+        );
     }
 
     #[test]
@@ -1388,6 +1843,23 @@ ai:
     }
 
     #[test]
+    fn test_config_invalid_path_reports_field_name() {
+        let yaml = r#"
+name: bad-path
+app:
+  type: custom
+  path: {}
+"#;
+        let err = StackerConfig::from_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("app.path"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("quoted path string"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
     fn test_validate_semantics_cloud_without_provider() {
         let config = ConfigBuilder::new()
             .name("test")
@@ -1496,6 +1968,55 @@ services:
             .filter(|i| i.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn test_validate_semantics_multi_target_requires_default_for_multiple_profiles() {
+        let config = StackerConfig::from_str(
+            r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        assert!(issues.iter().any(|issue| issue.code == "E004"));
+    }
+
+    #[test]
+    fn test_validate_semantics_multi_target_rejects_ambiguous_profile() {
+        let config = StackerConfig::from_str(
+            r#"
+name: multi-target-app
+app:
+  type: static
+deploy:
+  default_target: hybrid
+  targets:
+    hybrid:
+      cloud:
+        provider: aws
+      server:
+        host: 10.0.0.8
+        user: deploy
+        ssh_key: ~/.ssh/id_ed25519
+"#,
+        )
+        .unwrap();
+
+        let issues = config.validate_semantics();
+        assert!(issues.iter().any(|issue| issue.code == "E006"));
     }
 
     #[test]

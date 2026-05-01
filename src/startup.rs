@@ -16,6 +16,34 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing_actix_web::TracingLogger;
 
+fn project_scope(path: &str) -> actix_web::Scope {
+    web::scope(path)
+        .service(crate::routes::project::deploy::item)
+        .service(crate::routes::project::deploy::saved_item)
+        .service(crate::routes::project::deploy::rollback)
+        .service(crate::routes::project::member::add)
+        .service(crate::routes::project::member::list)
+        .service(crate::routes::project::member::delete)
+        .service(crate::routes::project::compose::add)
+        .service(crate::routes::project::get::list)
+        .service(crate::routes::project::get::shared_list)
+        .service(crate::routes::project::get::item)
+        .service(crate::routes::project::add::item)
+        .service(crate::routes::project::update::item)
+        .service(crate::routes::project::delete::item)
+        .service(crate::routes::project::app::list_apps)
+        .service(crate::routes::project::app::create_app)
+        .service(crate::routes::project::app::get_app)
+        .service(crate::routes::project::app::get_app_config)
+        .service(crate::routes::project::app::get_env_vars)
+        .service(crate::routes::project::app::update_env_vars)
+        .service(crate::routes::project::app::delete_env_var)
+        .service(crate::routes::project::app::update_ports)
+        .service(crate::routes::project::app::update_domain)
+        .service(crate::routes::project::discover::discover_containers)
+        .service(crate::routes::project::discover::import_containers)
+}
+
 pub async fn run(
     listener: TcpListener,
     api_pool: Pool<Postgres>,
@@ -140,35 +168,8 @@ pub async fn run(
                     .service(routes::rating::user_delete_handler)
                     .service(routes::rating::user_edit_handler),
             )
-            .service(
-                web::scope("/project")
-                    .service(crate::routes::project::deploy::item)
-                    .service(crate::routes::project::deploy::saved_item)
-                    .service(crate::routes::project::deploy::rollback)
-                    .service(crate::routes::project::member::add)
-                    .service(crate::routes::project::member::list)
-                    .service(crate::routes::project::member::delete)
-                    .service(crate::routes::project::compose::add)
-                    .service(crate::routes::project::get::list)
-                    .service(crate::routes::project::get::shared_list)
-                    .service(crate::routes::project::get::item)
-                    .service(crate::routes::project::add::item)
-                    .service(crate::routes::project::update::item)
-                    .service(crate::routes::project::delete::item)
-                    // App configuration routes
-                    .service(crate::routes::project::app::list_apps)
-                    .service(crate::routes::project::app::create_app)
-                    .service(crate::routes::project::app::get_app)
-                    .service(crate::routes::project::app::get_app_config)
-                    .service(crate::routes::project::app::get_env_vars)
-                    .service(crate::routes::project::app::update_env_vars)
-                    .service(crate::routes::project::app::delete_env_var)
-                    .service(crate::routes::project::app::update_ports)
-                    .service(crate::routes::project::app::update_domain)
-                    // Container discovery and import routes
-                    .service(crate::routes::project::discover::discover_containers)
-                    .service(crate::routes::project::discover::import_containers),
-            )
+            .service(project_scope("/project"))
+            .service(project_scope("/api/v1/project"))
             .service(
                 web::scope("/dockerhub")
                     .service(crate::routes::dockerhub::search_namespaces)

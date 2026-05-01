@@ -1893,8 +1893,8 @@ mod tests {
                 "protocols_detected": ["openapi", "postgres"],
                 "containers": [{
                     "name": "local-device-api-1",
-                    "image": "syncopia/device-api:local",
-                    "network": "syncopia",
+                    "image": "example/device-api:local",
+                    "network": "app-network",
                     "ports": [],
                     "addresses": ["172.18.0.20:5050"]
                 }],

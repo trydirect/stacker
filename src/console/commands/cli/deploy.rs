@@ -5,9 +5,10 @@ use std::time::Duration;
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
+use crate::cli::config_bundle::build_config_bundle;
 use crate::cli::config_parser::{
-    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
-    StackerConfig,
+    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, RegistryConfig,
+    ServerConfig, StackerConfig,
 };
 use crate::cli::credentials::{CredentialStore, CredentialsManager, StoredCredentials};
 use crate::cli::deployment_lock::DeploymentLock;
@@ -463,6 +464,621 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     Ok(())
 }
 
+fn validate_compose_for_deploy(compose_path: &Path) -> Result<(), CliError> {
+    let raw = std::fs::read_to_string(compose_path)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+
+    let root = match doc {
+        serde_yaml::Value::Mapping(m) => m,
+        _ => {
+            return Err(CliError::ConfigValidation(
+                "Compose file must be a YAML mapping at the top level".to_string(),
+            ))
+        }
+    };
+
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let include_key = serde_yaml::Value::String("include".to_string());
+    let services = match root.get(&services_key) {
+        Some(serde_yaml::Value::Mapping(m)) => Some(m),
+        _ => None,
+    };
+
+    if services.is_none() {
+        match root.get(&include_key) {
+            Some(serde_yaml::Value::Sequence(_)) | Some(serde_yaml::Value::String(_)) => {
+                return Ok(());
+            }
+            _ => {
+                return Err(CliError::ConfigValidation(
+                    "Compose file must define a top-level services mapping".to_string(),
+                ))
+            }
+        }
+    }
+
+    let services = services.expect("services checked above");
+
+    let mut published_ports: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+
+    for (service_key, service_value) in services {
+        let service_name = service_key.as_str().unwrap_or("<unknown>").to_string();
+        let service_map = match service_value {
+            serde_yaml::Value::Mapping(m) => m,
+            _ => continue,
+        };
+
+        let ports_key = serde_yaml::Value::String("ports".to_string());
+        let Some(serde_yaml::Value::Sequence(ports)) = service_map.get(&ports_key) else {
+            continue;
+        };
+
+        for port in ports {
+            if let Some(host_port) = extract_published_host_port(port) {
+                published_ports
+                    .entry(host_port)
+                    .or_default()
+                    .push(service_name.clone());
+            }
+        }
+    }
+
+    let collisions: Vec<String> = published_ports
+        .into_iter()
+        .filter_map(|(port, services)| {
+            if services.len() > 1 {
+                Some(format!(
+                    "port {} is published by {}",
+                    port,
+                    services.join(", ")
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if collisions.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::ConfigValidation(format!(
+            "Compose file has conflicting published host ports: {}",
+            collisions.join("; ")
+        )))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComposeImageRef {
+    image: String,
+    service_name: String,
+    source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DockerHubImageTarget {
+    original: String,
+    namespace: Option<String>,
+    repository: String,
+    tag: String,
+}
+
+impl DockerHubImageTarget {
+    fn display_name(&self) -> String {
+        match &self.namespace {
+            Some(namespace) => format!("docker.io/{}/{}:{}", namespace, self.repository, self.tag),
+            None => format!("docker.io/library/{}:{}", self.repository, self.tag),
+        }
+    }
+}
+
+fn validate_compose_images_for_deploy(
+    compose_path: &Path,
+    registry: Option<&RegistryConfig>,
+    image_env: &std::collections::BTreeMap<String, String>,
+) -> Result<(), CliError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+        })?;
+
+    validate_compose_images_for_deploy_with_checker(compose_path, image_env, |target| {
+        rt.block_on(check_docker_hub_image_exists(target, registry))
+    })
+}
+
+fn validate_compose_images_for_deploy_with_checker<F>(
+    compose_path: &Path,
+    image_env: &std::collections::BTreeMap<String, String>,
+    mut checker: F,
+) -> Result<(), CliError>
+where
+    F: FnMut(&DockerHubImageTarget) -> Result<bool, String>,
+{
+    let images = collect_compose_image_refs(compose_path)?;
+    let mut missing = Vec::new();
+
+    for image_ref in images {
+        let resolved_image =
+            resolve_compose_image_reference(&image_ref.image, image_env).map_err(|err| {
+                CliError::ConfigValidation(format!(
+                    "Failed to resolve image for service '{}' in {}: {}",
+                    image_ref.service_name,
+                    image_ref.source_path.display(),
+                    err
+                ))
+            })?;
+
+        let Some(target) = parse_docker_hub_image_target(&resolved_image) else {
+            continue;
+        };
+
+        match checker(&target) {
+            Ok(true) => {}
+            Ok(false) => missing.push(format!(
+                "{} (service '{}' in {})",
+                target.display_name(),
+                image_ref.service_name,
+                image_ref.source_path.display()
+            )),
+            Err(err) => eprintln!(
+                "  Warning: could not verify image {} before deploy: {}",
+                target.display_name(),
+                err
+            ),
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::ConfigValidation(format!(
+            "Compose image preflight failed. These images are missing or inaccessible: {}",
+            missing.join("; ")
+        )))
+    }
+}
+
+fn collect_compose_image_refs(compose_path: &Path) -> Result<Vec<ComposeImageRef>, CliError> {
+    let mut visited = std::collections::BTreeSet::new();
+    let mut images = Vec::new();
+    collect_compose_image_refs_from_file(compose_path, &mut visited, &mut images)?;
+    Ok(images)
+}
+
+fn collect_compose_image_refs_from_file(
+    compose_path: &Path,
+    visited: &mut std::collections::BTreeSet<PathBuf>,
+    images: &mut Vec<ComposeImageRef>,
+) -> Result<(), CliError> {
+    let visited_key =
+        std::fs::canonicalize(compose_path).unwrap_or_else(|_| compose_path.to_path_buf());
+    if !visited.insert(visited_key) {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(compose_path)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+
+    let root = match doc {
+        serde_yaml::Value::Mapping(m) => m,
+        _ => {
+            return Err(CliError::ConfigValidation(
+                "Compose file must be a YAML mapping at the top level".to_string(),
+            ))
+        }
+    };
+
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let build_key = serde_yaml::Value::String("build".to_string());
+    let image_key = serde_yaml::Value::String("image".to_string());
+
+    if let Some(serde_yaml::Value::Mapping(services)) = root.get(&services_key) {
+        for (service_key, service_value) in services {
+            let service_name = service_key.as_str().unwrap_or("<unknown>").to_string();
+            let service_map = match service_value {
+                serde_yaml::Value::Mapping(m) => m,
+                _ => continue,
+            };
+
+            if service_map.contains_key(&build_key) {
+                continue;
+            }
+
+            let Some(image) = service_map.get(&image_key).and_then(|value| value.as_str()) else {
+                continue;
+            };
+
+            images.push(ComposeImageRef {
+                image: image.to_string(),
+                service_name,
+                source_path: compose_path.to_path_buf(),
+            });
+        }
+    }
+
+    for include_path in collect_compose_include_paths(&root, compose_path)? {
+        if !include_path.exists() {
+            return Err(CliError::ConfigValidation(format!(
+                "Included compose file not found: {}",
+                include_path.display()
+            )));
+        }
+        collect_compose_image_refs_from_file(&include_path, visited, images)?;
+    }
+
+    Ok(())
+}
+
+fn collect_compose_include_paths(
+    root: &serde_yaml::Mapping,
+    compose_path: &Path,
+) -> Result<Vec<PathBuf>, CliError> {
+    let include_key = serde_yaml::Value::String("include".to_string());
+    let Some(include_value) = root.get(&include_key) else {
+        return Ok(Vec::new());
+    };
+
+    let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut paths = Vec::new();
+    append_compose_include_paths(include_value, compose_dir, &mut paths)?;
+    Ok(paths)
+}
+
+fn append_compose_include_paths(
+    value: &serde_yaml::Value,
+    compose_dir: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), CliError> {
+    match value {
+        serde_yaml::Value::String(path) => {
+            let path = PathBuf::from(path);
+            output.push(if path.is_absolute() {
+                path
+            } else {
+                compose_dir.join(path)
+            });
+        }
+        serde_yaml::Value::Sequence(entries) => {
+            for entry in entries {
+                append_compose_include_paths(entry, compose_dir, output)?;
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            let path_key = serde_yaml::Value::String("path".to_string());
+            if let Some(path_value) = map.get(&path_key) {
+                append_compose_include_paths(path_value, compose_dir, output)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn parse_docker_hub_image_target(image: &str) -> Option<DockerHubImageTarget> {
+    let image = image.trim();
+    if image.is_empty() {
+        return None;
+    }
+
+    let without_digest = image.split('@').next().unwrap_or(image);
+    let (without_tag, tag) = split_image_tag(without_digest);
+    let parts: Vec<&str> = without_tag.split('/').collect();
+
+    let remainder = if parts.len() > 1 && is_registry_host(parts[0]) {
+        if !is_docker_hub_host(parts[0]) {
+            return None;
+        }
+        &parts[1..]
+    } else {
+        &parts[..]
+    };
+
+    match remainder {
+        [repo] => Some(DockerHubImageTarget {
+            original: image.to_string(),
+            namespace: None,
+            repository: (*repo).to_string(),
+            tag,
+        }),
+        [namespace, repo] if *namespace == "library" => Some(DockerHubImageTarget {
+            original: image.to_string(),
+            namespace: None,
+            repository: (*repo).to_string(),
+            tag,
+        }),
+        [namespace, repo] => Some(DockerHubImageTarget {
+            original: image.to_string(),
+            namespace: Some((*namespace).to_string()),
+            repository: (*repo).to_string(),
+            tag,
+        }),
+        _ => None,
+    }
+}
+
+fn split_image_tag(image: &str) -> (&str, String) {
+    if let Some(pos) = image.rfind(':') {
+        let after_colon = &image[pos + 1..];
+        if !after_colon.contains('/') {
+            return (&image[..pos], after_colon.to_string());
+        }
+    }
+    (image, "latest".to_string())
+}
+
+fn is_registry_host(segment: &str) -> bool {
+    segment.contains('.') || segment.contains(':') || segment.eq_ignore_ascii_case("localhost")
+}
+
+fn is_docker_hub_host(segment: &str) -> bool {
+    let lower = segment
+        .trim()
+        .trim_end_matches('/')
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_ascii_lowercase();
+    lower == "docker.io"
+        || lower == "hub.docker.com"
+        || lower == "index.docker.io"
+        || lower == "index.docker.io/v1"
+        || lower == "registry-1.docker.io"
+}
+
+fn docker_hub_auth(registry: Option<&RegistryConfig>) -> Option<(&str, &str)> {
+    let registry = registry?;
+    let username = registry.username.as_deref()?.trim();
+    let password = registry.password.as_deref()?.trim();
+
+    if username.is_empty() || password.is_empty() {
+        return None;
+    }
+
+    let uses_docker_hub = registry
+        .server
+        .as_deref()
+        .map(is_docker_hub_host)
+        .unwrap_or(true);
+    if uses_docker_hub {
+        Some((username, password))
+    } else {
+        None
+    }
+}
+
+async fn check_docker_hub_image_exists(
+    target: &DockerHubImageTarget,
+    registry: Option<&RegistryConfig>,
+) -> Result<bool, String> {
+    let client = reqwest::Client::new();
+    let auth_token = if let Some((username, password)) = docker_hub_auth(registry) {
+        Some(login_to_docker_hub(&client, username, password).await?)
+    } else {
+        None
+    };
+
+    let url = match &target.namespace {
+        Some(namespace) => format!(
+            "https://hub.docker.com/v2/namespaces/{}/repositories/{}/tags/{}",
+            namespace, target.repository, target.tag
+        ),
+        None => format!(
+            "https://hub.docker.com/v2/repositories/library/{}/tags/{}",
+            target.repository, target.tag
+        ),
+    };
+
+    let mut request = client.get(url).header("Accept", "application/json");
+    if let Some(token) = auth_token {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if response.status().is_success() {
+        Ok(true)
+    } else if response.status() == reqwest::StatusCode::NOT_FOUND
+        || response.status() == reqwest::StatusCode::UNAUTHORIZED
+        || response.status() == reqwest::StatusCode::FORBIDDEN
+    {
+        Ok(false)
+    } else {
+        Err(format!("Docker Hub API returned {}", response.status()))
+    }
+}
+
+async fn login_to_docker_hub(
+    client: &reqwest::Client,
+    username: &str,
+    password: &str,
+) -> Result<String, String> {
+    let response = client
+        .post("https://hub.docker.com/v2/users/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": password,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Docker Hub login failed with status {}",
+            response.status()
+        ));
+    }
+
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    body.get("token")
+        .and_then(|value| value.as_str())
+        .map(|token| token.to_string())
+        .ok_or_else(|| "Docker Hub login response did not include a token".to_string())
+}
+
+fn build_image_env_lookup(
+    project_dir: &Path,
+    config: &StackerConfig,
+) -> Result<std::collections::BTreeMap<String, String>, CliError> {
+    let mut env_map = std::collections::BTreeMap::new();
+
+    if let Some(env_file) = &config.env_file {
+        let env_path = if env_file.is_absolute() {
+            env_file.clone()
+        } else {
+            project_dir.join(env_file)
+        };
+
+        if env_path.exists() {
+            let iter = dotenvy::from_path_iter(&env_path).map_err(|e| {
+                CliError::ConfigValidation(format!(
+                    "Failed to read env file {}: {}",
+                    env_path.display(),
+                    e
+                ))
+            })?;
+
+            for item in iter {
+                let (key, value) = item.map_err(|e| {
+                    CliError::ConfigValidation(format!(
+                        "Failed to parse env file {}: {}",
+                        env_path.display(),
+                        e
+                    ))
+                })?;
+                env_map.insert(key, value);
+            }
+        }
+    }
+
+    for (key, value) in &config.env {
+        env_map.insert(key.clone(), value.clone());
+    }
+
+    for (key, value) in std::env::vars() {
+        env_map.insert(key, value);
+    }
+
+    Ok(env_map)
+}
+
+fn resolve_compose_image_reference(
+    value: &str,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut output = String::new();
+    let mut cursor = 0usize;
+
+    while let Some(relative_start) = value[cursor..].find("${") {
+        let start = cursor + relative_start;
+        output.push_str(&value[cursor..start]);
+
+        let expr_start = start + 2;
+        let Some(relative_end) = value[expr_start..].find('}') else {
+            return Err(format!("unterminated variable expression in '{}'", value));
+        };
+        let end = expr_start + relative_end;
+        let expr = &value[expr_start..end];
+        output.push_str(&resolve_compose_variable_expression(expr, vars)?);
+        cursor = end + 1;
+    }
+
+    output.push_str(&value[cursor..]);
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        Err(format!(
+            "image reference '{}' resolved to an empty value",
+            value
+        ))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn resolve_compose_variable_expression(
+    expr: &str,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    if let Some((name, fallback)) = expr.split_once(":-") {
+        return match vars.get(name) {
+            Some(value) if !value.is_empty() => Ok(value.clone()),
+            _ => Ok(fallback.to_string()),
+        };
+    }
+
+    if let Some((name, fallback)) = expr.split_once('-') {
+        return match vars.get(name) {
+            Some(value) => Ok(value.clone()),
+            None => Ok(fallback.to_string()),
+        };
+    }
+
+    if let Some((name, message)) = expr.split_once(":?") {
+        return match vars.get(name) {
+            Some(value) if !value.is_empty() => Ok(value.clone()),
+            _ => Err(if message.is_empty() {
+                format!("required variable {} is not set", name)
+            } else {
+                message.to_string()
+            }),
+        };
+    }
+
+    if let Some((name, message)) = expr.split_once('?') {
+        return match vars.get(name) {
+            Some(value) => Ok(value.clone()),
+            None => Err(if message.is_empty() {
+                format!("required variable {} is not set", name)
+            } else {
+                message.to_string()
+            }),
+        };
+    }
+
+    vars.get(expr)
+        .cloned()
+        .ok_or_else(|| format!("variable {} is not set", expr))
+}
+
+fn extract_published_host_port(port: &serde_yaml::Value) -> Option<String> {
+    match port {
+        serde_yaml::Value::String(spec) => extract_host_port_from_string(spec),
+        serde_yaml::Value::Mapping(m) => {
+            let published_key = serde_yaml::Value::String("published".to_string());
+            m.get(&published_key).and_then(|value| match value {
+                serde_yaml::Value::String(s) => Some(s.clone()),
+                serde_yaml::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn extract_host_port_from_string(spec: &str) -> Option<String> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_protocol = trimmed.split('/').next().unwrap_or(trimmed);
+    let parts: Vec<&str> = without_protocol.split(':').collect();
+
+    if parts.len() < 2 {
+        return None;
+    }
+
+    parts
+        .get(parts.len().saturating_sub(2))
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+}
+
 fn compose_app_build_source(compose_path: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(compose_path).ok()?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
@@ -758,6 +1374,7 @@ fn prompt_select_cloud(access_token: &str) -> Result<Option<stacker_client::Clou
 ///   4. Calls `POST /project/{id}/deploy[/{cloud_id}]`
 pub struct DeployCommand {
     pub target: Option<String>,
+    pub environment: Option<String>,
     pub file: Option<String>,
     pub dry_run: bool,
     pub force_rebuild: bool,
@@ -789,6 +1406,7 @@ impl DeployCommand {
     ) -> Self {
         Self {
             target,
+            environment: None,
             file,
             dry_run,
             force_rebuild,
@@ -801,6 +1419,11 @@ impl DeployCommand {
             force_new: false,
             runtime: "runc".to_string(),
         }
+    }
+
+    pub fn with_environment(mut self, environment: Option<String>) -> Self {
+        self.environment = environment;
+        self
     }
 
     /// Builder method to set remote override flags from CLI args.
@@ -864,6 +1487,7 @@ impl DeployCommand {
 }
 
 /// Parse a deploy target string into `DeployTarget`.
+#[cfg(test)]
 fn parse_deploy_target(s: &str) -> Result<DeployTarget, CliError> {
     let json = format!("\"{}\"", s.to_lowercase());
     serde_json::from_str::<DeployTarget>(&json).map_err(|_| {
@@ -886,10 +1510,38 @@ pub struct RemoteDeployOverrides {
 /// Core deploy logic, extracted for testability.
 ///
 /// Takes injectable `CommandExecutor` so tests can mock shell calls.
+#[allow(clippy::too_many_arguments)]
 pub fn run_deploy(
     project_dir: &Path,
     config_file: Option<&str>,
     target_override: Option<&str>,
+    dry_run: bool,
+    force_rebuild: bool,
+    force_new: bool,
+    executor: &dyn CommandExecutor,
+    remote_overrides: &RemoteDeployOverrides,
+    runtime: &str,
+) -> Result<DeployResult, CliError> {
+    run_deploy_for_environment(
+        project_dir,
+        config_file,
+        target_override,
+        None,
+        dry_run,
+        force_rebuild,
+        force_new,
+        executor,
+        remote_overrides,
+        runtime,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_deploy_for_environment(
+    project_dir: &Path,
+    config_file: Option<&str>,
+    target_override: Option<&str>,
+    environment_override: Option<&str>,
     dry_run: bool,
     force_rebuild: bool,
     force_new: bool,
@@ -902,6 +1554,7 @@ pub fn run_deploy(
         project_dir,
         config_file,
         target_override,
+        environment_override,
         dry_run,
         force_rebuild,
         force_new,
@@ -912,10 +1565,12 @@ pub fn run_deploy(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_deploy_with_credentials_manager<S: CredentialStore>(
     project_dir: &Path,
     config_file: Option<&str>,
     target_override: Option<&str>,
+    environment_override: Option<&str>,
     dry_run: bool,
     force_rebuild: bool,
     force_new: bool,
@@ -930,14 +1585,26 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None => project_dir.join(DEFAULT_CONFIG_FILE),
     };
 
-    let mut config = StackerConfig::from_file(&config_path)?;
+    let mut config =
+        StackerConfig::from_file(&config_path)?.with_resolved_deploy_target(target_override)?;
+    let selected_environment = if let Some((environment, environment_config)) =
+        config.resolve_environment_config(environment_override)?
+    {
+        config.deploy.environment = Some(environment.clone());
+        if let Some(compose_file) = environment_config.compose_file {
+            config.deploy.compose_file = Some(compose_file);
+        }
+        if let Some(env_file) = environment_config.env_file {
+            config.env_file = Some(env_file);
+        }
+        Some(environment)
+    } else {
+        None
+    };
     ensure_env_file_if_needed(&config, project_dir)?;
 
-    // 2. Resolve deploy target (flag > config)
-    let mut deploy_target = match target_override {
-        Some(t) => parse_deploy_target(t)?,
-        None => config.deploy.target,
-    };
+    // 2. Resolve deploy target/profile (flag > config default)
+    let mut deploy_target = config.deploy.target;
 
     // 2b. Server pre-check: when target is Cloud but deploy.server section
     //     is defined with a host, try SSH connectivity first.
@@ -1041,11 +1708,66 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     }
 
     // 3. Cloud/server prerequisites — verify login and keep credentials for later use.
-    let cloud_creds: Option<StoredCredentials> = if deploy_target == DeployTarget::Cloud {
-        Some(cred_manager.require_valid_token("cloud deploy")?)
-    } else {
-        None
-    };
+    let cloud_creds: Option<StoredCredentials> =
+        if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
+            let purpose = if deploy_target == DeployTarget::Cloud {
+                "cloud deploy"
+            } else {
+                "server deploy"
+            };
+            Some(cred_manager.require_valid_token(purpose)?)
+        } else {
+            None
+        };
+
+    if deploy_target == DeployTarget::Server {
+        if let Some(ref server_cfg) = config.deploy.server {
+            eprintln!(
+                "  Validating SSH connectivity to {} before bootstrap deploy...",
+                server_cfg.host
+            );
+
+            match try_ssh_server_check(server_cfg) {
+                Some(check) if check.connected && check.authenticated => {
+                    eprintln!(
+                        "  ✓ Server {} is reachable ({})",
+                        server_cfg.host,
+                        check.summary()
+                    );
+
+                    if !check.docker_installed {
+                        return Err(CliError::DeployFailed {
+                            target: DeployTarget::Server,
+                            reason: format!(
+                                "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
+                                server_cfg.host
+                            ),
+                        });
+                    }
+                }
+                Some(check) => {
+                    print_server_unreachable_hint(server_cfg, &check);
+                    return Err(CliError::DeployFailed {
+                        target: DeployTarget::Server,
+                        reason: format!(
+                            "Failed to connect to {} over SSH: {}",
+                            server_cfg.host,
+                            check.error.as_deref().unwrap_or("unknown error")
+                        ),
+                    });
+                }
+                None => {
+                    return Err(CliError::DeployFailed {
+                        target: DeployTarget::Server,
+                        reason: format!(
+                            "Could not verify SSH connectivity to {}. Check deploy.server.ssh_key and retry.",
+                            server_cfg.host
+                        ),
+                    });
+                }
+            }
+        }
+    }
 
     // 3b. If cloud target but no cloud section in stacker.yml, prompt to select a saved credential.
     if deploy_target == DeployTarget::Cloud && config.deploy.cloud.is_none() {
@@ -1177,6 +1899,15 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     };
 
     normalize_generated_compose_paths(&compose_path)?;
+    validate_compose_for_deploy(&compose_path)?;
+    if !dry_run {
+        let image_env = build_image_env_lookup(project_dir, &config)?;
+        validate_compose_images_for_deploy(
+            &compose_path,
+            config.deploy.registry.as_ref(),
+            &image_env,
+        )?;
+    }
 
     // 5b.1 Surface build source paths to avoid confusion.
     if let Some(image) = &config.app.image {
@@ -1200,6 +1931,29 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         );
     }
     eprintln!("  Compose file: {}", compose_path.display());
+    if let Some(environment) = &selected_environment {
+        eprintln!(
+            "  Environment: {} -> Target: {}",
+            environment, deploy_target
+        );
+    }
+
+    let config_bundle = if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
+        if let Some(environment) = selected_environment.as_deref() {
+            let bundle = build_config_bundle(
+                project_dir,
+                environment,
+                &compose_path,
+                config.env_file.as_deref(),
+            )?;
+            eprintln!("  Config bundle: {}", bundle.archive_path.display());
+            Some(bundle)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 5c. Report hooks (dry-run)
     if dry_run {
@@ -1224,6 +1978,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         key_id_override: remote_overrides.key_id,
         server_name_override: remote_overrides.server_name.clone().or(lock_server_name),
         runtime: runtime.to_string(),
+        config_bundle,
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -1247,10 +2002,11 @@ impl CallableTrait for DeployCommand {
         // ── Spinner while deploying ──────────────────
         let spin = progress::deploy_spinner("starting...");
 
-        let result = run_deploy(
+        let result = run_deploy_for_environment(
             &project_dir,
             self.file.as_deref(),
             self.target.as_deref(),
+            self.environment.as_deref(),
             self.dry_run,
             self.force_rebuild,
             self.force_new,
@@ -1294,10 +2050,14 @@ impl CallableTrait for DeployCommand {
             DeployTarget::Local => {
                 // Always do a quick health check for local deploy unless --no-watch
                 if self.watch != Some(false) {
-                    watch_local_containers(&project_dir, self.file.as_deref())?;
+                    watch_local_containers(
+                        &project_dir,
+                        self.file.as_deref(),
+                        self.target.as_deref(),
+                    )?;
                 }
             }
-            DeployTarget::Cloud if should_watch => {
+            DeployTarget::Cloud | DeployTarget::Server if should_watch => {
                 watch_cloud_deployment(&result)?;
             }
             _ => {}
@@ -1327,20 +2087,61 @@ impl DeployCommand {
         let mut lock = match result.target {
             DeployTarget::Local => DeploymentLock::for_local(),
             DeployTarget::Server => {
-                // For server deploys, read server config from stacker.yml
+                let mut l = DeploymentLock::from_result(result)
+                    .with_project_name(self.project_name.clone());
+
                 let config_path = match &self.file {
                     Some(f) => project_dir.join(f),
                     None => project_dir.join(DEFAULT_CONFIG_FILE),
                 };
                 if let Ok(config) = StackerConfig::from_file(&config_path) {
-                    if let Some(ref server_cfg) = config.deploy.server {
-                        DeploymentLock::for_server(server_cfg)
-                    } else {
-                        DeploymentLock::from_result(result)
+                    if l.project_name.is_none() {
+                        let name = config
+                            .project
+                            .identity
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(config.name);
+                        l = l.with_project_name(Some(name));
                     }
-                } else {
-                    DeploymentLock::from_result(result)
+
+                    if let Some(ref server_cfg) = config.deploy.server {
+                        if l.server_ip.is_none() {
+                            l.server_ip = Some(server_cfg.host.clone());
+                        }
+                        if l.ssh_user.is_none() {
+                            l.ssh_user = Some(server_cfg.user.clone());
+                        }
+                        if l.ssh_port.is_none() {
+                            l.ssh_port = Some(server_cfg.port);
+                        }
+                    }
                 }
+
+                if let Some(project_id) = result.project_id {
+                    match fetch_server_for_project(project_id as i32, DeployTarget::Server) {
+                        Ok(Some(info)) => {
+                            l = l.with_server_info(
+                                info.srv_ip.clone(),
+                                info.ssh_user.clone(),
+                                info.ssh_port.map(|p| p as u16),
+                                info.name.clone(),
+                                info.cloud_id,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("  ⚠ Could not fetch server details: {}", e);
+                        }
+                    }
+                }
+
+                if l.server_name.is_none() {
+                    if let Some(ref name) = result.server_name {
+                        l.server_name = Some(name.clone());
+                    }
+                }
+
+                l
             }
             DeployTarget::Cloud => {
                 let mut l = DeploymentLock::from_result(result)
@@ -1365,7 +2166,7 @@ impl DeployCommand {
 
                 // Try to fetch provisioned server details from the Stacker API
                 if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(project_id as i32) {
+                    match fetch_server_for_project(project_id as i32, DeployTarget::Cloud) {
                         Ok(Some(info)) => {
                             l = l.with_server_info(
                                 info.srv_ip.clone(),
@@ -1468,24 +2269,31 @@ impl DeployCommand {
 /// timeout is reached), then retries fetching the server IP — because the IP
 /// may be assigned a few seconds after the deployment status flips to
 /// "completed".
+fn resolve_saved_stacker_base_url(context: &str) -> Result<(String, StoredCredentials), CliError> {
+    let cred_manager = CredentialsManager::with_default_store();
+    let creds = cred_manager.require_valid_token(context)?;
+    let raw_base_url = creds
+        .server_url
+        .as_deref()
+        .unwrap_or(stacker_client::DEFAULT_STACKER_URL);
+    let base_url = crate::cli::install_runner::normalize_stacker_server_url(raw_base_url);
+    Ok((base_url, creds))
+}
+
 fn fetch_server_for_project(
     project_id: i32,
+    target: DeployTarget,
 ) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
-    let cred_manager = CredentialsManager::with_default_store();
-    let creds = cred_manager.require_valid_token("server lookup")?;
-
-    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-        stacker_client::DEFAULT_STACKER_URL,
-    );
+    let (base_url, creds) = resolve_saved_stacker_base_url("server lookup")?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        let client = StackerClient::new(&base_url, &creds.access_token);
+        let client = StackerClient::new_for_target(&base_url, &creds.access_token, target.clone());
 
         // Phase 1: wait for the deployment to reach a terminal state.
         // The watch_cloud_deployment may have timed out, so the deployment
@@ -1579,6 +2387,7 @@ fn fetch_server_for_project(
 fn watch_local_containers(
     project_dir: &Path,
     config_file: Option<&str>,
+    target_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
@@ -1588,8 +2397,11 @@ fn watch_local_containers(
             Some(f) => project_dir.join(f),
             None => project_dir.join(DEFAULT_CONFIG_FILE),
         };
-        // Try to read compose_file from config; fall back to .stacker/docker-compose.yml
-        if let Ok(config) = StackerConfig::from_file(&config_path) {
+        // Try to read compose_file from the resolved local target; fall back to
+        // .stacker/docker-compose.yml.
+        if let Ok(config) = StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(target_override))
+        {
             if let Some(ref existing) = config.deploy.compose_file {
                 let p = project_dir.join(existing);
                 if p.exists() {
@@ -1701,23 +2513,18 @@ fn is_terminal(status: &str) -> bool {
     TERMINAL_STATUSES.iter().any(|s| *s == status)
 }
 
-/// Watch cloud deployment status until it reaches a terminal state.
+/// Watch remote deployment status until it reaches a terminal state.
 fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
-    let cred_manager = CredentialsManager::with_default_store();
-    let creds = match cred_manager.require_valid_token("deployment status") {
-        Ok(c) => c,
+    let (base_url, creds) = match resolve_saved_stacker_base_url("deployment status") {
+        Ok(values) => values,
         Err(e) => {
             eprintln!("  Cannot watch deployment status: {}", e);
             eprintln!("  Run `stacker status --watch` later to check progress.");
             return Ok(());
         }
     };
-
-    let base_url = crate::cli::install_runner::normalize_stacker_server_url(
-        stacker_client::DEFAULT_STACKER_URL,
-    );
 
     let project_id = match result.project_id {
         Some(id) => id as i32,
@@ -1738,7 +2545,8 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
         .build()?;
 
     rt.block_on(async {
-        let client = StackerClient::new(&base_url, &creds.access_token);
+        let client =
+            StackerClient::new_for_target(&base_url, &creds.access_token, result.target.clone());
         let start = std::time::Instant::now();
         let mut last_status = String::new();
         let mut last_message: Option<String> = None;
@@ -1790,7 +2598,12 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                     }
                 }
                 Err(e) => {
-                    progress::finish_error(&spin, &format!("Error polling status: {}", e));
+                    progress::finish_success(
+                        &spin,
+                        "Deployment request accepted; live status polling unavailable",
+                    );
+                    eprintln!("  ⚠ Could not poll live deployment status: {}", e);
+                    eprintln!("  Installation may still be in progress.");
                     eprintln!("  Run `stacker status --watch` to retry.");
                     return Ok(());
                 }
@@ -1835,10 +2648,6 @@ mod tests {
                     stderr: String::new(),
                 },
             }
-        }
-
-        fn recorded_calls(&self) -> Vec<(String, Vec<String>)> {
-            self.calls.lock().unwrap().clone()
         }
     }
 
@@ -1994,6 +2803,50 @@ mod tests {
     }
 
     #[test]
+    fn test_deploy_environment_override_uses_environment_compose() {
+        let config = r#"
+name: device-api
+app:
+  type: static
+  path: .
+deploy:
+  target: local
+"#;
+        let compose = r#"
+services:
+  api:
+    image: device-api:latest
+    environment:
+      RUST_LOG: warning
+"#;
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            ("docker/production/compose.yml", compose),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy_for_environment(
+            dir.path(),
+            None,
+            Some("local"),
+            Some("production"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            !dir.path().join(".stacker/docker-compose.yml").exists(),
+            "environment compose should be used instead of generating .stacker/docker-compose.yml"
+        );
+    }
+
+    #[test]
     fn test_deploy_local_with_image_skips_build() {
         let config = "name: test-app\napp:\n  type: static\n  path: .\n  image: nginx:latest\n";
         let dir = setup_local_project(&[("stacker.yml", config)]);
@@ -2025,6 +2878,7 @@ mod tests {
 
         let result = run_deploy_with_credentials_manager(
             dir.path(),
+            None,
             None,
             None,
             true,
@@ -2311,6 +3165,225 @@ services:
         let normalized = std::fs::read_to_string(&compose_path).unwrap();
         assert!(normalized.contains("context: .."));
         assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_allows_unique_published_ports() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "80:80"
+  api:
+    image: ghcr.io/example/api:latest
+    ports:
+      - published: 8080
+        target: 8080
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        validate_compose_for_deploy(&compose_path).unwrap();
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_rejects_duplicate_published_ports() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+services:
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - published: 80
+        target: 80
+      - published: 81
+        target: 81
+      - published: 443
+        target: 443
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        let err = validate_compose_for_deploy(&compose_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("conflicting published host ports"));
+        assert!(msg.contains("port 80"));
+        assert!(msg.contains("nginx-proxy-manager"));
+        assert!(msg.contains("nginx_proxy_manager"));
+    }
+
+    #[test]
+    fn test_validate_compose_for_deploy_allows_include_only_compose() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let compose = r#"
+include:
+  - ../../postgres/docker/local/compose.yml
+  - ../../website/docker/local/compose.yml
+"#;
+        std::fs::write(&compose_path, compose).unwrap();
+
+        validate_compose_for_deploy(&compose_path).unwrap();
+    }
+
+    #[test]
+    fn test_collect_compose_image_refs_follows_includes_and_skips_build_services() {
+        let dir = TempDir::new().unwrap();
+        let root_compose = dir.path().join("docker-compose.yml");
+        let services_dir = dir.path().join("services");
+        std::fs::create_dir_all(&services_dir).unwrap();
+        let api_compose = services_dir.join("api.yml");
+        let web_compose = services_dir.join("web.yml");
+
+        std::fs::write(
+            &root_compose,
+            "include:\n  - services/api.yml\n  - services/web.yml\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &api_compose,
+            "services:\n  api:\n    image: optimum/syncopia-device-api:latest\n  worker:\n    image: ghcr.io/example/worker:latest\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &web_compose,
+            "services:\n  web:\n    build: .\n    image: optimum/syncopia-website:latest\n  proxy:\n    image: jc21/nginx-proxy-manager:latest\n",
+        )
+        .unwrap();
+
+        let images = collect_compose_image_refs(&root_compose).unwrap();
+        let collected: Vec<String> = images.into_iter().map(|image| image.image).collect();
+
+        assert_eq!(
+            collected,
+            vec![
+                "optimum/syncopia-device-api:latest".to_string(),
+                "ghcr.io/example/worker:latest".to_string(),
+                "jc21/nginx-proxy-manager:latest".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_docker_hub_image_target_supports_official_namespaced_and_prefixed_images() {
+        let official = parse_docker_hub_image_target("postgres:17-alpine").unwrap();
+        assert_eq!(official.namespace, None);
+        assert_eq!(official.repository, "postgres");
+        assert_eq!(official.tag, "17-alpine");
+
+        let namespaced = parse_docker_hub_image_target("optimum/syncopia-device-api").unwrap();
+        assert_eq!(namespaced.namespace.as_deref(), Some("optimum"));
+        assert_eq!(namespaced.repository, "syncopia-device-api");
+        assert_eq!(namespaced.tag, "latest");
+
+        let prefixed =
+            parse_docker_hub_image_target("docker.io/optimum/syncopia-website:main").unwrap();
+        assert_eq!(prefixed.namespace.as_deref(), Some("optimum"));
+        assert_eq!(prefixed.repository, "syncopia-website");
+        assert_eq!(prefixed.tag, "main");
+
+        assert!(
+            parse_docker_hub_image_target("ghcr.io/optimum/syncopia-device-api:latest").is_none()
+        );
+    }
+
+    #[test]
+    fn test_validate_compose_images_for_deploy_reports_missing_docker_hub_image_before_deploy() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let image_env = std::collections::BTreeMap::new();
+        std::fs::write(
+            &compose_path,
+            "services:\n  api:\n    image: optimum/syncopia-device-api:latest\n  worker:\n    image: ghcr.io/example/worker:latest\n  proxy:\n    image: jc21/nginx-proxy-manager:latest\n",
+        )
+        .unwrap();
+
+        let err =
+            validate_compose_images_for_deploy_with_checker(&compose_path, &image_env, |target| {
+                Ok(target.repository != "syncopia-device-api")
+            })
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("Compose image preflight failed"));
+        assert!(message.contains("docker.io/optimum/syncopia-device-api:latest"));
+        assert!(message.contains("service 'api'"));
+        assert!(!message.contains("ghcr.io/example/worker:latest"));
+    }
+
+    #[test]
+    fn test_resolve_compose_image_reference_supports_plain_default_and_required_forms() {
+        let mut image_env = std::collections::BTreeMap::new();
+        image_env.insert(
+            "WEBSITE_IMAGE".to_string(),
+            "optimum/syncopia-website".to_string(),
+        );
+
+        assert_eq!(
+            resolve_compose_image_reference("${WEBSITE_IMAGE}:latest", &image_env).unwrap(),
+            "optimum/syncopia-website:latest"
+        );
+        assert_eq!(
+            resolve_compose_image_reference(
+                "${DEVICE_API_IMAGE:-syncopia/device-api:dev}",
+                &image_env
+            )
+            .unwrap(),
+            "syncopia/device-api:dev"
+        );
+        assert_eq!(
+            resolve_compose_image_reference(
+                "${WEBSITE_IMAGE:?Set WEBSITE_IMAGE to a published website image}:latest",
+                &image_env
+            )
+            .unwrap(),
+            "optimum/syncopia-website:latest"
+        );
+    }
+
+    #[test]
+    fn test_resolve_compose_image_reference_errors_for_missing_required_variable() {
+        let image_env = std::collections::BTreeMap::new();
+        let err = resolve_compose_image_reference(
+            "${WEBSITE_IMAGE:?Set WEBSITE_IMAGE to a published website image}:latest",
+            &image_env,
+        )
+        .unwrap_err();
+        assert!(err.contains("Set WEBSITE_IMAGE to a published website image"));
+    }
+
+    #[test]
+    fn test_validate_compose_images_for_deploy_resolves_environment_images_before_checking() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let mut image_env = std::collections::BTreeMap::new();
+        image_env.insert(
+            "WEBSITE_IMAGE".to_string(),
+            "optimum/syncopia-website".to_string(),
+        );
+        std::fs::write(
+            &compose_path,
+            "services:\n  website:\n    image: ${WEBSITE_IMAGE}:latest\n  proxy:\n    image: jc21/nginx-proxy-manager:latest\n",
+        )
+        .unwrap();
+
+        let err =
+            validate_compose_images_for_deploy_with_checker(&compose_path, &image_env, |target| {
+                Ok(target.repository != "syncopia-website")
+            })
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("docker.io/optimum/syncopia-website:latest"));
+        assert!(message.contains("service 'website'"));
     }
 
     #[test]

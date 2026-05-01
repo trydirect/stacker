@@ -34,13 +34,13 @@ fn validate_cloud_instance_config(deploy: &Deploy) -> Result<(), serde_valid::va
 
     let mut missing = Vec::new();
 
-    if deploy.server.region.as_ref().map_or(true, |s| s.is_empty()) {
+    if deploy.server.region.as_ref().is_none_or(|s| s.is_empty()) {
         missing.push("region");
     }
-    if deploy.server.server.as_ref().map_or(true, |s| s.is_empty()) {
+    if deploy.server.server.as_ref().is_none_or(|s| s.is_empty()) {
         missing.push("server");
     }
-    if deploy.server.os.as_ref().map_or(true, |s| s.is_empty()) {
+    if deploy.server.os.as_ref().is_none_or(|s| s.is_empty()) {
         missing.push("os");
     }
 
@@ -54,7 +54,7 @@ fn validate_cloud_instance_config(deploy: &Deploy) -> Result<(), serde_valid::va
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize, Validate)]
 #[validate(custom(validate_cloud_instance_config))]
 pub struct Deploy {
     #[validate]
@@ -66,6 +66,29 @@ pub struct Deploy {
     /// Optional Docker registry credentials for pulling private images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) registry: Option<RegistryForm>,
+    /// Optional selected deploy environment, e.g. development/staging/production.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) environment: Option<String>,
+    /// Config files uploaded by the CLI. Contents may include secrets and must not be logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) config_files: Option<Value>,
+    /// Safe metadata for Stack Builder artifact/config-file visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) config_bundle: Option<Value>,
+}
+
+impl std::fmt::Debug for Deploy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Deploy")
+            .field("stack", &self.stack)
+            .field("server", &self.server)
+            .field("cloud", &self.cloud)
+            .field("registry", &self.registry)
+            .field("environment", &self.environment)
+            .field("config_files", &"[REDACTED]")
+            .field("config_bundle", &self.config_bundle)
+            .finish()
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
