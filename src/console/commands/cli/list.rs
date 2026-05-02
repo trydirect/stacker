@@ -1,7 +1,5 @@
-use crate::cli::credentials::CredentialsManager;
-use crate::cli::error::CliError;
 use crate::cli::progress;
-use crate::cli::stacker_client::{self, StackerClient};
+use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -24,21 +22,10 @@ impl ListProjectsCommand {
 impl CallableTrait for ListProjectsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list projects")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list projects")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let projects = client.list_projects().await?;
+        ctx.block_on(async {
+            let projects = ctx.client.list_projects().await?;
 
             if projects.is_empty() {
                 eprintln!("No projects found.");
@@ -93,21 +80,10 @@ impl ListServersCommand {
 impl CallableTrait for ListServersCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list servers")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list servers")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let servers = client.list_servers().await?;
+        ctx.block_on(async {
+            let servers = ctx.client.list_servers().await?;
 
             if servers.is_empty() {
                 eprintln!("No servers found.");
@@ -171,24 +147,13 @@ impl ListDeploymentsCommand {
 impl CallableTrait for ListDeploymentsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
-
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list deployments")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
+        let ctx = CliRuntime::new("list deployments")?;
 
         let project_id = self.project_id;
         let limit = self.limit;
 
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let deployments = client.list_deployments(project_id, limit).await?;
+        ctx.block_on(async {
+            let deployments = ctx.client.list_deployments(project_id, limit).await?;
 
             if deployments.is_empty() {
                 eprintln!("No deployments found.");
@@ -245,21 +210,10 @@ impl ListSshKeysCommand {
 impl CallableTrait for ListSshKeysCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list ssh-keys")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list ssh-keys")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let servers = client.list_servers().await?;
+        ctx.block_on(async {
+            let servers = ctx.client.list_servers().await?;
 
             if servers.is_empty() {
                 eprintln!("No servers found (SSH keys are managed per-server).");
@@ -360,21 +314,10 @@ impl ListCloudsCommand {
 impl CallableTrait for ListCloudsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json = self.json;
+        let ctx = CliRuntime::new("list clouds")?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("list clouds")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let clouds = client.list_clouds().await?;
+        ctx.block_on(async {
+            let clouds = ctx.client.list_clouds().await?;
 
             if clouds.is_empty() {
                 eprintln!("No saved cloud credentials found.");

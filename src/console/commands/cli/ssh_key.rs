@@ -5,9 +5,8 @@
 
 use std::path::PathBuf;
 
-use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
-use crate::cli::stacker_client::{self, StackerClient};
+use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -35,20 +34,10 @@ impl CallableTrait for SshKeyGenerateCommand {
         let server_id = self.server_id;
         let save_to = self.save_to.clone();
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key generate")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key generate")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let result = client.generate_ssh_key(server_id).await?;
+        ctx.block_on(async {
+            let result = ctx.client.generate_ssh_key(server_id).await?;
 
             println!("✓ SSH key generated for server {}", server_id);
             println!();
@@ -104,20 +93,10 @@ impl CallableTrait for SshKeyShowCommand {
         let server_id = self.server_id;
         let json = self.json;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key show")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key show")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let result = client.get_ssh_public_key(server_id).await?;
+        ctx.block_on(async {
+            let result = ctx.client.get_ssh_public_key(server_id).await?;
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -179,20 +158,11 @@ impl CallableTrait for SshKeyUploadCommand {
             ))
         })?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key upload")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key upload")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let server = client
+        ctx.block_on(async {
+            let server = ctx
+                .client
                 .upload_ssh_key(server_id, public_key.trim(), private_key.trim())
                 .await?;
 
@@ -257,22 +227,11 @@ impl CallableTrait for SshKeyInjectCommand {
             ))
         })?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key inject")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key inject")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-
+        ctx.block_on(async {
             // Fetch server info to get IP, port, and user
-            let servers = client.list_servers().await?;
+            let servers = ctx.client.list_servers().await?;
             let server_info = servers
                 .into_iter()
                 .find(|s| s.id == server_id)
@@ -298,7 +257,7 @@ impl CallableTrait for SshKeyInjectCommand {
                 .unwrap_or_else(|| "root".to_string());
 
             // Fetch the vault public key
-            let key_resp = client.get_ssh_public_key(server_id).await?;
+            let key_resp = ctx.client.get_ssh_public_key(server_id).await?;
             let vault_public_key = key_resp.public_key.trim().to_string();
 
             println!("Server:     {} (ID {})", host, server_id);
