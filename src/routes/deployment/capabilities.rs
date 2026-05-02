@@ -5,7 +5,14 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{db, helpers::JsonResponse, models::Agent};
+use crate::{
+    db,
+    helpers::{
+        extract_capabilities, has_capability, has_capability_value, JsonResponse,
+        NPM_CREDENTIAL_SOURCE_KEY,
+    },
+    models::Agent,
+};
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct CapabilityCommand {
@@ -22,6 +29,7 @@ pub struct CapabilityFeatures {
     pub compose: bool,
     pub backup: bool,
     pub pipes: bool,
+    pub proxy_credentials_vault: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -146,10 +154,15 @@ fn build_capabilities_payload(
             let capabilities = extract_capabilities(agent.capabilities.clone());
             let commands = filter_commands(&capabilities);
             let features = CapabilityFeatures {
-                kata_runtime: capabilities.iter().any(|c| c == "kata"),
-                compose: capabilities.iter().any(|c| c == "compose"),
-                backup: capabilities.iter().any(|c| c == "backup"),
-                pipes: capabilities.iter().any(|c| c == "pipes"),
+                kata_runtime: has_capability(&capabilities, "kata"),
+                compose: has_capability(&capabilities, "compose"),
+                backup: has_capability(&capabilities, "backup"),
+                pipes: has_capability(&capabilities, "pipes"),
+                proxy_credentials_vault: has_capability_value(
+                    &capabilities,
+                    NPM_CREDENTIAL_SOURCE_KEY,
+                    "vault",
+                ),
             };
 
             CapabilitiesResponse {
@@ -170,12 +183,6 @@ fn build_capabilities_payload(
             ..Default::default()
         },
     }
-}
-
-fn extract_capabilities(value: Option<serde_json::Value>) -> Vec<String> {
-    value
-        .and_then(|val| serde_json::from_value::<Vec<String>>(val).ok())
-        .unwrap_or_default()
 }
 
 fn filter_commands(capabilities: &[String]) -> Vec<CapabilityCommand> {
@@ -247,6 +254,7 @@ mod tests {
         assert!(!payload.features.compose);
         assert!(!payload.features.backup);
         assert!(!payload.features.pipes);
+        assert!(!payload.features.proxy_credentials_vault);
     }
 
     #[test]
@@ -265,6 +273,7 @@ mod tests {
         assert!(!payload.features.compose);
         assert!(!payload.features.backup);
         assert!(!payload.features.pipes);
+        assert!(!payload.features.proxy_credentials_vault);
     }
 
     #[test]
@@ -283,5 +292,14 @@ mod tests {
         assert!(command_types.contains("activate_pipe"));
         assert!(command_types.contains("deactivate_pipe"));
         assert!(command_types.contains("trigger_pipe"));
+    }
+
+    #[test]
+    fn capabilities_features_include_vault_proxy_credentials() {
+        let mut agent = Agent::new("hash".to_string());
+        agent.capabilities = Some(serde_json::json!(["npm_credential_source=vault"]));
+
+        let payload = build_capabilities_payload("hash".to_string(), Some(agent));
+        assert!(payload.features.proxy_credentials_vault);
     }
 }

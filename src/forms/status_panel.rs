@@ -1221,6 +1221,9 @@ mod tests {
             "trigger_pipe.replay.report.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.report.json")
             }
+            "npm_credentials.v1_email_password.json" => {
+                include_str!("../../tests/fixtures/npm_credentials/v1_email_password.json")
+            }
             other => panic!("unknown fixture: {}", other),
         };
 
@@ -1842,6 +1845,28 @@ mod tests {
         .expect("should have params");
 
         assert_eq!(params["capture_samples"], true);
+    }
+
+    #[test]
+    fn configure_proxy_parameters_strip_legacy_npm_overrides() {
+        let npm_credentials = fixture("npm_credentials.v1_email_password.json");
+        let params = validate_command_parameters(
+            "configure_proxy",
+            &Some(json!({
+                "app_code": "wordpress",
+                "domain_names": ["wordpress.example.com"],
+                "forward_port": 80,
+                "npm_host": npm_credentials["host"],
+                "npm_email": npm_credentials["email"],
+                "npm_password": npm_credentials["password"],
+            })),
+        )
+        .expect("configure_proxy params should validate")
+        .expect("configure_proxy params should be present");
+
+        assert!(params.get("npm_host").is_none());
+        assert!(params.get("npm_email").is_none());
+        assert!(params.get("npm_password").is_none());
     }
 
     #[test]

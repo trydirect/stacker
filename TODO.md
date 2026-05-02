@@ -46,6 +46,13 @@
 
 ## ✅ Recent Fixes
 
+### May 2, 2026 - Vault-backed NPM credential contract
+- [x] Status Panel `configure_proxy` no longer relies on hard-coded `admin@example.com` / `changeme` defaults
+- [x] Installer contract now emits `STACKER_SERVER_ID` and a host-scoped Vault path for Nginx Proxy Manager credentials
+- [x] Deployment-scoped Vault tokens can be extended with an exact read grant for `secret/{env}/status_panel/hosts/{server_id}/npm_credentials`
+- [x] Status Panel linking now advertises `npm_credential_source=vault`; Stacker surfaces it in deployment capabilities and can gate `configure_proxy` with `STACKER_CONFIGURE_PROXY_CAPABILITY_MODE=warn|enforce`
+- [x] Rollout order: ship Status Panel reader → provision installer secret/policy → re-link agents so capabilities are refreshed → keep Stacker in `warn` mode → switch to `enforce` after all active agents report `npm_credential_source=vault`
+
 ### February 16, 2026 - CORS Headers Fix
 - [x] Fixed CORS configuration to properly support Authorization header with credentials
 - [x] Changed from whitelist (`allowed_headers(vec![...])`) to `.allow_any_header()` + `.expose_any_header()`
