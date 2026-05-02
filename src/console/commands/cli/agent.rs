@@ -1352,6 +1352,133 @@ impl AgentInstallCommand {
     }
 }
 
+fn fallback_server_config_for_agent_install(
+    server: &crate::cli::stacker_client::ServerInfo,
+) -> Result<crate::cli::config_parser::ServerConfig, CliError> {
+    let host = server.srv_ip.clone().ok_or_else(|| {
+        CliError::ConfigValidation(
+            "Server record has no reachable IP address.\n\
+             Cannot install Status Panel without a server host."
+                .to_string(),
+        )
+    })?;
+
+    let port = server
+        .ssh_port
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(22);
+
+    Ok(crate::cli::config_parser::ServerConfig {
+        host,
+        user: server
+            .ssh_user
+            .clone()
+            .unwrap_or_else(|| "root".to_string()),
+        ssh_key: None,
+        port,
+    })
+}
+
+fn build_agent_install_deploy_request(
+    config: &crate::cli::config_parser::StackerConfig,
+    server: &crate::cli::stacker_client::ServerInfo,
+    project_name: &str,
+    vault_url: &str,
+) -> Result<(Option<i32>, serde_json::Value), CliError> {
+    let server_target = config.deploy.target == crate::cli::config_parser::DeployTarget::Server
+        || server.cloud_id.is_none();
+
+    if server_target {
+        let server_cfg = match config.deploy.server.as_ref() {
+            Some(server_cfg) => server_cfg.clone(),
+            None => fallback_server_config_for_agent_install(server)?,
+        };
+        let effective_server_name = server
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{}-server", project_name));
+        let mut deploy_form = crate::cli::stacker_client::build_server_deploy_form(
+            config,
+            &server_cfg,
+            &effective_server_name,
+            true,
+        );
+
+        if let Some(server_obj) = deploy_form
+            .get_mut("server")
+            .and_then(|value| value.as_object_mut())
+        {
+            server_obj.insert("server_id".to_string(), serde_json::json!(server.id));
+
+            if let Some(vault_key_path) = &server.vault_key_path {
+                server_obj.insert(
+                    "vault_key_path".to_string(),
+                    serde_json::Value::String(vault_key_path.clone()),
+                );
+            }
+
+            if let Some(region) = &server.region {
+                server_obj.insert(
+                    "region".to_string(),
+                    serde_json::Value::String(region.clone()),
+                );
+            }
+
+            if let Some(os) = &server.os {
+                server_obj.insert("os".to_string(), serde_json::Value::String(os.clone()));
+            }
+
+            if let Some(server_kind) = &server.server {
+                server_obj.insert(
+                    "server".to_string(),
+                    serde_json::Value::String(server_kind.clone()),
+                );
+            }
+        }
+
+        return Ok((None, deploy_form));
+    }
+
+    let cloud_id = server.cloud_id.ok_or_else(|| {
+        CliError::ConfigValidation(
+            "Server has no associated cloud credentials.\n\
+             Cannot install Status Panel without cloud credentials."
+                .to_string(),
+        )
+    })?;
+
+    let deploy_form = serde_json::json!({
+        "cloud": {
+            "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
+            "save_token": true,
+        },
+        "server": {
+            "server_id": server.id,
+            "region": server.region,
+            "server": server.server,
+            "os": server.os,
+            "name": server.name,
+            "srv_ip": server.srv_ip,
+            "ssh_user": server.ssh_user,
+            "ssh_port": server.ssh_port,
+            "vault_key_path": server.vault_key_path,
+            "connection_mode": "status_panel",
+        },
+        "stack": {
+            "stack_code": project_name,
+            "vars": [
+                { "key": "vault_url", "value": vault_url },
+                { "key": "status_panel_port", "value": "5000" },
+            ],
+            "integrated_features": ["statuspanel"],
+            "extended_features": [],
+            "subscriptions": [],
+        },
+    });
+
+    Ok((Some(cloud_id), deploy_form))
+}
+
 impl CallableTrait for AgentInstallCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         use crate::cli::stacker_client::{self, DEFAULT_VAULT_URL};
@@ -1362,7 +1489,8 @@ impl CallableTrait for AgentInstallCommand {
             None => project_dir.join("stacker.yml"),
         };
 
-        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)?;
+        let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)?
+            .with_resolved_deploy_target(None)?;
 
         let project_name = config
             .project
@@ -1374,6 +1502,7 @@ impl CallableTrait for AgentInstallCommand {
         let pb = progress::spinner("Installing Status Panel agent");
 
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
+            let target_label = config.deploy.target.to_string();
             // 1. Find the project
             progress::update_message(&pb, "Finding project...");
             let project = ctx
@@ -1383,8 +1512,8 @@ impl CallableTrait for AgentInstallCommand {
                 .ok_or_else(|| {
                     CliError::ConfigValidation(format!(
                         "Project '{}' not found on the Stacker server.\n\
-                     Deploy the project first with: stacker deploy --target cloud",
-                        project_name
+                     Deploy the project first with: stacker deploy --target {}",
+                        project_name, target_label
                     ))
                 })?;
 
@@ -1397,59 +1526,21 @@ impl CallableTrait for AgentInstallCommand {
                 .ok_or_else(|| {
                     CliError::ConfigValidation(format!(
                         "No server found for project '{}' (id={}).\n\
-                     Deploy the project first with: stacker deploy --target cloud",
-                        project_name, project.id
+                     Deploy the project first with: stacker deploy --target {}",
+                        project_name, project.id, target_label
                     ))
                 })?;
-
-            let cloud_id = server.cloud_id.ok_or_else(|| {
-                CliError::ConfigValidation(
-                    "Server has no associated cloud credentials.\n\
-                 Cannot install Status Panel without cloud credentials."
-                        .to_string(),
-                )
-            })?;
 
             // 3. Build a minimal deploy form with only the statuspanel feature
             progress::update_message(&pb, "Preparing deploy payload...");
             let vault_url = std::env::var("STACKER_VAULT_URL")
                 .unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
-
-            let deploy_form = serde_json::json!({
-                "cloud": {
-                    "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
-                    "save_token": true,
-                },
-                "server": {
-                    "server_id": server.id,
-                    "region": server.region,
-                    "server": server.server,
-                    "os": server.os,
-                    "name": server.name,
-                    "srv_ip": server.srv_ip,
-                    "ssh_user": server.ssh_user,
-                    "ssh_port": server.ssh_port,
-                    "vault_key_path": server.vault_key_path,
-                    "connection_mode": "status_panel",
-                },
-                "stack": {
-                    "stack_code": project_name,
-                    "vars": [
-                        { "key": "vault_url", "value": vault_url },
-                        { "key": "status_panel_port", "value": "5000" },
-                    ],
-                    "integrated_features": ["statuspanel"],
-                    "extended_features": [],
-                    "subscriptions": [],
-                },
-            });
+            let (cloud_id, deploy_form) =
+                build_agent_install_deploy_request(&config, &server, &project_name, &vault_url)?;
 
             // 4. Trigger the deploy
             progress::update_message(&pb, "Deploying Status Panel...");
-            let resp = ctx
-                .client
-                .deploy(project.id, Some(cloud_id), deploy_form)
-                .await?;
+            let resp = ctx.client.deploy(project.id, cloud_id, deploy_form).await?;
             Ok(resp)
         });
 
@@ -1495,6 +1586,28 @@ impl CallableTrait for AgentInstallCommand {
 mod tests {
     use super::*;
 
+    fn sample_server_info() -> crate::cli::stacker_client::ServerInfo {
+        crate::cli::stacker_client::ServerInfo {
+            id: 7,
+            user_id: "user_1".to_string(),
+            project_id: 42,
+            cloud_id: None,
+            cloud: None,
+            region: Some("nbg1".to_string()),
+            zone: None,
+            server: Some("cpx11".to_string()),
+            os: Some("ubuntu-24.04".to_string()),
+            disk_type: None,
+            srv_ip: Some("203.0.113.10".to_string()),
+            ssh_port: Some(2222),
+            ssh_user: Some("deployer".to_string()),
+            name: Some("syncopia-prod".to_string()),
+            vault_key_path: Some("secret/users/user_1/servers/7/ssh".to_string()),
+            connection_mode: "ssh".to_string(),
+            key_status: "uploaded".to_string(),
+        }
+    }
+
     #[test]
     fn enqueue_request_builder() {
         let req = AgentEnqueueRequest::new("abc123", "health")
@@ -1530,6 +1643,65 @@ mod tests {
         let snap = serde_json::json!({});
         // Should not panic
         print_snapshot_summary(&snap, None);
+    }
+
+    #[test]
+    fn agent_install_request_uses_server_deploy_path_without_cloud_credentials() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("syncopia")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .build()
+            .expect("config");
+        let server = sample_server_info();
+
+        let (cloud_id, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "syncopia",
+            "https://vault.try.direct",
+        )
+        .expect("server install request");
+
+        assert_eq!(cloud_id, None);
+        assert_eq!(deploy_form["cloud"]["provider"], "own");
+        assert_eq!(deploy_form["server"]["server_id"], 7);
+        assert_eq!(deploy_form["server"]["srv_ip"], "203.0.113.10");
+        assert_eq!(deploy_form["server"]["ssh_user"], "deployer");
+        assert_eq!(deploy_form["server"]["ssh_port"], 2222);
+        assert_eq!(deploy_form["server"]["connection_mode"], "status_panel");
+        assert_eq!(
+            deploy_form["server"]["vault_key_path"],
+            "secret/users/user_1/servers/7/ssh"
+        );
+        assert!(deploy_form["stack"]["integrated_features"]
+            .as_array()
+            .expect("integrated_features array")
+            .contains(&serde_json::Value::String("statuspanel".to_string())));
+    }
+
+    #[test]
+    fn agent_install_request_keeps_cloud_deploy_path_when_cloud_server_is_linked() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("syncopia")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .expect("config");
+        let mut server = sample_server_info();
+        server.cloud_id = Some(9);
+        server.cloud = Some("htz".to_string());
+
+        let (cloud_id, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "syncopia",
+            "https://vault.try.direct",
+        )
+        .expect("cloud install request");
+
+        assert_eq!(cloud_id, Some(9));
+        assert_eq!(deploy_form["cloud"]["provider"], "htz");
+        assert_eq!(deploy_form["server"]["server_id"], 7);
+        assert_eq!(deploy_form["server"]["connection_mode"], "status_panel");
     }
 
     #[test]

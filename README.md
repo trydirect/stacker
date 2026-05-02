@@ -137,6 +137,7 @@ The end-user tool. No server required for local deploys.
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server). `--runtime kata\|runc` selects container runtime |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
 | `stacker list deployments` | List deployments on the Stacker server |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
@@ -186,6 +187,35 @@ stacker deploy --target cloud     # Terraform + Ansible → cloud provider
 stacker deploy --target server    # deploy to existing server via SSH
 stacker deploy --dry-run          # preview generated files without executing
 ```
+
+### Secrets workflow
+
+```bash
+# Local project .env secret
+stacker secrets set DB_PASSWORD=supersecret
+
+# Remote service secret used at render/deploy time for one app
+stacker secrets set S3_SECRET_KEY \
+  --scope service \
+  --project blog \
+  --service uploader \
+  --body supersecret
+
+# Remote server secret for future host-level consumers
+stacker secrets set NPM_TOKEN \
+  --scope server \
+  --server-id 42 \
+  --body-file .npm-token
+
+# Remote reads are metadata-only in v1
+stacker secrets list --scope service --project blog --service uploader --json
+stacker secrets get S3_SECRET_KEY --scope service --project blog --service uploader --json
+```
+
+- Local mode remains the default and reads/writes the project `.env` file.
+- Remote mode is enabled only with `--scope service` or `--scope server`.
+- Service-scoped secrets are merged into rendered app env at deploy time.
+- Remote `get` and `list` do **not** return plaintext values in v1.
 
 ### Marketplace workflow (for stack developers)
 
@@ -247,8 +277,12 @@ cargo run --bin server                           # http://127.0.0.1:8000
 | `POST /{id}/deploy/{cloud_id}` | Deploy to a cloud provider |
 | `GET /project/{id}/apps` | List apps in a project |
 | `PUT /project/{id}/apps/{code}/env` | Update app environment variables |
+| `GET /project/{id}/apps/{code}/secrets` | List service-scoped secret metadata for an app |
+| `PUT /project/{id}/apps/{code}/secrets/{name}` | Create or update a Vault-backed service secret |
 | `PUT /project/{id}/apps/{code}/ports` | Update port mappings |
 | `PUT /project/{id}/apps/{code}/domain` | Update domain / SSL settings |
+| `GET /server/{id}/secrets` | List server-scoped secret metadata |
+| `PUT /server/{id}/secrets/{name}` | Create or update a Vault-backed server secret |
 | `POST /api/v1/commands` | Enqueue a command for the Status Panel agent |
 | `POST /api/templates` | Create or update a marketplace template (creator) |
 | `POST /api/templates/{id}/submit` | Submit template for marketplace review |

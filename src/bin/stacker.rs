@@ -258,7 +258,32 @@ enum StackerCommands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-    /// Manage secrets and environment variables in .env
+    /// Manage local .env secrets and remote Vault-backed secrets
+    #[command(
+        long_about = "Manage secrets in two modes:\n\
+\n\
+  Local mode (default)\n\
+    Reads and writes a project .env file.\n\
+\n\
+  Remote mode\n\
+    Uses the authenticated Stacker API to manage Vault-backed secrets for a\n\
+    service or a server. Remote reads are metadata-only in v1 and never return\n\
+    plaintext secret values.\n\
+\n\
+Use explicit --scope service or --scope server to activate remote mode.",
+        after_help = "Examples:\n\
+  Local .env secret:\n\
+    stacker secrets set DB_PASSWORD=supersecret\n\
+\n\
+  Service secret for one app:\n\
+    stacker secrets set S3_SECRET_KEY --scope service --project blog --service uploader --body supersecret\n\
+\n\
+  Server secret from a file:\n\
+    stacker secrets set NPM_TOKEN --scope server --server-id 42 --body-file .npm-token\n\
+\n\
+  List remote metadata as JSON:\n\
+    stacker secrets list --scope service --project blog --service uploader --json"
+    )]
     Secrets {
         #[command(subcommand)]
         command: SecretsCommands,
@@ -504,7 +529,16 @@ enum ConfigSetupCommands {
 
 #[derive(Debug, Subcommand)]
 enum SecretsCommands {
-    /// Set or update a secret in the .env file
+    /// Set or update a local .env secret or remote Vault-backed secret
+    #[command(after_help = "Examples:\n\
+  Local .env secret:\n\
+    stacker secrets set DB_PASSWORD=supersecret\n\
+\n\
+  Remote service secret:\n\
+    stacker secrets set S3_SECRET_KEY --scope service --project blog --service uploader --body supersecret\n\
+\n\
+  Remote server secret from stdin:\n\
+    cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42")]
     Set {
         /// Local mode: KEY=VALUE. Remote mode: secret name.
         input: String,
@@ -544,7 +578,18 @@ enum SecretsCommands {
         )]
         body_file: Option<String>,
     },
-    /// Get a secret value from the .env file
+    /// Get a local .env secret or remote secret metadata
+    #[command(after_help = "Examples:\n\
+  Local value (masked by default):\n\
+    stacker secrets get DB_PASSWORD\n\
+\n\
+  Local plaintext value:\n\
+    stacker secrets get DB_PASSWORD --show\n\
+\n\
+  Remote metadata only:\n\
+    stacker secrets get S3_SECRET_KEY --scope service --project blog --service uploader --json\n\
+\n\
+Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     Get {
         /// Key name to retrieve
         key: String,
@@ -574,7 +619,18 @@ enum SecretsCommands {
         #[arg(long, requires = "scope")]
         json: bool,
     },
-    /// List all secrets in the .env file
+    /// List local .env secrets or remote secret metadata
+    #[command(after_help = "Examples:\n\
+  Local list:\n\
+    stacker secrets list\n\
+\n\
+  Remote service secrets:\n\
+    stacker secrets list --scope service --project blog --service uploader\n\
+\n\
+  Remote server secrets as JSON:\n\
+    stacker secrets list --scope server --server-id 42 --json\n\
+\n\
+Remote list returns metadata only in v1.")]
     List {
         /// Path to .env file
         #[arg(
@@ -602,7 +658,16 @@ enum SecretsCommands {
         #[arg(long, requires = "scope")]
         json: bool,
     },
-    /// Delete a secret from the .env file
+    /// Delete a local .env secret or a remote Vault-backed secret
+    #[command(after_help = "Examples:\n\
+  Local delete:\n\
+    stacker secrets delete DB_PASSWORD\n\
+\n\
+  Remote service secret delete:\n\
+    stacker secrets delete S3_SECRET_KEY --scope service --project blog --service uploader\n\
+\n\
+  Remote server secret delete:\n\
+    stacker secrets delete NPM_TOKEN --scope server --server-id 42")]
     Delete {
         /// Key name to delete
         key: String,
@@ -1736,6 +1801,14 @@ fn get_command(
 mod tests {
     use super::*;
 
+    fn render_command_help(command: &mut clap::Command) -> String {
+        let mut buffer = Vec::new();
+        command
+            .write_long_help(&mut buffer)
+            .expect("help rendering should succeed");
+        String::from_utf8(buffer).expect("help output should be valid UTF-8")
+    }
+
     #[test]
     fn test_deploy_parses_environment_alias() {
         let cli = Cli::try_parse_from([
@@ -1982,5 +2055,35 @@ mod tests {
             parsed.is_ok(),
             "remote secrets list syntax should parse successfully"
         );
+    }
+
+    #[test]
+    fn test_secrets_help_mentions_remote_modes() {
+        let mut command = Cli::command();
+        let secrets = command
+            .find_subcommand_mut("secrets")
+            .expect("secrets subcommand should exist");
+        let help = render_command_help(secrets);
+
+        assert!(help.contains("Vault-backed secrets"));
+        assert!(help.contains("--scope service"));
+        assert!(help.contains("--scope server"));
+        assert!(help.contains("metadata-only"));
+    }
+
+    #[test]
+    fn test_secrets_get_help_mentions_metadata_only_remote_reads() {
+        let mut command = Cli::command();
+        let secrets = command
+            .find_subcommand_mut("secrets")
+            .expect("secrets subcommand should exist");
+        let get = secrets
+            .find_subcommand_mut("get")
+            .expect("get subcommand should exist");
+        let help = render_command_help(get);
+
+        assert!(help.contains("metadata-only"));
+        assert!(help.contains("--scope service"));
+        assert!(help.contains("--json"));
     }
 }
