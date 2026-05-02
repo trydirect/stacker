@@ -483,6 +483,116 @@ async fn test_get_env_vars_includes_remote_secret_placeholders() {
 }
 
 #[tokio::test]
+async fn test_get_app_redacts_plain_and_remote_secret_values() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let mut project_app = create_test_project_app(&app.db_pool, project_id, "web").await;
+    project_app.environment = Some(json!({
+        "VISIBLE_KEY": "plain-value",
+        "LOCAL_PASSWORD": "db-secret"
+    }));
+    db::project_app::update(&app.db_pool, &project_app)
+        .await
+        .expect("project app update failed");
+
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_SECRET",
+        common::USER_A_ID,
+        project_id,
+        project_app.code
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &project_app.code,
+        "S3_SECRET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/project/{}/apps/{}",
+            app.address, project_id, project_app.code
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("get app failed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response
+        .json()
+        .await
+        .expect("response body should be valid json");
+    assert_eq!(body["item"]["environment"]["VISIBLE_KEY"], "plain-value");
+    assert_eq!(body["item"]["environment"]["LOCAL_PASSWORD"], "[REDACTED]");
+    assert_eq!(body["item"]["environment"]["S3_SECRET"], "[REDACTED]");
+}
+
+#[tokio::test]
+async fn test_create_app_rejects_remote_secret_name_collision() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_SECRET",
+        common::USER_A_ID,
+        project_id,
+        "web"
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        "web",
+        "S3_SECRET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/project/{}/apps", app.address, project_id))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({
+            "code": "web",
+            "image": "nginx:stable",
+            "env": {
+                "S3_SECRET": "plain-value",
+                "VISIBLE_KEY": "plain-value"
+            }
+        }))
+        .send()
+        .await
+        .expect("create app failed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response
+        .text()
+        .await
+        .expect("response body should be readable");
+    assert!(body.contains("managed as a remote service secret"));
+
+    let created = db::project_app::fetch_by_project_and_code(&app.db_pool, project_id, "web")
+        .await
+        .expect("app fetch failed");
+    assert!(created.is_none(), "conflicting app should not be created");
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn test_update_env_vars_rejects_remote_secret_name_collision() {
     let Some(app) = common::spawn_app_with_vault().await else {
         return;

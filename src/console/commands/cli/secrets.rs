@@ -281,8 +281,19 @@ fn resolve_remote_secret_value(options: &RemoteSecretWriteOptions) -> Result<Str
     ))
 }
 
-fn resolve_project_id(ctx: &CliRuntime, reference: &str) -> Result<i32, CliError> {
-    ctx.block_on(ctx.client.find_project(reference))?
+fn remap_remote_secret_error(operation: &str, error: CliError) -> CliError {
+    match error {
+        CliError::DeployFailed { reason, .. } => CliError::FeatureFailed {
+            feature: operation.to_string(),
+            reason,
+        },
+        other => other,
+    }
+}
+
+fn resolve_project_id(ctx: &CliRuntime, reference: &str, operation: &str) -> Result<i32, CliError> {
+    ctx.block_on(ctx.client.find_project(reference))
+        .map_err(|error| remap_remote_secret_error(operation, error))?
         .map(|project| project.id)
         .ok_or_else(|| CliError::ConfigValidation(format!("Project '{}' was not found", reference)))
 }
@@ -432,6 +443,7 @@ impl SecretsSetCommand {
     fn call_remote(options: &RemoteSecretWriteOptions) -> Result<(), Box<dyn std::error::Error>> {
         options.validate()?;
         let value = resolve_remote_secret_value(options)?;
+        let operation = "remote secrets set";
         let ctx = CliRuntime::new("remote secrets set")?;
 
         match options.target.scope {
@@ -441,18 +453,20 @@ impl SecretsSetCommand {
                         "Service-scoped secrets require --project".to_string(),
                     )
                 })?;
-                let project_id = resolve_project_id(&ctx, project_ref)?;
+                let project_id = resolve_project_id(&ctx, project_ref, operation)?;
                 let app_code = options.target.service_code().ok_or_else(|| {
                     CliError::ConfigValidation(
                         "Service-scoped secrets require --service".to_string(),
                     )
                 })?;
-                let secret = ctx.block_on(ctx.client.set_service_secret(
-                    project_id,
-                    app_code,
-                    &options.name,
-                    &value,
-                ))?;
+                let secret = ctx
+                    .block_on(ctx.client.set_service_secret(
+                        project_id,
+                        app_code,
+                        &options.name,
+                        &value,
+                    ))
+                    .map_err(|error| remap_remote_secret_error(operation, error))?;
                 println!(
                     "✓ Saved {} secret {} for project {} service {}",
                     secret.scope, secret.name, project_id, app_code
@@ -464,11 +478,12 @@ impl SecretsSetCommand {
                         "Server-scoped secrets require --server-id".to_string(),
                     )
                 })?;
-                let secret = ctx.block_on(ctx.client.set_server_secret(
-                    server_id,
-                    &options.name,
-                    &value,
-                ))?;
+                let secret = ctx
+                    .block_on(
+                        ctx.client
+                            .set_server_secret(server_id, &options.name, &value),
+                    )
+                    .map_err(|error| remap_remote_secret_error(operation, error))?;
                 println!(
                     "✓ Saved {} secret {} for server {}",
                     secret.scope, secret.name, server_id
@@ -563,6 +578,7 @@ impl CallableTrait for SecretsGetCommand {
             }
             SecretsGetMode::Remote(options) => {
                 options.validate()?;
+                let operation = "remote secrets get";
                 let ctx = CliRuntime::new("remote secrets get")?;
                 let secret = match options.target.scope {
                     RemoteSecretScope::Service => {
@@ -571,7 +587,7 @@ impl CallableTrait for SecretsGetCommand {
                                 "Service-scoped secrets require --project".to_string(),
                             )
                         })?;
-                        let project_id = resolve_project_id(&ctx, project_ref)?;
+                        let project_id = resolve_project_id(&ctx, project_ref, operation)?;
                         let app_code = options.target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
@@ -581,7 +597,8 @@ impl CallableTrait for SecretsGetCommand {
                             project_id,
                             app_code,
                             &options.name,
-                        ))?
+                        ))
+                        .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                     RemoteSecretScope::Server => {
                         let server_id = options.target.server_id().ok_or_else(|| {
@@ -592,7 +609,8 @@ impl CallableTrait for SecretsGetCommand {
                         ctx.block_on(
                             ctx.client
                                 .get_server_secret_metadata(server_id, &options.name),
-                        )?
+                        )
+                        .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                 }
                 .ok_or_else(|| CliError::SecretKeyNotFound {
@@ -684,6 +702,7 @@ impl CallableTrait for SecretsListCommand {
             }
             SecretsListMode::Remote(options) => {
                 options.validate()?;
+                let operation = "remote secrets list";
                 let ctx = CliRuntime::new("remote secrets list")?;
                 let secrets = match options.target.scope {
                     RemoteSecretScope::Service => {
@@ -692,13 +711,14 @@ impl CallableTrait for SecretsListCommand {
                                 "Service-scoped secrets require --project".to_string(),
                             )
                         })?;
-                        let project_id = resolve_project_id(&ctx, project_ref)?;
+                        let project_id = resolve_project_id(&ctx, project_ref, operation)?;
                         let app_code = options.target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        ctx.block_on(ctx.client.list_service_secrets(project_id, app_code))?
+                        ctx.block_on(ctx.client.list_service_secrets(project_id, app_code))
+                            .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                     RemoteSecretScope::Server => {
                         let server_id = options.target.server_id().ok_or_else(|| {
@@ -706,7 +726,8 @@ impl CallableTrait for SecretsListCommand {
                                 "Server-scoped secrets require --server-id".to_string(),
                             )
                         })?;
-                        ctx.block_on(ctx.client.list_server_secrets(server_id))?
+                        ctx.block_on(ctx.client.list_server_secrets(server_id))
+                            .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                 };
 
@@ -795,6 +816,7 @@ impl CallableTrait for SecretsDeleteCommand {
             SecretsDeleteMode::Remote { key, target } => {
                 validate_secret_name(key)?;
                 target.validate()?;
+                let operation = "remote secrets delete";
                 let ctx = CliRuntime::new("remote secrets delete")?;
 
                 match target.scope {
@@ -804,13 +826,14 @@ impl CallableTrait for SecretsDeleteCommand {
                                 "Service-scoped secrets require --project".to_string(),
                             )
                         })?;
-                        let project_id = resolve_project_id(&ctx, project_ref)?;
+                        let project_id = resolve_project_id(&ctx, project_ref, operation)?;
                         let app_code = target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        ctx.block_on(ctx.client.delete_service_secret(project_id, app_code, key))?;
+                        ctx.block_on(ctx.client.delete_service_secret(project_id, app_code, key))
+                            .map_err(|error| remap_remote_secret_error(operation, error))?;
                         println!("✓ Deleted service secret {} from {}", key, app_code);
                     }
                     RemoteSecretScope::Server => {
@@ -819,7 +842,8 @@ impl CallableTrait for SecretsDeleteCommand {
                                 "Server-scoped secrets require --server-id".to_string(),
                             )
                         })?;
-                        ctx.block_on(ctx.client.delete_server_secret(server_id, key))?;
+                        ctx.block_on(ctx.client.delete_server_secret(server_id, key))
+                            .map_err(|error| remap_remote_secret_error(operation, error))?;
                         println!("✓ Deleted server secret {} from server {}", key, server_id);
                     }
                 }
@@ -1284,5 +1308,20 @@ mod tests {
             }
             SecretsSetMode::Local { .. } => panic!("expected remote command mode"),
         }
+    }
+
+    #[test]
+    fn test_remote_secret_error_remaps_deploy_failed_context() {
+        let error = remap_remote_secret_error(
+            "remote secrets list",
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: "Stacker server GET /project/1/apps/web/secrets failed (403):".to_string(),
+            },
+        );
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("remote secrets list failed"));
+        assert!(!rendered.contains("Deployment to cloud failed"));
     }
 }
