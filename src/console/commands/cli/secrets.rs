@@ -11,13 +11,162 @@
 //! stacker secrets validate        [--file stacker.yml]
 //! ```
 
+use std::fmt;
+use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
 use crate::cli::error::CliError;
+use crate::cli::runtime::CliRuntime;
+use crate::cli::stacker_client::RemoteSecretMetadataInfo;
 use crate::console::commands::CallableTrait;
+use clap::ValueEnum;
 
 const DEFAULT_ENV_FILE: &str = ".env";
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum RemoteSecretScope {
+    Service,
+    Server,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteSecretTarget {
+    scope: RemoteSecretScope,
+    project: Option<String>,
+    service: Option<String>,
+    server_id: Option<i32>,
+}
+
+impl RemoteSecretTarget {
+    fn new(
+        scope: RemoteSecretScope,
+        project: Option<String>,
+        service: Option<String>,
+        server_id: Option<i32>,
+    ) -> Self {
+        Self {
+            scope,
+            project,
+            service,
+            server_id,
+        }
+    }
+
+    fn validate(&self) -> Result<(), CliError> {
+        match self.scope {
+            RemoteSecretScope::Service => {
+                if self.project.as_deref().unwrap_or_default().is_empty() {
+                    return Err(CliError::ConfigValidation(
+                        "Service-scoped secrets require --project".to_string(),
+                    ));
+                }
+                if self.service.as_deref().unwrap_or_default().is_empty() {
+                    return Err(CliError::ConfigValidation(
+                        "Service-scoped secrets require --service".to_string(),
+                    ));
+                }
+                if self.server_id.is_some() {
+                    return Err(CliError::ConfigValidation(
+                        "Service-scoped secrets do not accept --server-id".to_string(),
+                    ));
+                }
+            }
+            RemoteSecretScope::Server => {
+                if self.server_id.is_none() {
+                    return Err(CliError::ConfigValidation(
+                        "Server-scoped secrets require --server-id".to_string(),
+                    ));
+                }
+                if self.project.is_some() || self.service.is_some() {
+                    return Err(CliError::ConfigValidation(
+                        "Server-scoped secrets do not accept --project or --service".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn project_ref(&self) -> Option<&str> {
+        self.project.as_deref()
+    }
+
+    fn service_code(&self) -> Option<&str> {
+        self.service.as_deref()
+    }
+
+    fn server_id(&self) -> Option<i32> {
+        self.server_id
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RemoteSecretWriteOptions {
+    name: String,
+    target: RemoteSecretTarget,
+    body: Option<String>,
+    body_file: Option<String>,
+}
+
+impl fmt::Debug for RemoteSecretWriteOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoteSecretWriteOptions")
+            .field("name", &self.name)
+            .field("target", &self.target)
+            .field("body", &self.body.as_ref().map(|_| "[REDACTED]"))
+            .field("body_file", &self.body_file)
+            .finish()
+    }
+}
+
+impl RemoteSecretWriteOptions {
+    fn validate(&self) -> Result<(), CliError> {
+        validate_secret_name(&self.name)?;
+        self.target.validate()?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteSecretReadOptions {
+    name: String,
+    target: RemoteSecretTarget,
+    json: bool,
+}
+
+impl RemoteSecretReadOptions {
+    fn validate(&self) -> Result<(), CliError> {
+        validate_secret_name(&self.name)?;
+        self.target.validate()?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteSecretListOptions {
+    target: RemoteSecretTarget,
+    json: bool,
+}
+
+impl RemoteSecretListOptions {
+    fn validate(&self) -> Result<(), CliError> {
+        self.target.validate()
+    }
+}
+
+fn validate_secret_name(name: &str) -> Result<(), CliError> {
+    let valid_key = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
+    if valid_key.is_match(name) {
+        Ok(())
+    } else {
+        Err(CliError::ConfigValidation(format!(
+            "Invalid key '{}': must match [A-Za-z_][A-Za-z0-9_]*",
+            name
+        )))
+    }
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Shared helpers
@@ -110,42 +259,154 @@ fn resolve_env_path(explicit: Option<&str>) -> Result<PathBuf, CliError> {
     Ok(PathBuf::from(DEFAULT_ENV_FILE))
 }
 
+fn resolve_remote_secret_value(options: &RemoteSecretWriteOptions) -> Result<String, CliError> {
+    if let Some(body) = &options.body {
+        return Ok(body.clone());
+    }
+
+    if let Some(body_file) = &options.body_file {
+        return std::fs::read_to_string(body_file).map_err(CliError::from);
+    }
+
+    if !io::stdin().is_terminal() {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        if !buffer.is_empty() {
+            return Ok(buffer);
+        }
+    }
+
+    Err(CliError::ConfigValidation(
+        "Remote secrets set requires --body, --body-file, or stdin input".to_string(),
+    ))
+}
+
+fn resolve_project_id(ctx: &CliRuntime, reference: &str) -> Result<i32, CliError> {
+    ctx.block_on(ctx.client.find_project(reference))?
+        .map(|project| project.id)
+        .ok_or_else(|| CliError::ConfigValidation(format!("Project '{}' was not found", reference)))
+}
+
+fn print_remote_secret(secret: &RemoteSecretMetadataInfo, json: bool) -> Result<(), CliError> {
+    if json {
+        let rendered = serde_json::to_string_pretty(secret)
+            .map_err(|error| CliError::ConfigValidation(error.to_string()))?;
+        println!("{rendered}");
+    } else {
+        println!("Name: {}", secret.name);
+        println!("Scope: {}", secret.scope);
+        if let Some(project_id) = secret.project_id {
+            println!("Project ID: {}", project_id);
+        }
+        if let Some(app_code) = &secret.app_code {
+            println!("Service: {}", app_code);
+        }
+        if let Some(server_id) = secret.server_id {
+            println!("Server ID: {}", server_id);
+        }
+        println!("Updated At: {}", secret.updated_at);
+        println!("Updated By: {}", secret.updated_by);
+        println!("Source: {}", secret.source);
+        println!("Value: [REDACTED]");
+    }
+
+    Ok(())
+}
+
+fn print_remote_secret_list(
+    secrets: &[RemoteSecretMetadataInfo],
+    json: bool,
+) -> Result<(), CliError> {
+    if json {
+        let rendered = serde_json::to_string_pretty(secrets)
+            .map_err(|error| CliError::ConfigValidation(error.to_string()))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+
+    if secrets.is_empty() {
+        println!("(no remote secrets set)");
+        return Ok(());
+    }
+
+    println!(
+        "{:<32} {:<10} {:<20} {:<26}",
+        "NAME", "SCOPE", "TARGET", "UPDATED"
+    );
+    println!("{}", "─".repeat(92));
+    for secret in secrets {
+        let target = if let Some(app_code) = &secret.app_code {
+            format!("app:{app_code}")
+        } else if let Some(server_id) = secret.server_id {
+            format!("server:{server_id}")
+        } else {
+            "-".to_string()
+        };
+        println!(
+            "{:<32} {:<10} {:<20} {:<26}",
+            secret.name, secret.scope, target, secret.updated_at
+        );
+    }
+
+    Ok(())
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // secrets set
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// `stacker secrets set KEY=VALUE [--file .env]`
 pub struct SecretsSetCommand {
-    pub key_value: String,
-    pub file: Option<String>,
+    mode: SecretsSetMode,
+}
+
+#[derive(Debug)]
+enum SecretsSetMode {
+    Local {
+        key_value: String,
+        file: Option<String>,
+    },
+    Remote(RemoteSecretWriteOptions),
 }
 
 impl SecretsSetCommand {
     pub fn new(key_value: String, file: Option<String>) -> Self {
-        Self { key_value, file }
+        Self {
+            mode: SecretsSetMode::Local { key_value, file },
+        }
     }
-}
 
-impl CallableTrait for SecretsSetCommand {
-    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Parse "KEY=VALUE"
-        let pos = self.key_value.find('=').ok_or_else(|| {
+    pub fn new_remote(
+        name: String,
+        scope: RemoteSecretScope,
+        project: Option<String>,
+        service: Option<String>,
+        server_id: Option<i32>,
+        body: Option<String>,
+        body_file: Option<String>,
+    ) -> Self {
+        Self {
+            mode: SecretsSetMode::Remote(RemoteSecretWriteOptions {
+                name,
+                target: RemoteSecretTarget::new(scope, project, service, server_id),
+                body,
+                body_file,
+            }),
+        }
+    }
+
+    fn call_local(key_value: &str, file: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let pos = key_value.find('=').ok_or_else(|| {
             CliError::ConfigValidation(
                 "Expected KEY=VALUE format (e.g. DB_PASS=secret)".to_string(),
             )
         })?;
-        let key = self.key_value[..pos].trim().to_string();
-        let value = self.key_value[pos + 1..].to_string();
+        let key = key_value[..pos].trim().to_string();
+        let value = key_value[pos + 1..].to_string();
 
-        let valid_key = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
-        if !valid_key.is_match(&key) {
-            return Err(Box::new(CliError::ConfigValidation(format!(
-                "Invalid key '{}': must match [A-Za-z_][A-Za-z0-9_]*",
-                key
-            ))));
-        }
+        validate_secret_name(&key)?;
 
-        let env_path = resolve_env_path(self.file.as_deref())?;
+        let env_path = resolve_env_path(file)?;
         let mut lines = read_env_lines(&env_path)?;
 
         let new_line = format!("{key}={value}");
@@ -167,6 +428,67 @@ impl CallableTrait for SecretsSetCommand {
         println!("✓ Set {key} in {}", env_path.display());
         Ok(())
     }
+
+    fn call_remote(options: &RemoteSecretWriteOptions) -> Result<(), Box<dyn std::error::Error>> {
+        options.validate()?;
+        let value = resolve_remote_secret_value(options)?;
+        let ctx = CliRuntime::new("remote secrets set")?;
+
+        match options.target.scope {
+            RemoteSecretScope::Service => {
+                let project_ref = options.target.project_ref().ok_or_else(|| {
+                    CliError::ConfigValidation(
+                        "Service-scoped secrets require --project".to_string(),
+                    )
+                })?;
+                let project_id = resolve_project_id(&ctx, project_ref)?;
+                let app_code = options.target.service_code().ok_or_else(|| {
+                    CliError::ConfigValidation(
+                        "Service-scoped secrets require --service".to_string(),
+                    )
+                })?;
+                let secret = ctx.block_on(ctx.client.set_service_secret(
+                    project_id,
+                    app_code,
+                    &options.name,
+                    &value,
+                ))?;
+                println!(
+                    "✓ Saved {} secret {} for project {} service {}",
+                    secret.scope, secret.name, project_id, app_code
+                );
+            }
+            RemoteSecretScope::Server => {
+                let server_id = options.target.server_id().ok_or_else(|| {
+                    CliError::ConfigValidation(
+                        "Server-scoped secrets require --server-id".to_string(),
+                    )
+                })?;
+                let secret = ctx.block_on(ctx.client.set_server_secret(
+                    server_id,
+                    &options.name,
+                    &value,
+                ))?;
+                println!(
+                    "✓ Saved {} secret {} for server {}",
+                    secret.scope, secret.name, server_id
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl CallableTrait for SecretsSetCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        match &self.mode {
+            SecretsSetMode::Local { key_value, file } => {
+                Self::call_local(key_value, file.as_deref())
+            }
+            SecretsSetMode::Remote(options) => Self::call_remote(options),
+        }
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -175,42 +497,112 @@ impl CallableTrait for SecretsSetCommand {
 
 /// `stacker secrets get KEY [--file .env] [--show]`
 pub struct SecretsGetCommand {
-    pub key: String,
-    pub file: Option<String>,
-    pub show: bool,
+    mode: SecretsGetMode,
+}
+
+#[derive(Debug)]
+enum SecretsGetMode {
+    Local {
+        key: String,
+        file: Option<String>,
+        show: bool,
+    },
+    Remote(RemoteSecretReadOptions),
 }
 
 impl SecretsGetCommand {
     pub fn new(key: String, file: Option<String>, show: bool) -> Self {
-        Self { key, file, show }
+        Self {
+            mode: SecretsGetMode::Local { key, file, show },
+        }
+    }
+
+    pub fn new_remote(
+        name: String,
+        scope: RemoteSecretScope,
+        project: Option<String>,
+        service: Option<String>,
+        server_id: Option<i32>,
+        json: bool,
+    ) -> Self {
+        Self {
+            mode: SecretsGetMode::Remote(RemoteSecretReadOptions {
+                name,
+                target: RemoteSecretTarget::new(scope, project, service, server_id),
+                json,
+            }),
+        }
     }
 }
 
 impl CallableTrait for SecretsGetCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let env_path = resolve_env_path(self.file.as_deref())?;
+        match &self.mode {
+            SecretsGetMode::Local { key, file, show } => {
+                let env_path = resolve_env_path(file.as_deref())?;
 
-        if !env_path.exists() {
-            return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
-        }
-
-        let lines = read_env_lines(&env_path)?;
-        for line in &lines {
-            if let Some((k, v)) = parse_env_line(line) {
-                if k == self.key {
-                    if self.show {
-                        println!("{k}={v}");
-                    } else {
-                        println!("{k}=***");
-                    }
-                    return Ok(());
+                if !env_path.exists() {
+                    return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
                 }
+
+                let lines = read_env_lines(&env_path)?;
+                for line in &lines {
+                    if let Some((k, v)) = parse_env_line(line) {
+                        if k == *key {
+                            if *show {
+                                println!("{k}={v}");
+                            } else {
+                                println!("{k}=***");
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+
+                Err(Box::new(CliError::SecretKeyNotFound { key: key.clone() }))
+            }
+            SecretsGetMode::Remote(options) => {
+                options.validate()?;
+                let ctx = CliRuntime::new("remote secrets get")?;
+                let secret = match options.target.scope {
+                    RemoteSecretScope::Service => {
+                        let project_ref = options.target.project_ref().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Service-scoped secrets require --project".to_string(),
+                            )
+                        })?;
+                        let project_id = resolve_project_id(&ctx, project_ref)?;
+                        let app_code = options.target.service_code().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Service-scoped secrets require --service".to_string(),
+                            )
+                        })?;
+                        ctx.block_on(ctx.client.get_service_secret_metadata(
+                            project_id,
+                            app_code,
+                            &options.name,
+                        ))?
+                    }
+                    RemoteSecretScope::Server => {
+                        let server_id = options.target.server_id().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Server-scoped secrets require --server-id".to_string(),
+                            )
+                        })?;
+                        ctx.block_on(
+                            ctx.client
+                                .get_server_secret_metadata(server_id, &options.name),
+                        )?
+                    }
+                }
+                .ok_or_else(|| CliError::SecretKeyNotFound {
+                    key: options.name.clone(),
+                })?;
+
+                print_remote_secret(&secret, options.json)?;
+                Ok(())
             }
         }
-
-        Err(Box::new(CliError::SecretKeyNotFound {
-            key: self.key.clone(),
-        }))
     }
 }
 
@@ -220,51 +612,108 @@ impl CallableTrait for SecretsGetCommand {
 
 /// `stacker secrets list [--file .env] [--show]`
 pub struct SecretsListCommand {
-    pub file: Option<String>,
-    pub show: bool,
+    mode: SecretsListMode,
+}
+
+#[derive(Debug)]
+enum SecretsListMode {
+    Local { file: Option<String>, show: bool },
+    Remote(RemoteSecretListOptions),
 }
 
 impl SecretsListCommand {
     pub fn new(file: Option<String>, show: bool) -> Self {
-        Self { file, show }
+        Self {
+            mode: SecretsListMode::Local { file, show },
+        }
+    }
+
+    pub fn new_remote(
+        scope: RemoteSecretScope,
+        project: Option<String>,
+        service: Option<String>,
+        server_id: Option<i32>,
+        json: bool,
+    ) -> Self {
+        Self {
+            mode: SecretsListMode::Remote(RemoteSecretListOptions {
+                target: RemoteSecretTarget::new(scope, project, service, server_id),
+                json,
+            }),
+        }
     }
 }
 
 impl CallableTrait for SecretsListCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let env_path = resolve_env_path(self.file.as_deref())?;
+        match &self.mode {
+            SecretsListMode::Local { file, show } => {
+                let env_path = resolve_env_path(file.as_deref())?;
 
-        if !env_path.exists() {
-            eprintln!(
-                "No env file found at {}. Use `stacker secrets set KEY=VALUE` to create one.",
-                env_path.display()
-            );
-            return Ok(());
-        }
-
-        let lines = read_env_lines(&env_path)?;
-        let mut count = 0;
-
-        println!("Secrets in {}:", env_path.display());
-        for line in &lines {
-            if let Some((k, v)) = parse_env_line(line) {
-                if self.show {
-                    println!("  {k}={v}");
-                } else {
-                    println!("  {k}=***");
+                if !env_path.exists() {
+                    eprintln!(
+                        "No env file found at {}. Use `stacker secrets set KEY=VALUE` to create one.",
+                        env_path.display()
+                    );
+                    return Ok(());
                 }
-                count += 1;
+
+                let lines = read_env_lines(&env_path)?;
+                let mut count = 0;
+
+                println!("Secrets in {}:", env_path.display());
+                for line in &lines {
+                    if let Some((k, v)) = parse_env_line(line) {
+                        if *show {
+                            println!("  {k}={v}");
+                        } else {
+                            println!("  {k}=***");
+                        }
+                        count += 1;
+                    }
+                }
+
+                if count == 0 {
+                    println!("  (no secrets set)");
+                } else if !show {
+                    println!();
+                    println!("Tip: use --show to reveal values");
+                }
+
+                Ok(())
+            }
+            SecretsListMode::Remote(options) => {
+                options.validate()?;
+                let ctx = CliRuntime::new("remote secrets list")?;
+                let secrets = match options.target.scope {
+                    RemoteSecretScope::Service => {
+                        let project_ref = options.target.project_ref().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Service-scoped secrets require --project".to_string(),
+                            )
+                        })?;
+                        let project_id = resolve_project_id(&ctx, project_ref)?;
+                        let app_code = options.target.service_code().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Service-scoped secrets require --service".to_string(),
+                            )
+                        })?;
+                        ctx.block_on(ctx.client.list_service_secrets(project_id, app_code))?
+                    }
+                    RemoteSecretScope::Server => {
+                        let server_id = options.target.server_id().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Server-scoped secrets require --server-id".to_string(),
+                            )
+                        })?;
+                        ctx.block_on(ctx.client.list_server_secrets(server_id))?
+                    }
+                };
+
+                print_remote_secret_list(&secrets, options.json)?;
+                Ok(())
             }
         }
-
-        if count == 0 {
-            println!("  (no secrets set)");
-        } else if !self.show {
-            println!();
-            println!("Tip: use --show to reveal values");
-        }
-
-        Ok(())
     }
 }
 
@@ -274,46 +723,110 @@ impl CallableTrait for SecretsListCommand {
 
 /// `stacker secrets delete KEY [--file .env]`
 pub struct SecretsDeleteCommand {
-    pub key: String,
-    pub file: Option<String>,
+    mode: SecretsDeleteMode,
+}
+
+#[derive(Debug)]
+enum SecretsDeleteMode {
+    Local {
+        key: String,
+        file: Option<String>,
+    },
+    Remote {
+        key: String,
+        target: RemoteSecretTarget,
+    },
 }
 
 impl SecretsDeleteCommand {
     pub fn new(key: String, file: Option<String>) -> Self {
-        Self { key, file }
+        Self {
+            mode: SecretsDeleteMode::Local { key, file },
+        }
+    }
+
+    pub fn new_remote(
+        key: String,
+        scope: RemoteSecretScope,
+        project: Option<String>,
+        service: Option<String>,
+        server_id: Option<i32>,
+    ) -> Self {
+        Self {
+            mode: SecretsDeleteMode::Remote {
+                key,
+                target: RemoteSecretTarget::new(scope, project, service, server_id),
+            },
+        }
     }
 }
 
 impl CallableTrait for SecretsDeleteCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let env_path = resolve_env_path(self.file.as_deref())?;
+        match &self.mode {
+            SecretsDeleteMode::Local { key, file } => {
+                let env_path = resolve_env_path(file.as_deref())?;
 
-        if !env_path.exists() {
-            return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
-        }
-
-        let lines = read_env_lines(&env_path)?;
-        let before_len = lines.len();
-        let filtered: Vec<String> = lines
-            .into_iter()
-            .filter(|line| {
-                if let Some((k, _)) = parse_env_line(line) {
-                    k != self.key
-                } else {
-                    true // preserve comments / blank lines
+                if !env_path.exists() {
+                    return Err(Box::new(CliError::EnvFileNotFound { path: env_path }));
                 }
-            })
-            .collect();
 
-        if filtered.len() == before_len {
-            return Err(Box::new(CliError::SecretKeyNotFound {
-                key: self.key.clone(),
-            }));
+                let lines = read_env_lines(&env_path)?;
+                let before_len = lines.len();
+                let filtered: Vec<String> = lines
+                    .into_iter()
+                    .filter(|line| {
+                        if let Some((k, _)) = parse_env_line(line) {
+                            k != *key
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                if filtered.len() == before_len {
+                    return Err(Box::new(CliError::SecretKeyNotFound { key: key.clone() }));
+                }
+
+                write_env_lines(&env_path, &filtered)?;
+                println!("✓ Deleted {} from {}", key, env_path.display());
+                Ok(())
+            }
+            SecretsDeleteMode::Remote { key, target } => {
+                validate_secret_name(key)?;
+                target.validate()?;
+                let ctx = CliRuntime::new("remote secrets delete")?;
+
+                match target.scope {
+                    RemoteSecretScope::Service => {
+                        let project_ref = target.project_ref().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Service-scoped secrets require --project".to_string(),
+                            )
+                        })?;
+                        let project_id = resolve_project_id(&ctx, project_ref)?;
+                        let app_code = target.service_code().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Service-scoped secrets require --service".to_string(),
+                            )
+                        })?;
+                        ctx.block_on(ctx.client.delete_service_secret(project_id, app_code, key))?;
+                        println!("✓ Deleted service secret {} from {}", key, app_code);
+                    }
+                    RemoteSecretScope::Server => {
+                        let server_id = target.server_id().ok_or_else(|| {
+                            CliError::ConfigValidation(
+                                "Server-scoped secrets require --server-id".to_string(),
+                            )
+                        })?;
+                        ctx.block_on(ctx.client.delete_server_secret(server_id, key))?;
+                        println!("✓ Deleted server secret {} from server {}", key, server_id);
+                    }
+                }
+
+                Ok(())
+            }
         }
-
-        write_env_lines(&env_path, &filtered)?;
-        println!("✓ Deleted {} from {}", self.key, env_path.display());
-        Ok(())
     }
 }
 
@@ -417,13 +930,6 @@ impl CallableTrait for SecretsValidateCommand {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    // ── Helper ────────────────────────────────────────
-    fn write_env(dir: &TempDir, name: &str, content: &str) -> PathBuf {
-        let path = dir.path().join(name);
-        std::fs::write(&path, content).unwrap();
-        path
-    }
 
     // ── SECURITY: Path traversal via --file flag ──────
     // CWE-22: Improper Limitation of a Pathname to a Restricted Directory
@@ -663,5 +1169,120 @@ mod tests {
         );
         let result = cmd.call();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remote_service_target_requires_project() {
+        let target = RemoteSecretTarget::new(
+            RemoteSecretScope::Service,
+            None,
+            Some("web".to_string()),
+            None,
+        );
+
+        let error = target.validate().unwrap_err().to_string();
+        assert!(error.contains("--project"));
+    }
+
+    #[test]
+    fn test_remote_service_target_requires_service() {
+        let target = RemoteSecretTarget::new(
+            RemoteSecretScope::Service,
+            Some("project-1".to_string()),
+            None,
+            None,
+        );
+
+        let error = target.validate().unwrap_err().to_string();
+        assert!(error.contains("--service"));
+    }
+
+    #[test]
+    fn test_remote_server_target_rejects_project_and_service() {
+        let target = RemoteSecretTarget::new(
+            RemoteSecretScope::Server,
+            Some("project-1".to_string()),
+            Some("web".to_string()),
+            Some(42),
+        );
+
+        let error = target.validate().unwrap_err().to_string();
+        assert!(error.contains("--project or --service"));
+    }
+
+    #[test]
+    fn test_remote_server_target_requires_server_id() {
+        let target = RemoteSecretTarget::new(RemoteSecretScope::Server, None, None, None);
+
+        let error = target.validate().unwrap_err().to_string();
+        assert!(error.contains("--server-id"));
+    }
+
+    #[test]
+    fn test_remote_set_debug_redacts_inline_secret_value() {
+        let options = RemoteSecretWriteOptions {
+            name: "NPM_TOKEN".to_string(),
+            target: RemoteSecretTarget::new(RemoteSecretScope::Server, None, None, Some(42)),
+            body: Some("supersecret".to_string()),
+            body_file: None,
+        };
+
+        let debug_output = format!("{options:?}");
+        assert!(!debug_output.contains("supersecret"));
+        assert!(debug_output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_remote_set_resolves_inline_secret_value() {
+        let options = RemoteSecretWriteOptions {
+            name: "NPM_TOKEN".to_string(),
+            target: RemoteSecretTarget::new(RemoteSecretScope::Server, None, None, Some(42)),
+            body: Some("supersecret".to_string()),
+            body_file: None,
+        };
+
+        assert_eq!(
+            resolve_remote_secret_value(&options).unwrap(),
+            "supersecret"
+        );
+    }
+
+    #[test]
+    fn test_remote_set_validates_scope_before_runtime_execution() {
+        let options = RemoteSecretWriteOptions {
+            name: "NPM_TOKEN".to_string(),
+            target: RemoteSecretTarget::new(
+                RemoteSecretScope::Server,
+                Some("project-1".to_string()),
+                None,
+                Some(42),
+            ),
+            body: Some("supersecret".to_string()),
+            body_file: None,
+        };
+
+        let error = options.validate().unwrap_err().to_string();
+        assert!(error.contains("--project or --service"));
+    }
+
+    #[test]
+    fn test_remote_command_constructor_keeps_scope_metadata() {
+        let command = SecretsSetCommand::new_remote(
+            "NPM_TOKEN".to_string(),
+            RemoteSecretScope::Server,
+            None,
+            None,
+            Some(42),
+            Some("supersecret".to_string()),
+            None,
+        );
+
+        match command.mode {
+            SecretsSetMode::Remote(options) => {
+                assert_eq!(options.target.scope, RemoteSecretScope::Server);
+                assert_eq!(options.target.server_id, Some(42));
+            }
+            SecretsSetMode::Local { .. } => panic!("expected remote command mode"),
+        }
     }
 }

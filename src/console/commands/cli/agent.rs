@@ -99,6 +99,98 @@ fn resolve_deployment_hash(
 /// 1. Enqueues the command via the Stacker API
 /// 2. Shows a spinner while polling for the result
 /// 3. Returns the completed `AgentCommandInfo`
+fn json_error_message(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(message) if !message.trim().is_empty() => Some(message.clone()),
+        serde_json::Value::Object(map) => map
+            .get("message")
+            .and_then(|value| value.as_str())
+            .or_else(|| map.get("error").and_then(|value| value.as_str()))
+            .or_else(|| map.get("detail").and_then(|value| value.as_str()))
+            .map(ToString::to_string),
+        _ => None,
+    }
+}
+
+fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
+    if let Some(error) = info.error.as_ref() {
+        return json_error_message(error).or_else(|| Some(fmt::pretty_json(error)));
+    }
+
+    let result = info.result.as_ref()?;
+    let reported_status = result.get("status").and_then(|value| value.as_str());
+    let result_is_error = matches!(reported_status, Some("error" | "failed"))
+        || result.get("success").and_then(|value| value.as_bool()) == Some(false)
+        || result.get("ok").and_then(|value| value.as_bool()) == Some(false);
+
+    if !result_is_error {
+        return None;
+    }
+
+    let mut message = json_error_message(result)
+        .unwrap_or_else(|| "Agent command reported an application error".to_string());
+    if let Some(code) = result.get("error_code").and_then(|value| value.as_str()) {
+        message = format!("{} ({})", message, code);
+    }
+    Some(message)
+}
+
+async fn execute_agent_command(
+    ctx: &CliRuntime,
+    request: &AgentEnqueueRequest,
+    timeout: u64,
+) -> Result<AgentCommandInfo, CliError> {
+    let info = ctx.client.agent_enqueue(request).await?;
+    let command_id = info.command_id.clone();
+    let deployment_hash = request.deployment_hash.clone();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
+    let mut last_status = "pending".to_string();
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CliError::AgentCommandTimeout {
+                command_id: command_id.clone(),
+                command_type: request.command_type.clone(),
+                last_status,
+                deployment_hash,
+            });
+        }
+
+        let status = ctx
+            .client
+            .agent_command_status(&deployment_hash, &command_id)
+            .await?;
+
+        last_status = status.status.clone();
+
+        match status.status.as_str() {
+            "completed" => {
+                if let Some(error) = agent_command_error_message(&status) {
+                    return Err(CliError::AgentCommandFailed {
+                        command_id: command_id.clone(),
+                        error,
+                    });
+                }
+                return Ok(status);
+            }
+            "failed" | "cancelled" => {
+                let error = agent_command_error_message(&status).unwrap_or_else(|| {
+                    format!("Agent command ended with status '{}'", status.status)
+                });
+                return Err(CliError::AgentCommandFailed {
+                    command_id: command_id.clone(),
+                    error,
+                });
+            }
+            _ => continue,
+        }
+    }
+}
+
 fn run_agent_command(
     ctx: &CliRuntime,
     request: &AgentEnqueueRequest,
@@ -137,24 +229,42 @@ fn run_agent_command(
             progress::update_message(&pb, &format!("{} [{}]", spinner_msg, status.status));
 
             match status.status.as_str() {
-                "completed" | "failed" => return Ok(status),
+                "completed" => {
+                    if let Some(error) = agent_command_error_message(&status) {
+                        return Err(CliError::AgentCommandFailed {
+                            command_id: command_id.clone(),
+                            error,
+                        });
+                    }
+                    return Ok(status);
+                }
+                "failed" | "cancelled" => {
+                    let error = agent_command_error_message(&status).unwrap_or_else(|| {
+                        format!("Agent command ended with status '{}'", status.status)
+                    });
+                    return Err(CliError::AgentCommandFailed {
+                        command_id: command_id.clone(),
+                        error,
+                    });
+                }
                 _ => continue,
             }
         }
     });
 
     match &result {
-        Ok(info) if info.status == "completed" => {
-            progress::finish_success(&pb, &format!("{} ✓", spinner_msg));
-        }
-        Ok(info) => {
-            progress::finish_error(&pb, &format!("{} — {}", spinner_msg, info.status));
-        }
+        Ok(_) => progress::finish_success(&pb, spinner_msg),
         Err(e) => {
-            let short_msg = if matches!(e, CliError::AgentCommandTimeout { .. }) {
-                format!("{} — timed out", spinner_msg)
-            } else {
-                format!("{} — {}", spinner_msg, e)
+            let short_msg = match e {
+                CliError::AgentCommandTimeout { .. } => {
+                    format!("{} — timed out", spinner_msg)
+                }
+                CliError::AgentCommandFailed { error, .. } => {
+                    format!("{} — {}", spinner_msg, error)
+                }
+                _ => {
+                    format!("{} — {}", spinner_msg, e)
+                }
             };
             progress::finish_error(&pb, &short_msg);
         }
@@ -184,8 +294,8 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
         println!("\n{}", fmt::pretty_json(result));
     }
 
-    if let Some(ref error) = info.error {
-        eprintln!("\nError: {}", fmt::pretty_json(error));
+    if let Some(error) = agent_command_error_message(info) {
+        eprintln!("\nError: {}", error);
     }
 }
 
@@ -203,11 +313,21 @@ fn check_active_connections(ctx: &CliRuntime, hash: &str, force: bool) -> Result
         .with_parameters(&params)
         .map_err(|e| CliError::ConfigValidation(format!("check_connections parameters: {}", e)))?;
 
-    let info = match run_agent_command(ctx, &request, "Checking active connections", 15) {
-        Ok(info) => info,
-        Err(_) => {
+    let pb = progress::spinner("Checking active connections");
+    let info = match ctx.block_on(execute_agent_command(ctx, &request, 15)) {
+        Ok(info) => {
+            progress::finish_success(&pb, "Checking active connections");
+            info
+        }
+        Err(err) => {
             // Non-fatal: if the check times out or fails we warn but proceed.
-            eprintln!("\x1b[33m⚠ Connection check skipped (agent did not respond in time)\x1b[0m");
+            progress::finish_warning(&pb, "Checking active connections — skipped");
+            let reason = if matches!(err, CliError::AgentCommandTimeout { .. }) {
+                "agent did not respond in time"
+            } else {
+                "agent could not verify active connections"
+            };
+            eprintln!("\x1b[33m⚠ Connection check skipped ({})\x1b[0m", reason);
             return Ok(());
         }
     };
@@ -1410,5 +1530,83 @@ mod tests {
         let snap = serde_json::json!({});
         // Should not panic
         print_snapshot_summary(&snap, None);
+    }
+
+    #[test]
+    fn agent_command_error_message_prefers_error_field() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_1".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "message": "ignored"
+            })),
+            error: Some(serde_json::json!(
+                "Vault-backed proxy credential resolution is not configured on this agent"
+            )),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(
+            agent_command_error_message(&info),
+            Some(
+                "Vault-backed proxy credential resolution is not configured on this agent"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_reads_error_result_payload() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_2".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "error_code": "vault_not_configured",
+                "message": "Vault-backed proxy credential resolution is not configured on this agent"
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(
+            agent_command_error_message(&info),
+            Some(
+                "Vault-backed proxy credential resolution is not configured on this agent (vault_not_configured)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_ignores_successful_results() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_3".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "health".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "ok",
+                "message": "healthy"
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(agent_command_error_message(&info), None);
     }
 }

@@ -20,9 +20,12 @@ use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::project_app::hydration::{hydrate_project_app, hydrate_single_app, HydratedProjectApp};
+use crate::project_app::hydration::{
+    hydrate_project_app, hydrate_single_app, redact_app_environment, HydratedProjectApp,
+};
 
 async fn hydrate_apps_with_metadata(
     pool: &PgPool,
@@ -34,6 +37,54 @@ async fn hydrate_apps_with_metadata(
         hydrated.push(hydrate_project_app(pool, project, app).await?);
     }
     Ok(hydrated)
+}
+
+async fn ensure_no_service_secret_key_conflicts(
+    pool: &PgPool,
+    user_id: &str,
+    project_id: i32,
+    app_code: &str,
+    candidate_keys: &[String],
+) -> Result<()> {
+    if candidate_keys.is_empty() {
+        return Ok(());
+    }
+
+    let service_secrets =
+        db::remote_secret::list_service_secrets(pool, user_id, project_id, app_code)
+            .await
+            .map_err(JsonResponse::internal_server_error)?;
+    let secret_names: HashSet<String> = service_secrets
+        .into_iter()
+        .map(|secret| secret.name)
+        .collect();
+
+    if let Some(conflict) = candidate_keys
+        .iter()
+        .find(|key| secret_names.contains(key.as_str()))
+    {
+        return Err(JsonResponse::<String>::build().conflict(format!(
+            "Environment variable '{}' is managed as a remote service secret. Use 'stacker secrets set {} --scope service --project {} --service {}' instead.",
+            conflict, conflict, project_id, app_code
+        )));
+    }
+
+    Ok(())
+}
+
+fn environment_keys(env: &Value) -> Vec<String> {
+    match env {
+        Value::Object(map) => map.keys().cloned().collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                item.as_str()
+                    .and_then(|pair| pair.split_once('='))
+                    .map(|(key, _)| key.to_string())
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Response for app configuration
@@ -195,6 +246,18 @@ pub async fn create_app(
         return Err(JsonResponse::<()>::build().bad_request("image is required"));
     }
 
+    if let Some(env) = payload.env.as_ref() {
+        let keys = environment_keys(env);
+        ensure_no_service_secret_key_conflicts(
+            pg_pool.get_ref(),
+            &project.user_id,
+            project_id,
+            code,
+            &keys,
+        )
+        .await?;
+    }
+
     let mut app = models::ProjectApp::default();
     app.project_id = project_id;
     app.code = code.to_string();
@@ -304,7 +367,15 @@ pub async fn get_app_config(
         .ok_or_else(|| JsonResponse::not_found("App not found"))?;
 
     // Build response with redacted environment variables
-    let env = redact_sensitive_env_vars(app.environment.clone().unwrap_or(json!({})));
+    let env = redact_app_environment(
+        pg_pool.get_ref(),
+        &project.user_id,
+        project_id,
+        &code,
+        app.environment.clone().unwrap_or(json!({})),
+    )
+    .await
+    .map_err(JsonResponse::internal_server_error)?;
 
     let config = AppConfigResponse {
         project_id,
@@ -351,7 +422,15 @@ pub async fn get_env_vars(
         .ok_or_else(|| JsonResponse::not_found("App not found"))?;
 
     // Redact sensitive values
-    let env = redact_sensitive_env_vars(app.environment.clone().unwrap_or(json!({})));
+    let env = redact_app_environment(
+        pg_pool.get_ref(),
+        &project.user_id,
+        project_id,
+        &code,
+        app.environment.clone().unwrap_or(json!({})),
+    )
+    .await
+    .map_err(JsonResponse::internal_server_error)?;
 
     let response = json!({
         "project_id": project_id,
@@ -392,6 +471,16 @@ pub async fn update_env_vars(
         .ok_or_else(|| JsonResponse::not_found("App not found"))?;
 
     // Merge new variables with existing
+    let keys = environment_keys(&body.variables);
+    ensure_no_service_secret_key_conflicts(
+        pg_pool.get_ref(),
+        &project.user_id,
+        project_id,
+        &code,
+        &keys,
+    )
+    .await?;
+
     let mut env = app.environment.clone().unwrap_or(json!({}));
     if let (Some(existing), Some(new)) = (env.as_object_mut(), body.variables.as_object()) {
         for (key, value) in new {
@@ -588,41 +677,4 @@ pub async fn update_domain(
             "updated_at": updated.updated_at
         })))
         .ok("OK"))
-}
-
-/// Redact sensitive environment variables for display
-fn redact_sensitive_env_vars(env: Value) -> Value {
-    const SENSITIVE_PATTERNS: &[&str] = &[
-        "password",
-        "passwd",
-        "secret",
-        "token",
-        "key",
-        "api_key",
-        "apikey",
-        "auth",
-        "credential",
-        "private",
-        "cert",
-        "ssl",
-        "tls",
-    ];
-
-    if let Some(obj) = env.as_object() {
-        let redacted: serde_json::Map<String, Value> = obj
-            .iter()
-            .map(|(k, v)| {
-                let key_lower = k.to_lowercase();
-                let is_sensitive = SENSITIVE_PATTERNS.iter().any(|p| key_lower.contains(p));
-                if is_sensitive {
-                    (k.clone(), json!("[REDACTED]"))
-                } else {
-                    (k.clone(), v.clone())
-                }
-            })
-            .collect();
-        Value::Object(redacted)
-    } else {
-        env
-    }
 }

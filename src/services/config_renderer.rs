@@ -9,11 +9,13 @@
 //! 3. Applied for runtime configuration updates
 
 use crate::configuration::DeploymentSettings;
+use crate::db;
 use crate::models::{Project, ProjectApp};
 use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use tera::{Context as TeraContext, Tera};
 
@@ -157,25 +159,21 @@ impl ConfigRenderer {
     }
 
     /// Render a full configuration bundle for a project
-    pub fn render_bundle(
+    pub async fn render_bundle(
         &self,
+        pool: &PgPool,
         project: &Project,
         apps: &[ProjectApp],
         deployment_hash: &str,
     ) -> Result<ConfigBundle> {
-        let app_contexts: Vec<AppRenderContext> = apps
-            .iter()
-            .filter(|a| a.is_enabled())
-            .map(|app| self.project_app_to_context(app, project))
-            .collect::<Result<Vec<_>>>()?;
-
-        // Render docker-compose.yml
-        let compose_content = self.render_compose(&app_contexts, project)?;
-
-        // Render per-app .env files
+        let mut app_contexts = Vec::new();
         let mut app_configs = HashMap::new();
+
         for app in apps.iter().filter(|a| a.is_enabled()) {
-            let env_content = self.render_env_file(app, project, deployment_hash)?;
+            let environment = self.resolve_app_environment(pool, project, app).await?;
+            app_contexts.push(self.project_app_to_context(app, environment.clone())?);
+
+            let env_content = self.render_env_file(app, deployment_hash, &environment)?;
             let config = AppConfig {
                 content: env_content,
                 content_type: "env".to_string(),
@@ -186,6 +184,8 @@ impl ConfigRenderer {
             };
             app_configs.insert(app.code.clone(), config);
         }
+
+        let compose_content = self.render_compose(&app_contexts, project)?;
 
         Ok(ConfigBundle {
             deployment_hash: deployment_hash.to_string(),
@@ -200,7 +200,7 @@ impl ConfigRenderer {
     fn project_app_to_context(
         &self,
         app: &ProjectApp,
-        _project: &Project,
+        environment: HashMap<String, String>,
     ) -> Result<AppRenderContext> {
         // Validate that the app has a non-empty image to prevent generating
         // `image: ` in docker-compose.yml (Docker interprets this as `:latest`
@@ -212,9 +212,6 @@ impl ConfigRenderer {
                 app.code
             ));
         }
-
-        // Parse environment variables from JSON
-        let environment = self.parse_environment(&app.environment)?;
 
         // Parse ports from JSON
         let ports = self.parse_ports(&app.ports)?;
@@ -257,6 +254,61 @@ impl ConfigRenderer {
             healthcheck,
             runtime: None,
         })
+    }
+
+    async fn resolve_app_environment(
+        &self,
+        pool: &PgPool,
+        project: &Project,
+        app: &ProjectApp,
+    ) -> Result<HashMap<String, String>> {
+        let mut environment = self.parse_environment(&app.environment)?;
+        self.merge_service_secrets(pool, project, app, &mut environment)
+            .await?;
+        Ok(environment)
+    }
+
+    async fn merge_service_secrets(
+        &self,
+        pool: &PgPool,
+        project: &Project,
+        app: &ProjectApp,
+        environment: &mut HashMap<String, String>,
+    ) -> Result<()> {
+        let secrets =
+            db::remote_secret::list_service_secrets(pool, &project.user_id, project.id, &app.code)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to load service secret metadata: {}", error)
+                })?;
+
+        if secrets.is_empty() {
+            return Ok(());
+        }
+
+        let vault = self.vault_service.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Vault is required to render service secrets for app '{}'",
+                app.code
+            )
+        })?;
+
+        for secret in secrets {
+            let value = vault
+                .fetch_secret_value(&secret.vault_path)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "Failed to fetch service secret '{}' for app '{}': {}",
+                        secret.name,
+                        app.code,
+                        error
+                    )
+                })?;
+            environment.insert(secret.name, value);
+        }
+
+        Ok(())
     }
 
     /// Parse environment JSON to HashMap
@@ -523,16 +575,14 @@ impl ConfigRenderer {
     fn render_env_file(
         &self,
         app: &ProjectApp,
-        _project: &Project,
         deployment_hash: &str,
+        environment: &HashMap<String, String>,
     ) -> Result<String> {
-        let env_map = self.parse_environment(&app.environment)?;
-
         let mut context = TeraContext::new();
         context.insert("app_code", &app.code);
         context.insert("app_name", &app.name);
         context.insert("deployment_hash", deployment_hash);
-        context.insert("environment", &env_map);
+        context.insert("environment", environment);
         context.insert("domain", &app.domain);
         context.insert("ssl_enabled", &app.ssl_enabled.unwrap_or(false));
 
@@ -601,6 +651,7 @@ impl ConfigRenderer {
     /// Sync a single app config to Vault (for incremental updates)
     pub async fn sync_app_to_vault(
         &self,
+        pool: &PgPool,
         app: &ProjectApp,
         project: &Project,
         deployment_hash: &str,
@@ -615,8 +666,13 @@ impl ConfigRenderer {
             None => return Err(VaultError::NotConfigured),
         };
 
+        let environment = self
+            .resolve_app_environment(pool, project, app)
+            .await
+            .map_err(|e| VaultError::Other(format!("Secret resolution failed: {}", e)))?;
+
         let env_content = self
-            .render_env_file(app, project, deployment_hash)
+            .render_env_file(app, deployment_hash, &environment)
             .map_err(|e| VaultError::Other(format!("Render failed: {}", e)))?;
 
         let config = AppConfig {
@@ -994,18 +1050,16 @@ mod tests {
 
     #[test]
     fn test_empty_image_rejected() {
-        use crate::models::project::Project;
         use crate::models::project_app::ProjectApp;
 
         let renderer = ConfigRenderer::new().unwrap();
-        let project = Project::default();
         let app = ProjectApp {
             code: "broken_app".to_string(),
             image: "".to_string(),
             ..ProjectApp::default()
         };
 
-        let result = renderer.project_app_to_context(&app, &project);
+        let result = renderer.project_app_to_context(&app, HashMap::new());
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1022,28 +1076,24 @@ mod tests {
 
     #[test]
     fn test_whitespace_only_image_rejected() {
-        use crate::models::project::Project;
         use crate::models::project_app::ProjectApp;
 
         let renderer = ConfigRenderer::new().unwrap();
-        let project = Project::default();
         let app = ProjectApp {
             code: "spacey".to_string(),
             image: "   ".to_string(),
             ..ProjectApp::default()
         };
 
-        let result = renderer.project_app_to_context(&app, &project);
+        let result = renderer.project_app_to_context(&app, HashMap::new());
         assert!(result.is_err());
     }
 
     #[test]
     fn test_valid_image_accepted() {
-        use crate::models::project::Project;
         use crate::models::project_app::ProjectApp;
 
         let renderer = ConfigRenderer::new().unwrap();
-        let project = Project::default();
         let app = ProjectApp {
             code: "nginx".to_string(),
             name: "Nginx".to_string(),
@@ -1051,7 +1101,7 @@ mod tests {
             ..ProjectApp::default()
         };
 
-        let result = renderer.project_app_to_context(&app, &project);
+        let result = renderer.project_app_to_context(&app, HashMap::new());
         assert!(result.is_ok());
         let ctx = result.unwrap();
         assert_eq!(ctx.image, "nginx:latest");

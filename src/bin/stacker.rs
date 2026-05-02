@@ -15,6 +15,7 @@
 //! designed for end-user distribution.
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use stacker::console::commands::cli::secrets::RemoteSecretScope;
 
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
@@ -505,39 +506,125 @@ enum ConfigSetupCommands {
 enum SecretsCommands {
     /// Set or update a secret in the .env file
     Set {
-        /// KEY=VALUE pair (e.g. DB_PASS=s3cr3t)
-        key_value: String,
+        /// Local mode: KEY=VALUE. Remote mode: secret name.
+        input: String,
         /// Path to .env file (default: from stacker.yml env_file, or .env)
-        #[arg(long, value_name = "FILE")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with_all = ["scope", "project", "service", "server_id", "body", "body_file"]
+        )]
         file: Option<String>,
+        /// Remote secret scope
+        #[arg(long, value_enum)]
+        scope: Option<RemoteSecretScope>,
+        /// Project name or ID for service-scoped secrets
+        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        project: Option<String>,
+        /// App code for service-scoped secrets
+        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        service: Option<String>,
+        /// Server ID for server-scoped secrets
+        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        server_id: Option<i32>,
+        /// Inline secret value for remote mode
+        #[arg(
+            long,
+            value_name = "VALUE",
+            requires = "scope",
+            conflicts_with = "body_file"
+        )]
+        body: Option<String>,
+        /// Read the secret value from a file in remote mode
+        #[arg(
+            long = "body-file",
+            value_name = "FILE",
+            requires = "scope",
+            conflicts_with = "body"
+        )]
+        body_file: Option<String>,
     },
     /// Get a secret value from the .env file
     Get {
         /// Key name to retrieve
         key: String,
         /// Path to .env file
-        #[arg(long, value_name = "FILE")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with_all = ["scope", "project", "service", "server_id", "json"]
+        )]
         file: Option<String>,
         /// Show the actual value instead of masking it
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["scope", "project", "service", "server_id", "json"])]
         show: bool,
+        /// Remote secret scope
+        #[arg(long, value_enum)]
+        scope: Option<RemoteSecretScope>,
+        /// Project name or ID for service-scoped secrets
+        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        project: Option<String>,
+        /// App code for service-scoped secrets
+        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        service: Option<String>,
+        /// Server ID for server-scoped secrets
+        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        server_id: Option<i32>,
+        /// Output metadata as JSON in remote mode
+        #[arg(long, requires = "scope")]
+        json: bool,
     },
     /// List all secrets in the .env file
     List {
         /// Path to .env file
-        #[arg(long, value_name = "FILE")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with_all = ["scope", "project", "service", "server_id", "json"]
+        )]
         file: Option<String>,
         /// Show actual values (default: mask with ***)
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["scope", "project", "service", "server_id", "json"])]
         show: bool,
+        /// Remote secret scope
+        #[arg(long, value_enum)]
+        scope: Option<RemoteSecretScope>,
+        /// Project name or ID for service-scoped secrets
+        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        project: Option<String>,
+        /// App code for service-scoped secrets
+        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        service: Option<String>,
+        /// Server ID for server-scoped secrets
+        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        server_id: Option<i32>,
+        /// Output metadata as JSON in remote mode
+        #[arg(long, requires = "scope")]
+        json: bool,
     },
     /// Delete a secret from the .env file
     Delete {
         /// Key name to delete
         key: String,
         /// Path to .env file
-        #[arg(long, value_name = "FILE")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with_all = ["scope", "project", "service", "server_id"]
+        )]
         file: Option<String>,
+        /// Remote secret scope
+        #[arg(long, value_enum)]
+        scope: Option<RemoteSecretScope>,
+        /// Project name or ID for service-scoped secrets
+        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        project: Option<String>,
+        /// App code for service-scoped secrets
+        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        service: Option<String>,
+        /// Server ID for server-scoped secrets
+        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        server_id: Option<i32>,
     },
     /// Validate all ${VAR} references in stacker.yml are set in .env or environment
     Validate {
@@ -1272,18 +1359,99 @@ fn get_command(
             stacker::console::commands::cli::update::UpdateCommand::new(channel),
         ),
         StackerCommands::Secrets { command: sec_cmd } => match sec_cmd {
-            SecretsCommands::Set { key_value, file } => Box::new(
-                stacker::console::commands::cli::secrets::SecretsSetCommand::new(key_value, file),
-            ),
-            SecretsCommands::Get { key, file, show } => Box::new(
-                stacker::console::commands::cli::secrets::SecretsGetCommand::new(key, file, show),
-            ),
-            SecretsCommands::List { file, show } => Box::new(
-                stacker::console::commands::cli::secrets::SecretsListCommand::new(file, show),
-            ),
-            SecretsCommands::Delete { key, file } => Box::new(
-                stacker::console::commands::cli::secrets::SecretsDeleteCommand::new(key, file),
-            ),
+            SecretsCommands::Set {
+                input,
+                file,
+                scope,
+                project,
+                service,
+                server_id,
+                body,
+                body_file,
+            } => {
+                if let Some(scope) = scope {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsSetCommand::new_remote(
+                            input, scope, project, service, server_id, body, body_file,
+                        ),
+                    )
+                } else {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsSetCommand::new(
+                            input, file,
+                        ),
+                    )
+                }
+            }
+            SecretsCommands::Get {
+                key,
+                file,
+                show,
+                scope,
+                project,
+                service,
+                server_id,
+                json,
+            } => {
+                if let Some(scope) = scope {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsGetCommand::new_remote(
+                            key, scope, project, service, server_id, json,
+                        ),
+                    )
+                } else {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsGetCommand::new(
+                            key, file, show,
+                        ),
+                    )
+                }
+            }
+            SecretsCommands::List {
+                file,
+                show,
+                scope,
+                project,
+                service,
+                server_id,
+                json,
+            } => {
+                if let Some(scope) = scope {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsListCommand::new_remote(
+                            scope, project, service, server_id, json,
+                        ),
+                    )
+                } else {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsListCommand::new(
+                            file, show,
+                        ),
+                    )
+                }
+            }
+            SecretsCommands::Delete {
+                key,
+                file,
+                scope,
+                project,
+                service,
+                server_id,
+            } => {
+                if let Some(scope) = scope {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsDeleteCommand::new_remote(
+                            key, scope, project, service, server_id,
+                        ),
+                    )
+                } else {
+                    Box::new(
+                        stacker::console::commands::cli::secrets::SecretsDeleteCommand::new(
+                            key, file,
+                        ),
+                    )
+                }
+            }
             SecretsCommands::Validate { file } => Box::new(
                 stacker::console::commands::cli::secrets::SecretsValidateCommand::new(file),
             ),
@@ -1740,5 +1908,79 @@ mod tests {
             }
             _ => panic!("expected pipe scan command"),
         }
+    }
+
+    #[test]
+    fn test_secrets_set_still_parses_local_key_value() {
+        let parsed = Cli::try_parse_from(["stacker", "secrets", "set", "DB_PASSWORD=supersecret"]);
+        assert!(
+            parsed.is_ok(),
+            "local secrets set syntax must remain supported"
+        );
+    }
+
+    #[test]
+    fn test_secrets_set_parses_remote_service_flags() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "set",
+            "S3_SECRET_KEY",
+            "--scope",
+            "service",
+            "--project",
+            "blog",
+            "--service",
+            "uploader",
+            "--body",
+            "supersecret",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "remote service secret syntax should parse successfully"
+        );
+    }
+
+    #[test]
+    fn test_secrets_set_parses_remote_server_flags() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "set",
+            "NPM_TOKEN",
+            "--scope",
+            "server",
+            "--server-id",
+            "42",
+            "--body-file",
+            "/tmp/npm-token.txt",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "remote server secret syntax should parse successfully"
+        );
+    }
+
+    #[test]
+    fn test_secrets_list_parses_remote_scope_and_json() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "list",
+            "--scope",
+            "service",
+            "--project",
+            "blog",
+            "--service",
+            "uploader",
+            "--json",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "remote secrets list syntax should parse successfully"
+        );
     }
 }

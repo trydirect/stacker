@@ -55,6 +55,16 @@ pub fn finish_error(pb: &ProgressBar, msg: &str) {
     pb.finish_with_message(format!("✗ {}", msg));
 }
 
+/// Finish a spinner with a warning marker.
+pub fn finish_warning(pb: &ProgressBar, msg: &str) {
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("  {msg}")
+            .expect("invalid template"),
+    );
+    pb.finish_with_message(format!("⚠ {}", msg));
+}
+
 /// Update the spinner message without stopping it.
 pub fn update_message(pb: &ProgressBar, msg: &str) {
     pb.set_message(msg.to_string());

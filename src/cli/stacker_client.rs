@@ -89,6 +89,19 @@ pub struct ServerInfo {
     pub key_status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteSecretMetadataInfo {
+    pub id: i32,
+    pub scope: String,
+    pub name: String,
+    pub project_id: Option<i32>,
+    pub app_code: Option<String>,
+    pub server_id: Option<i32>,
+    pub updated_at: String,
+    pub updated_by: String,
+    pub source: String,
+}
+
 fn default_connection_mode() -> String {
     "ssh".to_string()
 }
@@ -404,6 +417,25 @@ impl StackerClient {
         })
     }
 
+    async fn send_server_request(
+        &self,
+        method: reqwest::Method,
+        suffix: &str,
+        body: Option<&serde_json::Value>,
+        action_label: &str,
+    ) -> Result<reqwest::Response, CliError> {
+        let url = format!("{}/server{}", self.base_url, suffix);
+        let mut request = self.http.request(method, &url).bearer_auth(&self.token);
+        if let Some(payload) = body {
+            request = request.json(payload);
+        }
+
+        request.send().await.map_err(|e| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: format!("Stacker server {} failed: {}", action_label, e),
+        })
+    }
+
     pub async fn resolve_handoff(
         base_url: &str,
         token: &str,
@@ -479,6 +511,14 @@ impl StackerClient {
         Ok(projects
             .into_iter()
             .find(|p| p.name.to_lowercase() == lower))
+    }
+
+    pub async fn find_project(&self, reference: &str) -> Result<Option<ProjectInfo>, CliError> {
+        let projects = self.list_projects().await?;
+        let lower = reference.to_lowercase();
+        Ok(projects.into_iter().find(|project| {
+            project.id.to_string() == reference || project.name.to_lowercase() == lower
+        }))
     }
 
     // ── Deployments ───────────────────────────────────
@@ -942,6 +982,290 @@ impl StackerClient {
                 .map(|n| n.to_lowercase() == lower)
                 .unwrap_or(false)
         }))
+    }
+
+    pub async fn get_service_secret_metadata(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+    ) -> Result<Option<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/secrets/{}", project_id, app_code, name),
+                None,
+                "GET /project/{id}/apps/{code}/secrets/{name}",
+            )
+            .await?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /project/{}/apps/{}/secrets/{} failed ({}): {}",
+                    project_id, app_code, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    pub async fn list_service_secrets(
+        &self,
+        project_id: i32,
+        app_code: &str,
+    ) -> Result<Vec<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/secrets", project_id, app_code),
+                None,
+                "GET /project/{id}/apps/{code}/secrets",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /project/{}/apps/{}/secrets failed ({}): {}",
+                    project_id, app_code, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    pub async fn set_service_secret(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<RemoteSecretMetadataInfo, CliError> {
+        let body = serde_json::json!({ "value": value });
+        let resp = self
+            .send_project_request(
+                reqwest::Method::PUT,
+                &format!("/{}/apps/{}/secrets/{}", project_id, app_code, name),
+                Some(&body),
+                "PUT /project/{id}/apps/{code}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server PUT /project/{}/apps/{}/secrets/{} failed ({}): {}",
+                    project_id, app_code, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server saved secret but returned no item".to_string(),
+        })
+    }
+
+    pub async fn delete_service_secret(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+    ) -> Result<(), CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::DELETE,
+                &format!("/{}/apps/{}/secrets/{}", project_id, app_code, name),
+                None,
+                "DELETE /project/{id}/apps/{code}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server DELETE /project/{}/apps/{}/secrets/{} failed ({}): {}",
+                    project_id, app_code, name, status, body
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_server_secret_metadata(
+        &self,
+        server_id: i32,
+        name: &str,
+    ) -> Result<Option<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_server_request(
+                reqwest::Method::GET,
+                &format!("/{}/secrets/{}", server_id, name),
+                None,
+                "GET /server/{id}/secrets/{name}",
+            )
+            .await?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /server/{}/secrets/{} failed ({}): {}",
+                    server_id, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    pub async fn list_server_secrets(
+        &self,
+        server_id: i32,
+    ) -> Result<Vec<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_server_request(
+                reqwest::Method::GET,
+                &format!("/{}/secrets", server_id),
+                None,
+                "GET /server/{id}/secrets",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /server/{}/secrets failed ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    pub async fn set_server_secret(
+        &self,
+        server_id: i32,
+        name: &str,
+        value: &str,
+    ) -> Result<RemoteSecretMetadataInfo, CliError> {
+        let body = serde_json::json!({ "value": value });
+        let resp = self
+            .send_server_request(
+                reqwest::Method::PUT,
+                &format!("/{}/secrets/{}", server_id, name),
+                Some(&body),
+                "PUT /server/{id}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server PUT /server/{}/secrets/{} failed ({}): {}",
+                    server_id, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server saved secret but returned no item".to_string(),
+        })
+    }
+
+    pub async fn delete_server_secret(&self, server_id: i32, name: &str) -> Result<(), CliError> {
+        let resp = self
+            .send_server_request(
+                reqwest::Method::DELETE,
+                &format!("/{}/secrets/{}", server_id, name),
+                None,
+                "DELETE /server/{id}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server DELETE /server/{}/secrets/{} failed ({}): {}",
+                    server_id, name, status, body
+                ),
+            });
+        }
+
+        Ok(())
     }
 
     // ── SSH Keys ─────────────────────────────────────

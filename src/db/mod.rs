@@ -14,5 +14,6 @@ pub mod project;
 pub mod project_app;
 pub mod project_member;
 pub mod rating;
+pub mod remote_secret;
 pub mod resilience;
 pub(crate) mod server;

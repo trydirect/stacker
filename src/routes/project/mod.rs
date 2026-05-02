@@ -6,6 +6,7 @@ pub mod deploy;
 pub mod discover;
 pub mod get;
 pub mod member;
+pub mod secret;
 pub mod update;
 
 pub use add::item;

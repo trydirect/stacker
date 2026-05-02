@@ -245,7 +245,8 @@ impl ProjectAppService {
 
         // Render the full bundle
         let bundle = renderer
-            .render_bundle(project, &apps, deployment_hash)
+            .render_bundle(&self.pool, project, &apps, deployment_hash)
+            .await
             .map_err(|e| ProjectAppError::ConfigRender(e.to_string()))?;
 
         // Sync to Vault
@@ -269,7 +270,7 @@ impl ProjectAppService {
     ) -> Result<()> {
         let renderer = self.config_renderer.read().await;
         renderer
-            .sync_app_to_vault(app, project, deployment_hash)
+            .sync_app_to_vault(&self.pool, app, project, deployment_hash)
             .await
             .map_err(ProjectAppError::VaultSync)
     }
@@ -332,7 +333,8 @@ impl ProjectAppService {
     ) -> Result<crate::services::config_renderer::ConfigBundle> {
         let renderer = self.config_renderer.read().await;
         renderer
-            .render_bundle(project, apps, deployment_hash)
+            .render_bundle(&self.pool, project, apps, deployment_hash)
+            .await
             .map_err(|e| ProjectAppError::ConfigRender(e.to_string()))
     }
 }
