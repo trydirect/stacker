@@ -2105,7 +2105,7 @@ mod tests {
         assert!(help.contains("--scope service"));
         assert!(help.contains("--scope server"));
         assert!(help.contains("metadata-only"));
-        assert!(help.contains("secrets apps --project"));
+        assert!(help.contains("List valid remote app codes for a project"));
     }
 
     #[test]
