@@ -21,7 +21,13 @@ fn login_uses_mocked_auth_endpoint() {
     Command::cargo_bin("stacker-cli")
         .expect("stacker-cli binary not found")
         .env("XDG_CONFIG_HOME", temp.path())
-        .args(["login", "--auth-url", &server.url()])
+        .args([
+            "login",
+            "--auth-url",
+            &server.url(),
+            "--server-url",
+            &server.url(),
+        ])
         .write_stdin("user@example.com\nsecret\n")
         .assert()
         .success()
