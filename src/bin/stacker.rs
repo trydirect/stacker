@@ -537,8 +537,8 @@ enum SecretsCommands {
   Local .env secret:\n\
     stacker secrets set DB_PASSWORD=supersecret\n\
 \n\
-  Remote service secret:\n\
-    stacker secrets set S3_SECRET_KEY --scope service --project blog --service uploader --body supersecret\n\
+  Remote service secret (project.identity from stacker.yml):\n\
+    stacker secrets set S3_SECRET_KEY --scope service --service uploader --body supersecret\n\
 \n\
   Remote server secret from stdin:\n\
     cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42")]
@@ -555,7 +555,7 @@ enum SecretsCommands {
         /// Remote secret scope
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
-        /// Project name or ID for service-scoped secrets
+        /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
         /// App code for service-scoped secrets
@@ -590,7 +590,7 @@ enum SecretsCommands {
     stacker secrets get DB_PASSWORD --show\n\
 \n\
   Remote metadata only:\n\
-    stacker secrets get S3_SECRET_KEY --scope service --project blog --service uploader --json\n\
+    stacker secrets get S3_SECRET_KEY --scope service --service uploader --json\n\
 \n\
 Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     Get {
@@ -609,7 +609,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Remote secret scope
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
-        /// Project name or ID for service-scoped secrets
+        /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
         /// App code for service-scoped secrets
@@ -628,7 +628,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     stacker secrets list\n\
 \n\
   Remote service secrets:\n\
-    stacker secrets list --scope service --project blog --service uploader\n\
+    stacker secrets list --scope service --service uploader\n\
 \n\
   Remote server secrets as JSON:\n\
     stacker secrets list --scope server --server-id 42 --json\n\
@@ -648,7 +648,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Remote secret scope
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
-        /// Project name or ID for service-scoped secrets
+        /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
         /// App code for service-scoped secrets
@@ -665,16 +665,19 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     #[command(
         visible_alias = "services",
         after_help = "Examples:\n\
+  List remote app codes using project.identity from stacker.yml:\n\
+    stacker secrets apps\n\
+ \n\
   List remote app codes for a project:\n\
     stacker secrets apps --project blog\n\
-\n\
+ \n\
   Output app metadata as JSON:\n\
-    stacker secrets apps --project blog --json"
+    stacker secrets apps --json"
     )]
     Apps {
-        /// Project name or ID
+        /// Project name or ID (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT")]
-        project: String,
+        project: Option<String>,
         /// Output app metadata as JSON
         #[arg(long)]
         json: bool,
@@ -685,7 +688,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     stacker secrets delete DB_PASSWORD\n\
 \n\
   Remote service secret delete:\n\
-    stacker secrets delete S3_SECRET_KEY --scope service --project blog --service uploader\n\
+    stacker secrets delete S3_SECRET_KEY --scope service --service uploader\n\
 \n\
   Remote server secret delete:\n\
     stacker secrets delete NPM_TOKEN --scope server --server-id 42")]
@@ -702,7 +705,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Remote secret scope
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
-        /// Project name or ID for service-scoped secrets
+        /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
         /// App code for service-scoped secrets
@@ -2084,8 +2087,7 @@ mod tests {
 
     #[test]
     fn test_secrets_apps_parses_project_lookup_flags() {
-        let parsed =
-            Cli::try_parse_from(["stacker", "secrets", "apps", "--project", "blog", "--json"]);
+        let parsed = Cli::try_parse_from(["stacker", "secrets", "apps", "--json"]);
 
         assert!(
             parsed.is_ok(),

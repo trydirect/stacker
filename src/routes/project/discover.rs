@@ -100,20 +100,29 @@ pub async fn discover_containers(
         return Err(JsonResponse::not_found("Project not found"));
     }
 
-    // Get deployment_hash from query or find it from project
+    // Get deployment_hash from query, the active project agent, or the latest
+    // deployment record. Active agent state is preferred because command
+    // history is keyed by the hash currently heartbeating, while the latest
+    // deployment row may be newer and still lack command results.
     let deployment_hash = match &query.deployment_hash {
         Some(hash) => hash.clone(),
         None => {
-            // Try to find a deployment for this project
-            let deployment = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
+            if let Some(agent) = db::agent::fetch_active_by_project(pg_pool.get_ref(), project_id)
                 .await
-                .map_err(|e| JsonResponse::internal_server_error(e))?;
+                .map_err(|e| JsonResponse::internal_server_error(e))?
+            {
+                agent.deployment_hash
+            } else {
+                let deployment = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
+                    .await
+                    .map_err(|e| JsonResponse::internal_server_error(e))?;
 
-            deployment.map(|d| d.deployment_hash).ok_or_else(|| {
-                JsonResponse::not_found(
-                    "No deployment found for project. Please provide deployment_hash",
-                )
-            })?
+                deployment.map(|d| d.deployment_hash).ok_or_else(|| {
+                    JsonResponse::not_found(
+                        "No deployment found for project. Please provide deployment_hash",
+                    )
+                })?
+            }
         }
     };
 

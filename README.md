@@ -197,7 +197,6 @@ stacker secrets set DB_PASSWORD=supersecret
 # Remote service secret used at render/deploy time for one app
 stacker secrets set S3_SECRET_KEY \
   --scope service \
-  --project blog \
   --service uploader \
   --body supersecret
 
@@ -208,15 +207,16 @@ stacker secrets set NPM_TOKEN \
   --body-file .npm-token
 
 # Remote reads are metadata-only in v1
-stacker secrets list --scope service --project blog --service uploader --json
-stacker secrets get S3_SECRET_KEY --scope service --project blog --service uploader --json
+stacker secrets list --scope service --service uploader --json
+stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 
-# Discover valid remote service app codes for a project
-stacker secrets apps --project blog
+# Discover valid remote service app codes for the current stacker.yml project
+stacker secrets apps
 ```
 
 - Local mode remains the default and reads/writes the project `.env` file.
 - Remote mode is enabled only with `--scope service` or `--scope server`.
+- Service-scoped remote commands default `--project` from `stacker.yml -> project.identity`; `--project` still overrides it explicitly.
 - Service-scoped secrets are merged into rendered app env at deploy time.
 - Remote `get` and `list` do **not** return plaintext values in v1.
 

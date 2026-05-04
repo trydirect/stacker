@@ -15,6 +15,7 @@ use std::fmt;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
+use crate::cli::config_parser::StackerConfig;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{ProjectAppInfo, ProjectInfo, RemoteSecretMetadataInfo};
@@ -56,11 +57,6 @@ impl RemoteSecretTarget {
     fn validate(&self) -> Result<(), CliError> {
         match self.scope {
             RemoteSecretScope::Service => {
-                if self.project.as_deref().unwrap_or_default().is_empty() {
-                    return Err(CliError::ConfigValidation(
-                        "Service-scoped secrets require --project".to_string(),
-                    ));
-                }
                 if self.service.as_deref().unwrap_or_default().is_empty() {
                     return Err(CliError::ConfigValidation(
                         "Service-scoped secrets require --service".to_string(),
@@ -257,6 +253,34 @@ fn resolve_env_path(explicit: Option<&str>) -> Result<PathBuf, CliError> {
         }
     }
     Ok(PathBuf::from(DEFAULT_ENV_FILE))
+}
+
+fn load_project_identity_from_config(path: &Path) -> Result<Option<String>, CliError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let config = StackerConfig::from_file_raw(path)?;
+    Ok(config
+        .project
+        .identity
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()))
+}
+
+fn resolve_service_project_reference(explicit: Option<&str>) -> Result<String, CliError> {
+    if let Some(project) = explicit.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(project.to_string());
+    }
+
+    if let Some(project) = load_project_identity_from_config(Path::new(DEFAULT_CONFIG_FILE))? {
+        return Ok(project);
+    }
+
+    Err(CliError::ConfigValidation(
+        "Service-scoped secrets require --project, or set project.identity in stacker.yml."
+            .to_string(),
+    ))
 }
 
 fn resolve_remote_secret_value(options: &RemoteSecretWriteOptions) -> Result<String, CliError> {
@@ -524,12 +548,8 @@ impl SecretsSetCommand {
 
         match options.target.scope {
             RemoteSecretScope::Service => {
-                let project_ref = options.target.project_ref().ok_or_else(|| {
-                    CliError::ConfigValidation(
-                        "Service-scoped secrets require --project".to_string(),
-                    )
-                })?;
-                let project = resolve_project(&ctx, project_ref, operation)?;
+                let project_ref = resolve_service_project_reference(options.target.project_ref())?;
+                let project = resolve_project(&ctx, &project_ref, operation)?;
                 let app_code = options.target.service_code().ok_or_else(|| {
                     CliError::ConfigValidation(
                         "Service-scoped secrets require --service".to_string(),
@@ -659,12 +679,9 @@ impl CallableTrait for SecretsGetCommand {
                 let ctx = CliRuntime::new("remote secrets get")?;
                 let secret = match options.target.scope {
                     RemoteSecretScope::Service => {
-                        let project_ref = options.target.project_ref().ok_or_else(|| {
-                            CliError::ConfigValidation(
-                                "Service-scoped secrets require --project".to_string(),
-                            )
-                        })?;
-                        let project = resolve_project(&ctx, project_ref, operation)?;
+                        let project_ref =
+                            resolve_service_project_reference(options.target.project_ref())?;
+                        let project = resolve_project(&ctx, &project_ref, operation)?;
                         let app_code = options.target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
@@ -784,12 +801,9 @@ impl CallableTrait for SecretsListCommand {
                 let ctx = CliRuntime::new("remote secrets list")?;
                 let secrets = match options.target.scope {
                     RemoteSecretScope::Service => {
-                        let project_ref = options.target.project_ref().ok_or_else(|| {
-                            CliError::ConfigValidation(
-                                "Service-scoped secrets require --project".to_string(),
-                            )
-                        })?;
-                        let project = resolve_project(&ctx, project_ref, operation)?;
+                        let project_ref =
+                            resolve_service_project_reference(options.target.project_ref())?;
+                        let project = resolve_project(&ctx, &project_ref, operation)?;
                         let app_code = options.target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
@@ -822,12 +836,12 @@ impl CallableTrait for SecretsListCommand {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct SecretsAppsCommand {
-    project: String,
+    project: Option<String>,
     json: bool,
 }
 
 impl SecretsAppsCommand {
-    pub fn new(project: String, json: bool) -> Self {
+    pub fn new(project: Option<String>, json: bool) -> Self {
         Self { project, json }
     }
 }
@@ -836,7 +850,8 @@ impl CallableTrait for SecretsAppsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let operation = "remote project apps list";
         let ctx = CliRuntime::new(operation)?;
-        let project = resolve_project(&ctx, &self.project, operation)?;
+        let project_ref = resolve_service_project_reference(self.project.as_deref())?;
+        let project = resolve_project(&ctx, &project_ref, operation)?;
         let apps = ctx
             .block_on(ctx.client.list_project_apps(project.id))
             .map_err(|error| remap_remote_secret_error(operation, error))?;
@@ -929,12 +944,8 @@ impl CallableTrait for SecretsDeleteCommand {
 
                 match target.scope {
                     RemoteSecretScope::Service => {
-                        let project_ref = target.project_ref().ok_or_else(|| {
-                            CliError::ConfigValidation(
-                                "Service-scoped secrets require --project".to_string(),
-                            )
-                        })?;
-                        let project = resolve_project(&ctx, project_ref, operation)?;
+                        let project_ref = resolve_service_project_reference(target.project_ref())?;
+                        let project = resolve_project(&ctx, &project_ref, operation)?;
                         let app_code = target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
@@ -1305,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remote_service_target_requires_project() {
+    fn test_remote_service_target_allows_project_to_be_resolved_later() {
         let target = RemoteSecretTarget::new(
             RemoteSecretScope::Service,
             None,
@@ -1313,8 +1324,7 @@ mod tests {
             None,
         );
 
-        let error = target.validate().unwrap_err().to_string();
-        assert!(error.contains("--project"));
+        target.validate().unwrap();
     }
 
     #[test]
@@ -1513,5 +1523,72 @@ mod tests {
     #[test]
     fn test_print_project_app_list_renders_empty_state() {
         print_project_app_list(&[], false).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_service_project_reference_prefers_explicit_flag() {
+        assert_eq!(
+            resolve_service_project_reference(Some("syncopia")).unwrap(),
+            "syncopia"
+        );
+    }
+
+    #[test]
+    fn test_resolve_service_project_reference_uses_stacker_yml_project_identity() {
+        let dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let result = (|| -> Result<String, CliError> {
+            std::fs::write(
+                dir.path().join("stacker.yml"),
+                r#"
+name: syncopia
+project:
+  identity: remote-syncopia
+app:
+  type: custom
+  path: .
+deploy:
+  target: local
+"#,
+            )
+            .unwrap();
+
+            resolve_service_project_reference(None)
+        })();
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert_eq!(result.unwrap(), "remote-syncopia");
+    }
+
+    #[test]
+    fn test_resolve_service_project_reference_errors_without_flag_or_config_identity() {
+        let dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let result = (|| -> Result<String, CliError> {
+            std::fs::write(
+                dir.path().join("stacker.yml"),
+                r#"
+name: syncopia
+app:
+  type: custom
+  path: .
+deploy:
+  target: local
+"#,
+            )
+            .unwrap();
+
+            resolve_service_project_reference(None)
+        })();
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("project.identity"));
     }
 }
