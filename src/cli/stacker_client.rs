@@ -50,6 +50,19 @@ pub struct ProjectInfo {
     pub updated_at: String,
 }
 
+/// Project app as returned by `/project/{id}/apps` endpoints
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectAppInfo {
+    pub id: i32,
+    pub project_id: i32,
+    pub code: String,
+    pub name: String,
+    pub image: String,
+    pub enabled: bool,
+    pub deploy_order: Option<i32>,
+    pub parent_app_code: Option<String>,
+}
+
 /// Cloud credentials as returned by `/cloud` endpoints
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudInfo {
@@ -508,6 +521,41 @@ impl StackerClient {
         Ok(projects.into_iter().find(|project| {
             project.id.to_string() == reference || project.name.to_lowercase() == lower
         }))
+    }
+
+    /// List all apps for a project owned by the authenticated user.
+    pub async fn list_project_apps(
+        &self,
+        project_id: i32,
+    ) -> Result<Vec<ProjectAppInfo>, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps", project_id),
+                None,
+                "GET /project/{id}/apps",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /project/{}/apps failed ({}): {}",
+                    project_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<ProjectAppInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.list.unwrap_or_default())
     }
 
     // ── Deployments ───────────────────────────────────

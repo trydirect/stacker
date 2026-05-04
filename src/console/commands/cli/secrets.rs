@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
-use crate::cli::stacker_client::RemoteSecretMetadataInfo;
+use crate::cli::stacker_client::{ProjectAppInfo, ProjectInfo, RemoteSecretMetadataInfo};
 use crate::console::commands::CallableTrait;
 use clap::ValueEnum;
 
@@ -291,11 +291,55 @@ fn remap_remote_secret_error(operation: &str, error: CliError) -> CliError {
     }
 }
 
-fn resolve_project_id(ctx: &CliRuntime, reference: &str, operation: &str) -> Result<i32, CliError> {
+fn resolve_project(
+    ctx: &CliRuntime,
+    reference: &str,
+    operation: &str,
+) -> Result<ProjectInfo, CliError> {
     ctx.block_on(ctx.client.find_project(reference))
         .map_err(|error| remap_remote_secret_error(operation, error))?
-        .map(|project| project.id)
         .ok_or_else(|| CliError::ConfigValidation(format!("Project '{}' was not found", reference)))
+}
+
+fn project_app_codes(project: &ProjectInfo) -> Vec<String> {
+    let mut codes: Vec<String> = project
+        .metadata
+        .get("custom")
+        .and_then(|custom| custom.get("web"))
+        .and_then(|web| web.as_array())
+        .map(|apps| {
+            apps.iter()
+                .filter_map(|app| app.get("code").and_then(|code| code.as_str()))
+                .map(|code| code.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    codes.sort();
+    codes.dedup();
+    codes
+}
+
+fn resolve_remote_service_code(project: &ProjectInfo, requested: &str) -> Result<String, CliError> {
+    let available_codes = project_app_codes(project);
+    if available_codes.is_empty() {
+        return Ok(requested.to_string());
+    }
+
+    let requested_lower = requested.to_lowercase();
+    if let Some(code) = available_codes
+        .iter()
+        .find(|code| code.to_lowercase() == requested_lower)
+    {
+        return Ok(code.clone());
+    }
+
+    Err(CliError::ConfigValidation(format!(
+        "Service '{}' was not found in project '{}'. Available app codes: {}",
+        requested,
+        project.name,
+        available_codes.join(", ")
+    )))
 }
 
 fn print_remote_secret(secret: &RemoteSecretMetadataInfo, json: bool) -> Result<(), CliError> {
@@ -356,6 +400,38 @@ fn print_remote_secret_list(
         println!(
             "{:<32} {:<10} {:<20} {:<26}",
             secret.name, secret.scope, target, secret.updated_at
+        );
+    }
+
+    Ok(())
+}
+
+fn print_project_app_list(apps: &[ProjectAppInfo], json: bool) -> Result<(), CliError> {
+    if json {
+        let rendered = serde_json::to_string_pretty(apps)
+            .map_err(|error| CliError::ConfigValidation(error.to_string()))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+
+    if apps.is_empty() {
+        println!("(no project apps found)");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<24} {:<8} {:<12} {}",
+        "CODE", "NAME", "ENABLED", "PARENT", "IMAGE"
+    );
+    println!("{}", "─".repeat(96));
+    for app in apps {
+        println!(
+            "{:<24} {:<24} {:<8} {:<12} {}",
+            app.code,
+            app.name,
+            if app.enabled { "yes" } else { "no" },
+            app.parent_app_code.as_deref().unwrap_or("-"),
+            app.image
         );
     }
 
@@ -453,23 +529,24 @@ impl SecretsSetCommand {
                         "Service-scoped secrets require --project".to_string(),
                     )
                 })?;
-                let project_id = resolve_project_id(&ctx, project_ref, operation)?;
+                let project = resolve_project(&ctx, project_ref, operation)?;
                 let app_code = options.target.service_code().ok_or_else(|| {
                     CliError::ConfigValidation(
                         "Service-scoped secrets require --service".to_string(),
                     )
                 })?;
+                let app_code = resolve_remote_service_code(&project, app_code)?;
                 let secret = ctx
                     .block_on(ctx.client.set_service_secret(
-                        project_id,
-                        app_code,
+                        project.id,
+                        &app_code,
                         &options.name,
                         &value,
                     ))
                     .map_err(|error| remap_remote_secret_error(operation, error))?;
                 println!(
                     "✓ Saved {} secret {} for project {} service {}",
-                    secret.scope, secret.name, project_id, app_code
+                    secret.scope, secret.name, project.id, app_code
                 );
             }
             RemoteSecretScope::Server => {
@@ -587,15 +664,16 @@ impl CallableTrait for SecretsGetCommand {
                                 "Service-scoped secrets require --project".to_string(),
                             )
                         })?;
-                        let project_id = resolve_project_id(&ctx, project_ref, operation)?;
+                        let project = resolve_project(&ctx, project_ref, operation)?;
                         let app_code = options.target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
+                        let app_code = resolve_remote_service_code(&project, app_code)?;
                         ctx.block_on(ctx.client.get_service_secret_metadata(
-                            project_id,
-                            app_code,
+                            project.id,
+                            &app_code,
                             &options.name,
                         ))
                         .map_err(|error| remap_remote_secret_error(operation, error))?
@@ -711,13 +789,14 @@ impl CallableTrait for SecretsListCommand {
                                 "Service-scoped secrets require --project".to_string(),
                             )
                         })?;
-                        let project_id = resolve_project_id(&ctx, project_ref, operation)?;
+                        let project = resolve_project(&ctx, project_ref, operation)?;
                         let app_code = options.target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        ctx.block_on(ctx.client.list_service_secrets(project_id, app_code))
+                        let app_code = resolve_remote_service_code(&project, app_code)?;
+                        ctx.block_on(ctx.client.list_service_secrets(project.id, &app_code))
                             .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                     RemoteSecretScope::Server => {
@@ -735,6 +814,35 @@ impl CallableTrait for SecretsListCommand {
                 Ok(())
             }
         }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// secrets apps
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct SecretsAppsCommand {
+    project: String,
+    json: bool,
+}
+
+impl SecretsAppsCommand {
+    pub fn new(project: String, json: bool) -> Self {
+        Self { project, json }
+    }
+}
+
+impl CallableTrait for SecretsAppsCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let operation = "remote project apps list";
+        let ctx = CliRuntime::new(operation)?;
+        let project = resolve_project(&ctx, &self.project, operation)?;
+        let apps = ctx
+            .block_on(ctx.client.list_project_apps(project.id))
+            .map_err(|error| remap_remote_secret_error(operation, error))?;
+
+        print_project_app_list(&apps, self.json)?;
+        Ok(())
     }
 }
 
@@ -826,13 +934,14 @@ impl CallableTrait for SecretsDeleteCommand {
                                 "Service-scoped secrets require --project".to_string(),
                             )
                         })?;
-                        let project_id = resolve_project_id(&ctx, project_ref, operation)?;
+                        let project = resolve_project(&ctx, project_ref, operation)?;
                         let app_code = target.service_code().ok_or_else(|| {
                             CliError::ConfigValidation(
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        ctx.block_on(ctx.client.delete_service_secret(project_id, app_code, key))
+                        let app_code = resolve_remote_service_code(&project, app_code)?;
+                        ctx.block_on(ctx.client.delete_service_secret(project.id, &app_code, key))
                             .map_err(|error| remap_remote_secret_error(operation, error))?;
                         println!("✓ Deleted service secret {} from {}", key, app_code);
                     }
@@ -1323,5 +1432,86 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("remote secrets list failed"));
         assert!(!rendered.contains("Deployment to cloud failed"));
+    }
+
+    #[test]
+    fn test_project_app_codes_extracts_declared_web_codes() {
+        let project = ProjectInfo {
+            id: 7,
+            name: "syncopia".to_string(),
+            user_id: "user-1".to_string(),
+            metadata: serde_json::json!({
+                "custom": {
+                    "web": [
+                        {"code": "app"},
+                        {"code": "device-apis"},
+                        {"code": "upload"}
+                    ]
+                }
+            }),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        assert_eq!(
+            project_app_codes(&project),
+            vec![
+                "app".to_string(),
+                "device-apis".to_string(),
+                "upload".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_service_code_matches_case_insensitively() {
+        let project = ProjectInfo {
+            id: 7,
+            name: "syncopia".to_string(),
+            user_id: "user-1".to_string(),
+            metadata: serde_json::json!({
+                "custom": {
+                    "web": [
+                        {"code": "device-apis"}
+                    ]
+                }
+            }),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        assert_eq!(
+            resolve_remote_service_code(&project, "Device-APIs").unwrap(),
+            "device-apis"
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_service_code_reports_available_codes() {
+        let project = ProjectInfo {
+            id: 7,
+            name: "syncopia".to_string(),
+            user_id: "user-1".to_string(),
+            metadata: serde_json::json!({
+                "custom": {
+                    "web": [
+                        {"code": "app"},
+                        {"code": "device-apis"}
+                    ]
+                }
+            }),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let error = resolve_remote_service_code(&project, "device-api")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Available app codes: app, device-apis"));
+    }
+
+    #[test]
+    fn test_print_project_app_list_renders_empty_state() {
+        print_project_app_list(&[], false).unwrap();
     }
 }

@@ -633,7 +633,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
   Remote server secrets as JSON:\n\
     stacker secrets list --scope server --server-id 42 --json\n\
 \n\
-Remote list returns metadata only in v1.")]
+ Remote list returns metadata only in v1.")]
     List {
         /// Path to .env file
         #[arg(
@@ -659,6 +659,24 @@ Remote list returns metadata only in v1.")]
         server_id: Option<i32>,
         /// Output metadata as JSON in remote mode
         #[arg(long, requires = "scope")]
+        json: bool,
+    },
+    /// List valid remote app codes for a project
+    #[command(
+        visible_alias = "services",
+        after_help = "Examples:\n\
+  List remote app codes for a project:\n\
+    stacker secrets apps --project blog\n\
+\n\
+  Output app metadata as JSON:\n\
+    stacker secrets apps --project blog --json"
+    )]
+    Apps {
+        /// Project name or ID
+        #[arg(long, value_name = "PROJECT")]
+        project: String,
+        /// Output app metadata as JSON
+        #[arg(long)]
         json: bool,
     },
     /// Delete a local .env secret or a remote Vault-backed secret
@@ -1499,6 +1517,9 @@ fn get_command(
                     )
                 }
             }
+            SecretsCommands::Apps { project, json } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsAppsCommand::new(project, json),
+            ),
             SecretsCommands::Delete {
                 key,
                 file,
@@ -2062,6 +2083,17 @@ mod tests {
     }
 
     #[test]
+    fn test_secrets_apps_parses_project_lookup_flags() {
+        let parsed =
+            Cli::try_parse_from(["stacker", "secrets", "apps", "--project", "blog", "--json"]);
+
+        assert!(
+            parsed.is_ok(),
+            "remote secrets apps syntax should parse successfully"
+        );
+    }
+
+    #[test]
     fn test_secrets_help_mentions_remote_modes() {
         let mut command = Cli::command();
         let secrets = command
@@ -2073,6 +2105,7 @@ mod tests {
         assert!(help.contains("--scope service"));
         assert!(help.contains("--scope server"));
         assert!(help.contains("metadata-only"));
+        assert!(help.contains("secrets apps --project"));
     }
 
     #[test]

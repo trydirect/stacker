@@ -210,6 +210,9 @@ stacker secrets set NPM_TOKEN \
 # Remote reads are metadata-only in v1
 stacker secrets list --scope service --project blog --service uploader --json
 stacker secrets get S3_SECRET_KEY --scope service --project blog --service uploader --json
+
+# Discover valid remote service app codes for a project
+stacker secrets apps --project blog
 ```
 
 - Local mode remains the default and reads/writes the project `.env` file.
