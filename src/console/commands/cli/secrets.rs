@@ -269,11 +269,18 @@ fn load_project_identity_from_config(path: &Path) -> Result<Option<String>, CliE
 }
 
 fn resolve_service_project_reference(explicit: Option<&str>) -> Result<String, CliError> {
+    resolve_service_project_reference_with_config(explicit, Path::new(DEFAULT_CONFIG_FILE))
+}
+
+fn resolve_service_project_reference_with_config(
+    explicit: Option<&str>,
+    config_path: &Path,
+) -> Result<String, CliError> {
     if let Some(project) = explicit.map(str::trim).filter(|value| !value.is_empty()) {
         return Ok(project.to_string());
     }
 
-    if let Some(project) = load_project_identity_from_config(Path::new(DEFAULT_CONFIG_FILE))? {
+    if let Some(project) = load_project_identity_from_config(config_path)? {
         return Ok(project);
     }
 
@@ -1536,13 +1543,10 @@ mod tests {
     #[test]
     fn test_resolve_service_project_reference_uses_stacker_yml_project_identity() {
         let dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let result = (|| -> Result<String, CliError> {
-            std::fs::write(
-                dir.path().join("stacker.yml"),
-                r#"
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            r#"
 name: syncopia
 project:
   identity: remote-syncopia
@@ -1552,27 +1556,22 @@ app:
 deploy:
   target: local
 "#,
-            )
-            .unwrap();
+        )
+        .unwrap();
 
-            resolve_service_project_reference(None)
-        })();
-
-        std::env::set_current_dir(original_dir).unwrap();
-
-        assert_eq!(result.unwrap(), "remote-syncopia");
+        assert_eq!(
+            resolve_service_project_reference_with_config(None, &config_path).unwrap(),
+            "remote-syncopia"
+        );
     }
 
     #[test]
     fn test_resolve_service_project_reference_errors_without_flag_or_config_identity() {
         let dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let result = (|| -> Result<String, CliError> {
-            std::fs::write(
-                dir.path().join("stacker.yml"),
-                r#"
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            r#"
 name: syncopia
 app:
   type: custom
@@ -1580,15 +1579,12 @@ app:
 deploy:
   target: local
 "#,
-            )
-            .unwrap();
+        )
+        .unwrap();
 
-            resolve_service_project_reference(None)
-        })();
-
-        std::env::set_current_dir(original_dir).unwrap();
-
-        let error = result.unwrap_err().to_string();
+        let error = resolve_service_project_reference_with_config(None, &config_path)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("project.identity"));
     }
 }

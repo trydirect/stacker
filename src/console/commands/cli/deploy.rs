@@ -2926,9 +2926,24 @@ services:
         let config = "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  target: server\n";
         let dir = setup_local_project(&[("stacker.yml", config)]);
         let executor = MockExecutor::success();
+        let store = FileCredentialStore::new(dir.path().join("credentials.json"));
+        let cred_manager = CredentialsManager::new(store);
+        cred_manager
+            .save(&StoredCredentials {
+                access_token: "test-token".to_string(),
+                refresh_token: None,
+                token_type: "Bearer".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                email: Some("test@example.com".to_string()),
+                server_url: Some("https://example.test".to_string()),
+                org: None,
+                domain: None,
+            })
+            .unwrap();
 
-        let result = run_deploy(
+        let result = run_deploy_with_credentials_manager(
             dir.path(),
+            None,
             None,
             None,
             true,
@@ -2937,6 +2952,7 @@ services:
             &executor,
             &RemoteDeployOverrides::default(),
             "runc",
+            &cred_manager,
         );
         assert!(result.is_err());
 
