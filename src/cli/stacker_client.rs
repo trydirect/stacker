@@ -362,8 +362,8 @@ impl StackerClient {
 
     fn project_endpoint_candidates(&self, suffix: &str) -> [String; 2] {
         [
-            format!("{}/project{}", self.base_url, suffix),
             format!("{}/api/v1/project{}", self.base_url, suffix),
+            format!("{}/project{}", self.base_url, suffix),
         ]
     }
 
@@ -374,7 +374,7 @@ impl StackerClient {
         body: Option<&serde_json::Value>,
         action_label: &str,
     ) -> Result<reqwest::Response, CliError> {
-        let mut last_not_found = None;
+        let mut last_response = None;
 
         for url in self.project_endpoint_candidates(suffix) {
             let mut request = self
@@ -390,30 +390,19 @@ impl StackerClient {
                 reason: format!("Stacker server unreachable: {}", e),
             })?;
 
-            if resp.status().as_u16() == 404 {
-                let body = resp.text().await.unwrap_or_default();
-                last_not_found = Some((url, body));
-                continue;
+            if resp.status().is_success() {
+                return Ok(resp);
             }
 
-            return Ok(resp);
+            last_response = Some(resp);
         }
 
-        let reason = if let Some((url, body)) = last_not_found {
-            format!(
-                "Stacker server {} failed (404) after trying project endpoints including {}: {}",
-                action_label, url, body
-            )
-        } else {
-            format!(
+        last_response.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: format!(
                 "Stacker server {} failed: project endpoints were not reachable",
                 action_label
-            )
-        };
-
-        Err(CliError::DeployFailed {
-            target: self.target.clone(),
-            reason,
+            ),
         })
     }
 
@@ -3701,11 +3690,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_projects_falls_back_to_api_v1_project_alias() {
+    async fn test_list_projects_falls_back_to_legacy_project_path() {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/project"))
+            .and(path("/api/v1/project"))
             .respond_with(ResponseTemplate::new(404).set_body_string(
                 r#"{"_status":"ERR","_error":{"code":404,"message":"not found"}}"#,
             ))
@@ -3713,7 +3702,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/api/v1/project"))
+            .and(path("/project"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "_status": "OK",
                 "list": [
@@ -3742,11 +3731,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deploy_falls_back_to_api_v1_project_alias() {
+    async fn test_deploy_falls_back_to_legacy_project_path() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/project/12/deploy"))
+            .and(path("/api/v1/project/12/deploy"))
             .respond_with(ResponseTemplate::new(404).set_body_string(
                 r#"{"_status":"ERR","_error":{"code":404,"message":"not found"}}"#,
             ))
@@ -3754,7 +3743,7 @@ mod tests {
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/project/12/deploy"))
+            .and(path("/project/12/deploy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": 99,
                 "_status": "OK",
@@ -3784,5 +3773,43 @@ mod tests {
                 .and_then(|meta| meta.get("deployment_hash")),
             Some(&serde_json::json!("hash-123"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_projects_retries_api_v1_after_forbidden_legacy_proxy_response() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/project"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "list": [
+                    {
+                        "id": 7,
+                        "name": "demo-project",
+                        "user_id": "user-1",
+                        "metadata": {},
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/project"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new_for_target(&server.uri(), "token", DeployTarget::Server);
+        let projects = client
+            .list_projects()
+            .await
+            .expect("api v1 endpoint should be preferred before legacy 403");
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "demo-project");
     }
 }

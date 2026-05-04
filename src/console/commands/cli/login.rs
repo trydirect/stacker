@@ -14,14 +14,21 @@ pub struct LoginCommand {
     pub org: Option<String>,
     pub domain: Option<String>,
     pub auth_url: Option<String>,
+    pub server_url: Option<String>,
 }
 
 impl LoginCommand {
-    pub fn new(org: Option<String>, domain: Option<String>, auth_url: Option<String>) -> Self {
+    pub fn new(
+        org: Option<String>,
+        domain: Option<String>,
+        auth_url: Option<String>,
+        server_url: Option<String>,
+    ) -> Self {
         Self {
             org,
             domain,
             auth_url,
+            server_url,
         }
     }
 
@@ -63,6 +70,7 @@ impl CallableTrait for LoginCommand {
             email,
             password,
             auth_url: self.auth_url.clone(),
+            server_url: self.server_url.clone(),
             org: self.org.clone(),
             domain: self.domain.clone(),
         };
@@ -78,6 +86,9 @@ impl CallableTrait for LoginCommand {
         }
         if let Some(domain) = &creds.domain {
             eprintln!("  Domain: {}", domain);
+        }
+        if let Some(server_url) = &creds.server_url {
+            eprintln!("  Stacker API: {}", server_url);
         }
 
         Ok(())
