@@ -2455,6 +2455,8 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_build_deploy_form_defaults() {
@@ -2637,6 +2639,58 @@ mod tests {
         // Ports should include the NPM management port (81)
         let ports = features[0]["shared_ports"].as_array().unwrap();
         assert_eq!(ports.len(), 3);
+    }
+
+    #[test]
+    fn test_build_project_body_nginx_proxy_manager_preserves_volumes_from_compose_file() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.prod.yml");
+        fs::write(
+            &compose_path,
+            r#"
+version: "3.8"
+services:
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+volumes:
+  npm-data:
+  npm-letsencrypt:
+"#,
+        )
+        .unwrap();
+
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+        config.deploy.compose_file = Some(compose_path);
+
+        let body = build_project_body(&config);
+        let features = body["custom"]["feature"].as_array().unwrap();
+        let npm = features
+            .iter()
+            .find(|f| f["code"] == "nginx_proxy_manager")
+            .unwrap();
+
+        let volumes = npm["volumes"].as_array().unwrap();
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[0]["host_path"], "npm-data");
+        assert_eq!(volumes[0]["container_path"], "/data");
+        assert_eq!(volumes[1]["host_path"], "npm-letsencrypt");
+        assert_eq!(volumes[1]["container_path"], "/etc/letsencrypt");
     }
 
     #[test]

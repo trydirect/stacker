@@ -391,3 +391,67 @@ pub fn generate_single_app_compose(
     serde_yaml::to_string(&compose)
         .map_err(|err| format!("Failed to serialize docker-compose: {}", err))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DcBuilder;
+    use crate::cli::config_parser::{ConfigBuilder, ProxyConfig, ProxyType};
+    use crate::cli::stacker_client::build_project_body;
+    use crate::models::Project;
+    use tempfile::TempDir;
+
+    #[test]
+    fn regression_generated_compose_preserves_nginx_proxy_manager_named_volumes() {
+        // Ensure DcBuilder can write its debug output file.
+        std::fs::create_dir_all("files").unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.prod.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+version: "3.8"
+services:
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+volumes:
+  npm-data:
+  npm-letsencrypt:
+"#,
+        )
+        .unwrap();
+
+        let mut config = ConfigBuilder::new()
+            .name("myproject")
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+        config.deploy.compose_file = Some(compose_path);
+
+        let metadata = build_project_body(&config);
+        let project = Project::new(
+            "user".to_string(),
+            "myproject".to_string(),
+            metadata,
+            serde_json::json!({}),
+        );
+
+        let compose_yaml = DcBuilder::new(project).build().unwrap();
+
+        // Verify the service mounts the named volumes at the correct targets.
+        assert!(compose_yaml.contains("npm-data:/data"));
+        assert!(compose_yaml.contains("npm-letsencrypt:/etc/letsencrypt"));
+    }
+}
