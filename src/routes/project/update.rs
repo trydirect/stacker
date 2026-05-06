@@ -2,6 +2,7 @@ use crate::db;
 use crate::forms::project::{DockerImageReadResult, ProjectForm};
 use crate::helpers::JsonResponse;
 use crate::models;
+use crate::project_app;
 use actix_web::{put, web, Responder, Result};
 use serde_json::Value;
 use serde_valid::Validate;
@@ -52,7 +53,7 @@ pub async fn item(
         }
     }
 
-    let metadata: Value = serde_json::to_value::<ProjectForm>(form)
+    let metadata: Value = serde_json::to_value::<ProjectForm>(form.clone())
         .or(serde_json::to_value::<ProjectForm>(ProjectForm::default()))
         .unwrap();
 
@@ -60,15 +61,26 @@ pub async fn item(
     project.metadata = metadata;
     project.request_json = request_json;
 
-    db::project::update(pg_pool.get_ref(), project)
+    let project = db::project::update(pg_pool.get_ref(), project)
         .await
-        .map(|project| {
-            JsonResponse::<models::Project>::build()
-                .set_item(project)
-                .ok("success")
-        })
         .map_err(|err| {
             tracing::error!("Failed to execute query: {:?}", err);
             JsonResponse::internal_server_error("")
-        })
+        })?;
+
+    project_app::sync_project_level_apps_from_form(pg_pool.get_ref(), project.id, &form)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to execute query: {:?}", err);
+            tracing::error!(
+                "Failed to sync project-level apps for project {} after update: {}",
+                project.id,
+                err
+            );
+            JsonResponse::internal_server_error("")
+        })?;
+
+    Ok(JsonResponse::<models::Project>::build()
+        .set_item(project)
+        .ok("success"))
 }

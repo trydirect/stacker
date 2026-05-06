@@ -1592,7 +1592,7 @@ fn resolve_remote_project_name(config: &StackerConfig, context: &DeployContext) 
     })
 }
 
-fn load_existing_server_ssh_key(
+pub(crate) fn load_existing_server_ssh_key(
     server_cfg: &crate::cli::config_parser::ServerConfig,
 ) -> Result<Option<(String, Option<String>)>, CliError> {
     let Some(path) = server_cfg.ssh_key.as_ref() else {

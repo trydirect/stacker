@@ -48,6 +48,14 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::discover::import_containers)
 }
 
+fn build_oauth_http_client(settings: &Settings) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(settings.auth_request_timeout_secs))
+        .connect_timeout(Duration::from_secs(settings.auth_connect_timeout_secs))
+        .build()
+}
+
 pub async fn run(
     listener: TcpListener,
     api_pool: Pool<Postgres>,
@@ -70,9 +78,7 @@ pub async fn run(
     let vault_client = helpers::VaultClient::new(&settings.vault);
     let vault_client = web::Data::new(vault_client);
 
-    let oauth_http_client = reqwest::Client::builder()
-        .pool_idle_timeout(Duration::from_secs(90))
-        .build()
+    let oauth_http_client = build_oauth_http_client(&settings)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
     let oauth_http_client = web::Data::new(oauth_http_client);
 
@@ -431,4 +437,51 @@ pub async fn run(
     .run();
 
     Ok(server)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{web, App, HttpResponse, HttpServer};
+    use std::net::TcpListener;
+
+    async fn slow_ok() -> HttpResponse {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        HttpResponse::Ok().finish()
+    }
+
+    #[tokio::test]
+    async fn oauth_http_client_respects_configured_request_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().unwrap().port();
+        let address = format!("http://127.0.0.1:{port}/slow");
+
+        let server = HttpServer::new(|| App::new().route("/slow", web::get().to(slow_ok)))
+            .listen(listener)
+            .unwrap()
+            .run();
+
+        let _server = tokio::spawn(server);
+
+        let settings = Settings {
+            auth_url: address.clone(),
+            auth_request_timeout_secs: 1,
+            auth_connect_timeout_secs: 1,
+            ..Settings::default()
+        };
+
+        let client = build_oauth_http_client(&settings).expect("build oauth client");
+        let started_at = std::time::Instant::now();
+        let err = client
+            .get(&address)
+            .send()
+            .await
+            .expect_err("request should time out");
+
+        assert!(err.is_timeout(), "expected timeout, got: {err}");
+        assert!(
+            started_at.elapsed() < Duration::from_millis(1400),
+            "client timeout should fail before upstream responds"
+        );
+    }
 }

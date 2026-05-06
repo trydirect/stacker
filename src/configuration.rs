@@ -7,6 +7,10 @@ pub struct Settings {
     pub app_port: u16,
     pub app_host: String,
     pub auth_url: String,
+    #[serde(default = "Settings::default_auth_request_timeout_secs")]
+    pub auth_request_timeout_secs: u64,
+    #[serde(default = "Settings::default_auth_connect_timeout_secs")]
+    pub auth_connect_timeout_secs: u64,
     #[serde(default = "Settings::default_user_service_url")]
     pub user_service_url: String,
     pub max_clients_number: i64,
@@ -37,6 +41,8 @@ impl std::fmt::Debug for Settings {
             .field("app_port", &self.app_port)
             .field("app_host", &self.app_host)
             .field("auth_url", &self.auth_url)
+            .field("auth_request_timeout_secs", &self.auth_request_timeout_secs)
+            .field("auth_connect_timeout_secs", &self.auth_connect_timeout_secs)
             .field("user_service_url", &self.user_service_url)
             .field("max_clients_number", &self.max_clients_number)
             .field(
@@ -68,6 +74,8 @@ impl Default for Settings {
             app_port: 8000,
             app_host: "127.0.0.1".to_string(),
             auth_url: "http://localhost:8080/me".to_string(),
+            auth_request_timeout_secs: Self::default_auth_request_timeout_secs(),
+            auth_connect_timeout_secs: Self::default_auth_connect_timeout_secs(),
             user_service_url: Self::default_user_service_url(),
             max_clients_number: 10,
             agent_command_poll_timeout_secs: Self::default_agent_command_poll_timeout_secs(),
@@ -86,6 +94,14 @@ impl Default for Settings {
 impl Settings {
     fn default_user_service_url() -> String {
         "http://user:4100".to_string()
+    }
+
+    fn default_auth_request_timeout_secs() -> u64 {
+        5
+    }
+
+    fn default_auth_connect_timeout_secs() -> u64 {
+        2
     }
 
     fn default_agent_command_poll_timeout_secs() -> u64 {
@@ -468,6 +484,18 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         }
     }
 
+    if let Ok(timeout) = std::env::var("STACKER_AUTH_REQUEST_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.auth_request_timeout_secs = parsed;
+        }
+    }
+
+    if let Ok(timeout) = std::env::var("STACKER_AUTH_CONNECT_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.auth_connect_timeout_secs = parsed;
+        }
+    }
+
     if let Ok(enabled) = std::env::var("STACKER_CASBIN_RELOAD_ENABLED") {
         config.casbin_reload_enabled = parse_bool_env(&enabled);
     }
@@ -523,5 +551,13 @@ mod tests {
         assert!(!parse_bool_env("no"));
         assert!(!parse_bool_env("True")); // Case-sensitive
         assert!(!parse_bool_env("invalid"));
+    }
+
+    #[test]
+    fn test_default_auth_timeouts_are_bounded() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.auth_request_timeout_secs, 5);
+        assert_eq!(settings.auth_connect_timeout_secs, 2);
     }
 }

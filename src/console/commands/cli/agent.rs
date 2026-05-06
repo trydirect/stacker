@@ -99,15 +99,56 @@ fn resolve_deployment_hash(
 /// 1. Enqueues the command via the Stacker API
 /// 2. Shows a spinner while polling for the result
 /// 3. Returns the completed `AgentCommandInfo`
+fn format_error_message(
+    message: &str,
+    code: Option<&str>,
+    details: Option<&serde_json::Value>,
+) -> String {
+    let mut formatted = message.to_string();
+    if let Some(code) = code.filter(|value| !value.trim().is_empty()) {
+        formatted = format!("{} ({})", formatted, code);
+    }
+    if let Some(details) = details {
+        let details = match details {
+            serde_json::Value::String(value) => value.clone(),
+            other => fmt::pretty_json(other),
+        };
+        if !details.trim().is_empty() {
+            formatted = format!("{}: {}", formatted, details);
+        }
+    }
+    formatted
+}
+
 fn json_error_message(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(message) if !message.trim().is_empty() => Some(message.clone()),
-        serde_json::Value::Object(map) => map
-            .get("message")
-            .and_then(|value| value.as_str())
-            .or_else(|| map.get("error").and_then(|value| value.as_str()))
-            .or_else(|| map.get("detail").and_then(|value| value.as_str()))
-            .map(ToString::to_string),
+        serde_json::Value::Object(map) => {
+            if let Some(first) = map
+                .get("errors")
+                .and_then(|value| value.as_array())
+                .and_then(|errors| errors.first())
+                .and_then(|value| value.as_object())
+            {
+                let message = first
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| first.get("error").and_then(|value| value.as_str()))
+                    .or_else(|| first.get("detail").and_then(|value| value.as_str()))?;
+                let code = first.get("code").and_then(|value| value.as_str());
+                let details = first.get("details");
+                return Some(format_error_message(message, code, details));
+            }
+
+            let message = map
+                .get("message")
+                .and_then(|value| value.as_str())
+                .or_else(|| map.get("error").and_then(|value| value.as_str()))
+                .or_else(|| map.get("detail").and_then(|value| value.as_str()))?;
+            let code = map.get("code").and_then(|value| value.as_str());
+            let details = map.get("details");
+            Some(format_error_message(message, code, details))
+        }
         _ => None,
     }
 }
@@ -1408,6 +1449,21 @@ fn build_agent_install_deploy_request(
             .get_mut("server")
             .and_then(|value| value.as_object_mut())
         {
+            if let Some((private_key, public_key)) =
+                crate::cli::install_runner::load_existing_server_ssh_key(&server_cfg)?
+            {
+                server_obj.insert(
+                    "ssh_private_key".to_string(),
+                    serde_json::Value::String(private_key),
+                );
+                if let Some(public_key) = public_key {
+                    server_obj.insert(
+                        "public_key".to_string(),
+                        serde_json::Value::String(public_key),
+                    );
+                }
+            }
+
             server_obj.insert("server_id".to_string(), serde_json::json!(server.id));
 
             if let Some(vault_key_path) = &server.vault_key_path {
@@ -1585,6 +1641,7 @@ impl CallableTrait for AgentInstallCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn sample_server_info() -> crate::cli::stacker_client::ServerInfo {
         crate::cli::stacker_client::ServerInfo {
@@ -1705,6 +1762,43 @@ mod tests {
     }
 
     #[test]
+    fn agent_install_request_includes_bootstrap_ssh_key_from_config() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let private_key_path = temp_dir.path().join("id_ed25519");
+        let public_key_path = temp_dir.path().join("id_ed25519.pub");
+
+        std::fs::write(&private_key_path, "TEST PRIVATE KEY").expect("private key");
+        std::fs::write(&public_key_path, "ssh-ed25519 TEST PUBLIC KEY").expect("public key");
+
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("syncopia")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "deploy".to_string(),
+                ssh_key: Some(private_key_path),
+                port: 2222,
+            })
+            .build()
+            .expect("config");
+        let server = sample_server_info();
+
+        let (_, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "syncopia",
+            "https://vault.try.direct",
+        )
+        .expect("server install request");
+
+        assert_eq!(deploy_form["server"]["ssh_private_key"], "TEST PRIVATE KEY");
+        assert_eq!(
+            deploy_form["server"]["public_key"],
+            "ssh-ed25519 TEST PUBLIC KEY"
+        );
+    }
+
+    #[test]
     fn agent_command_error_message_prefers_error_field() {
         let info = AgentCommandInfo {
             command_id: "cmd_1".to_string(),
@@ -1758,6 +1852,36 @@ mod tests {
                 "Vault-backed proxy credential resolution is not configured on this agent (vault_not_configured)"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_reads_structured_error_array() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_3".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "message": "ignored"
+            })),
+            error: Some(serde_json::json!({
+                "errors": [{
+                    "code": "npm_error",
+                    "message": "NPM operation failed",
+                    "details": "Failed to connect to NPM"
+                }]
+            })),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        assert_eq!(
+            agent_command_error_message(&info),
+            Some("NPM operation failed (npm_error): Failed to connect to NPM".to_string())
         );
     }
 
