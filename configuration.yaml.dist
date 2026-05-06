@@ -2,6 +2,9 @@
 app_host: 127.0.0.1
 app_port: 8000
 auth_url: https://dev.try.direct/server/user/oauth_server/api/me
+# Bound auth dependency latency so API routes do not stall behind a slow auth service.
+auth_request_timeout_secs: 5
+auth_connect_timeout_secs: 2
 max_clients_number: 2
 agent_command_poll_timeout_secs: 30
 agent_command_poll_interval_secs: 3
@@ -66,6 +69,7 @@ connectors:
 # Env overrides (optional):
 #   VAULT_ADDRESS, VAULT_TOKEN, VAULT_AGENT_PATH_PREFIX
 #   USER_SERVICE_AUTH_TOKEN, PAYMENT_SERVICE_AUTH_TOKEN
+#   STACKER_AUTH_REQUEST_TIMEOUT_SECS, STACKER_AUTH_CONNECT_TIMEOUT_SECS
 #   DEFAULT_DEPLOY_DIR - Base directory for deployments (default: /home/trydirect)
 
 # Deployment settings

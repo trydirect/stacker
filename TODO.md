@@ -52,6 +52,7 @@
 - [x] Deployment-scoped Vault tokens can be extended with an exact read grant for `secret/{env}/status_panel/hosts/{server_id}/npm_credentials`
 - [x] Status Panel linking now advertises `npm_credential_source=vault`; Stacker surfaces it in deployment capabilities and can gate `configure_proxy` with `STACKER_CONFIGURE_PROXY_CAPABILITY_MODE=warn|enforce`
 - [x] Rollout order: ship Status Panel reader → provision installer secret/policy → re-link agents so capabilities are refreshed → keep Stacker in `warn` mode → switch to `enforce` after all active agents report `npm_credential_source=vault`
+- [ ] Future Vault hardening: expose `vault.try.direct` for Status Panel agents behind identity-based access (prefer mTLS; a private mesh or tunnel is also acceptable) instead of relying on static source-IP allowlists. Keep Vault tokens short-lived and path-scoped to the exact Status Panel host/deployment secrets they need.
 
 ### February 16, 2026 - CORS Headers Fix
 - [x] Fixed CORS configuration to properly support Authorization header with credentials
