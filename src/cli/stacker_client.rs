@@ -2300,8 +2300,32 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         web_apps.push(main_app);
     }
 
+    fn is_nginx_proxy_manager_service(svc: &crate::cli::config_parser::ServiceDefinition) -> bool {
+        let name = svc.name.to_lowercase();
+        let image = svc.image.to_lowercase();
+
+        name == "nginx_proxy_manager"
+            || name == "npm"
+            || name == "proxy-manager"
+            || name == "nginx-proxy-manager"
+            || image.contains("nginx-proxy-manager")
+            || image.contains("jc21/nginx-proxy-manager")
+    }
+
     // Include additional services
     for svc in &config.services {
+        // `proxy.type: nginx|nginx-proxy-manager` is deployed via the dedicated
+        // `nginx_proxy_manager` feature/role. If a configure step accidentally
+        // injects an NPM service into `services:`, deploying it here would start
+        // a second NPM container and collide on ports 80/81/443.
+        if matches!(
+            config.proxy.proxy_type,
+            crate::cli::config_parser::ProxyType::Nginx
+                | crate::cli::config_parser::ProxyType::NginxProxyManager
+        ) && is_nginx_proxy_manager_service(svc)
+        {
+            continue;
+        }
         web_apps.push(service_to_app_json(svc, &network_ids));
     }
 
@@ -2509,7 +2533,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
             if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
                 let features = stack_obj
                     .entry("extended_features")
-                    .or_insert_with(|| serde_json::json!([])); 
+                    .or_insert_with(|| serde_json::json!([]));
                 if let Some(arr) = features.as_array_mut() {
                     let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
                     if !arr.contains(&npm) {
@@ -2572,6 +2596,7 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -2759,6 +2784,23 @@ mod tests {
     }
 
     #[test]
+      fn bdd_reconfigure_existing_nginx_proxy_manager_proxy_does_not_duplicate_features() {
+        use crate::cli::config_parser::{DeployTarget, ProxyConfig, ProxyType, ServiceDefinition};
+
+        let given_existing_npm_service = ServiceDefinition {
+            name: "nginx_proxy_manager".to_string(),
+            image: "jc21/nginx-proxy-manager:latest".to_string(),
+            ports: vec!["80:80".to_string(), "443:443".to_string(), "81:81".to_string()],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+
+        let given_config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(DeployTarget::Cloud)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
     fn test_build_project_body_nginx_proxy_manager_preserves_volumes_from_compose_file() {
         let dir = TempDir::new().unwrap();
         let compose_path = dir.path().join("docker-compose.prod.yml");
@@ -2791,6 +2833,45 @@ volumes:
                 domains: vec![],
                 config: None,
             })
+            .add_service(given_existing_npm_service)
+            .build()
+            .unwrap();
+
+        let when_project_body = build_project_body(&given_config);
+        let when_deploy_form = build_deploy_form(&given_config);
+
+        let then_project_web = when_project_body["custom"]["web"]
+            .as_array()
+            .expect("custom.web must be an array");
+        assert!(
+            then_project_web
+                .iter()
+                .all(|app| app["code"] != "nginx_proxy_manager"),
+            "should not deploy nginx_proxy_manager as a web service when proxy.type already provisions it as a feature: {:?}",
+            then_project_web
+        );
+
+        let then_project_features = when_project_body["custom"]["feature"]
+            .as_array()
+            .expect("custom.feature must be an array");
+        assert!(
+            then_project_features
+                .iter()
+                .filter(|f| f["code"] == "nginx_proxy_manager")
+                .count()
+                == 1,
+            "should include exactly one nginx_proxy_manager feature: {:?}",
+            then_project_features
+        );
+
+        let then_extended_features = when_deploy_form["stack"]["extended_features"]
+            .as_array()
+            .expect("stack.extended_features must be an array");
+        assert!(
+            then_extended_features.contains(&serde_json::json!("nginx_proxy_manager")),
+            "should inject nginx_proxy_manager into stack.extended_features when proxy.type requires it: {:?}",
+            then_extended_features
+        );
             .build()
             .unwrap();
         config.deploy.compose_file = Some(compose_path);
