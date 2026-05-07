@@ -102,8 +102,7 @@ fn run_agent_command(
         let command_id = info.command_id.clone();
         let deployment_hash = request.deployment_hash.clone();
 
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let interval = std::time::Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS);
         let mut last_status = "pending".to_string();
 
@@ -125,10 +124,7 @@ fn run_agent_command(
                 .await?;
 
             last_status = status.status.clone();
-            progress::update_message(
-                &pb,
-                &format!("{} [{}]", spinner_msg, status.status),
-            );
+            progress::update_message(&pb, &format!("{} [{}]", spinner_msg, status.status));
 
             match status.status.as_str() {
                 "completed" | "failed" => return Ok(status),
@@ -162,7 +158,11 @@ fn print_command_result(info: &AgentCommandInfo, json_output: bool) {
 
     println!("Command:  {}", info.command_id);
     println!("Type:     {}", info.command_type);
-    println!("Status:   {} {}", progress::status_icon(&info.status), info.status);
+    println!(
+        "Status:   {} {}",
+        progress::status_icon(&info.status),
+        info.status
+    );
 
     if let Some(ref result) = info.result {
         println!("\n{}", fmt::pretty_json(result));
@@ -381,11 +381,7 @@ fn extract_operations(info: &AgentCommandInfo) -> Vec<(String, String, String, V
                 if let Some(operations) = ep["operations"].as_array() {
                     for op in operations {
                         let method = op["method"].as_str().unwrap_or("GET").to_string();
-                        let path = format!(
-                            "{}{}",
-                            base,
-                            op["path"].as_str().unwrap_or("")
-                        );
+                        let path = format!("{}{}", base, op["path"].as_str().unwrap_or(""));
                         let summary = op["summary"].as_str().unwrap_or("").to_string();
                         let fields = op["fields"]
                             .as_array()
@@ -471,11 +467,17 @@ impl CallableTrait for PipeCreateCommand {
         let target_ops = extract_operations(&target_info);
 
         if source_ops.is_empty() {
-            eprintln!("No endpoints discovered on source app '{}'. Cannot create pipe.", self.source);
+            eprintln!(
+                "No endpoints discovered on source app '{}'. Cannot create pipe.",
+                self.source
+            );
             return Ok(());
         }
         if target_ops.is_empty() {
-            eprintln!("No endpoints discovered on target app '{}'. Cannot create pipe.", self.target);
+            eprintln!(
+                "No endpoints discovered on target app '{}'. Cannot create pipe.",
+                self.target
+            );
             return Ok(());
         }
 
@@ -541,7 +543,14 @@ impl CallableTrait for PipeCreateCommand {
                 .filter(|f| !mapping.contains_key(*f))
                 .collect();
             if !unmatched.is_empty() {
-                println!("    Unmatched target fields: {}", unmatched.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+                println!(
+                    "    Unmatched target fields: {}",
+                    unmatched
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 println!("    (You can edit the field mapping later via the API)");
             }
 
@@ -549,10 +558,7 @@ impl CallableTrait for PipeCreateCommand {
                 // No auto-matches — create pass-through
                 println!("    No auto-matches found. Creating pass-through mapping.");
                 for sf in src_fields {
-                    mapping.insert(
-                        sf.clone(),
-                        serde_json::Value::String(format!("$.{}", sf)),
-                    );
+                    mapping.insert(sf.clone(), serde_json::Value::String(format!("$.{}", sf)));
                 }
             }
 
@@ -594,7 +600,8 @@ impl CallableTrait for PipeCreateCommand {
         };
 
         let pb = progress::spinner("Creating pipe template...");
-        let template = ctx.block_on(ctx.client.create_pipe_template(&template_request))
+        let template = ctx
+            .block_on(ctx.client.create_pipe_template(&template_request))
             .map_err(|e| {
                 progress::finish_error(&pb, "Template creation failed");
                 e
@@ -613,7 +620,8 @@ impl CallableTrait for PipeCreateCommand {
         };
 
         let pb = progress::spinner("Creating pipe instance...");
-        let instance = ctx.block_on(ctx.client.create_pipe_instance(&instance_request))
+        let instance = ctx
+            .block_on(ctx.client.create_pipe_instance(&instance_request))
             .map_err(|e| {
                 progress::finish_error(&pb, "Instance creation failed");
                 e
@@ -632,7 +640,10 @@ impl CallableTrait for PipeCreateCommand {
             println!("  Instance ID:  {}", instance.id);
             println!("  Source:       {} ({})", self.source, src_path);
             println!("  Target:       {} ({})", self.target, tgt_path);
-            println!("  Status:       {} (use 'stacker pipe activate {}' to start)", instance.status, instance.id);
+            println!(
+                "  Status:       {} (use 'stacker pipe activate {}' to start)",
+                instance.status, instance.id
+            );
             println!("  Mapping:      {}", serde_json::to_string(&field_mapping)?);
         }
 
@@ -661,7 +672,8 @@ impl CallableTrait for PipeListCommand {
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
         let pb = progress::spinner("Fetching pipes...");
-        let pipes = ctx.block_on(ctx.client.list_pipe_instances(&hash))
+        let pipes = ctx
+            .block_on(ctx.client.list_pipe_instances(&hash))
             .map_err(|e| {
                 progress::finish_error(&pb, "Failed to fetch pipes");
                 e
@@ -692,10 +704,7 @@ impl CallableTrait for PipeListCommand {
                 .as_deref()
                 .or(pipe.target_url.as_deref())
                 .unwrap_or("-");
-            let last = pipe
-                .last_triggered_at
-                .as_deref()
-                .unwrap_or("never");
+            let last = pipe.last_triggered_at.as_deref().unwrap_or("never");
             let status_icon = match pipe.status.as_str() {
                 "active" => "● active",
                 "paused" => "◉ paused",
@@ -748,7 +757,13 @@ impl PipeActivateCommand {
         json: bool,
         deployment: Option<String>,
     ) -> Self {
-        Self { pipe_id, trigger, poll_interval, json, deployment }
+        Self {
+            pipe_id,
+            trigger,
+            poll_interval,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -759,11 +774,15 @@ impl CallableTrait for PipeActivateCommand {
 
         // Fetch pipe instance details to get source/target info
         let pb = progress::spinner("Fetching pipe details...");
-        let pipe = ctx.block_on(ctx.client.get_pipe_instance(&self.pipe_id))
-            .map_err(|e| { progress::finish_error(&pb, "Failed"); e })?
-            .ok_or_else(|| CliError::ConfigValidation(
-                format!("Pipe instance '{}' not found", self.pipe_id),
-            ))?;
+        let pipe = ctx
+            .block_on(ctx.client.get_pipe_instance(&self.pipe_id))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Failed");
+                e
+            })?
+            .ok_or_else(|| {
+                CliError::ConfigValidation(format!("Pipe instance '{}' not found", self.pipe_id))
+            })?;
         progress::finish_success(&pb, "Pipe found");
 
         // Get template info for endpoint details (if linked)
@@ -772,24 +791,54 @@ impl CallableTrait for PipeActivateCommand {
                 let templates = ctx.block_on(ctx.client.list_pipe_templates(None, None))?;
                 if let Some(tmpl) = templates.iter().find(|t| &t.id == tid) {
                     (
-                        tmpl.source_endpoint["path"].as_str().unwrap_or("/").to_string(),
-                        tmpl.source_endpoint["method"].as_str().unwrap_or("GET").to_string(),
-                        tmpl.target_endpoint["path"].as_str().unwrap_or("/").to_string(),
-                        tmpl.target_endpoint["method"].as_str().unwrap_or("POST").to_string(),
-                        pipe.field_mapping_override.clone().unwrap_or(tmpl.field_mapping.clone()),
+                        tmpl.source_endpoint["path"]
+                            .as_str()
+                            .unwrap_or("/")
+                            .to_string(),
+                        tmpl.source_endpoint["method"]
+                            .as_str()
+                            .unwrap_or("GET")
+                            .to_string(),
+                        tmpl.target_endpoint["path"]
+                            .as_str()
+                            .unwrap_or("/")
+                            .to_string(),
+                        tmpl.target_endpoint["method"]
+                            .as_str()
+                            .unwrap_or("POST")
+                            .to_string(),
+                        pipe.field_mapping_override
+                            .clone()
+                            .unwrap_or(tmpl.field_mapping.clone()),
                     )
                 } else {
-                    ("/".to_string(), "GET".to_string(), "/".to_string(), "POST".to_string(), serde_json::json!({}))
+                    (
+                        "/".to_string(),
+                        "GET".to_string(),
+                        "/".to_string(),
+                        "POST".to_string(),
+                        serde_json::json!({}),
+                    )
                 }
             } else {
-                ("/".to_string(), "GET".to_string(), "/".to_string(), "POST".to_string(),
-                 pipe.field_mapping_override.clone().unwrap_or(serde_json::json!({})))
+                (
+                    "/".to_string(),
+                    "GET".to_string(),
+                    "/".to_string(),
+                    "POST".to_string(),
+                    pipe.field_mapping_override
+                        .clone()
+                        .unwrap_or(serde_json::json!({})),
+                )
             };
 
         // 1. Update status to "active" via API
         let pb = progress::spinner("Setting pipe status to active...");
         ctx.block_on(ctx.client.update_pipe_status(&self.pipe_id, "active"))
-            .map_err(|e| { progress::finish_error(&pb, "Status update failed"); e })?;
+            .map_err(|e| {
+                progress::finish_error(&pb, "Status update failed");
+                e
+            })?;
         progress::finish_success(&pb, "Status: active");
 
         // 2. Send activate_pipe command to agent
@@ -807,8 +856,7 @@ impl CallableTrait for PipeActivateCommand {
             "poll_interval_secs": self.poll_interval,
         });
 
-        let request = AgentEnqueueRequest::new(&hash, "activate_pipe")
-            .with_raw_parameters(params);
+        let request = AgentEnqueueRequest::new(&hash, "activate_pipe").with_raw_parameters(params);
 
         let info = run_agent_command(
             &ctx,
@@ -843,7 +891,11 @@ pub struct PipeDeactivateCommand {
 
 impl PipeDeactivateCommand {
     pub fn new(pipe_id: String, json: bool, deployment: Option<String>) -> Self {
-        Self { pipe_id, json, deployment }
+        Self {
+            pipe_id,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -855,7 +907,10 @@ impl CallableTrait for PipeDeactivateCommand {
         // 1. Update status to "paused" via API
         let pb = progress::spinner("Setting pipe status to paused...");
         ctx.block_on(ctx.client.update_pipe_status(&self.pipe_id, "paused"))
-            .map_err(|e| { progress::finish_error(&pb, "Status update failed"); e })?;
+            .map_err(|e| {
+                progress::finish_error(&pb, "Status update failed");
+                e
+            })?;
         progress::finish_success(&pb, "Status: paused");
 
         // 2. Send deactivate_pipe command to agent
@@ -863,8 +918,8 @@ impl CallableTrait for PipeDeactivateCommand {
             "pipe_instance_id": self.pipe_id,
         });
 
-        let request = AgentEnqueueRequest::new(&hash, "deactivate_pipe")
-            .with_raw_parameters(params);
+        let request =
+            AgentEnqueueRequest::new(&hash, "deactivate_pipe").with_raw_parameters(params);
 
         let info = run_agent_command(
             &ctx,
@@ -895,8 +950,18 @@ pub struct PipeTriggerCommand {
 }
 
 impl PipeTriggerCommand {
-    pub fn new(pipe_id: String, data: Option<String>, json: bool, deployment: Option<String>) -> Self {
-        Self { pipe_id, data, json, deployment }
+    pub fn new(
+        pipe_id: String,
+        data: Option<String>,
+        json: bool,
+        deployment: Option<String>,
+    ) -> Self {
+        Self {
+            pipe_id,
+            data,
+            json,
+            deployment,
+        }
     }
 }
 
@@ -919,15 +984,9 @@ impl CallableTrait for PipeTriggerCommand {
             "input_data": input_data,
         });
 
-        let request = AgentEnqueueRequest::new(&hash, "trigger_pipe")
-            .with_raw_parameters(params);
+        let request = AgentEnqueueRequest::new(&hash, "trigger_pipe").with_raw_parameters(params);
 
-        let info = run_agent_command(
-            &ctx,
-            &request,
-            "Triggering pipe",
-            PROBE_TIMEOUT_SECS,
-        )?;
+        let info = run_agent_command(&ctx, &request, "Triggering pipe", PROBE_TIMEOUT_SECS)?;
 
         print_command_result(&info, self.json);
 

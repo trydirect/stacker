@@ -42,7 +42,11 @@ pub async fn create_handler(
 
     // Normalize pricing: plan_type "free" forces price to 0
     let billing_cycle = req.plan_type.unwrap_or_else(|| "free".to_string());
-    let price = if billing_cycle == "free" { 0.0 } else { req.price.unwrap_or(0.0) };
+    let price = if billing_cycle == "free" {
+        0.0
+    } else {
+        req.price.unwrap_or(0.0)
+    };
     let currency = req.currency.unwrap_or_else(|| "USD".to_string());
 
     // Check if template with this slug already exists for this user
@@ -317,7 +321,9 @@ pub async fn my_reviews_handler(
     let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
-        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Template not found"))?;
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
 
     if template.creator_user_id != user.id {
         return Err(JsonResponse::<serde_json::Value>::build().forbidden("Access denied"));

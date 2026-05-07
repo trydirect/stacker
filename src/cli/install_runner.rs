@@ -456,12 +456,14 @@ impl DeployStrategy for CloudDeploy {
         if let Some(cloud_cfg) = &config.deploy.cloud {
             if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
                 let cred_manager = CredentialsManager::with_default_store();
-                let creds = cred_manager.require_valid_token("remote cloud orchestrator deployment")?;
+                let creds =
+                    cred_manager.require_valid_token("remote cloud orchestrator deployment")?;
 
                 if context.dry_run {
                     return Ok(DeployResult {
                         target: DeployTarget::Cloud,
-                        message: "Remote cloud deploy dry-run validated payload and credentials".to_string(),
+                        message: "Remote cloud deploy dry-run validated payload and credentials"
+                            .to_string(),
                         server_ip: None,
                         deployment_id: None,
                         project_id: None,
@@ -488,9 +490,7 @@ impl DeployStrategy for CloudDeploy {
                     .clone()
                     .or_else(|| cloud_cfg.server.clone());
 
-                let base_url = normalize_stacker_server_url(
-                    stacker_client::DEFAULT_STACKER_URL,
-                );
+                let base_url = normalize_stacker_server_url(stacker_client::DEFAULT_STACKER_URL);
 
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -786,7 +786,11 @@ impl DeployStrategy for CloudDeploy {
             });
         }
 
-        let action_str = if context.dry_run { "plan completed" } else { "deployed" };
+        let action_str = if context.dry_run {
+            "plan completed"
+        } else {
+            "deployed"
+        };
         Ok(DeployResult {
             target: DeployTarget::Cloud,
             message: format!("Cloud deployment {}", action_str),
@@ -864,7 +868,13 @@ fn normalize_user_service_base_url(raw: &str) -> String {
 pub fn normalize_stacker_server_url(raw: &str) -> String {
     let mut url = raw.trim_end_matches('/').to_string();
     // Strip known auth endpoints that might be stored as server_url
-    for suffix in ["/oauth_server/token", "/auth/login", "/server/user/auth/login", "/login", "/api"] {
+    for suffix in [
+        "/oauth_server/token",
+        "/auth/login",
+        "/server/user/auth/login",
+        "/login",
+        "/api",
+    ] {
         if url.ends_with(suffix) {
             let len = url.len() - suffix.len();
             url = url[..len].to_string();
@@ -960,7 +970,10 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
             if let Some(secret) =
                 first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
             {
-                creds.insert("cloud_secret".to_string(), serde_json::Value::String(secret));
+                creds.insert(
+                    "cloud_secret".to_string(),
+                    serde_json::Value::String(secret),
+                );
             }
         }
         "cnt" => {
@@ -999,25 +1012,16 @@ pub(crate) fn resolve_docker_registry_credentials(
     let registry = config.deploy.registry.as_ref();
 
     // Username: env var > config
-    let username = first_non_empty_env(&[
-        "STACKER_DOCKER_USERNAME",
-        "DOCKER_USERNAME",
-    ])
-    .or_else(|| registry.and_then(|r| r.username.clone()));
+    let username = first_non_empty_env(&["STACKER_DOCKER_USERNAME", "DOCKER_USERNAME"])
+        .or_else(|| registry.and_then(|r| r.username.clone()));
 
     // Password: env var > config
-    let password = first_non_empty_env(&[
-        "STACKER_DOCKER_PASSWORD",
-        "DOCKER_PASSWORD",
-    ])
-    .or_else(|| registry.and_then(|r| r.password.clone()));
+    let password = first_non_empty_env(&["STACKER_DOCKER_PASSWORD", "DOCKER_PASSWORD"])
+        .or_else(|| registry.and_then(|r| r.password.clone()));
 
     // Registry server: env var > config > default "docker.io"
-    let server = first_non_empty_env(&[
-        "STACKER_DOCKER_REGISTRY",
-        "DOCKER_REGISTRY",
-    ])
-    .or_else(|| registry.and_then(|r| r.server.clone()));
+    let server = first_non_empty_env(&["STACKER_DOCKER_REGISTRY", "DOCKER_REGISTRY"])
+        .or_else(|| registry.and_then(|r| r.server.clone()));
 
     if let Some(u) = username {
         creds.insert("docker_username".to_string(), serde_json::Value::String(u));
@@ -1038,8 +1042,12 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
     let provider = cloud
         .map(|c| provider_code_for_remote(&c.provider.to_string()).to_string())
         .unwrap_or_else(|| "htz".to_string());
-    let region = cloud.and_then(|c| c.region.clone()).unwrap_or_else(|| "nbg1".to_string());
-    let server = cloud.and_then(|c| c.size.clone()).unwrap_or_else(|| "cpx11".to_string());
+    let region = cloud
+        .and_then(|c| c.region.clone())
+        .unwrap_or_else(|| "nbg1".to_string());
+    let server = cloud
+        .and_then(|c| c.size.clone())
+        .unwrap_or_else(|| "cpx11".to_string());
     let stack_code = config
         .project
         .identity
@@ -1048,8 +1056,8 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "custom-stack".to_string());
     let os = match provider.as_str() {
-        "do" => "docker-20-04",  // DigitalOcean marketplace image with Docker pre-installed
-        "htz" => "docker-ce",    // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
+        "do" => "docker-20-04", // DigitalOcean marketplace image with Docker pre-installed
+        "htz" => "docker-ce",   // Hetzner snapshot with Docker CE pre-installed (Ubuntu 24.04)
         "cnt" => "ubuntu-22.04", // Contabo: standard Ubuntu image
         _ => "ubuntu-22.04",
     };
@@ -1109,12 +1117,7 @@ fn validate_remote_deploy_payload(payload: &serde_json::Value) -> Result<(), Cli
                 if key == "subscriptions" && !v.is_array() {
                     missing.push("subscriptions(array)");
                 }
-                if key == "stack_code"
-                    && v
-                        .as_str()
-                        .map(|s| s.trim().is_empty())
-                        .unwrap_or(true)
-                {
+                if key == "stack_code" && v.as_str().map(|s| s.trim().is_empty()).unwrap_or(true) {
                     missing.push("stack_code(non-empty)");
                 }
             }
@@ -1123,10 +1126,7 @@ fn validate_remote_deploy_payload(payload: &serde_json::Value) -> Result<(), Cli
     }
 
     if !missing.is_empty() {
-        let identity_hint = if missing
-            .iter()
-            .any(|item| item.contains("stack_code"))
-        {
+        let identity_hint = if missing.iter().any(|item| item.contains("stack_code")) {
             " stack_code defaults to 'custom-stack'. Optionally set project.identity in stacker.yml to a registered catalog stack code."
         } else {
             ""
@@ -1202,7 +1202,10 @@ fn validate_remote_deploy_payload(payload: &serde_json::Value) -> Result<(), Cli
 }
 
 #[allow(dead_code)]
-fn persist_remote_payload_snapshot(project_dir: &Path, payload: &serde_json::Value) -> Option<PathBuf> {
+fn persist_remote_payload_snapshot(
+    project_dir: &Path,
+    payload: &serde_json::Value,
+) -> Option<PathBuf> {
     let stacker_dir = project_dir.join(".stacker");
     let snapshot_path = stacker_dir.join("remote-payload.last.json");
 
@@ -1218,7 +1221,10 @@ fn persist_remote_payload_snapshot(project_dir: &Path, payload: &serde_json::Val
     let payload_str = match serde_json::to_string_pretty(payload) {
         Ok(s) => s,
         Err(err) => {
-            eprintln!("Warning: failed to serialize remote payload snapshot: {}", err);
+            eprintln!(
+                "Warning: failed to serialize remote payload snapshot: {}",
+                err
+            );
             return None;
         }
     };
@@ -1275,13 +1281,13 @@ impl DeployStrategy for ServerDeploy {
             });
         }
 
-        let server_host = config
-            .deploy
-            .server
-            .as_ref()
-            .map(|s| s.host.clone());
+        let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
 
-        let action_str = if context.dry_run { "plan completed" } else { "deployed" };
+        let action_str = if context.dry_run {
+            "plan completed"
+        } else {
+            "deployed"
+        };
         Ok(DeployResult {
             target: DeployTarget::Server,
             message: format!("Server deployment {}", action_str),
@@ -1343,8 +1349,10 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::config_parser::{
+        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig,
+    };
     use std::sync::Mutex;
-    use crate::cli::config_parser::{CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig};
 
     // ── Mock executor ───────────────────────────────
 
@@ -1414,7 +1422,8 @@ mod tests {
     }
 
     fn sample_cloud_config() -> StackerConfig {
-        ConfigBuilder::new().name("test-cloud-app")
+        ConfigBuilder::new()
+            .name("test-cloud-app")
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
                 provider: CloudProvider::Hetzner,
@@ -1569,7 +1578,8 @@ mod tests {
     }
 
     fn sample_server_config() -> StackerConfig {
-        ConfigBuilder::new().name("test-server-app")
+        ConfigBuilder::new()
+            .name("test-server-app")
             .deploy_target(DeployTarget::Server)
             .server(ServerConfig {
                 host: "192.168.1.100".to_string(),
@@ -1709,17 +1719,28 @@ mod tests {
 
         let result = strategy.deploy(&config, &context, &executor).unwrap();
         assert_eq!(result.target, DeployTarget::Local);
-        assert!(result.message.contains("dry-run") || result.message.contains("previewed"),
-            "dry-run message should indicate preview, got: {}", result.message);
+        assert!(
+            result.message.contains("dry-run") || result.message.contains("previewed"),
+            "dry-run message should indicate preview, got: {}",
+            result.message
+        );
 
         // Dry-run should NOT invoke docker at all (no compose call)
         let recorded = executor.recorded_calls.lock().unwrap();
         // Only the compose-version probe may have been called (from resolve_compose_cmd),
         // but the actual compose up/config should NOT be called.
-        assert!(!recorded.iter().any(|(_, args)| args.contains(&"up".to_string())),
-            "dry-run must not call docker compose up");
-        assert!(!recorded.iter().any(|(_, args)| args.contains(&"config".to_string())),
-            "dry-run must not call docker compose config");
+        assert!(
+            !recorded
+                .iter()
+                .any(|(_, args)| args.contains(&"up".to_string())),
+            "dry-run must not call docker compose up"
+        );
+        assert!(
+            !recorded
+                .iter()
+                .any(|(_, args)| args.contains(&"config".to_string())),
+            "dry-run must not call docker compose config"
+        );
     }
 
     #[test]

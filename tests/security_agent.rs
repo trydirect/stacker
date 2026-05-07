@@ -47,10 +47,7 @@ async fn test_enqueue_command_rejects_other_user() {
 
     // User B tries to enqueue a command on User A's deployment
     let resp = client
-        .post(format!(
-            "{}/api/v1/agent/commands/enqueue",
-            &app.address
-        ))
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .json(&serde_json::json!({
             "deployment_hash": "dep-a-001",
@@ -79,10 +76,7 @@ async fn test_owner_can_enqueue_on_own_deployment() {
     let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-own-001").await;
 
     let resp = client
-        .post(format!(
-            "{}/api/v1/agent/commands/enqueue",
-            &app.address
-        ))
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .json(&serde_json::json!({
             "deployment_hash": "dep-own-001",
@@ -117,10 +111,7 @@ async fn test_list_commands_rejects_other_user() {
 
     // User B tries to list User A's commands
     let resp = client
-        .get(format!(
-            "{}/api/v1/commands/dep-cmd-a",
-            &app.address
-        ))
+        .get(format!("{}/api/v1/commands/dep-cmd-a", &app.address))
         .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
         .send()
         .await
@@ -175,15 +166,11 @@ async fn test_owner_can_list_own_commands() {
     let client = reqwest::Client::new();
 
     let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
-    let _dep_id =
-        create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cmd-own").await;
+    let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cmd-own").await;
     let _cmd_id = insert_test_command(&app.db_pool, "dep-cmd-own", USER_A_ID).await;
 
     let resp = client
-        .get(format!(
-            "{}/api/v1/commands/dep-cmd-own",
-            &app.address
-        ))
+        .get(format!("{}/api/v1/commands/dep-cmd-own", &app.address))
         .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
         .send()
         .await
@@ -192,10 +179,7 @@ async fn test_owner_can_list_own_commands() {
     assert!(resp.status().is_success(), "Owner should list own commands");
     let body: serde_json::Value = resp.json().await.unwrap();
     let list = body["list"].as_array().expect("Expected list field");
-    assert!(
-        !list.is_empty(),
-        "Owner should see at least one command"
-    );
+    assert!(!list.is_empty(), "Owner should see at least one command");
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -210,10 +194,7 @@ async fn test_enqueue_rejects_unauthenticated() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!(
-            "{}/api/v1/agent/commands/enqueue",
-            &app.address
-        ))
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
         // No Authorization header
         .json(&serde_json::json!({
             "deployment_hash": "dep-test",
@@ -239,10 +220,7 @@ async fn test_commands_list_rejects_unauthenticated() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!(
-            "{}/api/v1/commands/some-hash",
-            &app.address
-        ))
+        .get(format!("{}/api/v1/commands/some-hash", &app.address))
         .send()
         .await
         .expect("Failed to send request");

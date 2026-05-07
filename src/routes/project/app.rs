@@ -15,7 +15,7 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{self, Project};
-use crate::services::{ProjectAppService};
+use crate::services::ProjectAppService;
 use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

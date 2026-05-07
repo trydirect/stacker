@@ -34,10 +34,9 @@ pub async fn delete_preview(
             .await
             .unwrap_or_default();
 
-        user_servers.iter().any(|s| {
-            s.id != server.id
-                && s.vault_key_path.as_deref() == Some(vault_path.as_str())
-        })
+        user_servers
+            .iter()
+            .any(|s| s.id != server.id && s.vault_key_path.as_deref() == Some(vault_path.as_str()))
     } else {
         false
     };
@@ -63,11 +62,13 @@ pub async fn delete_preview(
         }
     }
 
-    Ok(JsonResponse::<serde_json::Value>::build().set_item(serde_json::json!({
-        "ssh_key_shared": ssh_key_shared,
-        "affected_deployments": affected_deployments,
-        "agent_count": agent_count,
-    })).ok("Delete preview"))
+    Ok(JsonResponse::<serde_json::Value>::build()
+        .set_item(serde_json::json!({
+            "ssh_key_shared": ssh_key_shared,
+            "affected_deployments": affected_deployments,
+            "agent_count": agent_count,
+        }))
+        .ok("Delete preview"))
 }
 
 #[tracing::instrument(name = "Delete user's server with cleanup.", skip_all)]
@@ -97,20 +98,16 @@ pub async fn item(
             .await
             .unwrap_or_default();
 
-        user_servers.iter().any(|s| {
-            s.id != server.id
-                && s.vault_key_path.as_deref() == Some(vault_path.as_str())
-        })
+        user_servers
+            .iter()
+            .any(|s| s.id != server.id && s.vault_key_path.as_deref() == Some(vault_path.as_str()))
     } else {
         false
     };
 
     // 2. Delete SSH key from Vault if not shared and key exists
     if !ssh_key_shared && server.vault_key_path.is_some() {
-        if let Err(e) = vault_client
-            .delete_ssh_key(&user.id, server.id)
-            .await
-        {
+        if let Err(e) = vault_client.delete_ssh_key(&user.id, server.id).await {
             tracing::warn!(
                 "Failed to delete SSH key from Vault for server {}: {}. Continuing with server deletion.",
                 server.id,

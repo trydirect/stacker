@@ -29,10 +29,9 @@ pub async fn list_handler(
     let limit = query.limit.unwrap_or(50).max(1).min(500);
 
     // Verify deployment belongs to the requesting user
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::internal_server_error(err))?;
+    let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
+        .await
+        .map_err(|err| JsonResponse::internal_server_error(err))?;
 
     match &deployment {
         Some(d) if d.user_id.as_deref() == Some(&user.id) => {}

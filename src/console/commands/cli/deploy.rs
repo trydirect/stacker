@@ -19,8 +19,8 @@ use crate::cli::install_runner::{
 };
 use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
-use crate::helpers::ssh_client;
 use crate::console::commands::CallableTrait;
+use crate::helpers::ssh_client;
 
 /// Default config filename.
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -37,7 +37,10 @@ fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
     })
 }
 
-fn resolve_ai_from_env_or_config(project_dir: &Path, config_file: Option<&str>) -> Result<crate::cli::config_parser::AiConfig, CliError> {
+fn resolve_ai_from_env_or_config(
+    project_dir: &Path,
+    config_file: Option<&str>,
+) -> Result<crate::cli::config_parser::AiConfig, CliError> {
     let config_path = match config_file {
         Some(f) => project_dir.join(f),
         None => project_dir.join(DEFAULT_CONFIG_FILE),
@@ -112,10 +115,18 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
     let mut hints = Vec::new();
 
     if lower.contains("npm ci") {
-        hints.push("npm ci failed: ensure package-lock.json exists and is in sync with package.json".to_string());
-        hints.push("Try locally: npm ci --production (or npm ci) to see the full dependency error".to_string());
+        hints.push(
+            "npm ci failed: ensure package-lock.json exists and is in sync with package.json"
+                .to_string(),
+        );
+        hints.push(
+            "Try locally: npm ci --production (or npm ci) to see the full dependency error"
+                .to_string(),
+        );
     }
-    if lower.contains("the attribute `version` is obsolete") || lower.contains("attribute `version` is obsolete") {
+    if lower.contains("the attribute `version` is obsolete")
+        || lower.contains("attribute `version` is obsolete")
+    {
         hints.push("docker-compose version warning: remove top-level 'version:' from .stacker/docker-compose.yml".to_string());
     }
     if lower.contains("failed to solve") {
@@ -125,10 +136,14 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
         hints.push("Permission issue detected: verify file ownership and executable bits for scripts copied into the image".to_string());
     }
     if lower.contains("no such file") || lower.contains("not found") {
-        hints.push("Missing file in build context: confirm COPY paths and .dockerignore rules".to_string());
+        hints.push(
+            "Missing file in build context: confirm COPY paths and .dockerignore rules".to_string(),
+        );
     }
     if lower.contains("network") || lower.contains("timed out") {
-        hints.push("Network/timeout issue: retry build and verify registry connectivity".to_string());
+        hints.push(
+            "Network/timeout issue: retry build and verify registry connectivity".to_string(),
+        );
     }
     if lower.contains("port is already allocated")
         || lower.contains("bind for 0.0.0.0")
@@ -151,11 +166,20 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
         hints.push("Orphan containers detected: run docker compose -f .stacker/docker-compose.yml down --remove-orphans".to_string());
     }
     if lower.contains("manifest unknown") || lower.contains("pull access denied") {
-        hints.push("Image pull failed: the configured image tag is not available in the registry".to_string());
+        hints.push(
+            "Image pull failed: the configured image tag is not available in the registry"
+                .to_string(),
+        );
         if let Some(image) = extract_missing_image(reason) {
             hints.push(format!("Missing image detected: {}", image));
-            hints.push(format!("Build and tag locally: docker build -t {} .", image));
-            hints.push(format!("If using a remote registry, push it first: docker push {}", image));
+            hints.push(format!(
+                "Build and tag locally: docker build -t {} .",
+                image
+            ));
+            hints.push(format!(
+                "If using a remote registry, push it first: docker push {}",
+                image
+            ));
         } else {
             hints.push("Build locally first (docker build -t <image:tag> .) or use an existing published tag".to_string());
         }
@@ -165,7 +189,10 @@ fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
     if hints.is_empty() {
         hints.push("Run docker compose -f .stacker/docker-compose.yml build --no-cache for detailed build logs".to_string());
         hints.push("Inspect .stacker/Dockerfile and .stacker/docker-compose.yml for invalid paths and commands".to_string());
-        hints.push("If the issue is dependency-related, run the failing install command locally first".to_string());
+        hints.push(
+            "If the issue is dependency-related, run the failing install command locally first"
+                .to_string(),
+        );
     }
 
     hints
@@ -253,10 +280,7 @@ fn try_ssh_server_check(server: &ServerConfig) -> Option<ssh_client::SystemCheck
                     return None;
                 }
             };
-            let candidates = [
-                home.join(".ssh/id_ed25519"),
-                home.join(".ssh/id_rsa"),
-            ];
+            let candidates = [home.join(".ssh/id_ed25519"), home.join(".ssh/id_rsa")];
             match candidates.iter().find(|p| p.exists()) {
                 Some(p) => p.clone(),
                 None => {
@@ -311,9 +335,18 @@ fn print_server_unreachable_hint(server: &ServerConfig, check: &ssh_client::Syst
     eprintln!("  │ To deploy to this server, fix the connection issue and retry:   │");
     eprintln!("  │                                                                 │");
     if let Some(ref key) = server.ssh_key {
-        eprintln!("  │   ssh -i {} -p {} {}@{}", key.display(), server.port, server.user, server.host);
+        eprintln!(
+            "  │   ssh -i {} -p {} {}@{}",
+            key.display(),
+            server.port,
+            server.user,
+            server.host
+        );
     } else {
-        eprintln!("  │   ssh -p {} {}@{}", server.port, server.user, server.host);
+        eprintln!(
+            "  │   ssh -p {} {}@{}",
+            server.port, server.user, server.host
+        );
     }
     eprintln!("  │                                                                 │");
     eprintln!("  │ Or, to provision a new cloud server instead, remove the         │");
@@ -341,7 +374,10 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
 
     if let serde_yaml::Value::Mapping(ref mut root) = doc {
         // Remove obsolete compose version key.
-        if root.remove(serde_yaml::Value::String("version".to_string())).is_some() {
+        if root
+            .remove(serde_yaml::Value::String("version".to_string()))
+            .is_some()
+        {
             changed = true;
         }
 
@@ -384,7 +420,9 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
                     .map(|d| d.starts_with(".stacker/"))
                     .unwrap_or(false);
 
-                if dockerfile_points_to_stacker && (current_context == "." || current_context == "./") {
+                if dockerfile_points_to_stacker
+                    && (current_context == "." || current_context == "./")
+                {
                     build_map.insert(
                         context_key.clone(),
                         serde_yaml::Value::String("..".to_string()),
@@ -393,10 +431,7 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
                 }
 
                 if service_name == "app" && (current_context == "." || current_context == "./") {
-                    build_map.insert(
-                        context_key,
-                        serde_yaml::Value::String("..".to_string()),
-                    );
+                    build_map.insert(context_key, serde_yaml::Value::String("..".to_string()));
 
                     let dockerfile_needs_rewrite = match dockerfile.as_deref() {
                         None => true,
@@ -418,8 +453,9 @@ fn normalize_generated_compose_paths(compose_path: &Path) -> Result<(), CliError
     }
 
     if changed {
-        let updated = serde_yaml::to_string(&doc)
-            .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize compose file: {e}")))?;
+        let updated = serde_yaml::to_string(&doc).map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to serialize compose file: {e}"))
+        })?;
         std::fs::write(compose_path, updated)?;
         eprintln!("  Normalized {}/docker-compose.yml paths", OUTPUT_DIR);
     }
@@ -539,11 +575,16 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
     let ai_config = match resolve_ai_from_env_or_config(project_dir, config_file) {
         Ok(cfg) => cfg,
         Err(load_err) => {
-            eprintln!("  Could not load AI config for troubleshooting: {}", load_err);
+            eprintln!(
+                "  Could not load AI config for troubleshooting: {}",
+                load_err
+            );
             for hint in fallback_troubleshooting_hints(reason) {
                 eprintln!("  - {}", hint);
             }
-            eprintln!("  Tip: enable AI with stacker init --with-ai or set STACKER_AI_PROVIDER=ollama");
+            eprintln!(
+                "  Tip: enable AI with stacker init --with-ai or set STACKER_AI_PROVIDER=ollama"
+            );
             return;
         }
     };
@@ -560,7 +601,10 @@ fn print_ai_deploy_help(project_dir: &Path, config_file: Option<&str>, err: &Cli
     let error_log = build_troubleshoot_error_log(project_dir, reason);
     let ctx = PromptContext {
         project_type: None,
-        files: vec![".stacker/Dockerfile".to_string(), ".stacker/docker-compose.yml".to_string()],
+        files: vec![
+            ".stacker/Dockerfile".to_string(),
+            ".stacker/docker-compose.yml".to_string(),
+        ],
         error_log: Some(error_log),
         current_config: None,
     };
@@ -629,9 +673,7 @@ fn cloud_provider_from_code(code: &str) -> Option<CloudProvider> {
 ///   - `Ok(Some(cloud_info))` when the user picks an existing credential.
 ///   - `Ok(None)` when the user picks "Connect a new cloud provider".
 ///   - `Err(...)` on I/O or network errors.
-fn prompt_select_cloud(
-    access_token: &str,
-) -> Result<Option<stacker_client::CloudInfo>, CliError> {
+fn prompt_select_cloud(access_token: &str) -> Result<Option<stacker_client::CloudInfo>, CliError> {
     let base_url = crate::cli::install_runner::normalize_stacker_server_url(
         stacker_client::DEFAULT_STACKER_URL,
     );
@@ -639,7 +681,9 @@ fn prompt_select_cloud(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| CliError::ConfigValidation(format!("Failed to create async runtime: {}", e)))?;
+        .map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
+        })?;
 
     let clouds = rt.block_on(async {
         let client = StackerClient::new(&base_url, access_token);
@@ -665,8 +709,16 @@ fn prompt_select_cloud(
 
     let mut items: Vec<String> = clouds
         .iter()
-        .map(|c| format!("{:<width_id$} {:<width_name$} ({})", c.id, c.name, c.provider,
-            width_id = CLOUD_ID_WIDTH, width_name = CLOUD_NAME_WIDTH))
+        .map(|c| {
+            format!(
+                "{:<width_id$} {:<width_name$} ({})",
+                c.id,
+                c.name,
+                c.provider,
+                width_id = CLOUD_ID_WIDTH,
+                width_name = CLOUD_NAME_WIDTH
+            )
+        })
         .collect();
     items.push(CONNECT_NEW.to_string());
 
@@ -687,12 +739,9 @@ fn prompt_select_cloud(
         return Ok(None);
     }
 
-    Ok(Some(
-        clouds
-            .into_iter()
-            .nth(selection)
-            .expect("selection index should be within bounds of clouds vector"),
-    ))
+    Ok(Some(clouds.into_iter().nth(selection).expect(
+        "selection index should be within bounds of clouds vector",
+    )))
 }
 
 /// `stacker deploy [--target local|cloud|server] [--file stacker.yml] [--dry-run] [--force-rebuild]`
@@ -802,7 +851,10 @@ impl DeployCommand {
     pub fn with_runtime(mut self, runtime: String) -> Self {
         let rt = runtime.to_lowercase();
         if rt != "runc" && rt != "kata" {
-            eprintln!("Warning: unknown runtime '{}', defaulting to 'runc'", runtime);
+            eprintln!(
+                "Warning: unknown runtime '{}', defaulting to 'runc'",
+                runtime
+            );
             self.runtime = "runc".to_string();
         } else {
             self.runtime = rt;
@@ -869,11 +921,18 @@ pub fn run_deploy(
     let mut lock_server_name: Option<String> = None;
     if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
-            eprintln!("  Found deploy.server section (host={}). Checking SSH connectivity...", server_cfg.host);
+            eprintln!(
+                "  Found deploy.server section (host={}). Checking SSH connectivity...",
+                server_cfg.host
+            );
 
             match try_ssh_server_check(server_cfg) {
                 Some(check) if check.connected && check.authenticated => {
-                    eprintln!("  ✓ Server {} is reachable ({})", server_cfg.host, check.summary());
+                    eprintln!(
+                        "  ✓ Server {} is reachable ({})",
+                        server_cfg.host,
+                        check.summary()
+                    );
 
                     if !check.docker_installed {
                         eprintln!("  ⚠ Docker is NOT installed on the server.");
@@ -890,7 +949,9 @@ pub fn run_deploy(
                         });
                     }
 
-                    eprintln!("  Switching deploy target from 'cloud' → 'server' (using existing server)");
+                    eprintln!(
+                        "  Switching deploy target from 'cloud' → 'server' (using existing server)"
+                    );
                     deploy_target = DeployTarget::Server;
                 }
                 Some(check) => {
@@ -921,19 +982,31 @@ pub fn run_deploy(
                     });
                 }
             }
-        } else if DeploymentLock::exists_for_target(project_dir, "cloud") || DeploymentLock::exists(project_dir) {
+        } else if DeploymentLock::exists_for_target(project_dir, "cloud")
+            || DeploymentLock::exists(project_dir)
+        {
             // No deploy.server in config, but a lockfile exists from a prior deploy.
             // Auto-inject the server name so the cloud deploy API reuses the same server.
             if let Ok(Some(lock)) = DeploymentLock::load_for_target(project_dir, "cloud") {
                 if let Some(ref name) = lock.server_name {
-                    eprintln!("  ℹ Found previous cloud deployment (server='{}') — reusing server", name);
+                    eprintln!(
+                        "  ℹ Found previous cloud deployment (server='{}') — reusing server",
+                        name
+                    );
                     eprintln!("    To provision a new server instead: stacker deploy --force-new");
                     lock_server_name = Some(name.clone());
                 } else if let Some(ref ip) = lock.server_ip {
                     if ip != "127.0.0.1" {
-                        eprintln!("  ℹ Found previous deployment to {} (from deployment lock)", ip);
-                        eprintln!("    Server name unknown — cannot auto-reuse. Run: stacker config lock");
-                        eprintln!("    To provision a new server instead:   stacker deploy --force-new");
+                        eprintln!(
+                            "  ℹ Found previous deployment to {} (from deployment lock)",
+                            ip
+                        );
+                        eprintln!(
+                            "    Server name unknown — cannot auto-reuse. Run: stacker config lock"
+                        );
+                        eprintln!(
+                            "    To provision a new server instead:   stacker deploy --force-new"
+                        );
                     }
                 }
             }
@@ -1035,7 +1108,10 @@ pub fn run_deploy(
             let builder = DockerfileBuilder::from(config.app.app_type);
             builder.write_to(&dockerfile_path, force_rebuild)?;
         } else {
-            eprintln!("  Using existing {}/Dockerfile (use --force-rebuild to regenerate)", OUTPUT_DIR);
+            eprintln!(
+                "  Using existing {}/Dockerfile (use --force-rebuild to regenerate)",
+                OUTPUT_DIR
+            );
         }
     }
 
@@ -1066,7 +1142,10 @@ pub fn run_deploy(
             let compose = ComposeDefinition::try_from(&config)?;
             compose.write_to(&compose_out, force_rebuild)?;
         } else {
-            eprintln!("  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)", OUTPUT_DIR);
+            eprintln!(
+                "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
+                OUTPUT_DIR
+            );
         }
         compose_out
     };
@@ -1075,7 +1154,10 @@ pub fn run_deploy(
 
     // 5b.1 Surface build source paths to avoid confusion.
     if let Some(image) = &config.app.image {
-        eprintln!("  App image source: image={} (no local Dockerfile build)", image);
+        eprintln!(
+            "  App image source: image={} (no local Dockerfile build)",
+            image
+        );
     } else if let Some(build_src) = compose_app_build_source(&compose_path) {
         eprintln!("  App build source: {}", build_src);
     } else if let Some(dockerfile) = &config.app.dockerfile {
@@ -1086,7 +1168,10 @@ pub fn run_deploy(
         };
         eprintln!("  App build source: Dockerfile={}", dockerfile_display);
     } else {
-        eprintln!("  App build source: Dockerfile={}", dockerfile_path.display());
+        eprintln!(
+            "  App build source: Dockerfile={}",
+            dockerfile_path.display()
+        );
     }
     eprintln!("  Compose file: {}", compose_path.display());
 
@@ -1111,10 +1196,7 @@ pub fn run_deploy(
         project_name_override: remote_overrides.project_name.clone(),
         key_name_override: remote_overrides.key_name.clone(),
         key_id_override: remote_overrides.key_id,
-        server_name_override: remote_overrides
-            .server_name
-            .clone()
-            .or(lock_server_name),
+        server_name_override: remote_overrides.server_name.clone().or(lock_server_name),
         runtime: runtime.to_string(),
     };
 
@@ -1267,7 +1349,8 @@ impl DeployCommand {
                                 info.cloud_id,
                             );
                             if let Some(ref ip) = info.srv_ip {
-                                eprintln!("  Server details: {} ({}@{}:{})",
+                                eprintln!(
+                                    "  Server details: {} ({}@{}:{})",
                                     info.name.as_deref().unwrap_or("unnamed"),
                                     info.ssh_user.as_deref().unwrap_or("root"),
                                     ip,
@@ -1276,7 +1359,9 @@ impl DeployCommand {
                             }
                         }
                         Ok(None) => {
-                            eprintln!("  ℹ Server details not yet available (may still be provisioning).");
+                            eprintln!(
+                                "  ℹ Server details not yet available (may still be provisioning)."
+                            );
                         }
                         Err(e) => {
                             eprintln!("  ⚠ Could not fetch server details: {}", e);
@@ -1319,9 +1404,7 @@ impl DeployCommand {
                 None => project_dir.join(DEFAULT_CONFIG_FILE),
             };
 
-            if lock.server_ip.is_some()
-                && lock.server_ip.as_deref() != Some("127.0.0.1")
-            {
+            if lock.server_ip.is_some() && lock.server_ip.as_deref() != Some("127.0.0.1") {
                 match StackerConfig::from_file(&config_path) {
                     Ok(mut config) => {
                         lock.apply_to_config(&mut config);
@@ -1483,7 +1566,11 @@ fn watch_local_containers(
         if let Ok(config) = StackerConfig::from_file(&config_path) {
             if let Some(ref existing) = config.deploy.compose_file {
                 let p = project_dir.join(existing);
-                if p.exists() { p } else { output_dir.join("docker-compose.yml") }
+                if p.exists() {
+                    p
+                } else {
+                    output_dir.join("docker-compose.yml")
+                }
             } else {
                 output_dir.join("docker-compose.yml")
             }
@@ -1505,10 +1592,7 @@ fn watch_local_containers(
     let spin = progress::spinner("Checking container health...");
 
     loop {
-        let args = vec![
-            "compose", "-f", &compose_str, "ps",
-            "--format", "json",
-        ];
+        let args = vec!["compose", "-f", &compose_str, "ps", "--format", "json"];
         if let Ok(output) = executor.execute("docker", &args) {
             if output.success() {
                 let stdout = output.stdout.trim();
@@ -1533,7 +1617,10 @@ fn watch_local_containers(
         }
 
         if start.elapsed() > timeout {
-            progress::finish_error(&spin, "Timeout waiting for containers — check `stacker status`");
+            progress::finish_error(
+                &spin,
+                "Timeout waiting for containers — check `stacker status`",
+            );
             return Ok(());
         }
 
@@ -1582,13 +1669,7 @@ fn print_container_summary(compose_str: &str, executor: &dyn CommandExecutor) {
 // ── Cloud deployment status polling after remote deploy ──────
 
 /// Terminal statuses — once reached, watching stops.
-const TERMINAL_STATUSES: &[&str] = &[
-    "completed",
-    "failed",
-    "cancelled",
-    "error",
-    "paused",
-];
+const TERMINAL_STATUSES: &[&str] = &["completed", "failed", "cancelled", "error", "paused"];
 
 fn is_terminal(status: &str) -> bool {
     TERMINAL_STATUSES.iter().any(|s| *s == status)
@@ -1667,10 +1748,7 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                                 &format!("Deployment #{} completed", info.id),
                             );
                         } else {
-                            let msg = info
-                                .status_message
-                                .as_deref()
-                                .unwrap_or(&info.status);
+                            let msg = info.status_message.as_deref().unwrap_or(&info.status);
                             progress::finish_error(
                                 &spin,
                                 &format!("Deployment #{} — {}", info.id, msg),
@@ -1681,28 +1759,19 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                 }
                 Ok(None) => {
                     if last_status.is_empty() {
-                        progress::update_message(
-                            &spin,
-                            "Waiting for deployment to appear...",
-                        );
+                        progress::update_message(&spin, "Waiting for deployment to appear...");
                         last_status = "<none>".to_string();
                     }
                 }
                 Err(e) => {
-                    progress::finish_error(
-                        &spin,
-                        &format!("Error polling status: {}", e),
-                    );
+                    progress::finish_error(&spin, &format!("Error polling status: {}", e));
                     eprintln!("  Run `stacker status --watch` to retry.");
                     return Ok(());
                 }
             }
 
             if start.elapsed() > timeout {
-                progress::finish_error(
-                    &spin,
-                    "Watch timeout (10m) — deployment still in progress",
-                );
+                progress::finish_error(&spin, "Watch timeout (10m) — deployment still in progress");
                 eprintln!("  Run `stacker status --watch` to continue watching.");
                 return Ok(());
             }
@@ -1791,7 +1860,17 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
 
         // Generated files should exist
@@ -1809,7 +1888,17 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
 
         // Custom Dockerfile should not be overwritten
@@ -1825,12 +1914,25 @@ mod tests {
         let config = "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  compose_file: docker-compose.yml\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hello</h1>"),
-            ("docker-compose.yml", "version: '3.8'\nservices:\n  web:\n    image: nginx\n"),
+            (
+                "docker-compose.yml",
+                "version: '3.8'\nservices:\n  web:\n    image: nginx\n",
+            ),
             ("stacker.yml", config),
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
 
         // .stacker/docker-compose.yml should NOT be generated
@@ -1843,23 +1945,44 @@ mod tests {
         let dir = setup_local_project(&[
             ("index.html", "<h1>hello</h1>"),
             ("stacker.yml", config),
-            (".stacker/docker-compose.yml", "services:\n  app:\n    image: nginx\n"),
+            (
+                ".stacker/docker-compose.yml",
+                "services:\n  app:\n    image: nginx\n",
+            ),
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_deploy_local_with_image_skips_build() {
         let config = "name: test-app\napp:\n  type: static\n  path: .\n  image: nginx:latest\n";
-        let dir = setup_local_project(&[
-            ("stacker.yml", config),
-        ]);
+        let dir = setup_local_project(&[("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
 
         // No Dockerfile should be generated (using image)
@@ -1868,12 +1991,20 @@ mod tests {
 
     #[test]
     fn test_deploy_cloud_requires_login() {
-        let dir = setup_local_project(&[
-            ("stacker.yml", &cloud_config_yaml()),
-        ]);
+        let dir = setup_local_project(&[("stacker.yml", &cloud_config_yaml())]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
@@ -1888,30 +2019,49 @@ mod tests {
     fn test_deploy_cloud_requires_provider() {
         // Cloud target but no cloud config
         let config = "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  target: cloud\n";
-        let dir = setup_local_project(&[
-            ("stacker.yml", config),
-        ]);
+        let dir = setup_local_project(&[("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
         // This should fail at validation since no credentials exist
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_deploy_server_requires_host() {
         let config = "name: test-app\napp:\n  type: static\n  path: .\ndeploy:\n  target: server\n";
-        let dir = setup_local_project(&[
-            ("stacker.yml", config),
-        ]);
+        let dir = setup_local_project(&[("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("host") || err.contains("Host") || err.contains("server"),
-            "Expected server host error, got: {}", err);
+        assert!(
+            err.contains("host") || err.contains("Host") || err.contains("server"),
+            "Expected server host error, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1919,12 +2069,25 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), None, None, true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            None,
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("not found") || err.contains("Configuration"),
-            "Expected config not found error, got: {}", err);
+        assert!(
+            err.contains("not found") || err.contains("Configuration"),
+            "Expected config not found error, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1935,7 +2098,17 @@ mod tests {
         ]);
         let executor = MockExecutor::success();
 
-        let result = run_deploy(dir.path(), Some("custom.yml"), Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            Some("custom.yml"),
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
     }
 
@@ -1948,15 +2121,45 @@ mod tests {
         let executor = MockExecutor::success();
 
         // First deploy creates files
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
 
         // Second deploy without force_rebuild should succeed (reuses existing files)
-        let result2 = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result2 = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result2.is_ok());
 
         // With force_rebuild should also succeed (regenerates files)
-        let result3 = run_deploy(dir.path(), None, Some("local"), true, true, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result3 = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            true,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result3.is_ok());
     }
 
@@ -1981,21 +2184,30 @@ mod tests {
 
     #[test]
     fn test_deploy_runs_pre_build_hook_noted() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
-        let dir = setup_local_project(&[
-            ("index.html", "<h1>hello</h1>"),
-            ("stacker.yml", config),
-        ]);
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[("index.html", "<h1>hello</h1>"), ("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
         // Dry-run should succeed (hooks are just noted, not executed in dry-run)
-        let result = run_deploy(dir.path(), None, Some("local"), true, false, false, &executor, &RemoteDeployOverrides::default(), "runc");
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            true,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_fallback_hints_for_npm_ci_error() {
-        let hints = fallback_troubleshooting_hints("failed to solve: /bin/sh -c npm ci --production");
+        let hints =
+            fallback_troubleshooting_hints("failed to solve: /bin/sh -c npm ci --production");
         assert!(hints.iter().any(|h| h.contains("npm ci failed")));
     }
 
@@ -2024,14 +2236,14 @@ mod tests {
         assert!(log.contains("(not found)"));
     }
 
-        #[test]
-        fn test_normalize_generated_compose_paths_fixes_stacker_context_and_version() {
-                let dir = TempDir::new().unwrap();
-                let stacker_dir = dir.path().join(".stacker");
-                std::fs::create_dir_all(&stacker_dir).unwrap();
+    #[test]
+    fn test_normalize_generated_compose_paths_fixes_stacker_context_and_version() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
 
-                let compose_path = stacker_dir.join("docker-compose.yml");
-                let compose = r#"
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
 version: "3.9"
 services:
     app:
@@ -2039,37 +2251,37 @@ services:
             context: .
             dockerfile: .stacker/Dockerfile
 "#;
-                std::fs::write(&compose_path, compose).unwrap();
+        std::fs::write(&compose_path, compose).unwrap();
 
-                normalize_generated_compose_paths(&compose_path).unwrap();
+        normalize_generated_compose_paths(&compose_path).unwrap();
 
-                let normalized = std::fs::read_to_string(&compose_path).unwrap();
-                assert!(!normalized.contains("version:"));
-                assert!(normalized.contains("context: .."));
-                assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
-        }
+        let normalized = std::fs::read_to_string(&compose_path).unwrap();
+        assert!(!normalized.contains("version:"));
+        assert!(normalized.contains("context: .."));
+        assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+    }
 
-        #[test]
-        fn test_normalize_generated_compose_paths_adds_stacker_dockerfile_for_app_when_missing() {
-                let dir = TempDir::new().unwrap();
-                let stacker_dir = dir.path().join(".stacker");
-                std::fs::create_dir_all(&stacker_dir).unwrap();
+    #[test]
+    fn test_normalize_generated_compose_paths_adds_stacker_dockerfile_for_app_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
 
-                let compose_path = stacker_dir.join("docker-compose.yml");
-                let compose = r#"
+        let compose_path = stacker_dir.join("docker-compose.yml");
+        let compose = r#"
 services:
     app:
         build:
             context: .
 "#;
-                std::fs::write(&compose_path, compose).unwrap();
+        std::fs::write(&compose_path, compose).unwrap();
 
-                normalize_generated_compose_paths(&compose_path).unwrap();
+        normalize_generated_compose_paths(&compose_path).unwrap();
 
-                let normalized = std::fs::read_to_string(&compose_path).unwrap();
-                assert!(normalized.contains("context: .."));
-                assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
-        }
+        let normalized = std::fs::read_to_string(&compose_path).unwrap();
+        assert!(normalized.contains("context: .."));
+        assert!(normalized.contains("dockerfile: .stacker/Dockerfile"));
+    }
 
     #[test]
     fn test_parse_deploy_target_valid() {
@@ -2100,7 +2312,9 @@ services:
             "docker compose failed: manifest for optimum/optimumcode:latest not found: manifest unknown"
         );
         assert!(hints.iter().any(|h| h.contains("Image pull failed")));
-        assert!(hints.iter().any(|h| h.contains("docker build -t optimum/optimumcode:latest .")));
+        assert!(hints
+            .iter()
+            .any(|h| h.contains("docker build -t optimum/optimumcode:latest .")));
     }
 
     #[test]
@@ -2115,7 +2329,7 @@ services:
     #[test]
     fn test_fallback_hints_for_orphan_containers() {
         let hints = fallback_troubleshooting_hints(
-            "Found orphan containers ([stackerdb]) for this project"
+            "Found orphan containers ([stackerdb]) for this project",
         );
         assert!(hints.iter().any(|h| h.contains("--remove-orphans")));
     }
@@ -2133,7 +2347,7 @@ services:
     fn test_ensure_env_file_is_created_when_missing() {
         let dir = TempDir::new().unwrap();
         let config = StackerConfig::from_str(
-            "name: env-app\napp:\n  type: static\nenv_file: .env\nenv:\n  APP_ENV: production\n"
+            "name: env-app\napp:\n  type: static\nenv_file: .env\nenv:\n  APP_ENV: production\n",
         )
         .unwrap();
 
@@ -2203,18 +2417,39 @@ services:
     #[test]
     fn test_cloud_provider_from_code() {
         // Short codes
-        assert_eq!(cloud_provider_from_code("htz"), Some(CloudProvider::Hetzner));
-        assert_eq!(cloud_provider_from_code("do"), Some(CloudProvider::Digitalocean));
+        assert_eq!(
+            cloud_provider_from_code("htz"),
+            Some(CloudProvider::Hetzner)
+        );
+        assert_eq!(
+            cloud_provider_from_code("do"),
+            Some(CloudProvider::Digitalocean)
+        );
         assert_eq!(cloud_provider_from_code("aws"), Some(CloudProvider::Aws));
         assert_eq!(cloud_provider_from_code("lo"), Some(CloudProvider::Linode));
         assert_eq!(cloud_provider_from_code("vu"), Some(CloudProvider::Vultr));
         // Full names
-        assert_eq!(cloud_provider_from_code("hetzner"), Some(CloudProvider::Hetzner));
-        assert_eq!(cloud_provider_from_code("digitalocean"), Some(CloudProvider::Digitalocean));
-        assert_eq!(cloud_provider_from_code("linode"), Some(CloudProvider::Linode));
-        assert_eq!(cloud_provider_from_code("vultr"), Some(CloudProvider::Vultr));
+        assert_eq!(
+            cloud_provider_from_code("hetzner"),
+            Some(CloudProvider::Hetzner)
+        );
+        assert_eq!(
+            cloud_provider_from_code("digitalocean"),
+            Some(CloudProvider::Digitalocean)
+        );
+        assert_eq!(
+            cloud_provider_from_code("linode"),
+            Some(CloudProvider::Linode)
+        );
+        assert_eq!(
+            cloud_provider_from_code("vultr"),
+            Some(CloudProvider::Vultr)
+        );
         // Case insensitive
-        assert_eq!(cloud_provider_from_code("HTZ"), Some(CloudProvider::Hetzner));
+        assert_eq!(
+            cloud_provider_from_code("HTZ"),
+            Some(CloudProvider::Hetzner)
+        );
         assert_eq!(cloud_provider_from_code("AWS"), Some(CloudProvider::Aws));
         // Unknown
         assert_eq!(cloud_provider_from_code("unknown"), None);
@@ -2223,21 +2458,17 @@ services:
 
     #[test]
     fn test_with_watch_flags() {
-        let cmd = DeployCommand::new(None, None, false, false)
-            .with_watch(false, false);
+        let cmd = DeployCommand::new(None, None, false, false).with_watch(false, false);
         assert_eq!(cmd.watch, None); // auto
 
-        let cmd = DeployCommand::new(None, None, false, false)
-            .with_watch(true, false);
+        let cmd = DeployCommand::new(None, None, false, false).with_watch(true, false);
         assert_eq!(cmd.watch, Some(true));
 
-        let cmd = DeployCommand::new(None, None, false, false)
-            .with_watch(false, true);
+        let cmd = DeployCommand::new(None, None, false, false).with_watch(false, true);
         assert_eq!(cmd.watch, Some(false));
 
         // --no-watch wins over --watch
-        let cmd = DeployCommand::new(None, None, false, false)
-            .with_watch(true, true);
+        let cmd = DeployCommand::new(None, None, false, false).with_watch(true, true);
         assert_eq!(cmd.watch, Some(false));
     }
 }

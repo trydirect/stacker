@@ -82,10 +82,15 @@ impl RedisCache {
             ConnectorError::Internal(format!("Invalid Redis URL for Docker Hub cache: {}", err))
         })?;
 
-        let connection = tokio::time::timeout(Duration::from_secs(3), ConnectionManager::new(client))
-            .await
-            .map_err(|_| ConnectorError::ServiceUnavailable("Redis connection timed out".to_string()))?
-            .map_err(|err| ConnectorError::ServiceUnavailable(format!("Redis unavailable: {}", err)))?;
+        let connection =
+            tokio::time::timeout(Duration::from_secs(3), ConnectionManager::new(client))
+                .await
+                .map_err(|_| {
+                    ConnectorError::ServiceUnavailable("Redis connection timed out".to_string())
+                })?
+                .map_err(|err| {
+                    ConnectorError::ServiceUnavailable(format!("Redis unavailable: {}", err))
+                })?;
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),

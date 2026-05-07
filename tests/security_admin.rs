@@ -38,10 +38,7 @@ async fn test_admin_routes_reject_unauthenticated() {
     let admin_endpoints = vec![
         ("GET", format!("{}/admin/rating", &app.address)),
         ("GET", format!("{}/admin/rating/1", &app.address)),
-        (
-            "PUT",
-            format!("{}/admin/client/1/enable", &app.address),
-        ),
+        ("PUT", format!("{}/admin/client/1/enable", &app.address)),
     ];
 
     for (method, url) in admin_endpoints {
@@ -74,18 +71,9 @@ async fn test_admin_endpoint_not_accessible_to_regular_user() {
     let admin_endpoints = vec![
         ("GET", format!("{}/admin/rating", &app.address)),
         ("GET", format!("{}/admin/rating/999", &app.address)),
-        (
-            "PUT",
-            format!("{}/admin/client/999", &app.address),
-        ),
-        (
-            "PUT",
-            format!("{}/admin/client/999/enable", &app.address),
-        ),
-        (
-            "PUT",
-            format!("{}/admin/client/999/disable", &app.address),
-        ),
+        ("PUT", format!("{}/admin/client/999", &app.address)),
+        ("PUT", format!("{}/admin/client/999/enable", &app.address)),
+        ("PUT", format!("{}/admin/client/999/disable", &app.address)),
     ];
 
     for (method, url) in admin_endpoints {

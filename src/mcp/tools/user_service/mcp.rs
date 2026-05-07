@@ -280,7 +280,8 @@ impl ToolHandler for GetNotificationsTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "get_notifications".to_string(),
-            description: "List user notifications with optional pagination and unread filter".to_string(),
+            description: "List user notifications with optional pagination and unread filter"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

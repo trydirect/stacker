@@ -59,19 +59,16 @@ pub async fn link_handler(
         })?;
 
     // 2. Verify user owns the requested deployment
-    let deployment = db::deployment::fetch_by_deployment_hash(
-        api_pool.get_ref(),
-        &payload.deployment_id,
-    )
-    .await
-    .map_err(|e| {
-        helpers::JsonResponse::<LinkAgentResponse>::build()
-            .internal_server_error(format!("Database error: {}", e))
-    })?;
+    let deployment =
+        db::deployment::fetch_by_deployment_hash(api_pool.get_ref(), &payload.deployment_id)
+            .await
+            .map_err(|e| {
+                helpers::JsonResponse::<LinkAgentResponse>::build()
+                    .internal_server_error(format!("Database error: {}", e))
+            })?;
 
     let deployment = deployment.ok_or_else(|| {
-        helpers::JsonResponse::<LinkAgentResponse>::build()
-            .not_found("Deployment not found")
+        helpers::JsonResponse::<LinkAgentResponse>::build().not_found("Deployment not found")
     })?;
 
     // Check ownership: deployment.user_id must match the authenticated user
@@ -91,8 +88,7 @@ pub async fn link_handler(
         db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &deployment.deployment_hash)
             .await
             .map_err(|e| {
-                helpers::JsonResponse::<LinkAgentResponse>::build()
-                    .internal_server_error(e)
+                helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
     let (agent, agent_token) = if let Some(mut existing) = existing_agent {
@@ -106,8 +102,7 @@ pub async fn link_handler(
         let existing = db::agent::update(agent_pool.as_ref(), existing)
             .await
             .map_err(|e| {
-                helpers::JsonResponse::<LinkAgentResponse>::build()
-                    .internal_server_error(e)
+                helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
         // Fetch existing token from Vault or regenerate
@@ -140,8 +135,7 @@ pub async fn link_handler(
         let saved_agent = db::agent::insert(agent_pool.as_ref(), agent)
             .await
             .map_err(|e| {
-                helpers::JsonResponse::<LinkAgentResponse>::build()
-                    .internal_server_error(e)
+                helpers::JsonResponse::<LinkAgentResponse>::build().internal_server_error(e)
             })?;
 
         // Store token in Vault

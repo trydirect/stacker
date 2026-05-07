@@ -11,8 +11,8 @@ pub struct Deployment {
     pub user_id: Option<String>, // user who created the deployment (nullable in db)
     pub deleted: Option<bool>,
     pub status: String,
-    pub runtime: String,                     // container runtime: "runc" or "kata"
-    pub metadata: Value,                     // renamed from 'body' to 'metadata'
+    pub runtime: String, // container runtime: "runc" or "kata"
+    pub metadata: Value, // renamed from 'body' to 'metadata'
     pub last_seen_at: Option<DateTime<Utc>>, // last heartbeat from agent
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

@@ -9,23 +9,24 @@ use std::sync::Arc;
 
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
+    AddAppToDeploymentTool,
     AddCloudTool,
     AdminApproveTemplateTool,
     AdminGetTemplateDetailTool,
     AdminListSubmittedTemplatesTool,
     AdminListTemplateReviewsTool,
     AdminListTemplateVersionsTool,
+    AdminRejectTemplateTool,
     AdminValidateTemplateSecurityTool,
     ApplyVaultConfigTool,
-    AddAppToDeploymentTool,
     CancelDeploymentTool,
     CloneProjectTool,
-    ConfigureProxyTool,
-    // Agent Control tools
-    ConfigureProxyAgentTool,
+    ConfigureFirewallFromRoleTool,
     // Firewall tools
     ConfigureFirewallTool,
-    ConfigureFirewallFromRoleTool,
+    // Agent Control tools
+    ConfigureProxyAgentTool,
+    ConfigureProxyTool,
     CreateProjectAppTool,
     CreateProjectTool,
     DeleteAppEnvVarTool,
@@ -35,15 +36,13 @@ use crate::mcp::tools::{
     // Ansible Roles tools
     DeployAppTool,
     DeployRoleTool,
-    // Stack Recommendations
-    RecommendStackServicesTool,
-    RemoveAppTool,
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
-    GetAppConfigTool,
     // Agent Control tools
     GetAgentStatusTool,
+    GetAnsibleRoleDefaultsTool,
+    GetAppConfigTool,
     // Phase 5: App Configuration tools
     GetAppEnvVarsTool,
     GetCloudTool,
@@ -65,39 +64,40 @@ use crate::mcp::tools::{
     GetUserProfileTool,
     // Phase 5: Vault Configuration tools
     GetVaultConfigTool,
+    InitiateDeploymentTool,
     ListAvailableRolesTool,
-    ListCloudsTool,
     ListCloudImagesTool,
     ListCloudRegionsTool,
     ListCloudServerSizesTool,
+    ListCloudsTool,
     ListContainersTool,
-    ListInstallationsTool,
     ListFirewallRulesTool,
-    InitiateDeploymentTool,
+    ListInstallationsTool,
     ListProjectAppsTool,
     ListProjectsTool,
     ListProxiesTool,
     ListTemplatesTool,
     ListVaultConfigsTool,
-    RestartContainerTool,
+    MarkAllNotificationsReadTool,
+    MarkNotificationReadTool,
+    PreviewInstallConfigTool,
+    // Stack Recommendations
+    RecommendStackServicesTool,
+    RemoveAppTool,
     RenderAnsibleTemplateTool,
+    RestartContainerTool,
     SearchApplicationsTool,
     SearchMarketplaceTemplatesTool,
     SetAppEnvVarTool,
     SetVaultConfigTool,
-    MarkAllNotificationsReadTool,
-    MarkNotificationReadTool,
     StartContainerTool,
     StartDeploymentTool,
     // Phase 5: Container Operations tools
     StopContainerTool,
-    TriggerRedeployTool,
-    AdminRejectTemplateTool,
     SuggestResourcesTool,
+    TriggerRedeployTool,
     UpdateAppDomainTool,
     UpdateAppPortsTool,
-    GetAnsibleRoleDefaultsTool,
-    PreviewInstallConfigTool,
     ValidateDomainTool,
     ValidateRoleVarsTool,
     // Phase 5: Stack Validation tool
@@ -179,10 +179,7 @@ impl ToolRegistry {
             Box::new(SearchMarketplaceTemplatesTool),
         );
         registry.register("get_notifications", Box::new(GetNotificationsTool));
-        registry.register(
-            "mark_notification_read",
-            Box::new(MarkNotificationReadTool),
-        );
+        registry.register("mark_notification_read", Box::new(MarkNotificationReadTool));
         registry.register(
             "mark_all_notifications_read",
             Box::new(MarkAllNotificationsReadTool),
@@ -268,14 +265,8 @@ impl ToolRegistry {
             "admin_get_template_detail",
             Box::new(AdminGetTemplateDetailTool),
         );
-        registry.register(
-            "admin_approve_template",
-            Box::new(AdminApproveTemplateTool),
-        );
-        registry.register(
-            "admin_reject_template",
-            Box::new(AdminRejectTemplateTool),
-        );
+        registry.register("admin_approve_template", Box::new(AdminApproveTemplateTool));
+        registry.register("admin_reject_template", Box::new(AdminRejectTemplateTool));
         registry.register(
             "admin_list_template_versions",
             Box::new(AdminListTemplateVersionsTool),
@@ -292,10 +283,7 @@ impl ToolRegistry {
         // Ansible Roles tools (SSH deployment method)
         registry.register("list_available_roles", Box::new(ListAvailableRolesTool));
         registry.register("get_role_details", Box::new(GetRoleDetailsTool));
-        registry.register(
-            "get_role_requirements",
-            Box::new(GetRoleRequirementsTool),
-        );
+        registry.register("get_role_requirements", Box::new(GetRoleRequirementsTool));
         registry.register("validate_role_vars", Box::new(ValidateRoleVarsTool));
         registry.register("deploy_role", Box::new(DeployRoleTool));
 

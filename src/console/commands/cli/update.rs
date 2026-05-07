@@ -8,8 +8,7 @@ use std::path::PathBuf;
 
 const DEFAULT_CHANNEL: &str = "stable";
 const VALID_CHANNELS: &[&str] = &["stable", "beta"];
-const GITHUB_API_RELEASES: &str =
-    "https://api.github.com/repos/trydirect/stacker/releases";
+const GITHUB_API_RELEASES: &str = "https://api.github.com/repos/trydirect/stacker/releases";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Parse and validate a release channel string.
@@ -58,7 +57,9 @@ struct GithubAsset {
 /// Fetch the latest release from GitHub that matches the channel.
 /// - "stable" → non-prerelease releases
 /// - "beta"   → prerelease releases
-fn fetch_latest_release(channel: &str) -> Result<Option<GithubRelease>, Box<dyn std::error::Error>> {
+fn fetch_latest_release(
+    channel: &str,
+) -> Result<Option<GithubRelease>, Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("stacker-cli/{}", CURRENT_VERSION))
         .build()?;
@@ -109,7 +110,9 @@ fn download_to_tempfile(url: &str) -> Result<tempfile::NamedTempFile, Box<dyn st
 }
 
 /// Extract the `stacker` binary from a `.tar.gz` archive and return its bytes.
-fn extract_binary_from_targz(tmp: &tempfile::NamedTempFile) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn extract_binary_from_targz(
+    tmp: &tempfile::NamedTempFile,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let file = fs::File::open(tmp.path())?;
     let gz = GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
@@ -131,7 +134,9 @@ fn replace_current_exe(new_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Err
     let current_exe: PathBuf = env::current_exe()?;
 
     // Write new binary to a sibling temp file, then atomically rename.
-    let parent = current_exe.parent().ok_or("Cannot determine binary parent directory")?;
+    let parent = current_exe
+        .parent()
+        .ok_or("Cannot determine binary parent directory")?;
     let mut tmp = tempfile::Builder::new()
         .prefix(".stacker-update-")
         .tempfile_in(parent)?;
@@ -180,10 +185,7 @@ impl CallableTrait for UpdateCommand {
         let latest_version = release.tag_name.trim_start_matches('v');
 
         if !is_newer(CURRENT_VERSION, latest_version) {
-            eprintln!(
-                "You are running the latest version (v{}).",
-                CURRENT_VERSION
-            );
+            eprintln!("You are running the latest version (v{}).", CURRENT_VERSION);
             return Ok(());
         }
 
@@ -209,7 +211,10 @@ impl CallableTrait for UpdateCommand {
         eprintln!("Installing...");
         replace_current_exe(new_bytes)?;
 
-        eprintln!("✅ Updated to v{}. Run 'stacker --version' to confirm.", latest_version);
+        eprintln!(
+            "✅ Updated to v{}. Run 'stacker --version' to confirm.",
+            latest_version
+        );
         Ok(())
     }
 }

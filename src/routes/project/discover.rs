@@ -354,7 +354,11 @@ pub async fn import_containers(
     let mut errors = Vec::new();
 
     for container in &body.containers {
-        if is_blocked_system_container(&container.container_name, &container.image, Some(&container.app_code)) {
+        if is_blocked_system_container(
+            &container.container_name,
+            &container.image,
+            Some(&container.app_code),
+        ) {
             errors.push(format!(
                 "Container '{}' is a system container and cannot be imported",
                 container.container_name

@@ -18,7 +18,10 @@ fn test_logs_no_deployment_returns_error() {
         .arg("logs")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("No deployment found").or(predicate::str::contains("docker-compose")));
+        .stderr(
+            predicate::str::contains("No deployment found")
+                .or(predicate::str::contains("docker-compose")),
+        );
 }
 
 #[test]

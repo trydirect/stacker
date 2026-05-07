@@ -79,11 +79,11 @@ impl crate::console::commands::CallableTrait for ListenCommand {
 
             let db_pool = web::Data::new(db_pool);
             let queue_name = "stacker_listener";
-            
+
             // Outer loop for reconnection on connection errors
             loop {
                 println!("Connecting to RabbitMQ...");
-                
+
                 // Try to establish connection with retry
                 let mq_manager = match Self::connect_with_retry(&settings.amqp.connection_string()).await {
                     Ok(m) => m,
@@ -93,7 +93,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                         continue;
                     }
                 };
-                
+
                 let consumer_channel = match mq_manager
                     .consume("install_progress", queue_name, "install.progress.*.*.*")
                     .await
@@ -125,7 +125,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                 };
 
                 println!("Waiting for messages ..");
-                
+
                 // Inner loop for processing messages
                 while let Some(delivery_result) = consumer.next().await {
                     let delivery = match delivery_result {
@@ -135,7 +135,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                             break; // Break inner loop to reconnect
                         }
                     };
-                    
+
                     let s: String = match String::from_utf8(delivery.data.to_owned()) {
                         Ok(v) => v,
                         Err(e) => {
@@ -158,7 +158,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                         "wait_start",
                         "confirmed",
                     ];
-                    
+
                     match serde_json::from_str::<ProgressMessage>(&s) {
                         Ok(msg) => {
                             println!("message {:?}", s);
@@ -259,7 +259,7 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                         break; // Connection likely lost, reconnect
                     }
                 }
-                
+
                 println!("Consumer loop ended, reconnecting in 5s...");
                 sleep(Duration::from_secs(5)).await;
             }
@@ -271,10 +271,10 @@ impl ListenCommand {
     async fn connect_with_retry(connection_string: &str) -> Result<MqManager, String> {
         let max_retries = 10;
         let mut retry_delay = Duration::from_secs(1);
-        
+
         for attempt in 1..=max_retries {
             println!("RabbitMQ connection attempt {}/{}", attempt, max_retries);
-            
+
             match MqManager::try_new(connection_string.to_string()) {
                 Ok(manager) => {
                     println!("Connected to RabbitMQ");
@@ -289,7 +289,7 @@ impl ListenCommand {
                 }
             }
         }
-        
+
         Err(format!("Failed to connect after {} attempts", max_retries))
     }
 }

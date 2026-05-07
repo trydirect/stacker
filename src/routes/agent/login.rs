@@ -115,13 +115,12 @@ pub async fn login_handler(
         })?;
 
     // 3. Fetch user's deployments from Stacker DB
-    let deployments =
-        db::deployment::fetch_by_user(api_pool.get_ref(), &profile.email, 50)
-            .await
-            .map_err(|e| {
-                helpers::JsonResponse::<AgentLoginResponse>::build()
-                    .internal_server_error(format!("Failed to fetch deployments: {}", e))
-            })?;
+    let deployments = db::deployment::fetch_by_user(api_pool.get_ref(), &profile.email, 50)
+        .await
+        .map_err(|e| {
+            helpers::JsonResponse::<AgentLoginResponse>::build()
+                .internal_server_error(format!("Failed to fetch deployments: {}", e))
+        })?;
 
     let deployment_infos: Vec<DeploymentInfo> = deployments
         .into_iter()

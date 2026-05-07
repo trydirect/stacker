@@ -287,10 +287,7 @@ impl VaultClient {
 
     /// Delete runtime preference from Vault
     #[tracing::instrument(name = "Delete runtime preference from Vault", skip_all)]
-    pub async fn delete_runtime_preference(
-        &self,
-        deployment_hash: &str,
-    ) -> Result<(), String> {
+    pub async fn delete_runtime_preference(&self, deployment_hash: &str) -> Result<(), String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
         let api_prefix = self.api_prefix.trim_matches('/');
@@ -331,10 +328,7 @@ impl VaultClient {
     /// Path: {api_prefix}/{agent_prefix}/org/{org_id}/runtime_policy
     /// Returns the required runtime if an org policy exists, None otherwise
     #[tracing::instrument(name = "Fetch org runtime policy from Vault", skip_all)]
-    pub async fn fetch_org_runtime_policy(
-        &self,
-        org_id: &str,
-    ) -> Result<Option<String>, String> {
+    pub async fn fetch_org_runtime_policy(&self, org_id: &str) -> Result<Option<String>, String> {
         let base = self.address.trim_end_matches('/');
         let prefix = self.agent_path_prefix.trim_matches('/');
         let api_prefix = self.api_prefix.trim_matches('/');

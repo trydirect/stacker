@@ -196,7 +196,10 @@ impl DeploymentLock {
     }
 
     /// Load the legacy `deployment.lock`, optionally filtering by target.
-    fn load_legacy(project_dir: &Path, filter_target: Option<&str>) -> Result<Option<Self>, CliError> {
+    fn load_legacy(
+        project_dir: &Path,
+        filter_target: Option<&str>,
+    ) -> Result<Option<Self>, CliError> {
         let path = Self::lockfile_path(project_dir);
         if !path.exists() {
             return Ok(None);
@@ -275,13 +278,7 @@ impl DeploymentLock {
                 .server
                 .as_ref()
                 .and_then(|s| s.ssh_key.clone())
-                .or_else(|| {
-                    config
-                        .deploy
-                        .cloud
-                        .as_ref()
-                        .and_then(|c| c.ssh_key.clone())
-                });
+                .or_else(|| config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone()));
 
             config.deploy.server = Some(ServerConfig {
                 host: ip.clone(),
@@ -346,7 +343,9 @@ mod tests {
         assert!(path.exists());
         assert!(path.ends_with("deployment-cloud.lock"));
 
-        let loaded = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap().unwrap();
+        let loaded = DeploymentLock::load_for_target(tmp.path(), "cloud")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.server_ip, lock.server_ip);
         assert_eq!(loaded.deployment_id, lock.deployment_id);
         assert_eq!(loaded.project_id, lock.project_id);
@@ -392,11 +391,15 @@ mod tests {
         assert!(DeploymentLock::exists_for_target(tmp.path(), "local"));
 
         // Load each independently
-        let loaded_cloud = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap().unwrap();
+        let loaded_cloud = DeploymentLock::load_for_target(tmp.path(), "cloud")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded_cloud.server_ip, Some("203.0.113.42".to_string()));
         assert_eq!(loaded_cloud.deployment_id, Some(123));
 
-        let loaded_local = DeploymentLock::load_for_target(tmp.path(), "local").unwrap().unwrap();
+        let loaded_local = DeploymentLock::load_for_target(tmp.path(), "local")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded_local.server_ip, Some("127.0.0.1".to_string()));
         assert_eq!(loaded_local.deployment_id, None);
 
@@ -417,7 +420,9 @@ mod tests {
         std::fs::write(stacker_dir.join("deployment.lock"), &content).unwrap();
 
         // load_for_target("cloud") should find it via legacy fallback
-        let loaded = DeploymentLock::load_for_target(tmp.path(), "cloud").unwrap().unwrap();
+        let loaded = DeploymentLock::load_for_target(tmp.path(), "cloud")
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.target, "cloud");
         assert_eq!(loaded.deployment_id, Some(123));
 

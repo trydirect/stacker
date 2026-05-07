@@ -26,10 +26,7 @@ async fn seed_pipe_template(pool: &sqlx::PgPool, user_id: &str) -> uuid::Uuid {
 }
 
 /// Seed a deployment + pipe instance for the given user. Returns (deployment_hash, instance_id).
-async fn seed_pipe_instance(
-    pool: &sqlx::PgPool,
-    user_id: &str,
-) -> (String, uuid::Uuid) {
+async fn seed_pipe_instance(pool: &sqlx::PgPool, user_id: &str) -> (String, uuid::Uuid) {
     let project_id = common::create_test_project(pool, user_id).await;
     let hash = format!("dpl-{}", uuid::Uuid::new_v4());
     let _did = common::create_test_deployment(pool, user_id, project_id, &hash).await;
@@ -55,7 +52,9 @@ async fn seed_pipe_instance(
 /// Currently the endpoint returns all templates regardless of ownership.
 #[tokio::test]
 async fn test_list_pipe_templates_leaks_all() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let tmpl_id = seed_pipe_template(&app.db_pool, common::USER_A_ID).await;
@@ -72,10 +71,7 @@ async fn test_list_pipe_templates_leaks_all() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let list = body["list"].as_array().expect("list should be an array");
 
-    let ids: Vec<&str> = list
-        .iter()
-        .filter_map(|t| t["id"].as_str())
-        .collect();
+    let ids: Vec<&str> = list.iter().filter_map(|t| t["id"].as_str()).collect();
 
     assert!(
         !ids.contains(&tmpl_id.to_string().as_str()),
@@ -90,7 +86,9 @@ async fn test_list_pipe_templates_leaks_all() {
 /// User B should NOT be able to fetch User A's private template by ID.
 #[tokio::test]
 async fn test_get_pipe_template_rejects_other_user() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let tmpl_id = seed_pipe_template(&app.db_pool, common::USER_A_ID).await;
@@ -117,16 +115,15 @@ async fn test_get_pipe_template_rejects_other_user() {
 /// User B should NOT see pipe instances for User A's deployment.
 #[tokio::test]
 async fn test_list_pipe_instances_rejects_other_user() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (hash_a, _inst_id) = seed_pipe_instance(&app.db_pool, common::USER_A_ID).await;
 
     let resp = client
-        .get(format!(
-            "{}/api/v1/pipes/instances/{}",
-            app.address, hash_a
-        ))
+        .get(format!("{}/api/v1/pipes/instances/{}", app.address, hash_a))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -152,7 +149,9 @@ async fn test_list_pipe_instances_rejects_other_user() {
 /// User B should NOT be able to fetch User A's pipe instance by ID.
 #[tokio::test]
 async fn test_get_pipe_instance_rejects_other_user() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (_hash_a, inst_id) = seed_pipe_instance(&app.db_pool, common::USER_A_ID).await;
@@ -178,17 +177,16 @@ async fn test_get_pipe_instance_rejects_other_user() {
 
 #[tokio::test]
 async fn test_owner_can_list_own_pipe_instances() {
-    let Some(app) = common::spawn_app_two_users().await else { return };
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
     let client = reqwest::Client::new();
 
     let (hash_a, inst_id) = seed_pipe_instance(&app.db_pool, common::USER_A_ID).await;
 
     // List
     let resp = client
-        .get(format!(
-            "{}/api/v1/pipes/instances/{}",
-            app.address, hash_a
-        ))
+        .get(format!("{}/api/v1/pipes/instances/{}", app.address, hash_a))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await

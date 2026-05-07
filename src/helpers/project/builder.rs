@@ -31,6 +31,8 @@ pub struct ExtractedService {
     pub entrypoint: Option<String>,
     /// Labels
     pub labels: IndexMap<String, String>,
+    /// Healthcheck configuration
+    pub healthcheck: Option<serde_json::Value>,
 }
 
 /// Parse a docker-compose.yml string and extract all service definitions
@@ -78,9 +80,10 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             .filter_map(|v| match v {
                 dctypes::Volumes::Simple(s) => Some(s.clone()),
                 dctypes::Volumes::Advanced(adv) => Some(format!(
-                    "{}:{}",
+                    "{}:{}{}",
                     adv.source.as_deref().unwrap_or(""),
-                    &adv.target
+                    &adv.target,
+                    if adv.read_only { ":ro" } else { "" }
                 )),
             })
             .collect();
@@ -149,6 +152,41 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             dctypes::Labels::Map(map) => map.clone(),
         };
 
+        // Extract healthcheck
+        let healthcheck = service.healthcheck.as_ref().and_then(|check| {
+            let mut payload = serde_json::Map::new();
+
+            if let Some(test) = &check.test {
+                let test_value = match test {
+                    dctypes::HealthcheckTest::Single(cmd) => serde_json::json!(cmd),
+                    dctypes::HealthcheckTest::Multiple(cmds) => serde_json::json!(cmds),
+                };
+                payload.insert("test".to_string(), test_value);
+            }
+
+            if let Some(interval) = &check.interval {
+                payload.insert("interval".to_string(), serde_json::json!(interval));
+            }
+
+            if let Some(timeout) = &check.timeout {
+                payload.insert("timeout".to_string(), serde_json::json!(timeout));
+            }
+
+            if check.retries > 0 {
+                payload.insert("retries".to_string(), serde_json::json!(check.retries));
+            }
+
+            if let Some(start_period) = &check.start_period {
+                payload.insert("start_period".to_string(), serde_json::json!(start_period));
+            }
+
+            if check.disable {
+                payload.insert("disable".to_string(), serde_json::json!(true));
+            }
+
+            (!payload.is_empty()).then_some(serde_json::Value::Object(payload))
+        });
+
         services.push(ExtractedService {
             name: name.clone(),
             image,
@@ -161,6 +199,7 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             command,
             entrypoint,
             labels,
+            healthcheck,
         });
     }
 
@@ -397,11 +436,12 @@ pub fn generate_single_app_compose(
 
 #[cfg(test)]
 mod tests {
-    use super::DcBuilder;
+    use super::{parse_compose_services, DcBuilder};
     use crate::cli::config_parser::{ConfigBuilder, ProxyConfig, ProxyType};
     use crate::cli::stacker_client::build_project_body;
     use crate::models::Project;
     use docker_compose_types as dctypes;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn assert_npm_volumes_present(compose_yaml: &str) {
@@ -440,7 +480,10 @@ mod tests {
         }
 
         assert!(found_data, "npm-data:/data volume missing");
-        assert!(found_letsencrypt, "npm-letsencrypt:/etc/letsencrypt volume missing");
+        assert!(
+            found_letsencrypt,
+            "npm-letsencrypt:/etc/letsencrypt volume missing"
+        );
 
         // Ensure the top-level named volumes are declared.
         assert!(compose.volumes.0.contains_key("npm-data"));
@@ -502,7 +545,9 @@ volumes:
 
     #[test]
     fn bdd_scenario_redeploy_keeps_nginx_proxy_manager_stateful_volumes() {
-        println!("\nScenario: Redeploying a stack with nginx-proxy-manager keeps its stateful volumes");
+        println!(
+            "\nScenario: Redeploying a stack with nginx-proxy-manager keeps its stateful volumes"
+        );
         println!("  Given a production compose that declares npm-data:/data and npm-letsencrypt:/etc/letsencrypt");
 
         std::fs::create_dir_all("files").unwrap();
@@ -566,5 +611,62 @@ volumes:
         for compose_yaml in [compose_v1, compose_v2] {
             assert_npm_volumes_present(&compose_yaml);
         }
+    }
+
+    #[test]
+    fn test_parse_compose_services_preserves_env_placeholders_and_healthcheck() {
+        let services = parse_compose_services(
+            r#"
+version: "3.8"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE:-coolify}
+    volumes:
+      - type: bind
+        source: ${COOLIFY_SOURCE_ENV_FILE:-./coolify.env}
+        target: /var/www/html/.env
+        read_only: true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE:-coolify}
+      interval: 10s
+      timeout: 5s
+      retries: 5
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(services.len(), 1);
+        let postgres = &services[0];
+        assert_eq!(postgres.environment.len(), 3);
+        assert!(postgres
+            .environment
+            .contains(&"POSTGRES_USER=${DB_USERNAME}".to_string()));
+        assert!(postgres
+            .environment
+            .contains(&"POSTGRES_PASSWORD=${DB_PASSWORD}".to_string()));
+        assert!(postgres
+            .environment
+            .contains(&"POSTGRES_DB=${DB_DATABASE:-coolify}".to_string()));
+        assert!(postgres.volumes.contains(
+            &"${COOLIFY_SOURCE_ENV_FILE:-./coolify.env}:/var/www/html/.env:ro".to_string()
+        ));
+        assert_eq!(
+            postgres.healthcheck,
+            Some(json!({
+                "test": [
+                    "CMD-SHELL",
+                    "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE:-coolify}"
+                ],
+                "interval": "10s",
+                "timeout": "5s",
+                "retries": 5
+            }))
+        );
     }
 }

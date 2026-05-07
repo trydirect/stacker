@@ -128,11 +128,7 @@ pub struct PipeInstance {
 }
 
 impl PipeInstance {
-    pub fn new(
-        deployment_hash: String,
-        source_container: String,
-        created_by: String,
-    ) -> Self {
+    pub fn new(deployment_hash: String, source_container: String, created_by: String) -> Self {
         Self {
             id: Uuid::new_v4(),
             template_id: None,

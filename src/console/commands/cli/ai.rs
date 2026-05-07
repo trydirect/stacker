@@ -1,13 +1,12 @@
-use std::path::{Path, PathBuf};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use crate::cli::ai_client::{
-    AiProvider, AiResponse, ChatMessage, ToolCall, ToolDef,
-    all_write_mode_tools, create_provider,
+    all_write_mode_tools, create_provider, AiProvider, AiResponse, ChatMessage, ToolCall, ToolDef,
 };
 use crate::cli::config_parser::{AiConfig, AiProviderType, StackerConfig};
 use crate::cli::error::CliError;
-use crate::cli::service_catalog::{ServiceCatalog, catalog_summary_for_ai};
+use crate::cli::service_catalog::{catalog_summary_for_ai, ServiceCatalog};
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -213,7 +212,10 @@ fn configure_ai_interactive(config_path: &str) -> Result<AiConfig, CliError> {
         Some(api_key_input)
     };
 
-    let endpoint_default = current.endpoint.as_deref().unwrap_or("http://localhost:11434");
+    let endpoint_default = current
+        .endpoint
+        .as_deref()
+        .unwrap_or("http://localhost:11434");
     let endpoint_input = prompt_with_default("Endpoint", endpoint_default)?;
     let endpoint = if endpoint_input.trim().is_empty() {
         None
@@ -356,8 +358,12 @@ fn try_extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
     // Try full string first, then scan for the first '{' / '['
     let candidates: Vec<&str> = {
         let mut v = vec![stripped.as_str()];
-        if let Some(idx) = stripped.find('{') { v.push(&stripped[idx..]); }
-        if let Some(idx) = stripped.find('[') { v.push(&stripped[idx..]); }
+        if let Some(idx) = stripped.find('{') {
+            v.push(&stripped[idx..]);
+        }
+        if let Some(idx) = stripped.find('[') {
+            v.push(&stripped[idx..]);
+        }
         v
     };
 
@@ -376,17 +382,17 @@ fn try_extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
 fn parse_tool_calls_from_json(json: &serde_json::Value) -> Vec<ToolCall> {
     // Array of calls
     if let Some(arr) = json.as_array() {
-        let calls: Vec<ToolCall> = arr.iter()
+        let calls: Vec<ToolCall> = arr
+            .iter()
             .flat_map(|v| parse_tool_calls_from_json(v))
             .collect();
-        if !calls.is_empty() { return calls; }
+        if !calls.is_empty() {
+            return calls;
+        }
     }
 
     // {"name": ..., "arguments": {...}}
-    if let (Some(name), Some(args)) = (
-        json["name"].as_str(),
-        json.get("arguments"),
-    ) {
+    if let (Some(name), Some(args)) = (json["name"].as_str(), json.get("arguments")) {
         let arguments = if args.is_object() {
             args.clone()
         } else if let Some(s) = args.as_str() {
@@ -394,18 +400,23 @@ fn parse_tool_calls_from_json(json: &serde_json::Value) -> Vec<ToolCall> {
         } else {
             serde_json::json!({})
         };
-        return vec![ToolCall { id: None, name: name.to_string(), arguments }];
-    }
-
-    // {"tool": ..., "parameters": {...}}
-    if let (Some(name), Some(args)) = (
-        json["tool"].as_str(),
-        json.get("parameters"),
-    ) {
         return vec![ToolCall {
             id: None,
             name: name.to_string(),
-            arguments: if args.is_object() { args.clone() } else { serde_json::json!({}) },
+            arguments,
+        }];
+    }
+
+    // {"tool": ..., "parameters": {...}}
+    if let (Some(name), Some(args)) = (json["tool"].as_str(), json.get("parameters")) {
+        return vec![ToolCall {
+            id: None,
+            name: name.to_string(),
+            arguments: if args.is_object() {
+                args.clone()
+            } else {
+                serde_json::json!({})
+            },
         }];
     }
 
@@ -429,7 +440,7 @@ fn is_write_allowed(path_str: &str) -> bool {
         .trim_start_matches('/')
         .trim_start_matches('\\');
     // Reject any path that tries to escape with "../"
-    if p.contains("../") || p.contains("..\\" ) || p == ".." {
+    if p.contains("../") || p.contains("..\\") || p == ".." {
         return false;
     }
     p == "stacker.yml" || p.starts_with(".stacker/") || p.starts_with(".stacker\\")
@@ -443,16 +454,17 @@ fn run_subprocess(args: &[&str]) -> String {
         Err(e) => return format!("Error: could not resolve binary path: {}", e),
     };
 
-    match std::process::Command::new(&exe)
-        .args(args)
-        .output()
-    {
+    match std::process::Command::new(&exe).args(args).output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             let combined = format!("{}{}", stdout, stderr).trim().to_string();
             if out.status.success() {
-                if combined.is_empty() { "OK (no output)".to_string() } else { combined }
+                if combined.is_empty() {
+                    "OK (no output)".to_string()
+                } else {
+                    combined
+                }
             } else {
                 format!("Exit {}: {}", out.status.code().unwrap_or(-1), combined)
             }
@@ -571,7 +583,11 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
 
         // ── agent CLI tools ────────────────────────────────────────────────
         "agent_health" => {
-            let mut args: Vec<String> = vec!["agent".to_string(), "health".to_string(), "--json".to_string()];
+            let mut args: Vec<String> = vec![
+                "agent".to_string(),
+                "health".to_string(),
+                "--json".to_string(),
+            ];
             if let Some(app) = call.arguments["app"].as_str() {
                 args.push("--app".to_string());
                 args.push(app.to_string());
@@ -584,7 +600,11 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
             run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
         }
         "agent_status" => {
-            let mut args: Vec<String> = vec!["agent".to_string(), "status".to_string(), "--json".to_string()];
+            let mut args: Vec<String> = vec![
+                "agent".to_string(),
+                "status".to_string(),
+                "--json".to_string(),
+            ];
             if let Some(dep) = call.arguments["deployment"].as_str() {
                 args.push("--deployment".to_string());
                 args.push(dep.to_string());
@@ -597,7 +617,12 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
                 Some(a) => a,
                 None => return "Error: missing 'app' argument".to_string(),
             };
-            let mut args: Vec<String> = vec!["agent".to_string(), "logs".to_string(), app.to_string(), "--json".to_string()];
+            let mut args: Vec<String> = vec![
+                "agent".to_string(),
+                "logs".to_string(),
+                app.to_string(),
+                "--json".to_string(),
+            ];
             if let Some(limit) = call.arguments["limit"].as_u64() {
                 args.push("--limit".to_string());
                 args.push(limit.to_string());
@@ -624,7 +649,11 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
             if call.arguments["force_rebuild"].as_bool().unwrap_or(false) {
                 args.push("--force-rebuild".to_string());
             }
-            let label = if dry_run { "stacker deploy --dry-run" } else { "stacker deploy" };
+            let label = if dry_run {
+                "stacker deploy --dry-run"
+            } else {
+                "stacker deploy"
+            };
             eprintln!("  ⚙ running: {}", label);
             run_subprocess(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
         }
@@ -633,7 +662,8 @@ fn execute_tool(call: &ToolCall, cwd: &Path) -> String {
                 Some(d) => d,
                 None => return "Error: missing 'domain' argument".to_string(),
             };
-            let mut args: Vec<String> = vec!["proxy".to_string(), "add".to_string(), domain.to_string()];
+            let mut args: Vec<String> =
+                vec!["proxy".to_string(), "add".to_string(), domain.to_string()];
             if let Some(upstream) = call.arguments["upstream"].as_str() {
                 args.push("--upstream".to_string());
                 args.push(upstream.to_string());
@@ -816,7 +846,10 @@ fn run_chat_turn(
                     if iteration + 1 == MAX_TOOL_ITERATIONS {
                         return Err(CliError::AiProviderError {
                             provider: provider.name().to_string(),
-                            message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                            message: format!(
+                                "Reached maximum tool iterations ({})",
+                                MAX_TOOL_ITERATIONS
+                            ),
                         });
                     }
                     continue;
@@ -846,7 +879,10 @@ fn run_chat_turn(
                 if iteration + 1 == MAX_TOOL_ITERATIONS {
                     return Err(CliError::AiProviderError {
                         provider: provider.name().to_string(),
-                        message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                        message: format!(
+                            "Reached maximum tool iterations ({})",
+                            MAX_TOOL_ITERATIONS
+                        ),
                     });
                 }
             }
@@ -910,7 +946,11 @@ pub fn run_ai_ask_agentic(
                         // strip the JSON before showing narration to user
                         let narration = text
                             .lines()
-                            .filter(|l| !l.trim().starts_with('{') && !l.trim().starts_with('[') && !l.trim().starts_with('`'))
+                            .filter(|l| {
+                                !l.trim().starts_with('{')
+                                    && !l.trim().starts_with('[')
+                                    && !l.trim().starts_with('`')
+                            })
                             .collect::<Vec<_>>()
                             .join("\n");
                         if !narration.trim().is_empty() {
@@ -930,7 +970,10 @@ pub fn run_ai_ask_agentic(
                     if iteration + 1 == MAX_TOOL_ITERATIONS {
                         return Err(CliError::AiProviderError {
                             provider: provider.name().to_string(),
-                            message: format!("Reached maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
+                            message: format!(
+                                "Reached maximum tool iterations ({})",
+                                MAX_TOOL_ITERATIONS
+                            ),
                         });
                     }
                     continue;
@@ -952,10 +995,7 @@ pub fn run_ai_ask_agentic(
                 // Execute each tool and append results
                 for call in &calls {
                     let result = execute_tool(call, &cwd);
-                    messages.push(ChatMessage::tool_result(
-                        call.id.clone(),
-                        result,
-                    ));
+                    messages.push(ChatMessage::tool_result(call.id.clone(), result));
                 }
 
                 if iteration + 1 == MAX_TOOL_ITERATIONS {
@@ -1039,11 +1079,7 @@ impl CallableTrait for AiAskCommand {
                 println!("{}", response);
             }
         } else {
-            let response = run_ai_ask(
-                &self.question,
-                self.context.as_deref(),
-                provider.as_ref(),
-            )?;
+            let response = run_ai_ask(&self.question, self.context.as_deref(), provider.as_ref())?;
             println!("{}", response);
         }
         Ok(())
@@ -1097,7 +1133,11 @@ impl CallableTrait for AiChatCommand {
             "Stacker AI  ({provider} · {model}){tools}",
             provider = provider_name,
             model = model_name,
-            tools = if write_active { "  [write mode — .stacker/ + stacker.yml]" } else { "" }
+            tools = if write_active {
+                "  [write mode — .stacker/ + stacker.yml]"
+            } else {
+                ""
+            }
         );
         eprintln!("Type your question and press Enter.  `help` for tips, `exit` to quit.");
         eprintln!();
@@ -1111,10 +1151,7 @@ impl CallableTrait for AiChatCommand {
                 "{}\n\n{}\n\n## Current project files\n{}",
                 STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx, ctx
             ),
-            None => format!(
-                "{}\n\n{}",
-                STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx
-            ),
+            None => format!("{}\n\n{}", STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx),
         };
 
         let mut messages: Vec<ChatMessage> = vec![ChatMessage::system(&system)];
@@ -1180,12 +1217,16 @@ mod tests {
 
     impl MockProvider {
         fn new(response: &str) -> Self {
-            Self { response: response.to_string() }
+            Self {
+                response: response.to_string(),
+            }
         }
     }
 
     impl AiProvider for MockProvider {
-        fn name(&self) -> &str { "mock" }
+        fn name(&self) -> &str {
+            "mock"
+        }
         fn complete(&self, _prompt: &str, _context: &str) -> Result<String, CliError> {
             Ok(self.response.clone())
         }
@@ -1229,11 +1270,8 @@ mod tests {
         std::fs::write(&ctx_path, "FROM rust:1.75\nCOPY . .").unwrap();
 
         let provider = MockProvider::new("Looks good!");
-        let result = run_ai_ask(
-            "Review this",
-            Some(ctx_path.to_str().unwrap()),
-            &provider,
-        ).unwrap();
+        let result =
+            run_ai_ask("Review this", Some(ctx_path.to_str().unwrap()), &provider).unwrap();
         assert_eq!(result, "Looks good!");
     }
 
