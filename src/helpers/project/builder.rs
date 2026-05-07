@@ -212,6 +212,9 @@ impl DcBuilder {
         let serialized = serde_yaml::to_string(&compose_content)
             .map_err(|err| format!("Failed to serialize docker-compose file: {}", err))?;
 
+        if let Some(parent) = target_file.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| format!("{}", err))?;
+        }
         std::fs::write(target_file, serialized.clone()).map_err(|err| format!("{}", err))?;
 
         Ok(serialized)
@@ -390,4 +393,178 @@ pub fn generate_single_app_compose(
 
     serde_yaml::to_string(&compose)
         .map_err(|err| format!("Failed to serialize docker-compose: {}", err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DcBuilder;
+    use crate::cli::config_parser::{ConfigBuilder, ProxyConfig, ProxyType};
+    use crate::cli::stacker_client::build_project_body;
+    use crate::models::Project;
+    use docker_compose_types as dctypes;
+    use tempfile::TempDir;
+
+    fn assert_npm_volumes_present(compose_yaml: &str) {
+        let compose: dctypes::Compose = serde_yaml::from_str(compose_yaml).unwrap();
+        let npm = compose
+            .services
+            .0
+            .get("nginx_proxy_manager")
+            .and_then(|svc| svc.as_ref())
+            .expect("nginx_proxy_manager service missing from generated compose");
+
+        let mut found_data = false;
+        let mut found_letsencrypt = false;
+
+        for vol in &npm.volumes {
+            match vol {
+                dctypes::Volumes::Simple(s) => {
+                    if s.starts_with("npm-data:") && s.contains(":/data") {
+                        found_data = true;
+                    }
+                    if s.starts_with("npm-letsencrypt:") && s.contains(":/etc/letsencrypt") {
+                        found_letsencrypt = true;
+                    }
+                }
+                dctypes::Volumes::Advanced(adv) => {
+                    if adv.source.as_deref() == Some("npm-data") && adv.target == "/data" {
+                        found_data = true;
+                    }
+                    if adv.source.as_deref() == Some("npm-letsencrypt")
+                        && adv.target == "/etc/letsencrypt"
+                    {
+                        found_letsencrypt = true;
+                    }
+                }
+            }
+        }
+
+        assert!(found_data, "npm-data:/data volume missing");
+        assert!(found_letsencrypt, "npm-letsencrypt:/etc/letsencrypt volume missing");
+
+        // Ensure the top-level named volumes are declared.
+        assert!(compose.volumes.0.contains_key("npm-data"));
+        assert!(compose.volumes.0.contains_key("npm-letsencrypt"));
+    }
+
+    #[test]
+    fn regression_generated_compose_preserves_nginx_proxy_manager_named_volumes() {
+        // Ensure DcBuilder can write its debug output file.
+        std::fs::create_dir_all("files").unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.prod.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+version: "3.8"
+services:
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+volumes:
+  npm-data:
+  npm-letsencrypt:
+"#,
+        )
+        .unwrap();
+
+        let mut config = ConfigBuilder::new()
+            .name("myproject")
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+        config.deploy.compose_file = Some(compose_path);
+
+        let metadata = build_project_body(&config);
+        let project = Project::new(
+            "user".to_string(),
+            "myproject".to_string(),
+            metadata,
+            serde_json::json!({}),
+        );
+
+        let compose_yaml = DcBuilder::new(project).build().unwrap();
+
+        assert_npm_volumes_present(&compose_yaml);
+    }
+
+    #[test]
+    fn bdd_scenario_redeploy_keeps_nginx_proxy_manager_stateful_volumes() {
+        println!("\nScenario: Redeploying a stack with nginx-proxy-manager keeps its stateful volumes");
+        println!("  Given a production compose that declares npm-data:/data and npm-letsencrypt:/etc/letsencrypt");
+
+        std::fs::create_dir_all("files").unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.prod.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+version: "3.8"
+services:
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+volumes:
+  npm-data:
+  npm-letsencrypt:
+"#,
+        )
+        .unwrap();
+
+        let mut config = ConfigBuilder::new()
+            .name("myproject")
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+        config.deploy.compose_file = Some(compose_path);
+
+        println!("  When the project metadata is generated and deployed");
+        let metadata_v1 = build_project_body(&config);
+        let project_v1 = Project::new(
+            "user".to_string(),
+            "myproject".to_string(),
+            metadata_v1,
+            serde_json::json!({}),
+        );
+        let compose_v1 = DcBuilder::new(project_v1).build().unwrap();
+
+        println!("  And the same stack is redeployed (regenerating metadata/compose)");
+        let metadata_v2 = build_project_body(&config);
+        let project_v2 = Project::new(
+            "user".to_string(),
+            "myproject".to_string(),
+            metadata_v2,
+            serde_json::json!({}),
+        );
+        let compose_v2 = DcBuilder::new(project_v2).build().unwrap();
+
+        println!("  Then both deploys include the nginx-proxy-manager volumes");
+        for compose_yaml in [compose_v1, compose_v2] {
+            assert_npm_volumes_present(&compose_yaml);
+        }
+    }
 }

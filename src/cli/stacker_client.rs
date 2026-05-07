@@ -2008,6 +2008,99 @@ fn parse_volume_mapping(vol_str: &str) -> (String, String, bool) {
     }
 }
 
+#[derive(Debug, Clone)]
+struct NginxProxyManagerOverrides {
+    shared_ports: Vec<serde_json::Value>,
+    volumes: Vec<serde_json::Value>,
+    environment: Vec<serde_json::Value>,
+}
+
+fn parse_compose_port_mapping(port_str: &str) -> Option<(String, String)> {
+    // Remove protocol suffix like "/tcp", "/udp"
+    let port_no_proto = port_str.split('/').next().unwrap_or(port_str);
+    let parts: Vec<&str> = port_no_proto.split(':').collect();
+    match parts.len() {
+        // "ip:host:container"
+        3 => Some((parts[1].to_string(), parts[2].to_string())),
+        // "host:container"
+        2 => Some((parts[0].to_string(), parts[1].to_string())),
+        // "container"
+        1 => Some((parts[0].to_string(), parts[0].to_string())),
+        _ => None,
+    }
+}
+
+fn resolve_compose_path(config: &StackerConfig) -> Option<std::path::PathBuf> {
+    let path = config.deploy.compose_file.as_ref()?;
+    if path.is_absolute() {
+        Some(path.clone())
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    }
+}
+
+fn nginx_proxy_manager_overrides_from_compose(
+    config: &StackerConfig,
+) -> Option<NginxProxyManagerOverrides> {
+    let compose_path = resolve_compose_path(config)?;
+    let compose_content = std::fs::read_to_string(&compose_path).ok()?;
+    let services = crate::helpers::project::builder::parse_compose_services(&compose_content).ok()?;
+
+    let npm = services.into_iter().find(|svc| {
+        let name = svc.name.to_lowercase();
+        let name_match =
+            matches!(name.as_str(), "nginx_proxy_manager" | "nginx-proxy-manager" | "npm");
+        let image_match = svc
+            .image
+            .as_ref()
+            .map(|i| i.to_lowercase().contains("nginx-proxy-manager"))
+            .unwrap_or(false);
+        name_match || image_match
+    })?;
+
+    let shared_ports: Vec<serde_json::Value> = npm
+        .ports
+        .iter()
+        .filter_map(|p| parse_compose_port_mapping(p))
+        .map(|(host, container)| {
+            serde_json::json!({
+                "host_port": host,
+                "container_port": container,
+            })
+        })
+        .collect();
+
+    let volumes: Vec<serde_json::Value> = npm
+        .volumes
+        .iter()
+        .map(|v| {
+            let (host, container, read_only) = parse_volume_mapping(v);
+            let container_path = if read_only {
+                format!("{}:ro", container)
+            } else {
+                container
+            };
+            serde_json::json!({
+                "host_path": host,
+                "container_path": container_path,
+            })
+        })
+        .collect();
+
+    let environment: Vec<serde_json::Value> = npm
+        .environment
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| serde_json::json!({ "key": k, "value": v }))
+        .collect();
+
+    Some(NginxProxyManagerOverrides {
+        shared_ports,
+        volumes,
+        environment,
+    })
+}
+
 /// Convert a `ServiceDefinition` from stacker.yml into the Stacker server's
 /// app JSON format (matching `forms::project::App` / `forms::project::Web`).
 fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde_json::Value {
@@ -2244,7 +2337,9 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
     match config.proxy.proxy_type {
         crate::cli::config_parser::ProxyType::Nginx
         | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-            features.push(serde_json::json!({
+            let overrides = nginx_proxy_manager_overrides_from_compose(config);
+
+            let mut npm = serde_json::json!({
                 "_id": generate_app_id(),
                 "name": "Nginx Proxy Manager",
                 "code": "nginx_proxy_manager",
@@ -2260,7 +2355,29 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
                 "dockerhub_user": "jc21",
                 "dockerhub_name": "nginx-proxy-manager",
                 "dockerhub_tag": "latest",
-            }));
+            });
+
+            if let Some(overrides) = overrides {
+                if let Some(obj) = npm.as_object_mut() {
+                    if !overrides.shared_ports.is_empty() {
+                        obj.insert(
+                            "shared_ports".to_string(),
+                            serde_json::json!(overrides.shared_ports),
+                        );
+                    }
+                    if !overrides.volumes.is_empty() {
+                        obj.insert("volumes".to_string(), serde_json::json!(overrides.volumes));
+                    }
+                    if !overrides.environment.is_empty() {
+                        obj.insert(
+                            "environment".to_string(),
+                            serde_json::json!(overrides.environment),
+                        );
+                    }
+                }
+            }
+
+            features.push(npm);
         }
         _ => {}
     }
@@ -2480,6 +2597,8 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_build_deploy_form_defaults() {
@@ -2665,7 +2784,7 @@ mod tests {
     }
 
     #[test]
-    fn bdd_reconfigure_existing_nginx_proxy_manager_proxy_does_not_duplicate_features() {
+      fn bdd_reconfigure_existing_nginx_proxy_manager_proxy_does_not_duplicate_features() {
         use crate::cli::config_parser::{DeployTarget, ProxyConfig, ProxyType, ServiceDefinition};
 
         let given_existing_npm_service = ServiceDefinition {
@@ -2682,6 +2801,34 @@ mod tests {
             .deploy_target(DeployTarget::Cloud)
             .proxy(ProxyConfig {
                 proxy_type: ProxyType::NginxProxyManager,
+    fn test_build_project_body_nginx_proxy_manager_preserves_volumes_from_compose_file() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.prod.yml");
+        fs::write(
+            &compose_path,
+            r#"
+version: "3.8"
+services:
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    volumes:
+      - npm-data:/data
+      - npm-letsencrypt:/etc/letsencrypt
+volumes:
+  npm-data:
+  npm-letsencrypt:
+"#,
+        )
+        .unwrap();
+
+        let mut config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
                 auto_detect: true,
                 domains: vec![],
                 config: None,
@@ -2725,6 +2872,23 @@ mod tests {
             "should inject nginx_proxy_manager into stack.extended_features when proxy.type requires it: {:?}",
             then_extended_features
         );
+            .build()
+            .unwrap();
+        config.deploy.compose_file = Some(compose_path);
+
+        let body = build_project_body(&config);
+        let features = body["custom"]["feature"].as_array().unwrap();
+        let npm = features
+            .iter()
+            .find(|f| f["code"] == "nginx_proxy_manager")
+            .unwrap();
+
+        let volumes = npm["volumes"].as_array().unwrap();
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[0]["host_path"], "npm-data");
+        assert_eq!(volumes[0]["container_path"], "/data");
+        assert_eq!(volumes[1]["host_path"], "npm-letsencrypt");
+        assert_eq!(volumes[1]["container_path"], "/etc/letsencrypt");
     }
 
     #[test]
