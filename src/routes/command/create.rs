@@ -678,6 +678,7 @@ pub async fn discover_and_register_child_services(
         new_app.command = svc.command.clone();
         new_app.entrypoint = svc.entrypoint.clone();
         new_app.restart_policy = svc.restart.clone();
+        new_app.healthcheck = svc.healthcheck.clone();
 
         // Convert labels to JSON
         if !svc.labels.is_empty() {

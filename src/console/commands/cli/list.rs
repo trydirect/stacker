@@ -1,6 +1,7 @@
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
+use std::fmt::Write as _;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // list projects
@@ -163,24 +164,7 @@ impl CallableTrait for ListDeploymentsCommand {
             if json {
                 println!("{}", serde_json::to_string_pretty(&deployments)?);
             } else {
-                println!(
-                    "{:<6} {:<10} {:<10} {:<47} {:<12}",
-                    "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
-                );
-                println!("{}", "─".repeat(90));
-
-                for d in &deployments {
-                    println!(
-                        "{:<6} {:<10} {} {:<8} {:<47} {:<12}",
-                        d.id,
-                        d.project_id,
-                        progress::status_icon(&d.status),
-                        truncate(&d.status, 7),
-                        &d.deployment_hash,
-                        truncate(&d.created_at, 10),
-                    );
-                }
-
+                print!("{}", render_deployments_table(&deployments));
                 eprintln!("\n{} deployment(s) total.", deployments.len());
             }
 
@@ -293,6 +277,36 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+fn render_deployments_table(
+    deployments: &[crate::cli::stacker_client::DeploymentStatusInfo],
+) -> String {
+    let mut table = String::new();
+    let _ = writeln!(
+        &mut table,
+        "{:<6} {:<10} {:<16} {:<47} {:<20}",
+        "ID", "PROJECT", "STATUS", "DEPLOYMENT HASH", "CREATED"
+    );
+    let _ = writeln!(&mut table, "{}", "─".repeat(104));
+
+    for deployment in deployments {
+        let _ = writeln!(
+            &mut table,
+            "{:<6} {:<10} {:<16} {:<47} {:<20}",
+            deployment.id,
+            deployment.project_id,
+            format!(
+                "{} {}",
+                progress::status_icon(&deployment.status),
+                deployment.status
+            ),
+            deployment.deployment_hash,
+            deployment.created_at,
+        );
+    }
+
+    table
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // list clouds
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -374,5 +388,32 @@ impl CallableTrait for ListCloudsCommand {
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::stacker_client::DeploymentStatusInfo;
+
+    #[test]
+    fn render_deployments_table_keeps_full_status_and_timestamp() {
+        let deployments = vec![DeploymentStatusInfo {
+            id: 114,
+            project_id: 229,
+            deployment_hash: "deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22".to_string(),
+            status: "completed".to_string(),
+            status_message: Some("done".to_string()),
+            created_at: "2026-05-06 00:35:31".to_string(),
+            updated_at: "2026-05-06 00:36:31".to_string(),
+        }];
+
+        let rendered = render_deployments_table(&deployments);
+
+        assert!(rendered.contains("✓ completed"));
+        assert!(rendered.contains("2026-05-06 00:35:31"));
+        assert!(rendered.contains("deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22"));
+        assert!(!rendered.contains("comple…"));
+        assert!(!rendered.contains("2026-05-0…"));
     }
 }

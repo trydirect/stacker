@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::cli::error::CliError;
@@ -267,14 +268,9 @@ fn run_remote_logs(
     };
 
     if app_codes.is_empty() {
-        eprintln!(
-            "No containers found for deployment {}.",
-            &hash[..8.min(hash.len())]
-        );
-        eprintln!(
-            "Tip: use 'stacker agent status --deployment {}' to check the deployment.",
-            &hash[..8.min(hash.len())]
-        );
+        let (summary, tip) = no_containers_messages(&hash);
+        eprintln!("{}", summary);
+        eprintln!("{}", tip);
         return Ok(());
     }
 
@@ -300,6 +296,18 @@ fn run_remote_logs(
     }
 
     Ok(())
+}
+
+fn no_containers_messages(hash: &str) -> (String, String) {
+    let mut summary = String::new();
+    let mut tip = String::new();
+    let _ = write!(&mut summary, "No containers found for deployment {}.", hash);
+    let _ = write!(
+        &mut tip,
+        "Tip: use 'stacker agent status --deployment {}' to check the deployment.",
+        hash
+    );
+    (summary, tip)
 }
 
 /// Execute an agent command with spinner and polling.
@@ -518,6 +526,16 @@ mod tests {
                 .join("docker/local/compose.yml")
                 .to_string_lossy()
         );
+    }
+
+    #[test]
+    fn test_no_containers_messages_use_full_hash() {
+        let hash = "deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22";
+        let (summary, tip) = no_containers_messages(hash);
+
+        assert!(summary.contains(hash));
+        assert!(tip.contains(hash));
+        assert!(!summary.contains("deployme."));
     }
 
     #[test]

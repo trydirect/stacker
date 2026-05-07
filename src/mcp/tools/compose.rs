@@ -442,6 +442,7 @@ impl ToolHandler for DiscoverStackServicesTool {
                 "networks": svc.networks,
                 "depends_on": svc.depends_on,
                 "environment_count": svc.environment.len(),
+                "has_healthcheck": svc.healthcheck.is_some(),
                 "has_command": svc.command.is_some(),
                 "has_entrypoint": svc.entrypoint.is_some(),
                 "labels_count": svc.labels.len(),
@@ -518,6 +519,7 @@ impl ToolHandler for DiscoverStackServicesTool {
                 new_app.command = svc.command.clone();
                 new_app.entrypoint = svc.entrypoint.clone();
                 new_app.restart_policy = svc.restart.clone();
+                new_app.healthcheck = svc.healthcheck.clone();
 
                 // Convert labels to JSON
                 if !svc.labels.is_empty() {
