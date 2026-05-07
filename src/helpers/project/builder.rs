@@ -3,6 +3,7 @@ use crate::models;
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as JsonValue};
 use serde_yaml;
 // use crate::helpers::project::*;
 
@@ -31,6 +32,8 @@ pub struct ExtractedService {
     pub entrypoint: Option<String>,
     /// Labels
     pub labels: IndexMap<String, String>,
+    /// Healthcheck definition normalized into ProjectApp JSON shape.
+    pub healthcheck: Option<JsonValue>,
 }
 
 /// Parse a docker-compose.yml string and extract all service definitions
@@ -149,6 +152,8 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             dctypes::Labels::Map(map) => map.clone(),
         };
 
+        let healthcheck = extract_healthcheck(&service.healthcheck);
+
         services.push(ExtractedService {
             name: name.clone(),
             image,
@@ -161,10 +166,82 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             command,
             entrypoint,
             labels,
+            healthcheck,
         });
     }
 
     Ok(services)
+}
+
+fn extract_healthcheck(healthcheck: &Option<dctypes::Healthcheck>) -> Option<JsonValue> {
+    let healthcheck = healthcheck.as_ref()?;
+    if healthcheck.disable {
+        return None;
+    }
+
+    let test = match &healthcheck.test {
+        Some(dctypes::HealthcheckTest::Single(command)) => vec![command.clone()],
+        Some(dctypes::HealthcheckTest::Multiple(commands)) => commands.clone(),
+        None => Vec::new(),
+    };
+
+    if test.is_empty() {
+        return None;
+    }
+
+    let mut map = serde_json::Map::new();
+    map.insert("test".to_string(), json!(test));
+
+    if let Some(interval) = &healthcheck.interval {
+        map.insert("interval".to_string(), json!(interval));
+    }
+    if let Some(timeout) = &healthcheck.timeout {
+        map.insert("timeout".to_string(), json!(timeout));
+    }
+    if healthcheck.retries > 0 {
+        map.insert("retries".to_string(), json!(healthcheck.retries));
+    }
+    if let Some(start_period) = &healthcheck.start_period {
+        map.insert("start_period".to_string(), json!(start_period));
+    }
+
+    Some(JsonValue::Object(map))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_compose_services_extracts_healthcheck() {
+        let compose = r#"
+services:
+  api:
+    image: nginx:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+"#;
+
+        let services = parse_compose_services(compose).expect("compose should parse");
+        let service = services.first().expect("service should exist");
+        let healthcheck = service
+            .healthcheck
+            .as_ref()
+            .expect("healthcheck should be extracted");
+
+        assert_eq!(
+            healthcheck["test"],
+            json!(["CMD", "curl", "-f", "http://localhost/health"])
+        );
+        assert_eq!(healthcheck["interval"], json!("30s"));
+        assert_eq!(healthcheck["timeout"], json!("5s"));
+        assert_eq!(healthcheck["retries"], json!(3));
+        assert_eq!(healthcheck["start_period"], json!("10s"));
+    }
 }
 
 /// A builder for constructing docker compose.
