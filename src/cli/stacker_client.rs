@@ -2784,7 +2784,7 @@ mod tests {
     }
 
     #[test]
-      fn bdd_reconfigure_existing_nginx_proxy_manager_proxy_does_not_duplicate_features() {
+    fn bdd_reconfigure_existing_nginx_proxy_manager_proxy_does_not_duplicate_features() {
         use crate::cli::config_parser::{DeployTarget, ProxyConfig, ProxyType, ServiceDefinition};
 
         let given_existing_npm_service = ServiceDefinition {
@@ -2801,6 +2801,52 @@ mod tests {
             .deploy_target(DeployTarget::Cloud)
             .proxy(ProxyConfig {
                 proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .add_service(given_existing_npm_service)
+            .build()
+            .unwrap();
+
+        let when_project_body = build_project_body(&given_config);
+        let when_deploy_form = build_deploy_form(&given_config);
+
+        let then_project_web = when_project_body["custom"]["web"]
+            .as_array()
+            .expect("custom.web must be an array");
+        assert!(
+            then_project_web
+                .iter()
+                .all(|app| app["code"] != "nginx_proxy_manager"),
+            "should not deploy nginx_proxy_manager as a web service when proxy.type already provisions it as a feature: {:?}",
+            then_project_web
+        );
+
+        let then_project_features = when_project_body["custom"]["feature"]
+            .as_array()
+            .expect("custom.feature must be an array");
+        assert_eq!(
+            then_project_features
+                .iter()
+                .filter(|f| f["code"] == "nginx_proxy_manager")
+                .count(),
+            1,
+            "should include exactly one nginx_proxy_manager feature: {:?}",
+            then_project_features
+        );
+
+        let then_extended_features = when_deploy_form["stack"]["extended_features"]
+            .as_array()
+            .expect("stack.extended_features must be an array");
+        assert!(
+            then_extended_features.contains(&serde_json::json!("nginx_proxy_manager")),
+            "should inject nginx_proxy_manager into stack.extended_features when proxy.type requires it: {:?}",
+            then_extended_features
+        );
+    }
+
+    #[test]
     fn test_build_project_body_nginx_proxy_manager_preserves_volumes_from_compose_file() {
         let dir = TempDir::new().unwrap();
         let compose_path = dir.path().join("docker-compose.prod.yml");
@@ -2833,45 +2879,6 @@ volumes:
                 domains: vec![],
                 config: None,
             })
-            .add_service(given_existing_npm_service)
-            .build()
-            .unwrap();
-
-        let when_project_body = build_project_body(&given_config);
-        let when_deploy_form = build_deploy_form(&given_config);
-
-        let then_project_web = when_project_body["custom"]["web"]
-            .as_array()
-            .expect("custom.web must be an array");
-        assert!(
-            then_project_web
-                .iter()
-                .all(|app| app["code"] != "nginx_proxy_manager"),
-            "should not deploy nginx_proxy_manager as a web service when proxy.type already provisions it as a feature: {:?}",
-            then_project_web
-        );
-
-        let then_project_features = when_project_body["custom"]["feature"]
-            .as_array()
-            .expect("custom.feature must be an array");
-        assert!(
-            then_project_features
-                .iter()
-                .filter(|f| f["code"] == "nginx_proxy_manager")
-                .count()
-                == 1,
-            "should include exactly one nginx_proxy_manager feature: {:?}",
-            then_project_features
-        );
-
-        let then_extended_features = when_deploy_form["stack"]["extended_features"]
-            .as_array()
-            .expect("stack.extended_features must be an array");
-        assert!(
-            then_extended_features.contains(&serde_json::json!("nginx_proxy_manager")),
-            "should inject nginx_proxy_manager into stack.extended_features when proxy.type requires it: {:?}",
-            then_extended_features
-        );
             .build()
             .unwrap();
         config.deploy.compose_file = Some(compose_path);
