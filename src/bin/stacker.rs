@@ -1242,9 +1242,9 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::login::LoginCommand::new(
             org, domain, auth_url, server_url,
         )),
-        StackerCommands::Whoami {} => Box::new(
-            stacker::console::commands::cli::whoami::WhoamiCommand::new(),
-        ),
+        StackerCommands::Whoami {} => {
+            Box::new(stacker::console::commands::cli::whoami::WhoamiCommand::new())
+        }
         StackerCommands::Init {
             app_type,
             with_proxy,

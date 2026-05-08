@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
+use crate::cli::cloud_env;
 use crate::cli::config_bundle::build_config_bundle;
 use crate::cli::config_parser::{
     AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, RegistryConfig,
@@ -1312,9 +1313,12 @@ fn prompt_select_cloud(access_token: &str) -> Result<Option<stacker_client::Clou
         eprintln!();
         eprintln!("  No saved cloud credentials found.");
         eprintln!("  To add cloud credentials, export your provider token and redeploy:");
-        eprintln!("    HCLOUD_TOKEN=<token> stacker deploy --target cloud   # Hetzner");
-        eprintln!("    DO_API_TOKEN=<token> stacker deploy --target cloud   # DigitalOcean");
-        eprintln!("    AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> stacker deploy --target cloud  # AWS");
+        eprintln!("    {}   # Hetzner", cloud_env::provider_cli_example("htz"));
+        eprintln!(
+            "    {}   # DigitalOcean",
+            cloud_env::provider_cli_example("do")
+        );
+        eprintln!("    {}  # AWS", cloud_env::provider_cli_example("aws"));
         eprintln!();
         return Err(CliError::CloudProviderMissing);
     }
@@ -1826,11 +1830,26 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                 // User chose "Connect a new cloud provider"
                 eprintln!();
                 eprintln!("  To connect a new cloud provider, export your API token and redeploy:");
-                eprintln!("    Hetzner:      HCLOUD_TOKEN=<token>  stacker deploy --target cloud");
-                eprintln!("    DigitalOcean: DO_API_TOKEN=<token>  stacker deploy --target cloud");
-                eprintln!("    Linode:       LINODE_TOKEN=<token>  stacker deploy --target cloud");
-                eprintln!("    Vultr:        VULTR_API_KEY=<key>   stacker deploy --target cloud");
-                eprintln!("    AWS:          AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret>  stacker deploy --target cloud");
+                eprintln!(
+                    "    Hetzner:      {}",
+                    cloud_env::provider_cli_example("htz")
+                );
+                eprintln!(
+                    "    DigitalOcean: {}",
+                    cloud_env::provider_cli_example("do")
+                );
+                eprintln!(
+                    "    Linode:       {}",
+                    cloud_env::provider_cli_example("lo")
+                );
+                eprintln!(
+                    "    Vultr:        {}",
+                    cloud_env::provider_cli_example("vu")
+                );
+                eprintln!(
+                    "    AWS:          {}",
+                    cloud_env::provider_cli_example("aws")
+                );
                 eprintln!();
                 eprintln!("  Or configure manually with: stacker config setup cloud");
                 eprintln!();

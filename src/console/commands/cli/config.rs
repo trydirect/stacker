@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::cli::cloud_env;
 use crate::cli::config_parser::{
     CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
 };
@@ -269,51 +270,30 @@ fn resolve_remote_cloud_credentials(
 
     match provider_code {
         "htz" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_HETZNER_TOKEN",
-                "HETZNER_TOKEN",
-                "HCLOUD_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("htz")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "do" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_DIGITALOCEAN_TOKEN",
-                "DIGITALOCEAN_TOKEN",
-                "DO_API_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("do")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "lo" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_LINODE_TOKEN",
-                "LINODE_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("lo")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "vu" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_VULTR_TOKEN",
-                "VULTR_TOKEN",
-                "VULTR_API_KEY",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("vu")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "aws" => {
-            if let Some(key) = first_non_empty_env(&["STACKER_CLOUD_KEY", "AWS_ACCESS_KEY_ID"]) {
+            if let Some(key) = first_non_empty_env(cloud_env::key_env_vars("aws")) {
                 creds.insert("cloud_key".to_string(), serde_json::Value::String(key));
             }
-            if let Some(secret) =
-                first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
-            {
+            if let Some(secret) = first_non_empty_env(cloud_env::secret_env_vars("aws")) {
                 creds.insert(
                     "cloud_secret".to_string(),
                     serde_json::Value::String(secret),
@@ -1219,6 +1199,22 @@ app:
         assert_eq!(cloud.provider, CloudProvider::Hetzner);
         assert_eq!(cloud.region.as_deref(), Some("nbg1"));
         assert_eq!(cloud.size.as_deref(), Some("cpx11"));
+    }
+
+    #[test]
+    fn test_resolve_remote_cloud_credentials_accepts_digitalocean_token() {
+        std::env::remove_var("STACKER_CLOUD_TOKEN");
+        std::env::remove_var("STACKER_DIGITALOCEAN_TOKEN");
+        std::env::set_var("DIGITALOCEAN_TOKEN", "do-token-value");
+
+        let creds = resolve_remote_cloud_credentials("do");
+
+        std::env::remove_var("DIGITALOCEAN_TOKEN");
+
+        assert_eq!(
+            creds.get("cloud_token").and_then(|v| v.as_str()),
+            Some("do-token-value")
+        );
     }
 
     #[test]

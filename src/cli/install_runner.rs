@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::cli::cloud_env;
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
@@ -541,6 +542,10 @@ impl DeployStrategy for CloudDeploy {
                     };
 
                     // Step 2: Resolve cloud credentials
+                    let provider_str = cloud_cfg.provider.to_string();
+                    let provider_code = provider_code_for_remote(&provider_str);
+                    let env_creds = resolve_remote_cloud_credentials(provider_code);
+
                     let cloud_id = if let Some(cid) = context.key_id_override {
                         // --key-id flag: look up by ID (server checks ownership)
                         eprintln!("  Looking up cloud credentials by id={}...", cid);
@@ -583,12 +588,6 @@ impl DeployStrategy for CloudDeploy {
                                 }
                                 None => {
                                     // Try saving current env-var creds under this provider
-                                    let provider_str = cloud_cfg.provider.to_string();
-                                    let provider_code = provider_code_for_remote(
-                                        &provider_str,
-                                    );
-                                    let env_creds =
-                                        resolve_remote_cloud_credentials(provider_code);
                                     let cloud_token = env_creds
                                         .get("cloud_token")
                                         .and_then(|v| v.as_str());
@@ -624,8 +623,9 @@ impl DeployStrategy for CloudDeploy {
                                         return Err(CliError::DeployFailed {
                                             target: DeployTarget::Cloud,
                                             reason: format!(
-                                                "Cloud key '{}' not found on server and no cloud credentials in env vars (STACKER_CLOUD_TOKEN, HCLOUD_TOKEN, etc.)",
-                                                key_ref
+                                                "Cloud key '{}' not found on server and no cloud credentials were found in env vars ({}).",
+                                                key_ref,
+                                                cloud_env::provider_env_summary(provider_code)
                                             ),
                                         });
                                     }
@@ -635,9 +635,6 @@ impl DeployStrategy for CloudDeploy {
                     } else {
                         // No key specified: try to find existing cloud creds for this provider,
                         // or pass creds directly in deploy form from env vars
-                        let provider_str = cloud_cfg.provider.to_string();
-                        let provider_code =
-                            provider_code_for_remote(&provider_str);
                         match client.find_cloud_by_provider(provider_code).await? {
                             Some(c) => {
                                 eprintln!(
@@ -649,6 +646,12 @@ impl DeployStrategy for CloudDeploy {
                             None => None,
                         }
                     };
+
+                    ensure_remote_cloud_credentials_available(
+                        cloud_id,
+                        provider_code,
+                        &env_creds,
+                    )?;
 
                     // Step 3: Resolve server by name
                     let server_id = if let Some(srv_name) = &server_name {
@@ -717,10 +720,6 @@ impl DeployStrategy for CloudDeploy {
 
                     // Include env-var cloud creds in form if no saved cloud
                     if cloud_id.is_none() {
-                        let provider_str = cloud_cfg.provider.to_string();
-                        let provider_code =
-                            provider_code_for_remote(&provider_str);
-                        let env_creds = resolve_remote_cloud_credentials(provider_code);
                         if let Some(cloud_obj) = deploy_form.get_mut("cloud") {
                             if let Some(obj) = cloud_obj.as_object_mut() {
                                 for (k, v) in &env_creds {
@@ -922,7 +921,8 @@ pub fn normalize_stacker_server_url(raw: &str) -> String {
 
 fn resolve_saved_stacker_base_url(creds: &StoredCredentials) -> String {
     normalize_stacker_server_url(
-        creds.server_url
+        creds
+            .server_url
             .as_deref()
             .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
     )
@@ -969,51 +969,30 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
 
     match provider {
         "htz" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_HETZNER_TOKEN",
-                "HETZNER_TOKEN",
-                "HCLOUD_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("htz")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "do" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_DIGITALOCEAN_TOKEN",
-                "DIGITALOCEAN_TOKEN",
-                "DO_API_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("do")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "lo" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_LINODE_TOKEN",
-                "LINODE_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("lo")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "vu" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_VULTR_TOKEN",
-                "VULTR_TOKEN",
-                "VULTR_API_KEY",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("vu")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "aws" => {
-            if let Some(key) = first_non_empty_env(&["STACKER_CLOUD_KEY", "AWS_ACCESS_KEY_ID"]) {
+            if let Some(key) = first_non_empty_env(cloud_env::key_env_vars("aws")) {
                 creds.insert("cloud_key".to_string(), serde_json::Value::String(key));
             }
-            if let Some(secret) =
-                first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
-            {
+            if let Some(secret) = first_non_empty_env(cloud_env::secret_env_vars("aws")) {
                 creds.insert(
                     "cloud_secret".to_string(),
                     serde_json::Value::String(secret),
@@ -1022,20 +1001,16 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
         }
         "cnt" => {
             // Contabo uses four credentials: OAuth2 client_id/secret + API user/password.
-            if let Some(v) = first_non_empty_env(&["STACKER_CONTABO_CLIENT_ID", "CNT_CLIENT_ID"]) {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_CLIENT_ID_ENV_VARS) {
                 creds.insert("cloud_key".to_string(), serde_json::Value::String(v));
             }
-            if let Some(v) =
-                first_non_empty_env(&["STACKER_CONTABO_CLIENT_SECRET", "CNT_CLIENT_SECRET"])
-            {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_CLIENT_SECRET_ENV_VARS) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(v));
             }
-            if let Some(v) = first_non_empty_env(&["STACKER_CONTABO_API_USER", "CNT_API_USER"]) {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_API_USER_ENV_VARS) {
                 creds.insert("cloud_user".to_string(), serde_json::Value::String(v));
             }
-            if let Some(v) =
-                first_non_empty_env(&["STACKER_CONTABO_API_PASSWORD", "CNT_API_PASSWORD"])
-            {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_API_PASSWORD_ENV_VARS) {
                 creds.insert("cloud_password".to_string(), serde_json::Value::String(v));
             }
         }
@@ -1043,6 +1018,26 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
     }
 
     creds
+}
+
+fn ensure_remote_cloud_credentials_available(
+    cloud_id: Option<i32>,
+    provider: &str,
+    env_creds: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CliError> {
+    if cloud_id.is_some() || !env_creds.is_empty() {
+        return Ok(());
+    }
+
+    let hint = cloud_env::provider_missing_credentials_hint(provider);
+
+    Err(CliError::DeployFailed {
+        target: DeployTarget::Cloud,
+        reason: format!(
+            "No saved cloud credentials were found for provider '{}', and no provider credentials were found in the environment. {}",
+            provider, hint
+        ),
+    })
 }
 
 /// Resolve Docker registry credentials from the stacker.yml `deploy.registry` section
@@ -1807,6 +1802,22 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_remote_cloud_credentials_accepts_digitalocean_token() {
+        std::env::remove_var("STACKER_CLOUD_TOKEN");
+        std::env::remove_var("STACKER_DIGITALOCEAN_TOKEN");
+        std::env::set_var("DIGITALOCEAN_TOKEN", "do-token-value");
+
+        let creds = resolve_remote_cloud_credentials("do");
+
+        std::env::remove_var("DIGITALOCEAN_TOKEN");
+
+        assert_eq!(
+            creds.get("cloud_token").and_then(|v| v.as_str()),
+            Some("do-token-value")
+        );
+    }
+
+    #[test]
     fn test_validate_remote_deploy_payload_rejects_missing_common_domain() {
         let payload = serde_json::json!({
             "provider": "htz",
@@ -2205,6 +2216,31 @@ mod tests {
             resolve_saved_stacker_base_url(&creds),
             stacker_client::DEFAULT_STACKER_URL
         );
+    }
+
+    #[test]
+    fn test_ensure_remote_cloud_credentials_available_accepts_saved_cloud_id() {
+        let env_creds = serde_json::Map::new();
+        assert!(ensure_remote_cloud_credentials_available(Some(12), "htz", &env_creds).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_remote_cloud_credentials_available_accepts_env_token() {
+        let mut env_creds = serde_json::Map::new();
+        env_creds.insert(
+            "cloud_token".to_string(),
+            serde_json::Value::String("token".to_string()),
+        );
+        assert!(ensure_remote_cloud_credentials_available(None, "htz", &env_creds).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_remote_cloud_credentials_available_fails_without_saved_or_env_creds() {
+        let env_creds = serde_json::Map::new();
+        let err = ensure_remote_cloud_credentials_available(None, "htz", &env_creds).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("No saved cloud credentials were found"));
+        assert!(msg.contains("HCLOUD_TOKEN"));
     }
 
     #[test]

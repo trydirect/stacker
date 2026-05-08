@@ -3,7 +3,7 @@
 //! All operations call the Stacker server REST API (`/server/{id}/ssh-key/*`)
 //! which stores keys in HashiCorp Vault. Requires `stacker login` first.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
@@ -212,12 +212,25 @@ impl SshKeyInjectCommand {
     }
 }
 
+fn validate_bootstrap_private_key_path(key_path: &Path) -> Result<(), CliError> {
+    if key_path.extension().and_then(|ext| ext.to_str()) == Some("pub") {
+        return Err(CliError::ConfigValidation(format!(
+            "`--with-key` expects a private key file, not a public key: {}. Pass a private key that already grants SSH access to the server.",
+            key_path.display()
+        )));
+    }
+
+    Ok(())
+}
+
 impl CallableTrait for SshKeyInjectCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let server_id = self.server_id;
         let key_path = self.with_key.clone();
         let override_user = self.user.clone();
         let override_port = self.port;
+
+        validate_bootstrap_private_key_path(&key_path)?;
 
         // Read the local working private key
         let local_private_key = std::fs::read_to_string(&key_path).map_err(|e| {
@@ -341,7 +354,8 @@ async fn inject_key_via_ssh(
 
     if !auth_res.success() {
         return Err(Box::new(CliError::ConfigValidation(
-            "Authentication failed — the provided key is not accepted by the server".to_string(),
+            "Authentication failed — the provided private key is not accepted by the server. `ssh-key inject` requires a bootstrap private key that already grants SSH access."
+                .to_string(),
         )));
     }
 
@@ -392,4 +406,31 @@ async fn inject_key_via_ssh(
     println!("You can now run:  stacker deploy");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_bootstrap_private_key_path;
+    use crate::cli::error::CliError;
+    use std::path::Path;
+
+    #[test]
+    fn rejects_public_key_file_for_ssh_key_inject() {
+        let err = validate_bootstrap_private_key_path(Path::new("/tmp/id_ed25519.pub"))
+            .expect_err("public key paths must be rejected");
+
+        match err {
+            CliError::ConfigValidation(message) => {
+                assert!(message.contains("expects a private key file"));
+                assert!(message.contains("id_ed25519.pub"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn accepts_private_key_file_for_ssh_key_inject() {
+        validate_bootstrap_private_key_path(Path::new("/tmp/id_ed25519"))
+            .expect("private key paths should be accepted");
+    }
 }

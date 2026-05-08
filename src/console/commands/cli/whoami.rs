@@ -25,7 +25,10 @@ fn describe_saved_login(creds: Option<&StoredCredentials>) -> Vec<String> {
             if let Some(domain) = &creds.domain {
                 lines.push(format!("  Domain:        {}", domain));
             }
-            lines.push(format!("  Expires at:    {}", creds.expires_at.to_rfc3339()));
+            lines.push(format!(
+                "  Expires at:    {}",
+                creds.expires_at.to_rfc3339()
+            ));
             lines
         }
         None => vec![
@@ -35,7 +38,9 @@ fn describe_saved_login(creds: Option<&StoredCredentials>) -> Vec<String> {
     }
 }
 
-fn load_project_lock(project_dir: &Path) -> Result<Option<DeploymentLock>, crate::cli::error::CliError> {
+fn load_project_lock(
+    project_dir: &Path,
+) -> Result<Option<DeploymentLock>, crate::cli::error::CliError> {
     DeploymentLock::load_active(project_dir)
 }
 
@@ -49,9 +54,8 @@ fn describe_project_lock(lock: Option<&DeploymentLock>) -> Vec<String> {
             }
             match &lock.stacker_email {
                 Some(email) => lines.push(format!("  Deployed by:   {}", email)),
-                None => lines.push(
-                    "  Deployed by:   unknown (lock predates account tracking)".to_string(),
-                ),
+                None => lines
+                    .push("  Deployed by:   unknown (lock predates account tracking)".to_string()),
             }
             if let Some(server_name) = &lock.server_name {
                 lines.push(format!("  Server name:   {}", server_name));
@@ -105,7 +109,9 @@ mod tests {
         let lines = describe_saved_login(Some(&creds));
         assert!(lines[0].contains("user@example.com"));
         assert!(lines[0].contains("(expired)"));
-        assert!(lines.iter().any(|line| line.contains("https://stacker.example")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("https://stacker.example")));
     }
 
     #[test]

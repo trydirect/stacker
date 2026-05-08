@@ -339,7 +339,7 @@ impl CallableTrait for ListCloudsCommand {
                     "Cloud credentials are saved automatically when you deploy with env vars,"
                 );
                 eprintln!(
-                    "or via: stacker deploy --target cloud (with HCLOUD_TOKEN, etc. exported)."
+                    "or via: stacker deploy --target cloud (with HCLOUD_TOKEN, DIGITALOCEAN_TOKEN, LINODE_TOKEN, VULTR_API_KEY, or AWS credentials exported)."
                 );
                 return Ok(());
             }
