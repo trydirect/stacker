@@ -100,6 +100,8 @@ enum StackerCommands {
         #[arg(long = "server-url", visible_alias = "api-url")]
         server_url: Option<String>,
     },
+    /// Show the saved login and current project's recorded deploy identity
+    Whoami {},
     /// Initialize a new stacker project (stacker.yml + Dockerfile)
     Init {
         #[arg(long, value_name = "TYPE")]
@@ -367,6 +369,9 @@ fn get_command(
                     auth_url,
                     server_url,
                 ),
+            )),
+            StackerCommands::Whoami {} => Ok(Box::new(
+                stacker::console::commands::cli::whoami::WhoamiCommand::new(),
             )),
             StackerCommands::Init {
                 app_type,

@@ -68,6 +68,8 @@ enum StackerCommands {
         #[arg(long = "server-url", visible_alias = "api-url")]
         server_url: Option<String>,
     },
+    /// Show the saved login and current project's recorded deploy identity
+    Whoami {},
     /// Initialize a new stacker project (generates stacker.yml + Dockerfile)
     Init {
         /// Application type: static, node, python, rust, go, php
@@ -1240,6 +1242,9 @@ fn get_command(
         } => Box::new(stacker::console::commands::cli::login::LoginCommand::new(
             org, domain, auth_url, server_url,
         )),
+        StackerCommands::Whoami {} => Box::new(
+            stacker::console::commands::cli::whoami::WhoamiCommand::new(),
+        ),
         StackerCommands::Init {
             app_type,
             with_proxy,
@@ -1879,6 +1884,16 @@ mod tests {
                 assert_eq!(environment.as_deref(), Some("staging"));
             }
             _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn test_whoami_parses() {
+        let cli = Cli::try_parse_from(["stacker", "whoami"]).unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Whoami {} => {}
+            _ => panic!("expected whoami command"),
         }
     }
 

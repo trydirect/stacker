@@ -869,6 +869,43 @@ mod tests {
     }
 
     #[test]
+    fn test_login_preserves_explicit_legacy_stacker_route() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: Some("https://dev.try.direct/stacker".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://dev.try.direct/stacker")
+        );
+    }
+
+    #[test]
+    fn test_login_preserves_explicit_api_gateway_url() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: Some("https://api.try.direct".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(creds.server_url.as_deref(), Some("https://api.try.direct"));
+    }
+
+    #[test]
     fn test_login_requires_auth_url_when_not_provided_by_flag_or_env() {
         let (manager, _) = make_manager();
         let oauth = MockOAuthClient::success();

@@ -52,6 +52,9 @@ pub struct DeploymentLock {
     /// Project name as known by the Stacker server.
     pub project_name: Option<String>,
 
+    /// Stacker account email used for the deployment.
+    pub stacker_email: Option<String>,
+
     /// ISO 8601 timestamp of the deployment.
     pub deployed_at: String,
 }
@@ -71,6 +74,7 @@ impl DeploymentLock {
             project_id: result.project_id,
             cloud_id: None,
             project_name: None,
+            stacker_email: None,
             deployed_at: Utc::now().to_rfc3339(),
         }
     }
@@ -87,6 +91,7 @@ impl DeploymentLock {
             project_id: None,
             cloud_id: None,
             project_name: None,
+            stacker_email: None,
             deployed_at: Utc::now().to_rfc3339(),
         }
     }
@@ -103,6 +108,7 @@ impl DeploymentLock {
             project_id: None,
             cloud_id: None,
             project_name: None,
+            stacker_email: None,
             deployed_at: Utc::now().to_rfc3339(),
         }
     }
@@ -139,6 +145,13 @@ impl DeploymentLock {
     pub fn with_project_name(mut self, name: Option<String>) -> Self {
         if name.is_some() {
             self.project_name = name;
+        }
+        self
+    }
+
+    pub fn with_stacker_email(mut self, email: Option<String>) -> Self {
+        if email.is_some() {
+            self.stacker_email = email;
         }
         self
     }
@@ -243,6 +256,18 @@ impl DeploymentLock {
         }
 
         Self::load_legacy(project_dir, None)
+    }
+
+    /// Load the lock for the active target if present, otherwise fall back to the
+    /// first available lock.
+    pub fn load_active(project_dir: &Path) -> Result<Option<Self>, CliError> {
+        if let Some(target) = Self::read_active_target(project_dir)? {
+            if let Some(lock) = Self::load_for_target(project_dir, &target)? {
+                return Ok(Some(lock));
+            }
+        }
+
+        Self::load(project_dir)
     }
 
     /// Check whether a lockfile exists for a given target.
@@ -390,6 +415,7 @@ mod tests {
             project_id: Some(456),
             cloud_id: Some(7),
             project_name: Some("my-project".to_string()),
+            stacker_email: Some("owner@example.com".to_string()),
             deployed_at: "2026-03-06T12:00:00+00:00".to_string(),
         }
     }
@@ -410,6 +436,7 @@ mod tests {
         assert_eq!(loaded.deployment_id, lock.deployment_id);
         assert_eq!(loaded.project_id, lock.project_id);
         assert_eq!(loaded.server_name, lock.server_name);
+        assert_eq!(loaded.stacker_email, lock.stacker_email);
         assert_eq!(loaded.target, "cloud");
     }
 
@@ -560,6 +587,12 @@ mod tests {
     }
 
     #[test]
+    fn with_stacker_email_enriches_lock() {
+        let lock = DeploymentLock::for_local().with_stacker_email(Some("user@example.com".into()));
+        assert_eq!(lock.stacker_email.as_deref(), Some("user@example.com"));
+    }
+
+    #[test]
     fn active_target_read_write() {
         let tmp = TempDir::new().unwrap();
 
@@ -611,5 +644,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let result = DeploymentLock::switch_target(tmp.path(), "mars");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_active_prefers_active_target_lock() {
+        let tmp = TempDir::new().unwrap();
+
+        sample_lock().save(tmp.path()).unwrap();
+        DeploymentLock::for_local().save(tmp.path()).unwrap();
+        DeploymentLock::write_active_target(tmp.path(), "local").unwrap();
+
+        let lock = DeploymentLock::load_active(tmp.path()).unwrap().unwrap();
+        assert_eq!(lock.target, "local");
     }
 }

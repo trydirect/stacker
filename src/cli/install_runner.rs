@@ -884,19 +884,6 @@ fn normalize_user_service_base_url(raw: &str) -> String {
     url
 }
 
-fn infer_trydirect_stacker_host(host: &str) -> Option<String> {
-    let normalized = host.to_ascii_lowercase();
-    if normalized == "stacker.try.direct" || normalized.ends_with(".stacker.try.direct") {
-        return Some(normalized);
-    }
-    if normalized == "try.direct" || normalized == "api.try.direct" {
-        return Some("stacker.try.direct".to_string());
-    }
-    normalized
-        .strip_suffix(".try.direct")
-        .map(|prefix| format!("{prefix}.stacker.try.direct"))
-}
-
 /// Normalize the Stacker server URL from stored credentials.
 /// Strips trailing slashes and known auth path suffixes to get the base API URL.
 pub fn normalize_stacker_server_url(raw: &str) -> String {
@@ -907,32 +894,6 @@ pub fn normalize_stacker_server_url(raw: &str) -> String {
 
     if let Ok(mut url) = reqwest::Url::parse(trimmed) {
         let path = url.path().trim_end_matches('/').to_string();
-        let host = url.host_str().map(|value| value.to_ascii_lowercase());
-
-        if path.starts_with("/server/user") {
-            if let Some(stacker_host) = host.as_deref().and_then(infer_trydirect_stacker_host) {
-                let _ = url.set_host(Some(&stacker_host));
-                url.set_path("/");
-                url.set_query(None);
-                url.set_fragment(None);
-                return url.to_string().trim_end_matches('/').to_string();
-            }
-            url.set_path("/stacker");
-            url.set_query(None);
-            url.set_fragment(None);
-            return url.to_string().trim_end_matches('/').to_string();
-        }
-
-        if path == "/stacker" || path.starts_with("/stacker/") {
-            if let Some(stacker_host) = host.as_deref().and_then(infer_trydirect_stacker_host) {
-                let _ = url.set_host(Some(&stacker_host));
-                url.set_path("/");
-                url.set_query(None);
-                url.set_fragment(None);
-                return url.to_string().trim_end_matches('/').to_string();
-            }
-        }
-
         for suffix in [
             "/api/v1",
             "/oauth_server/token",
@@ -951,10 +912,6 @@ pub fn normalize_stacker_server_url(raw: &str) -> String {
                 url.set_fragment(None);
                 break;
             }
-        }
-
-        if host.as_deref() == Some("api.try.direct") && url.path() == "/" {
-            return stacker_client::DEFAULT_STACKER_URL.to_string();
         }
 
         return url.to_string().trim_end_matches('/').to_string();
@@ -2181,26 +2138,26 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_stacker_server_url_maps_direct_login_path_to_stacker_host() {
+    fn test_normalize_stacker_server_url_strips_direct_login_suffix() {
         assert_eq!(
             normalize_stacker_server_url("https://dev.try.direct/server/user/auth/login"),
-            "https://dev.stacker.try.direct"
+            "https://dev.try.direct/server/user"
         );
     }
 
     #[test]
-    fn test_normalize_stacker_server_url_maps_legacy_stacker_route_to_stacker_host() {
+    fn test_normalize_stacker_server_url_preserves_legacy_stacker_route() {
         assert_eq!(
             normalize_stacker_server_url("https://dev.try.direct/stacker"),
-            "https://dev.stacker.try.direct"
+            "https://dev.try.direct/stacker"
         );
     }
 
     #[test]
-    fn test_normalize_stacker_server_url_maps_api_host_to_default_stacker_host() {
+    fn test_normalize_stacker_server_url_preserves_api_gateway_host() {
         assert_eq!(
             normalize_stacker_server_url("https://api.try.direct"),
-            stacker_client::DEFAULT_STACKER_URL
+            "https://api.try.direct"
         );
     }
 

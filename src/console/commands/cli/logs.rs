@@ -551,6 +551,7 @@ mod tests {
             project_id: Some(7),
             cloud_id: Some(9),
             project_name: Some("demo".to_string()),
+            stacker_email: Some("owner@example.com".to_string()),
             deployed_at: Utc::now().to_rfc3339(),
         }
         .save(dir.path())

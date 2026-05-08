@@ -2214,6 +2214,12 @@ impl DeployCommand {
             lock = lock.with_project_name(self.project_name.clone());
         }
 
+        if matches!(result.target, DeployTarget::Cloud | DeployTarget::Server) {
+            if let Ok(Some(creds)) = CredentialsManager::with_default_store().load() {
+                lock = lock.with_stacker_email(creds.email.clone());
+            }
+        }
+
         // Save lockfile
         match lock.save(project_dir) {
             Ok(path) => {

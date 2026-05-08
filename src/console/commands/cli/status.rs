@@ -694,6 +694,7 @@ deploy:
             project_id: Some(7),
             cloud_id: Some(9),
             project_name: Some("demo".to_string()),
+            stacker_email: Some("owner@example.com".to_string()),
             deployed_at: Utc::now().to_rfc3339(),
         }
         .save(dir.path())
@@ -738,5 +739,40 @@ deploy:
             resolve_stacker_base_url(&creds),
             "https://custom.stacker.example"
         );
+    }
+
+    #[test]
+    fn test_resolve_stacker_base_url_preserves_legacy_stacker_route() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: Utc::now() + Duration::minutes(10),
+            email: None,
+            server_url: Some("https://dev.try.direct/stacker".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_stacker_base_url(&creds),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    #[test]
+    fn test_resolve_stacker_base_url_preserves_api_gateway_host() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: Utc::now() + Duration::minutes(10),
+            email: None,
+            server_url: Some("https://api.try.direct".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(resolve_stacker_base_url(&creds), "https://api.try.direct");
     }
 }

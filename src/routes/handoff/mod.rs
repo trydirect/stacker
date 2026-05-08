@@ -158,6 +158,7 @@ fn build_payload(
         project_id: Some(project.id as i64),
         cloud_id: server.and_then(|srv| srv.cloud_id),
         project_name: Some(project.name.clone()),
+        stacker_email: Some(user.email.clone()),
         deployed_at: deployment.updated_at.to_rfc3339(),
     })
     .unwrap_or_else(|_| serde_json::json!({}));
@@ -235,6 +236,7 @@ fn build_legacy_payload(
         project_id: None,
         cloud_id: None,
         project_name: Some(project_name.clone()),
+        stacker_email: Some(user.email.clone()),
         deployed_at: installation
             .updated_at
             .clone()

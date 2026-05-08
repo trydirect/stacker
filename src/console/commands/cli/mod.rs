@@ -20,3 +20,4 @@ pub mod ssh_key;
 pub mod status;
 pub mod submit;
 pub mod update;
+pub mod whoami;

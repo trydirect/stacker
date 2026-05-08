@@ -2957,27 +2957,6 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         _ => {}
     }
 
-    // When monitoring.status_panel is enabled, include the statuspanel feature
-    // with its public port so the install service's collect_props() picks it up
-    // and opens port 5000 in the cloud firewall.
-    if config.monitoring.status_panel {
-        features.push(serde_json::json!({
-            "_id": generate_app_id(),
-            "name": "Status Panel",
-            "code": "statuspanel",
-            "type": "feature",
-            "restart": "always",
-            "custom": true,
-            "shared_ports": [
-                {"host_port": "5000", "container_port": "5000"},
-            ],
-            "network": [],
-            "dockerhub_user": "trydirect",
-            "dockerhub_name": "status",
-            "dockerhub_tag": "latest",
-        }));
-    }
-
     serde_json::json!({
         "custom": {
             "custom_stack_code": stack_code,
@@ -3176,10 +3155,9 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     }
 
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
-    // integrated_features and set connection_mode so the install service's Ansible
-    // playbook picks it up (get_features_roles checks connection_mode == "status_panel").
-    // Also pass vault_url in stack.vars so the Ansible role configures the remote
-    // status panel agent with the public Vault address (not the local Docker IP).
+    // integrated_features, set connection_mode so the installer recognizes the
+    // status panel flow, and pass vault_url in stack.vars so the Ansible role
+    // configures the remote status panel agent with the public Vault address.
     if config.monitoring.status_panel {
         // Resolve public Vault URL: env override → default constant.
         let vault_url =
@@ -3312,7 +3290,6 @@ pub fn build_server_deploy_form(
                 }));
             }
         }
-
         if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
             server_obj.insert(
                 "connection_mode".to_string(),
@@ -3464,6 +3441,38 @@ mod tests {
     }
 
     #[test]
+    fn test_build_server_deploy_form_with_status_panel_monitoring_uses_connection_mode() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "deploy".to_string(),
+                ssh_key: Some(std::path::PathBuf::from("/tmp/id_ed25519")),
+                port: 2222,
+            })
+            .monitoring(crate::cli::config_parser::MonitoringConfig {
+                status_panel: true,
+                healthcheck: None,
+                metrics: None,
+            })
+            .build()
+            .unwrap();
+        let server_cfg = config.deploy.server.as_ref().unwrap();
+
+        let form = build_server_deploy_form(&config, server_cfg, "edge-box", false);
+        let vars = form["stack"]["vars"].as_array().unwrap();
+
+        assert_eq!(form["server"]["connection_mode"], "status_panel");
+        assert!(form["stack"]["integrated_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "statuspanel"));
+        assert!(vars.iter().any(|value| value["key"] == "vault_url"));
+    }
+
+    #[test]
     fn test_build_deploy_form_with_identity() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -3519,7 +3528,6 @@ mod tests {
             "integrated_features should contain 'statuspanel': {:?}",
             features
         );
-        // connection_mode should be set to "status_panel"
         assert_eq!(form["server"]["connection_mode"], "status_panel");
 
         // vault_url should be passed in stack.vars for the Ansible statuspanel role
@@ -3617,7 +3625,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_project_body_with_status_panel() {
+    fn test_build_project_body_with_status_panel_does_not_add_status_panel_feature() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
             .monitoring(crate::cli::config_parser::MonitoringConfig {
@@ -3630,26 +3638,11 @@ mod tests {
 
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
-        let sp = features.iter().find(|f| f["code"] == "statuspanel");
         assert!(
-            sp.is_some(),
-            "feature array should contain statuspanel entry: {:?}",
+            features.iter().all(|f| f["code"] != "statuspanel"),
+            "feature array should not contain statuspanel entry: {:?}",
             features
         );
-        let sp = sp.unwrap();
-        assert_eq!(sp["type"], "feature");
-        assert_eq!(sp["name"], "Status Panel");
-        assert!(sp["_id"].is_string(), "_id must be present");
-        assert_eq!(sp["custom"], true);
-        // Port 5000 must be declared so the install service opens it in the cloud firewall
-        let ports = sp["shared_ports"].as_array().unwrap();
-        assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0]["host_port"], "5000");
-        assert_eq!(ports[0]["container_port"], "5000");
-        // Image fields must be present so the install service can build a Docker image reference
-        assert_eq!(sp["dockerhub_user"], "trydirect");
-        assert_eq!(sp["dockerhub_name"], "status");
-        assert_eq!(sp["dockerhub_tag"], "latest");
     }
 
     #[test]
