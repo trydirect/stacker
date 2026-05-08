@@ -1028,6 +1028,8 @@ fn print_apps_summary(apps: &[serde_json::Value]) {
 }
 
 fn print_containers_summary(containers: &[serde_json::Value]) {
+    let containers = visible_containers(containers);
+
     if containers.is_empty() {
         println!("Containers: none");
         return;
@@ -1050,6 +1052,25 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
             fmt::truncate(image, 28),
         );
     }
+}
+
+fn visible_containers(containers: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    containers
+        .iter()
+        .filter(|container| !is_stale_platform_project_container(container))
+        .collect()
+}
+
+fn is_stale_platform_project_container(container: &serde_json::Value) -> bool {
+    let Some(name) = container.get("name").and_then(|value| value.as_str()) else {
+        return false;
+    };
+
+    let normalized_name = crate::project_app::normalize_app_code(name);
+    normalized_name.starts_with("project_")
+        && ["nginx_proxy_manager", "statuspanel"]
+            .iter()
+            .any(|code| normalized_name.contains(code))
 }
 
 /// Pretty-print a snapshot summary for human consumption.
@@ -1700,6 +1721,35 @@ mod tests {
         let snap = serde_json::json!({});
         // Should not panic
         print_snapshot_summary(&snap, None);
+    }
+
+    #[test]
+    fn visible_containers_hides_stale_platform_project_container() {
+        let containers = vec![
+            serde_json::json!({
+                "name": "nginx-proxy-manager",
+                "state": "running",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+            serde_json::json!({
+                "name": "project-nginx_proxy_manager-1",
+                "state": "exited",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+            serde_json::json!({
+                "name": "project-coolify-1",
+                "state": "running",
+                "image": "coollabsio/coolify:latest"
+            }),
+        ];
+
+        let visible = visible_containers(&containers);
+        let names = visible
+            .iter()
+            .map(|container| container["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["nginx-proxy-manager", "project-coolify-1"]);
     }
 
     #[test]

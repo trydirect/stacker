@@ -35,6 +35,9 @@ All notable changes to this project will be documented in this file.
 - Data migration `20260717120015_cleanup_nginx_proxy_manager_project_apps`
   removes existing stale `nginx_proxy_manager` project app rows that caused NPM
   to remain visible after upgrading.
+- `stacker agent status` hides stale project-scoped platform containers such as
+  `project-nginx_proxy_manager-*` while still showing the managed
+  `nginx-proxy-manager` container.
 
 ### Changed — Server bootstrap SSH key handling
 
