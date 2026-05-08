@@ -18,6 +18,17 @@ All notable changes to this project will be documented in this file.
   command after successful authorization.
 - `stacker ssh-key inject` remains the repair path for using an
   already-working private key to re-add the Vault public key to a server.
+- Casbin/sqlx migration `20260717120014_casbin_server_ssh_authorize_public_key`
+  grants `group_user` and `root` access to the new authorization endpoint.
+
+### Fixed — Managed Nginx Proxy Manager duplication
+
+- Cloud/server project bodies no longer add `nginx_proxy_manager` as a project
+  app when proxy support is already managed through `extended_features`.
+- User-declared `nginx_proxy_manager` / NPM services are skipped from project app
+  sync when `proxy.type` is `nginx` or `nginx-proxy-manager`, preventing the
+  duplicate `project-nginx_proxy_manager-*` container alongside the managed NPM
+  container.
 
 ### Changed — Server bootstrap SSH key handling
 

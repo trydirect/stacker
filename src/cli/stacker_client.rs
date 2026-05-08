@@ -2856,6 +2856,15 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     app
 }
 
+fn is_nginx_proxy_manager_service(svc: &ServiceDefinition) -> bool {
+    let service_name = svc.name.to_ascii_lowercase().replace('-', "_");
+    let image = svc.image.to_ascii_lowercase();
+
+    service_name == "nginx_proxy_manager"
+        || service_name == "npm"
+        || image.contains("nginx-proxy-manager")
+}
+
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
 /// format. Returns `None` if the app has no image (build-only local apps).
 fn app_source_to_app_json(
@@ -2988,38 +2997,19 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         web_apps.push(main_app);
     }
 
-    // Include additional services
-    for svc in &config.services {
-        web_apps.push(service_to_app_json(svc, &network_ids));
-    }
-
-    // Build the feature list based on proxy config.
-    // When proxy type is Nginx or NginxProxyManager, include it as a feature
-    // so the install service's collect_props() picks it up into extended_features
-    // and the Ansible playbook runs the nginx_proxy_manager role.
-    let mut features: Vec<serde_json::Value> = Vec::new();
-    match config.proxy.proxy_type {
+    let proxy_is_managed = matches!(
+        config.proxy.proxy_type,
         crate::cli::config_parser::ProxyType::Nginx
-        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-            features.push(serde_json::json!({
-                "_id": generate_app_id(),
-                "name": "Nginx Proxy Manager",
-                "code": "nginx_proxy_manager",
-                "type": "feature",
-                "restart": "always",
-                "custom": true,
-                "shared_ports": [
-                    {"host_port": "80", "container_port": "80"},
-                    {"host_port": "443", "container_port": "443"},
-                    {"host_port": "81", "container_port": "81"},
-                ],
-                "network": [],
-                "dockerhub_user": "jc21",
-                "dockerhub_name": "nginx-proxy-manager",
-                "dockerhub_tag": "latest",
-            }));
+            | crate::cli::config_parser::ProxyType::NginxProxyManager
+    );
+
+    // Include additional services. Managed proxy services are installed via
+    // extended_features, not as project apps, to avoid duplicate NPM containers.
+    for svc in &config.services {
+        if proxy_is_managed && is_nginx_proxy_manager_service(svc) {
+            continue;
         }
-        _ => {}
+        web_apps.push(service_to_app_json(svc, &network_ids));
     }
 
     serde_json::json!({
@@ -3027,7 +3017,7 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
             "custom_stack_code": stack_code,
             "project_name": config.name.clone(),
             "web": web_apps,
-            "feature": features,
+            "feature": [],
             "service": [],
             "networks": [{
                 "id": network_id,
@@ -3659,7 +3649,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_project_body_with_nginx_proxy() {
+    fn test_build_project_body_with_nginx_proxy_does_not_add_npm_project_feature() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
             .proxy(crate::cli::config_parser::ProxyConfig {
@@ -3673,20 +3663,55 @@ mod tests {
 
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
-        assert_eq!(features.len(), 1, "feature array should have 1 entry");
-        assert_eq!(features[0]["code"], "nginx_proxy_manager");
-        assert_eq!(features[0]["type"], "feature");
-        assert_eq!(features[0]["name"], "Nginx Proxy Manager");
-        assert_eq!(features[0]["restart"], "always");
-        assert!(features[0]["_id"].is_string(), "_id must be present");
-        assert_eq!(features[0]["custom"], true);
-        // Image fields must be present so the install service can build a Docker image reference
-        assert_eq!(features[0]["dockerhub_user"], "jc21");
-        assert_eq!(features[0]["dockerhub_name"], "nginx-proxy-manager");
-        assert_eq!(features[0]["dockerhub_tag"], "latest");
-        // Ports should include the NPM management port (81)
-        let ports = features[0]["shared_ports"].as_array().unwrap();
-        assert_eq!(ports.len(), 3);
+        assert!(
+            features.iter().all(|f| f["code"] != "nginx_proxy_manager"),
+            "feature array should not contain nginx_proxy_manager project app: {:?}",
+            features
+        );
+    }
+
+    #[test]
+    fn test_build_project_body_skips_declared_npm_service_when_proxy_is_managed() {
+        let npm_service = ServiceDefinition {
+            name: "nginx_proxy_manager".to_string(),
+            image: "jc21/nginx-proxy-manager:latest".to_string(),
+            ports: vec![
+                "80:80".to_string(),
+                "443:443".to_string(),
+                "81:81".to_string(),
+            ],
+            environment: std::collections::HashMap::new(),
+            volumes: vec!["npm_data:/data".to_string()],
+            depends_on: vec![],
+        };
+        let redis_service = ServiceDefinition {
+            name: "redis".to_string(),
+            image: "redis:7-alpine".to_string(),
+            ports: vec![],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .add_service(npm_service)
+            .add_service(redis_service)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let web = body["custom"]["web"].as_array().unwrap();
+        let codes = web
+            .iter()
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec!["redis"]);
     }
 
     #[test]
