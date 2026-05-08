@@ -7,6 +7,8 @@ use serde_json::{json, Map, Value};
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
+use super::is_platform_managed_app_code;
+
 fn non_empty_string(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -97,6 +99,9 @@ pub(crate) fn project_level_apps_from_form(
     let mut deploy_order = 0;
 
     for web in &form.custom.web {
+        if is_platform_managed_app_code(&web.app.code) {
+            continue;
+        }
         deploy_order += 1;
         desired_apps.insert(
             web.app.code.clone(),
@@ -106,6 +111,9 @@ pub(crate) fn project_level_apps_from_form(
 
     if let Some(services) = &form.custom.service {
         for service in services {
+            if is_platform_managed_app_code(&service.app.code) {
+                continue;
+            }
             deploy_order += 1;
             desired_apps.insert(
                 service.app.code.clone(),
@@ -116,6 +124,9 @@ pub(crate) fn project_level_apps_from_form(
 
     if let Some(features) = &form.custom.feature {
         for feature in features {
+            if is_platform_managed_app_code(&feature.app.code) {
+                continue;
+            }
             deploy_order += 1;
             desired_apps.insert(
                 feature.app.code.clone(),
@@ -212,16 +223,16 @@ mod tests {
                     "shared_ports": [{"host_port": "", "container_port": "6379"}],
                     "volumes": []
                 }],
-                "feature": [{
-                    "_id": "feat-1",
-                    "name": "Status Panel",
-                    "code": "statuspanel",
-                    "type": "feature",
-                    "custom": true,
-                    "dockerhub_image": "trydirect/status:dev",
-                    "domain": "",
-                    "restart": "always",
-                    "network": ["net-1"],
+                    "feature": [{
+                        "_id": "feat-1",
+                        "name": "Search",
+                        "code": "search",
+                        "type": "feature",
+                        "custom": true,
+                        "dockerhub_image": "getmeili/meilisearch:v1.12",
+                        "domain": "",
+                        "restart": "always",
+                        "network": ["net-1"],
                     "environment": [],
                     "shared_ports": [],
                     "volumes": []
@@ -233,7 +244,7 @@ mod tests {
         let apps = project_level_apps_from_form(42, &form);
         let codes = apps.iter().map(|app| app.code.as_str()).collect::<Vec<_>>();
 
-        assert_eq!(codes, vec!["website", "redis", "statuspanel"]);
+        assert_eq!(codes, vec!["website", "redis", "search"]);
         assert_eq!(apps[0].image, "nginx:1.27");
         assert_eq!(apps[0].domain.as_deref(), Some("example.com"));
         assert_eq!(apps[0].networks, Some(json!(["default_network"])));
@@ -246,5 +257,50 @@ mod tests {
             Some(json!([{"host_port": "", "container_port": "6379", "protocol": null}]))
         );
         assert_eq!(apps[2].restart_policy.as_deref(), Some("always"));
+    }
+
+    #[test]
+    fn project_level_apps_from_form_skips_platform_managed_entries() {
+        let form: ProjectForm = serde_json::from_value(json!({
+            "custom": {
+                "custom_stack_code": "managed-platform",
+                "project_name": "Managed platform",
+                "networks": [],
+                "web": [],
+                "service": [{
+                    "_id": "svc-1",
+                    "name": "Nginx Proxy Manager",
+                    "code": "nginx_proxy_manager",
+                    "type": "service",
+                    "custom": true,
+                    "dockerhub_image": "jc21/nginx-proxy-manager:latest",
+                    "domain": "",
+                    "restart": "unless-stopped",
+                    "network": [],
+                    "environment": [],
+                    "shared_ports": [],
+                    "volumes": []
+                }],
+                "feature": [{
+                    "_id": "feat-1",
+                    "name": "Status Panel",
+                    "code": "statuspanel",
+                    "type": "feature",
+                    "custom": true,
+                    "dockerhub_image": "trydirect/status:dev",
+                    "domain": "",
+                    "restart": "always",
+                    "network": [],
+                    "environment": [],
+                    "shared_ports": [],
+                    "volumes": []
+                }]
+            }
+        }))
+        .expect("project form should deserialize");
+
+        let apps = project_level_apps_from_form(42, &form);
+
+        assert!(apps.is_empty());
     }
 }

@@ -4,7 +4,10 @@ use crate::forms::status_panel;
 use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
-use crate::project_app::{store_configs_to_vault_from_params, upsert_app_config_for_deploy};
+use crate::project_app::{
+    is_platform_managed_app_code, normalize_app_code, store_configs_to_vault_from_params,
+    upsert_app_config_for_deploy,
+};
 use crate::services::VaultService;
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
@@ -600,6 +603,16 @@ pub async fn discover_and_register_child_services(
     let mut registered_count = 0;
 
     for svc in &services {
+        if is_platform_managed_compose_service(&svc.name, svc.image.as_deref()) {
+            tracing::debug!(
+                parent_app = %parent_app_code,
+                service = %svc.name,
+                image = ?svc.image,
+                "Skipping platform-managed compose service"
+            );
+            continue;
+        }
+
         // Generate unique code: parent_code-service_name
         let app_code = format!("{}-{}", parent_app_code, svc.name);
 
@@ -722,4 +735,45 @@ pub async fn discover_and_register_child_services(
     }
 
     registered_count
+}
+
+fn is_platform_managed_compose_service(service_name: &str, image: Option<&str>) -> bool {
+    let mut candidates = vec![normalize_app_code(service_name)];
+
+    if let Some(image) = image {
+        if let Some(image_name) = image.split('/').last() {
+            if let Some(name_without_tag) = image_name.split(':').next() {
+                candidates.push(normalize_app_code(name_without_tag));
+            }
+        }
+    }
+
+    candidates
+        .iter()
+        .any(|candidate| is_platform_managed_app_code(candidate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_managed_compose_service_matches_nginx_proxy_manager_name_or_image() {
+        assert!(is_platform_managed_compose_service(
+            "nginx_proxy_manager",
+            None
+        ));
+        assert!(is_platform_managed_compose_service(
+            "proxy",
+            Some("jc21/nginx-proxy-manager:latest")
+        ));
+    }
+
+    #[test]
+    fn platform_managed_compose_service_allows_regular_service() {
+        assert!(!is_platform_managed_compose_service(
+            "postgres",
+            Some("postgres:16-alpine")
+        ));
+    }
 }

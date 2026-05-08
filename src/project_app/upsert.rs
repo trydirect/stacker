@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use crate::services::{ProjectAppService, VaultService};
 
-use super::{merge_project_app, project_app_from_post, store_configs_to_vault_from_params};
+use super::{
+    is_platform_managed_app_code, merge_project_app, project_app_from_post,
+    store_configs_to_vault_from_params,
+};
 
 /// Upsert app config and sync to Vault for deploy_app
 ///
@@ -16,6 +19,14 @@ pub(crate) async fn upsert_app_config_for_deploy(
     parameters: &serde_json::Value,
     deployment_hash: &str,
 ) {
+    if is_platform_managed_app_code(app_code) {
+        tracing::info!(
+            "[UPSERT_APP_CONFIG] Skipping platform-managed app code: {}",
+            app_code
+        );
+        return;
+    }
+
     tracing::info!(
         "[UPSERT_APP_CONFIG] START - deployment_id: {}, app_code: {}, deployment_hash: {}",
         deployment_id,

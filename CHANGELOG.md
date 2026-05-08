@@ -29,6 +29,12 @@ All notable changes to this project will be documented in this file.
   sync when `proxy.type` is `nginx` or `nginx-proxy-manager`, preventing the
   duplicate `project-nginx_proxy_manager-*` container alongside the managed NPM
   container.
+- Server-side project app sync, compose child-service discovery, agent snapshots,
+  and deploy-app upserts now treat NPM as platform-managed so older clients or
+  stale records cannot keep re-registering it as a user app.
+- Data migration `20260717120015_cleanup_nginx_proxy_manager_project_apps`
+  removes existing stale `nginx_proxy_manager` project app rows that caused NPM
+  to remain visible after upgrading.
 
 ### Changed — Server bootstrap SSH key handling
 

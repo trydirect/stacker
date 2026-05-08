@@ -1,7 +1,7 @@
 use crate::helpers::project::builder::generate_single_app_compose;
 
 use super::mapping::{ProjectAppContext, ProjectAppPostArgs};
-use super::project_app_from_post;
+use super::{is_platform_managed_app_code, project_app_from_post};
 use serde_json::json;
 
 /// Example payload from the user's request
@@ -35,6 +35,14 @@ fn example_deploy_app_payload() -> serde_json::Value {
             ]
         }
     })
+}
+
+#[test]
+fn platform_managed_app_code_normalizes_common_variants() {
+    assert!(is_platform_managed_app_code("nginx_proxy_manager"));
+    assert!(is_platform_managed_app_code("nginx-proxy-manager"));
+    assert!(is_platform_managed_app_code("/statuspanel"));
+    assert!(!is_platform_managed_app_code("coolify"));
 }
 
 #[test]

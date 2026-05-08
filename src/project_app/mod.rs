@@ -9,6 +9,24 @@ pub(crate) use sync::sync_project_level_apps_from_form;
 pub(crate) use upsert::upsert_app_config_for_deploy;
 pub(crate) use vault::store_configs_to_vault_from_params;
 
+const PLATFORM_MANAGED_APP_CODES: &[&str] = &["nginx_proxy_manager", "statuspanel"];
+
+pub(crate) fn is_platform_managed_app_code(value: &str) -> bool {
+    let normalized = normalize_app_code(value);
+    PLATFORM_MANAGED_APP_CODES.contains(&normalized.as_str())
+}
+
+pub(crate) fn normalize_app_code(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('/')
+        .to_lowercase()
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<&str>>()
+        .join("_")
+}
+
 pub(crate) fn is_compose_filename(file_name: &str) -> bool {
     matches!(
         file_name,
