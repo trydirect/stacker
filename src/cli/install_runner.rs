@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
-use crate::cli::credentials::CredentialsManager;
+use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::{self, StackerClient};
 
@@ -495,7 +495,7 @@ impl DeployStrategy for CloudDeploy {
                     .clone()
                     .or_else(|| cloud_cfg.server.clone());
 
-                let base_url = normalize_stacker_server_url(stacker_client::DEFAULT_STACKER_URL);
+                let base_url = resolve_saved_stacker_base_url(&creds);
 
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -918,6 +918,14 @@ pub fn normalize_stacker_server_url(raw: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+fn resolve_saved_stacker_base_url(creds: &StoredCredentials) -> String {
+    normalize_stacker_server_url(
+        creds.server_url
+            .as_deref()
+            .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
+    )
 }
 
 #[allow(dead_code)]
@@ -2158,6 +2166,44 @@ mod tests {
         assert_eq!(
             normalize_stacker_server_url("https://api.try.direct"),
             "https://api.try.direct"
+        );
+    }
+
+    #[test]
+    fn test_resolve_saved_stacker_base_url_prefers_saved_server_url() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            email: Some("user@example.com".to_string()),
+            server_url: Some("https://dev.try.direct/stacker".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_saved_stacker_base_url(&creds),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    #[test]
+    fn test_resolve_saved_stacker_base_url_falls_back_to_default() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            email: Some("user@example.com".to_string()),
+            server_url: None,
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_saved_stacker_base_url(&creds),
+            stacker_client::DEFAULT_STACKER_URL
         );
     }
 
