@@ -142,6 +142,17 @@ pub struct PublicKeyResponse {
     pub fingerprint: Option<String>,
 }
 
+/// Response from `POST /server/{id}/ssh-key/authorize-public-key`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizePublicKeyResponse {
+    pub server_id: i32,
+    pub srv_ip: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub authorized: bool,
+    pub message: String,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Marketplace response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1380,6 +1391,60 @@ impl StackerClient {
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
             reason: "No SSH key found for this server".to_string(),
+        })
+    }
+
+    /// Authorize a local public SSH key on a server using the server-side Vault key.
+    pub async fn authorize_ssh_public_key(
+        &self,
+        server_id: i32,
+        public_key: &str,
+        user: Option<&str>,
+        port: Option<u16>,
+    ) -> Result<AuthorizePublicKeyResponse, CliError> {
+        let url = format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            self.base_url, server_id
+        );
+        let body = serde_json::json!({
+            "public_key": public_key,
+            "user": user,
+            "port": port,
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target,
+                reason: format!(
+                    "Failed to authorize SSH public key for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<AuthorizePublicKeyResponse> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target,
+            reason: "Server authorized SSH public key but returned no item".to_string(),
         })
     }
 

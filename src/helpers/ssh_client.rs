@@ -2,6 +2,7 @@
 //!
 //! Uses russh to connect to servers and execute system check commands.
 
+use base64::{engine::general_purpose, Engine as _};
 use russh::client::{Config, Handle};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::PrivateKey;
@@ -199,11 +200,109 @@ pub async fn check_server(
     result
 }
 
+/// Authorize an OpenSSH public key on the remote server using an accepted private key.
+pub async fn authorize_public_key(
+    host: &str,
+    port: u16,
+    username: &str,
+    private_key_pem: &str,
+    public_key: &str,
+    connection_timeout: Duration,
+) -> Result<(), anyhow::Error> {
+    let public_key = public_key.trim();
+    if public_key.is_empty() {
+        return Err(anyhow::anyhow!("Public key cannot be empty"));
+    }
+
+    let key = parse_private_key(private_key_pem)?;
+    let config = Arc::new(Config {
+        ..Default::default()
+    });
+    let addr = format!("{}:{}", host, port);
+
+    let handle = timeout(
+        connection_timeout,
+        connect_and_auth(config, &addr, username, key),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Connection timed out after {} seconds",
+            connection_timeout.as_secs()
+        )
+    })??;
+
+    let encoded_key = general_purpose::STANDARD.encode(public_key.as_bytes());
+    let command = format!(
+        "set -eu; key=$(printf '%s' '{}' | base64 -d); \
+         mkdir -p ~/.ssh; chmod 700 ~/.ssh; \
+         touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; \
+         grep -qxF \"$key\" ~/.ssh/authorized_keys || printf '%s\\n' \"$key\" >> ~/.ssh/authorized_keys",
+        encoded_key
+    );
+
+    let result = exec_command_checked(&handle, &command).await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "English")
+        .await;
+
+    result
+}
+
 /// Parse a PEM-encoded private key (OpenSSH or traditional formats)
 fn parse_private_key(pem: &str) -> Result<PrivateKey, anyhow::Error> {
     // russh-keys supports various formats including OpenSSH and traditional PEM
     let key = russh::keys::decode_secret_key(pem, None)?;
     Ok(key)
+}
+
+async fn exec_command_checked(
+    handle: &Handle<ClientHandler>,
+    command: &str,
+) -> Result<(), anyhow::Error> {
+    let mut channel = handle.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    let mut stderr = Vec::new();
+    let mut exit_status = None;
+    let timeout_duration = Duration::from_secs(10);
+
+    let read_result = timeout(timeout_duration, async {
+        loop {
+            match channel.wait().await {
+                Some(russh::ChannelMsg::ExtendedData { data, ext: _ }) => {
+                    stderr.extend_from_slice(&data);
+                }
+                Some(russh::ChannelMsg::ExitStatus {
+                    exit_status: status,
+                }) => {
+                    exit_status = Some(status);
+                }
+                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+
+    if read_result.is_err() {
+        return Err(anyhow::anyhow!("Remote authorization command timed out"));
+    }
+
+    if exit_status.unwrap_or(0) != 0 {
+        let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            "Remote authorization command failed".to_string()
+        } else {
+            format!("Remote authorization command failed: {}", stderr)
+        };
+        return Err(anyhow::anyhow!(message));
+    }
+
+    Ok(())
 }
 
 /// Connect and authenticate to the SSH server

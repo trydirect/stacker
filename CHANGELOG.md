@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Cloud deploy local SSH backup access
+
+- `stacker deploy --target cloud` now creates or reuses a local Ed25519 backup
+  key under the Stacker config directory and authorizes it on the deployed
+  server when possible.
+- New server API endpoint `POST /server/{id}/ssh-key/authorize-public-key`
+  accepts caller-provided public key material, validates ownership and key
+  format, then uses the server-side Vault key to append it to
+  `authorized_keys` idempotently.
+- The Vault private key is never returned to the CLI or written to local files;
+  the CLI sends only the local public key and prints a copy-paste-ready `ssh`
+  command after successful authorization.
+- `stacker ssh-key inject` remains the repair path for using an
+  already-working private key to re-add the Vault public key to a server.
+
 ### Changed — Server bootstrap SSH key handling
 
 - `stacker deploy --target server` now treats a user-provided `deploy.server.ssh_key` as a

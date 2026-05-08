@@ -23,6 +23,15 @@ fn vault_key_response(public_key: &str, private_key: &str) -> serde_json::Value 
     })
 }
 
+async fn set_server_ip(pool: &sqlx::PgPool, server_id: i32, ip: &str) {
+    sqlx::query("UPDATE server SET srv_ip = $1 WHERE id = $2")
+        .bind(ip)
+        .bind(server_id)
+        .execute(pool)
+        .await
+        .expect("Failed to update test server IP");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests: GET /server/{id}/ssh-key/public
 // ─────────────────────────────────────────────────────────────────────────────
@@ -425,6 +434,155 @@ async fn test_delete_key_none_returns_400() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tests: POST /server/{id}/ssh-key/authorize-public-key
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_authorize_public_key_invalid_public_key_returns_400_before_vault() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id = common::create_test_server(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    set_server_ip(&app.db_pool, server_id, "203.0.113.10").await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": "not-a-public-key"}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.to_lowercase().contains("invalid public key"));
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_authorize_public_key_vault_path_null_returns_400_before_vault() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id =
+        common::create_test_server(&app.db_pool, "test_user_id", project_id, "active", None).await;
+    let (public_key, _) = stacker::helpers::VaultClient::generate_ssh_keypair().unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": public_key}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.to_lowercase().contains("vault"));
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_authorize_public_key_missing_server_ip_returns_400_before_vault() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id = common::create_test_server(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    let (public_key, _) = stacker::helpers::VaultClient::generate_ssh_keypair().unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": public_key}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(msg.to_lowercase().contains("ip"));
+    assert_eq!(app.vault_server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_authorize_public_key_vault_read_failure_does_not_leak_private_key() {
+    let app = match common::spawn_app_with_vault().await {
+        Some(a) => a,
+        None => return,
+    };
+    let project_id = common::create_test_project(&app.db_pool, "test_user_id").await;
+    let server_id = common::create_test_server(
+        &app.db_pool,
+        "test_user_id",
+        project_id,
+        "active",
+        Some("secret/users/test_user_id/ssh_keys/1"),
+    )
+    .await;
+    set_server_ip(&app.db_pool, server_id, "203.0.113.10").await;
+    let (public_key, _) = stacker::helpers::VaultClient::generate_ssh_keypair().unwrap();
+
+    Mock::given(method("GET"))
+        .and(path_regex(vault_ssh_path_regex("test_user_id", server_id)))
+        .respond_with(ResponseTemplate::new(500).set_body_string("vault unavailable"))
+        .mount(&app.vault_server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            &app.address, server_id
+        ))
+        .header("Authorization", "Bearer test-token")
+        .json(&json!({"public_key": public_key}))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let body_text = body.to_string();
+    assert!(!body_text.contains("PRIVATE KEY"));
+    assert!(!body_text.contains("vault unavailable"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests: Unauthenticated access
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -440,6 +598,7 @@ async fn test_ssh_key_endpoints_require_auth() {
     let endpoints: &[(&str, &str)] = &[
         ("GET", "/server/1/ssh-key/public"),
         ("POST", "/server/1/ssh-key/generate"),
+        ("POST", "/server/1/ssh-key/authorize-public-key"),
         ("DELETE", "/server/1/ssh-key"),
     ];
 

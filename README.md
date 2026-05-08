@@ -134,7 +134,7 @@ The end-user tool. No server required for local deploys.
 | Command | Description |
 |---------|-------------|
 | `stacker init` | Detect project type, generate `stacker.yml` + `.stacker/` artifacts |
-| `stacker deploy` | Build & deploy the stack (local, cloud, or server). `--runtime kata\|runc` selects container runtime |
+| `stacker deploy` | Build & deploy the stack (local, cloud, or server). Cloud deploys also install a local SSH backup key when possible. `--runtime kata\|runc` selects container runtime |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
@@ -150,6 +150,7 @@ The end-user tool. No server required for local deploys.
 | `stacker ssh-key generate` | Generate a new SSH key pair for a server (Vault-backed) |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker ssh-key inject` | Repair Vault-key trust by using an already-working private key to update `authorized_keys` |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
 | `stacker agent health` | Check Status Panel agent connectivity and health |
@@ -187,6 +188,11 @@ stacker deploy --target cloud     # Terraform + Ansible → cloud provider
 stacker deploy --target server    # deploy to existing server via SSH
 stacker deploy --dry-run          # preview generated files without executing
 ```
+
+After a successful cloud deploy, Stacker creates or reuses a local backup key at
+`~/.config/stacker/ssh/server-<id>_ed25519` (or under `$XDG_CONFIG_HOME`) and
+authorizes its public key on the server when possible. The CLI prints a normal
+`ssh -i ...` command, while the Vault private key remains server-side.
 
 ### Secrets workflow
 
@@ -250,7 +256,8 @@ curl -sL https://marketplace.try.direct/<purchase-token>/install.sh | sh
 - **Service catalog** — 20+ built-in service templates (Postgres, Redis, WordPress, etc.) — add with `stacker service add`
 - **AI service addition** — ask `stacker ai ask --write "add wordpress"` and the AI uses the template catalog
 - **Agent control** — `stacker agent` subcommand to manage remote Status Panel agents (health, logs, restart, deploy, proxy) with `--json` output
-- **SSH key management** — generate, view, and upload server SSH keys (Vault-backed)
+- **SSH key management** — generate, view, upload, and repair server SSH keys
+  (Vault-backed), with automatic local backup SSH access after cloud deploy
 - **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
 - **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode
 - **Marketplace** — submit stacks for review, auto-publish on approval, check status from CLI

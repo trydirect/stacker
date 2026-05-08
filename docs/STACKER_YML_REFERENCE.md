@@ -951,7 +951,7 @@ Configuration issues:
 | Command | Description |
 |---------|-------------|
 | `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml) |
-| `stacker deploy` | Build and deploy the stack (reuses existing `.stacker/` artifacts if present) |
+| `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
 | `stacker destroy` | Tear down the stack |
@@ -965,6 +965,7 @@ Configuration issues:
 | `stacker ssh-key generate` | Generate a Vault-backed SSH key pair for a server |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker ssh-key inject` | Repair Vault-key trust using an already-working private key |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
 | `stacker agent health` | Check Status Panel agent connectivity and health |
@@ -1029,6 +1030,10 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 >
 > **Troubleshooting:** On deploy build/runtime failures, Stacker attempts AI-assisted diagnosis using your configured AI provider. If AI is unavailable, it prints fallback fix suggestions.
 > **Note:** `deploy` reuses existing `.stacker/Dockerfile` and `.stacker/docker-compose.yml` if present (e.g. from `stacker init`). Use `--force-rebuild` to regenerate them.
+> **SSH access:** After a successful cloud deploy, Stacker creates or reuses a
+> local backup key in the user-scoped Stacker config directory and authorizes its
+> public key on the server when possible. It prints a copy-paste-ready `ssh -i`
+> command; the Vault private key is not exported to the CLI.
 
 ### Other commands
 
@@ -1073,7 +1078,10 @@ stacker config fix --file prod.yml     # Fix a specific config file
 
 ### `stacker ssh-key` — SSH Key Management
 
-Manage Vault-backed SSH keys for your deployed servers. Keys are stored securely in HashiCorp Vault.
+Manage Vault-backed SSH keys for your deployed servers. Server automation keys
+are stored securely in HashiCorp Vault. Cloud deploys also maintain a separate
+local backup key under the Stacker config directory so users can connect with a
+normal `ssh` command.
 
 ```bash
 # Generate a new SSH key pair for a server
@@ -1090,7 +1098,25 @@ stacker ssh-key show --server-id 42 --json         # JSON output
 stacker ssh-key upload --server-id 42 \
   --public-key ~/.ssh/id_rsa.pub \
   --private-key ~/.ssh/id_rsa
+
+# Repair a server that no longer trusts the Vault public key
+stacker ssh-key inject --server-id 42 --with-key ~/.ssh/existing-private-key
 ```
+
+`ssh-key generate` manages the server-side Vault key. `ssh-key inject` is a
+repair command: it uses `--with-key` as a bootstrap private key that already
+works on the server, then appends the Vault public key to `authorized_keys`. It
+does not install your local key on the server.
+
+Automatic cloud-deploy backup keys are stored outside the project directory:
+
+```text
+~/.config/stacker/ssh/server-42_ed25519
+~/.config/stacker/ssh/server-42_ed25519.pub
+```
+
+If `$XDG_CONFIG_HOME` is set, Stacker uses
+`$XDG_CONFIG_HOME/stacker/ssh/` instead.
 
 ### `stacker service` — Service Template Catalog
 

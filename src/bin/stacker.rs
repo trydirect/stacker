@@ -228,7 +228,9 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ListCommands,
     },
-    /// SSH key management (generate, show, upload)
+    /// SSH key management (generate, show, upload, repair)
+    #[command(long_about = "Manage Stacker server SSH keys.\n\n\
+Cloud deploys automatically create a local backup SSH key under the Stacker config directory and authorize it on the deployed server when possible. The `generate` command manages the server-side Vault key; `inject` repairs a server by using an already-working local private key to add the Vault public key.")]
     #[command(name = "ssh-key")]
     SshKey {
         #[command(subcommand)]
@@ -434,12 +436,17 @@ enum SshKeyCommands {
         #[arg(long, value_name = "FILE")]
         private_key: std::path::PathBuf,
     },
-    /// Inject the Vault-stored public key into a server's authorized_keys via a working local key
+    /// Bootstrap the Vault-managed public key onto a server via an already-working SSH private key
+    #[command(
+        long_about = "Bootstrap the Vault-managed public key onto a server by logging in with an already-working SSH private key.\n\n\
+This command does not install your local key onto the server. Instead, it uses --with-key as a bootstrap credential, connects to the server, and appends the Vault-stored public key to ~/.ssh/authorized_keys.\n\n\
+Use this when Stacker already has a key for the server in Vault, but the server no longer trusts that key. If you want Stacker to use your local key pair, use `stacker ssh-key upload` instead."
+    )]
     Inject {
         /// Server ID whose Vault public key should be injected
         #[arg(long)]
         server_id: i32,
-        /// Path to a local private key that already grants SSH access to the server
+        /// Path to a bootstrap private key that already grants SSH access to the server
         #[arg(long, value_name = "FILE")]
         with_key: std::path::PathBuf,
         /// SSH user on the remote server (default: root)

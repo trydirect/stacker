@@ -2084,12 +2084,111 @@ impl CallableTrait for DeployCommand {
 
         // ── Deployment lock: persist deployment context ──
         self.save_deployment_lock(&project_dir, &result)?;
+        if should_install_cloud_backup_key(&result, self.dry_run) {
+            self.install_cloud_backup_key(&result);
+        }
 
         Ok(())
     }
 }
 
+fn should_install_cloud_backup_key(result: &DeployResult, dry_run: bool) -> bool {
+    !dry_run && result.target == DeployTarget::Cloud && result.project_id.is_some()
+}
+
 impl DeployCommand {
+    fn install_cloud_backup_key(&self, result: &DeployResult) {
+        if result.target != DeployTarget::Cloud {
+            return;
+        }
+
+        let Some(project_id) = result.project_id else {
+            eprintln!(
+                "  ⚠ Local SSH backup key was not installed: deployment returned no project ID."
+            );
+            return;
+        };
+
+        let server = match fetch_server_for_project(project_id as i32, DeployTarget::Cloud) {
+            Ok(Some(server)) => server,
+            Ok(None) => {
+                eprintln!(
+                    "  ⚠ Local SSH backup key was not installed: server details are not available yet."
+                );
+                return;
+            }
+            Err(err) => {
+                eprintln!(
+                    "  ⚠ Local SSH backup key was not installed: could not fetch server details: {}",
+                    err
+                );
+                return;
+            }
+        };
+
+        if server
+            .srv_ip
+            .as_deref()
+            .is_none_or(|ip| ip.trim().is_empty())
+        {
+            eprintln!(
+                "  ⚠ Local SSH backup key was not installed: server IP is not available yet."
+            );
+            return;
+        }
+
+        let (base_url, creds) = match resolve_saved_stacker_base_url("SSH backup key authorization")
+        {
+            Ok(values) => values,
+            Err(err) => {
+                eprintln!(
+                    "  ⚠ Local SSH backup key was not installed: could not load credentials: {}",
+                    err
+                );
+                return;
+            }
+        };
+
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(err) => {
+                eprintln!(
+                    "  ⚠ Local SSH backup key was not installed: failed to initialize runtime: {}",
+                    err
+                );
+                return;
+            }
+        };
+
+        let client =
+            StackerClient::new_for_target(&base_url, &creds.access_token, DeployTarget::Cloud);
+        match rt.block_on(
+            crate::console::commands::cli::ssh_key::ensure_local_backup_key_authorized(
+                &client, &server,
+            ),
+        ) {
+            Ok(auth) => {
+                eprintln!("  ✓ Local SSH backup key authorized");
+                eprintln!("    Key: {}", auth.private_key_path.display());
+                eprintln!("    Public key: {}", auth.public_key_path.display());
+                eprintln!("    Connect: {}", auth.ssh_command);
+            }
+            Err(err) => {
+                eprintln!(
+                    "  ⚠ App deploy succeeded, but local SSH backup access was not installed."
+                );
+                eprintln!("    Reason: {}", err);
+                eprintln!(
+                    "    Repair: stacker ssh-key inject --server-id {} --with-key <existing-private-key>",
+                    server.id
+                );
+            }
+        }
+    }
+
     /// Save deployment context to `.stacker/deployment.lock` after a successful deploy.
     ///
     /// For cloud deploys, tries to fetch the provisioned server's details from the
@@ -2712,6 +2811,41 @@ mod tests {
     }
 
     // ── Tests ────────────────────────────────────────
+
+    fn deploy_result_for_target(target: DeployTarget, project_id: Option<i64>) -> DeployResult {
+        DeployResult {
+            target,
+            message: "ok".to_string(),
+            server_ip: None,
+            deployment_id: None,
+            project_id,
+            server_name: None,
+        }
+    }
+
+    #[test]
+    fn backup_key_authorization_runs_only_after_real_cloud_deploy_with_project_id() {
+        assert!(should_install_cloud_backup_key(
+            &deploy_result_for_target(DeployTarget::Cloud, Some(42)),
+            false
+        ));
+        assert!(!should_install_cloud_backup_key(
+            &deploy_result_for_target(DeployTarget::Cloud, Some(42)),
+            true
+        ));
+        assert!(!should_install_cloud_backup_key(
+            &deploy_result_for_target(DeployTarget::Local, Some(42)),
+            false
+        ));
+        assert!(!should_install_cloud_backup_key(
+            &deploy_result_for_target(DeployTarget::Server, Some(42)),
+            false
+        ));
+        assert!(!should_install_cloud_backup_key(
+            &deploy_result_for_target(DeployTarget::Cloud, None),
+            false
+        ));
+    }
 
     #[test]
     fn test_deploy_local_dry_run_generates_files() {
