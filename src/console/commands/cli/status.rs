@@ -240,6 +240,20 @@ fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
         .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string())
 }
 
+fn missing_remote_project_reason(
+    project_name: &str,
+    base_url: &str,
+    deploy_target: DeployTarget,
+) -> String {
+    format!(
+        "Project '{}' was not found on Stacker API {}. If this stack exists in another \
+environment, run `stacker whoami` to verify the active Stacker API or re-login with \
+`stacker login --auth-url <user-service-url> --api-url <stacker-api-url>`. If it has \
+not been deployed there yet, run `stacker deploy --target {}`.",
+        project_name, base_url, deploy_target
+    )
+}
+
 fn snapshot_containers(snapshot: &serde_json::Value) -> Vec<serde_json::Value> {
     snapshot
         .get("containers")
@@ -269,6 +283,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
         .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
 
     let project_name = resolve_project_name(&config);
+    let deploy_target = config.deploy.target;
 
     // Load credentials
     let cred_manager = CredentialsManager::with_default_store();
@@ -280,7 +295,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
         .enable_all()
         .build()
         .map_err(|e| CliError::DeployFailed {
-            target: DeployTarget::Cloud,
+            target: deploy_target,
             reason: format!("Failed to initialize async runtime: {}", e),
         })?;
 
@@ -308,7 +323,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                     }
                 }
 
-                eprintln!("Watching deployment status for hash '{}'...\n", deployment_hash);
+                eprintln!(
+                    "Watching deployment status for hash '{}'...\n",
+                    deployment_hash
+                );
                 let poll_interval = std::time::Duration::from_secs(5);
                 let mut last_status = String::new();
                 let mut last_message: Option<String> = None;
@@ -348,7 +366,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
 
                             if is_terminal(&info.status) {
                                 if !json {
-                                    eprintln!("\nDeployment reached terminal status: {}", info.status);
+                                    eprintln!(
+                                        "\nDeployment reached terminal status: {}",
+                                        info.status
+                                    );
                                 }
                                 return Ok(());
                             }
@@ -369,11 +390,8 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
         // Resolve project ID by name
         let project = client.find_project_by_name(&project_name).await?;
         let project = project.ok_or_else(|| CliError::DeployFailed {
-            target: DeployTarget::Cloud,
-            reason: format!(
-                "Project '{}' not found on server. Deploy first with 'stacker deploy --target cloud'.",
-                project_name
-            ),
+            target: deploy_target,
+            reason: missing_remote_project_reason(&project_name, &base_url, deploy_target),
         })?;
 
         // Fetch server info for this project (best-effort)
@@ -381,17 +399,11 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
             .list_servers()
             .await
             .ok()
-            .and_then(|servers| {
-                servers
-                    .into_iter()
-                    .find(|s| s.project_id == project.id)
-            });
+            .and_then(|servers| servers.into_iter().find(|s| s.project_id == project.id));
 
         if !watch {
             // Single query
-            let status = client
-                .get_deployment_status_by_project(project.id)
-                .await?;
+            let status = client.get_deployment_status_by_project(project.id).await?;
             match status {
                 Some(info) => {
                     let live_containers = client
@@ -410,7 +422,10 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                     Ok(())
                 }
                 None => {
-                    eprintln!("No deployments found for project '{}' (id={})", project_name, project.id);
+                    eprintln!(
+                        "No deployments found for project '{}' (id={})",
+                        project_name, project.id
+                    );
                     Ok(())
                 }
             }
@@ -427,9 +442,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
             let mut last_containers = String::new();
 
             loop {
-                let status = client
-                    .get_deployment_status_by_project(project.id)
-                    .await?;
+                let status = client.get_deployment_status_by_project(project.id).await?;
 
                 match status {
                     Some(info) => {
@@ -774,5 +787,32 @@ deploy:
         };
 
         assert_eq!(resolve_stacker_base_url(&creds), "https://api.try.direct");
+    }
+
+    #[test]
+    fn test_missing_remote_project_reason_mentions_active_stacker_api() {
+        let reason = missing_remote_project_reason(
+            "coolify",
+            "https://stacker.try.direct",
+            DeployTarget::Cloud,
+        );
+
+        assert!(reason.contains("Project 'coolify' was not found"));
+        assert!(reason.contains("https://stacker.try.direct"));
+        assert!(reason.contains("stacker whoami"));
+        assert!(reason.contains("stacker login"));
+        assert!(reason.contains("stacker deploy --target cloud"));
+    }
+
+    #[test]
+    fn test_missing_remote_project_reason_uses_server_target_when_requested() {
+        let reason = missing_remote_project_reason(
+            "coolify",
+            "https://dev.try.direct/stacker",
+            DeployTarget::Server,
+        );
+
+        assert!(reason.contains("https://dev.try.direct/stacker"));
+        assert!(reason.contains("stacker deploy --target server"));
     }
 }

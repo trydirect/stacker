@@ -1023,9 +1023,12 @@ enum AgentCommands {
         /// Port to forward to
         #[arg(long)]
         port: u16,
-        /// Enable SSL (default: true)
+        /// Enable SSL/Let's Encrypt certificate issuance
         #[arg(long, default_value_t = true)]
         ssl: bool,
+        /// Disable SSL/Let's Encrypt and create a plain HTTP proxy host
+        #[arg(long = "no-ssl")]
+        no_ssl: bool,
         /// Action: create, update, delete
         #[arg(long, default_value = "create")]
         action: String,
@@ -1747,12 +1750,13 @@ fn get_command(
                     domain,
                     port,
                     ssl,
+                    no_ssl,
                     action,
                     force,
                     json,
                     deployment,
                 } => Box::new(agent::AgentConfigureProxyCommand::new(
-                    app, domain, port, ssl, action, force, json, deployment,
+                    app, domain, port, ssl, no_ssl, action, force, json, deployment,
                 )),
                 AgentCommands::List { command: list_cmd } => match list_cmd {
                     AgentListCommands::Apps { json, deployment } => {

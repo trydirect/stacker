@@ -838,7 +838,7 @@ impl CallableTrait for AgentConfigureFirewallCommand {
 
 // ── Configure Proxy ──────────────────────────────────
 
-/// `stacker agent configure-proxy <app> --domain <d> --port <p> [--force] [--json] [--deployment <hash>]`
+/// `stacker agent configure-proxy <app> --domain <d> --port <p> [--no-ssl] [--force] [--json] [--deployment <hash>]`
 pub struct AgentConfigureProxyCommand {
     pub app_code: String,
     pub domain: String,
@@ -856,11 +856,13 @@ impl AgentConfigureProxyCommand {
         domain: String,
         port: u16,
         ssl: bool,
+        no_ssl: bool,
         action: String,
         force: bool,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
+        let ssl = ssl && !no_ssl;
         Self {
             app_code,
             domain,
@@ -1954,5 +1956,22 @@ mod tests {
         };
 
         assert_eq!(agent_command_error_message(&info), None);
+    }
+
+    #[test]
+    fn configure_proxy_no_ssl_overrides_default_ssl() {
+        let command = AgentConfigureProxyCommand::new(
+            "coolify".to_string(),
+            "coolify.example.com".to_string(),
+            8000,
+            true,
+            true,
+            "create".to_string(),
+            true,
+            false,
+            None,
+        );
+
+        assert!(!command.ssl);
     }
 }

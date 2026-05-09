@@ -968,6 +968,262 @@ fn build_image_env_lookup(
     Ok(env_map)
 }
 
+fn merge_compose_public_ports_into_app_config(
+    config: &mut StackerConfig,
+    compose_path: &Path,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> Result<(), CliError> {
+    let compose_ports = extract_compose_public_port_specs(compose_path, env_lookup)?;
+    if compose_ports.is_empty() {
+        return Ok(());
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut merged = Vec::new();
+
+    for port in &config.app.ports {
+        if seen.insert(port.clone()) {
+            merged.push(port.clone());
+        }
+    }
+
+    for port in compose_ports {
+        if seen.insert(port.clone()) {
+            merged.push(port);
+        }
+    }
+
+    config.app.ports = merged;
+    Ok(())
+}
+
+fn extract_compose_public_port_specs(
+    compose_path: &Path,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<String>, CliError> {
+    let raw = std::fs::read_to_string(compose_path).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to read compose file {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to parse compose file {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    let services = doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping);
+
+    let Some(services) = services else {
+        return Ok(Vec::new());
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut ports = Vec::new();
+
+    for service_value in services.values() {
+        let Some(service_map) = service_value.as_mapping() else {
+            continue;
+        };
+        let Some(port_values) = service_map
+            .get(serde_yaml::Value::String("ports".to_string()))
+            .and_then(serde_yaml::Value::as_sequence)
+        else {
+            continue;
+        };
+
+        for port_value in port_values {
+            if let Some(spec) = compose_public_port_spec(port_value, env_lookup) {
+                if seen.insert(spec.clone()) {
+                    ports.push(spec);
+                }
+            }
+        }
+    }
+
+    Ok(ports)
+}
+
+fn compose_public_port_spec(
+    port_value: &serde_yaml::Value,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    match port_value {
+        serde_yaml::Value::String(spec) => short_compose_public_port_spec(spec, env_lookup),
+        serde_yaml::Value::Mapping(mapping) => long_compose_public_port_spec(mapping, env_lookup),
+        _ => None,
+    }
+}
+
+fn long_compose_public_port_spec(
+    mapping: &serde_yaml::Mapping,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let host_ip = yaml_scalar_as_string(mapping, "host_ip")
+        .map(|value| resolve_compose_port_env(&value, env_lookup));
+    if host_ip
+        .as_deref()
+        .is_some_and(|value| !is_public_compose_host_ip(value))
+    {
+        return None;
+    }
+
+    let protocol = yaml_scalar_as_string(mapping, "protocol")
+        .unwrap_or_else(|| "tcp".to_string())
+        .to_ascii_lowercase();
+    if protocol != "tcp" {
+        return None;
+    }
+
+    let published = yaml_scalar_as_string(mapping, "published")
+        .map(|value| resolve_compose_port_env(&value, env_lookup))?;
+    let target = yaml_scalar_as_string(mapping, "target")
+        .map(|value| resolve_compose_port_env(&value, env_lookup))?;
+
+    format_compose_public_port_spec(&published, &target)
+}
+
+fn short_compose_public_port_spec(
+    spec: &str,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let resolved = resolve_compose_port_env(spec.trim(), env_lookup);
+    let without_protocol = match resolved.rsplit_once('/') {
+        Some((port_spec, protocol)) if protocol.eq_ignore_ascii_case("tcp") => port_spec,
+        Some(_) => return None,
+        None => resolved.as_str(),
+    };
+
+    let (host_ip, host_port, container_port) = split_short_compose_port_spec(without_protocol)?;
+    if host_ip.is_some_and(|value| !is_public_compose_host_ip(&value)) {
+        return None;
+    }
+
+    format_compose_public_port_spec(&host_port, &container_port)
+}
+
+fn split_short_compose_port_spec(spec: &str) -> Option<(Option<String>, String, String)> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let parts = split_compose_port_parts(trimmed);
+    match parts.len() {
+        0 | 1 => None,
+        2 => Some((None, parts[0].clone(), parts[1].clone())),
+        _ => {
+            let host_ip = parts[..parts.len() - 2].join(":");
+            Some((
+                Some(host_ip),
+                parts[parts.len() - 2].clone(),
+                parts[parts.len() - 1].clone(),
+            ))
+        }
+    }
+}
+
+fn split_compose_port_parts(spec: &str) -> Vec<String> {
+    let trimmed = spec.trim();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        if let Some(closing) = rest.find(']') {
+            let host_ip = &rest[..closing];
+            let after_bracket = rest[closing + 1..].trim_start_matches(':');
+            let mut parts = vec![host_ip.to_string()];
+            parts.extend(after_bracket.split(':').map(ToOwned::to_owned));
+            return parts;
+        }
+    }
+
+    trimmed.split(':').map(ToOwned::to_owned).collect()
+}
+
+fn yaml_scalar_as_string(mapping: &serde_yaml::Mapping, key: &str) -> Option<String> {
+    mapping
+        .get(serde_yaml::Value::String(key.to_string()))
+        .and_then(|value| match value {
+            serde_yaml::Value::String(value) => Some(value.clone()),
+            serde_yaml::Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
+fn format_compose_public_port_spec(host_port: &str, container_port: &str) -> Option<String> {
+    let host_port = host_port.trim();
+    let container_port = container_port.trim();
+
+    if !is_valid_tcp_port(host_port) || !is_valid_tcp_port(container_port) {
+        return None;
+    }
+
+    Some(format!("{}:{}", host_port, container_port))
+}
+
+fn is_valid_tcp_port(value: &str) -> bool {
+    value
+        .parse::<u16>()
+        .is_ok_and(|port| (1..=65535).contains(&port))
+}
+
+fn is_public_compose_host_ip(value: &str) -> bool {
+    let normalized = value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+
+    matches!(normalized, "" | "0.0.0.0" | "::" | "*")
+}
+
+fn resolve_compose_port_env(
+    value: &str,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(start) = rest.find("${") {
+        result.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find('}') else {
+            result.push_str(&rest[start..]);
+            return result;
+        };
+
+        let expression = &after_start[..end];
+        result.push_str(&resolve_compose_port_env_expression(expression, env_lookup));
+        rest = &after_start[end + 1..];
+    }
+
+    result.push_str(rest);
+    result
+}
+
+fn resolve_compose_port_env_expression(
+    expression: &str,
+    env_lookup: &std::collections::BTreeMap<String, String>,
+) -> String {
+    for separator in [":-", "-"] {
+        if let Some((name, fallback)) = expression.split_once(separator) {
+            return env_lookup
+                .get(name)
+                .filter(|value| !value.is_empty() || separator == "-")
+                .cloned()
+                .unwrap_or_else(|| fallback.to_string());
+        }
+    }
+
+    env_lookup.get(expression).cloned().unwrap_or_default()
+}
+
 fn resolve_compose_image_reference(
     value: &str,
     vars: &std::collections::BTreeMap<String, String>,
@@ -1919,8 +2175,9 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     normalize_generated_compose_paths(&compose_path)?;
     validate_compose_for_deploy(&compose_path)?;
+    let image_env = build_image_env_lookup(project_dir, &config)?;
+    merge_compose_public_ports_into_app_config(&mut config, &compose_path, &image_env)?;
     if !dry_run {
-        let image_env = build_image_env_lookup(project_dir, &config)?;
         validate_compose_images_for_deploy(
             &compose_path,
             config.deploy.registry.as_ref(),
@@ -3559,6 +3816,210 @@ include:
         let message = err.to_string();
         assert!(message.contains("docker.io/optimum/syncopia-website:latest"));
         assert!(message.contains("service 'website'"));
+    }
+
+    #[test]
+    fn test_extract_compose_public_port_specs_resolves_env_defaults() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  coolify:
+    image: coollabsio/coolify:latest
+    ports:
+      - "${APP_PORT:-8000}:8080"
+      - "127.0.0.1:5432:5432"
+      - "53:53/udp"
+  soketi:
+    image: coollabsio/coolify-realtime:1.0.13
+    ports:
+      - "${SOKETI_PORT:-6001}:6001"
+      - "6002:6002"
+  api:
+    image: example/api:latest
+    ports:
+      - target: 9000
+        published: "${API_PORT:-19000}"
+        protocol: tcp
+"#,
+        )
+        .unwrap();
+
+        let env = std::collections::BTreeMap::new();
+        let ports = extract_compose_public_port_specs(&compose_path, &env).unwrap();
+
+        assert_eq!(
+            ports,
+            vec!["8000:8080", "6001:6001", "6002:6002", "19000:9000"]
+        );
+    }
+
+    #[test]
+    fn test_merge_compose_public_ports_into_app_config_prevents_default_custom_port() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  coolify:
+    image: coollabsio/coolify:latest
+    ports:
+      - "${APP_PORT:-8000}:8080"
+"#,
+        )
+        .unwrap();
+        let mut config = StackerConfig::from_str(
+            "name: coolify\napp:\n  type: custom\n  image: coollabsio/coolify:latest\n",
+        )
+        .unwrap();
+        let env = std::collections::BTreeMap::new();
+
+        merge_compose_public_ports_into_app_config(&mut config, &compose_path, &env).unwrap();
+
+        assert_eq!(config.app.ports, vec!["8000:8080"]);
+    }
+
+    #[test]
+    fn test_compose_public_ports_flow_into_project_body_shared_ports() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  coolify:
+    image: coollabsio/coolify:latest
+    ports:
+      - "${APP_PORT:-8000}:8080"
+"#,
+        )
+        .unwrap();
+        let mut config = StackerConfig::from_str(
+            "name: coolify\napp:\n  type: custom\n  image: coollabsio/coolify:latest\n",
+        )
+        .unwrap();
+        let env = std::collections::BTreeMap::new();
+
+        merge_compose_public_ports_into_app_config(&mut config, &compose_path, &env).unwrap();
+        let project_body = crate::cli::stacker_client::build_project_body(&config);
+
+        assert_eq!(
+            project_body["custom"]["web"][0]["shared_ports"],
+            serde_json::json!([{"host_port": "8000", "container_port": "8080"}])
+        );
+    }
+
+    #[test]
+    fn test_coolify_project_compose_ports_define_cloud_firewall_ports() {
+        let dir = TempDir::new().unwrap();
+        let compose_dir = dir.path().join("docker/production");
+        std::fs::create_dir_all(&compose_dir).unwrap();
+        let compose_path = compose_dir.join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  coolify:
+    image: "${REGISTRY_URL:-ghcr.io}/coollabsio/coolify:${LATEST_IMAGE:-latest}"
+    container_name: coolify
+    ports:
+      - "${APP_PORT:-8000}:8080"
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      soketi:
+        condition: service_healthy
+  postgres:
+    image: postgres:15-alpine
+    container_name: coolify-db
+  redis:
+    image: redis:7-alpine
+    container_name: coolify-redis
+  soketi:
+    image: "${REGISTRY_URL:-ghcr.io}/coollabsio/coolify-realtime:1.0.13"
+    container_name: coolify-realtime
+    ports:
+      - "${SOKETI_PORT:-6001}:6001"
+      - "6002:6002"
+"#,
+        )
+        .unwrap();
+
+        let mut config = StackerConfig::from_str(
+            r#"
+name: coolify
+project:
+  identity: coolify
+app:
+  type: custom
+  image: "coollabsio/coolify:latest"
+proxy:
+  type: nginx-proxy-manager
+  auto_detect: false
+deploy:
+  target: cloud
+  cloud:
+    provider: hetzner
+    region: fsn1
+    size: cpx22
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+monitoring:
+  status_panel: true
+"#,
+        )
+        .unwrap()
+        .with_resolved_deploy_target(None)
+        .unwrap();
+
+        let (_, environment_config) = config
+            .resolve_environment_config(Some("production"))
+            .unwrap()
+            .unwrap();
+        if let Some(compose_file) = environment_config.compose_file {
+            config.deploy.compose_file = Some(compose_file);
+        }
+
+        let env = build_image_env_lookup(dir.path(), &config).unwrap();
+        merge_compose_public_ports_into_app_config(&mut config, &compose_path, &env).unwrap();
+        let project_body = crate::cli::stacker_client::build_project_body(&config);
+        let shared_ports = project_body["custom"]["web"][0]["shared_ports"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            shared_ports,
+            &vec![
+                serde_json::json!({"host_port": "8000", "container_port": "8080"}),
+                serde_json::json!({"host_port": "6001", "container_port": "6001"}),
+                serde_json::json!({"host_port": "6002", "container_port": "6002"}),
+            ]
+        );
+        assert!(shared_ports
+            .iter()
+            .all(|port| port["host_port"].as_str() != Some("8080")));
+        assert!(project_body["custom"]["feature"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        let deploy_form = crate::cli::stacker_client::build_deploy_form(&config);
+        assert!(deploy_form["stack"]["extended_features"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("nginx_proxy_manager")));
+        assert!(deploy_form["stack"]["integrated_features"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("statuspanel")));
     }
 
     #[test]

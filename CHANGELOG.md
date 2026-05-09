@@ -39,6 +39,19 @@ All notable changes to this project will be documented in this file.
   `project-nginx_proxy_manager-*` while still showing the managed
   `nginx-proxy-manager` container.
 
+### Fixed — Compose public ports in cloud firewall
+
+- Cloud/server deploy now reads published ports from the resolved Compose file
+  and passes them into project metadata before invoking the installer, so
+  provider firewalls receive app ports such as Coolify's `8000:8080` instead of
+  the generic custom-app fallback `8080`.
+
+### Changed — Agent proxy SSL control
+
+- `stacker agent configure-proxy` now supports `--no-ssl` to create or update a
+  plain HTTP Nginx Proxy Manager host without requesting a Let's Encrypt
+  certificate.
+
 ### Changed — Server bootstrap SSH key handling
 
 - `stacker deploy --target server` now treats a user-provided `deploy.server.ssh_key` as a
