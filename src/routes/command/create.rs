@@ -8,7 +8,7 @@ use crate::project_app::{
     is_platform_managed_app_code, normalize_app_code, store_configs_to_vault_from_params,
     upsert_app_config_for_deploy,
 };
-use crate::services::VaultService;
+use crate::services::{ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -253,6 +253,8 @@ pub async fn create_handler(
             &req.deployment_hash,
             validated_parameters,
             &settings.vault,
+            pg_pool.get_ref(),
+            deployment_id,
         )
         .await;
 
@@ -361,6 +363,8 @@ async fn enrich_deploy_app_with_compose(
     deployment_hash: &str,
     params: Option<serde_json::Value>,
     vault_settings: &crate::configuration::VaultSettings,
+    pg_pool: &PgPool,
+    project_id: Option<i32>,
 ) -> Option<serde_json::Value> {
     let mut params = params.unwrap_or_else(|| json!({}));
 
@@ -396,25 +400,48 @@ async fn enrich_deploy_app_with_compose(
             "Looking up compose content in Vault"
         );
 
-        // Fetch compose config - stored under app_code key (e.g., "telegraf")
-        match vault.fetch_app_config(deployment_hash, &app_code).await {
-            Ok(compose_config) => {
-                tracing::info!(
-                    deployment_hash = %deployment_hash,
-                    app_code = %app_code,
-                    "Enriched deploy_app command with compose_content from Vault"
-                );
-                if let Some(obj) = params.as_object_mut() {
-                    obj.insert("compose_content".to_string(), json!(compose_config.content));
-                }
+        if let Some(rendered_compose) =
+            render_project_compose_for_deploy_app(pg_pool, project_id, deployment_hash, &app_code)
+                .await
+        {
+            tracing::info!(
+                deployment_hash = %deployment_hash,
+                app_code = %app_code,
+                "Enriched deploy_app command with freshly rendered project compose"
+            );
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("compose_content".to_string(), json!(rendered_compose));
             }
-            Err(e) => {
-                tracing::warn!(
-                    deployment_hash = %deployment_hash,
-                    app_code = %app_code,
-                    error = %e,
-                    "Failed to fetch compose from Vault, deploy_app may fail if compose not on disk"
-                );
+        } else if let Ok(compose_config) = vault.fetch_app_config(deployment_hash, &app_code).await
+        {
+            tracing::info!(
+                deployment_hash = %deployment_hash,
+                app_code = %app_code,
+                "Enriched deploy_app command with app compose_content from Vault"
+            );
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("compose_content".to_string(), json!(compose_config.content));
+            }
+        } else {
+            // Fallback to the deployment-level compose generated during full sync.
+            match vault.fetch_app_config(deployment_hash, "_compose").await {
+                Ok(compose_config) => {
+                    tracing::info!(
+                        deployment_hash = %deployment_hash,
+                        "Enriched deploy_app command with deployment compose_content from Vault"
+                    );
+                    if let Some(obj) = params.as_object_mut() {
+                        obj.insert("compose_content".to_string(), json!(compose_config.content));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        deployment_hash = %deployment_hash,
+                        app_code = %app_code,
+                        error = %e,
+                        "Failed to fetch compose from Vault, deploy_app may fail if compose not on disk"
+                    );
+                }
             }
         }
     } else {
@@ -549,6 +576,89 @@ async fn enrich_deploy_app_with_compose(
     }
 
     Some(params)
+}
+
+async fn render_project_compose_for_deploy_app(
+    pg_pool: &PgPool,
+    project_id: Option<i32>,
+    deployment_hash: &str,
+    app_code: &str,
+) -> Option<String> {
+    let project_id = project_id?;
+    let project = match db::project::fetch(pg_pool, project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                "Cannot render deploy_app compose because project was not found"
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app compose because project fetch failed"
+            );
+            return None;
+        }
+    };
+
+    let service = match ProjectAppService::new(Arc::new(pg_pool.clone())) {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app compose because ProjectAppService init failed"
+            );
+            return None;
+        }
+    };
+
+    let apps = match service.list_by_project(project_id).await {
+        Ok(apps) => apps,
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app compose because project apps could not be loaded"
+            );
+            return None;
+        }
+    };
+
+    if !apps
+        .iter()
+        .any(|app| app.code == app_code && app.is_enabled())
+    {
+        tracing::warn!(
+            project_id,
+            app_code,
+            "Cannot render deploy_app compose because enabled app was not found"
+        );
+        return None;
+    }
+
+    match service
+        .preview_bundle(&project, &apps, deployment_hash)
+        .await
+    {
+        Ok(bundle) => Some(bundle.compose_content),
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app compose preview"
+            );
+            None
+        }
+    }
 }
 
 /// Discover child services from a multi-service compose file and register them as project_apps.
