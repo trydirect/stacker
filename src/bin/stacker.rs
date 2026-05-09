@@ -305,6 +305,11 @@ Use explicit --scope service or --scope server to activate remote mode.",
         #[command(subcommand)]
         command: PipeCommands,
     },
+    /// Cloud provider operations
+    Cloud {
+        #[command(subcommand)]
+        command: CloudCommands,
+    },
     /// Status Panel agent control (health, logs, restart, deploy)
     Agent {
         #[command(subcommand)]
@@ -319,6 +324,64 @@ Use explicit --scope service or --scope server to activate remote mode.",
     Target {
         /// Target to switch to: local, cloud, or server. Omit to show current.
         target: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CloudCommands {
+    /// Configure cloud provider firewall rules without SSH
+    Firewall {
+        #[command(subcommand)]
+        command: CloudFirewallCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CloudFirewallCommands {
+    /// Add cloud firewall rules
+    Add {
+        /// Server ID to configure
+        #[arg(long)]
+        server_id: Option<i32>,
+        /// Public ports (open to all), comma-separated: "80/tcp,443/tcp,53/udp"
+        #[arg(long, value_delimiter = ',')]
+        public_ports: Vec<String>,
+        /// Private ports, comma-separated: "5432/tcp:10.0.0.0/8"
+        #[arg(long, value_delimiter = ',')]
+        private_ports: Vec<String>,
+        /// Validate and enqueue without applying provider changes
+        #[arg(long)]
+        dry_run: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove cloud firewall rules
+    Remove {
+        /// Server ID to configure
+        #[arg(long)]
+        server_id: Option<i32>,
+        /// Public ports (open to all), comma-separated: "80/tcp,443/tcp,53/udp"
+        #[arg(long, value_delimiter = ',')]
+        public_ports: Vec<String>,
+        /// Private ports, comma-separated: "5432/tcp:10.0.0.0/8"
+        #[arg(long, value_delimiter = ',')]
+        private_ports: Vec<String>,
+        /// Validate and enqueue without applying provider changes
+        #[arg(long)]
+        dry_run: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List cloud firewall rules
+    List {
+        /// Server ID to inspect
+        #[arg(long)]
+        server_id: Option<i32>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1790,6 +1853,52 @@ fn get_command(
                 }
             }
         }
+        StackerCommands::Cloud { command } => match command {
+            CloudCommands::Firewall { command } => match command {
+                CloudFirewallCommands::Add {
+                    server_id,
+                    public_ports,
+                    private_ports,
+                    dry_run,
+                    json,
+                } => Box::new(
+                    stacker::console::commands::cli::cloud_firewall::CloudFirewallCommand::new(
+                        stacker::forms::CloudFirewallAction::Add,
+                        server_id,
+                        public_ports,
+                        private_ports,
+                        dry_run,
+                        json,
+                    ),
+                ),
+                CloudFirewallCommands::Remove {
+                    server_id,
+                    public_ports,
+                    private_ports,
+                    dry_run,
+                    json,
+                } => Box::new(
+                    stacker::console::commands::cli::cloud_firewall::CloudFirewallCommand::new(
+                        stacker::forms::CloudFirewallAction::Remove,
+                        server_id,
+                        public_ports,
+                        private_ports,
+                        dry_run,
+                        json,
+                    ),
+                ),
+                CloudFirewallCommands::List { server_id, json } => Box::new(
+                    stacker::console::commands::cli::cloud_firewall::CloudFirewallCommand::new(
+                        stacker::forms::CloudFirewallAction::List,
+                        server_id,
+                        vec![],
+                        vec![],
+                        false,
+                        json,
+                    ),
+                ),
+            },
+        },
         StackerCommands::Submit {
             file,
             version,

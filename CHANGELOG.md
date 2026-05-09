@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Cloud provider firewall operations
+
+- Added `stacker cloud firewall add|remove|list` for cloud-provider firewall
+  changes that do not require SSH access to the server.
+- Added universal Stacker-to-Install-Service protocol
+  `stacker.cloud_firewall.v1` with shared firewall rule parsing reused from the
+  existing agent firewall flow.
+- Added `POST /server/{id}/cloud-firewall` and Install Service MQ routing
+  `install.firewall.{provider}.v1`; Hetzner (`htz`) is the first supported
+  provider.
+- Casbin/sqlx migration `20260717120016_casbin_cloud_firewall` grants
+  `root`, `group_admin`, and `group_user` access to modify cloud firewalls.
+
 ### Added — Cloud deploy local SSH backup access
 
 - `stacker deploy --target cloud` now creates or reuses a local Ed25519 backup

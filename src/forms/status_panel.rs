@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub use crate::forms::firewall::FirewallPortRule;
+
 fn default_include_metrics() -> bool {
     true
 }
@@ -169,14 +171,6 @@ fn default_firewall_action() -> String {
     "add".to_string()
 }
 
-fn default_firewall_protocol() -> String {
-    "tcp".to_string()
-}
-
-fn default_firewall_source() -> String {
-    "0.0.0.0/0".to_string()
-}
-
 /// Request to configure iptables firewall rules on the target server
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ConfigureFirewallCommandRequest {
@@ -199,21 +193,6 @@ pub struct ConfigureFirewallCommandRequest {
 
 fn default_persist_rules() -> bool {
     true
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct FirewallPortRule {
-    /// Port number (e.g., 80, 443, 5432)
-    pub port: u16,
-    /// Protocol: "tcp" or "udp"
-    #[serde(default = "default_firewall_protocol")]
-    pub protocol: String,
-    /// Source IP/CIDR (e.g., "0.0.0.0/0" for any, "10.0.0.0/8" for internal)
-    #[serde(default = "default_firewall_source")]
-    pub source: String,
-    /// Optional description/comment for the rule
-    #[serde(default)]
-    pub comment: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

@@ -1448,6 +1448,48 @@ impl StackerClient {
         })
     }
 
+    pub async fn configure_cloud_firewall(
+        &self,
+        server_id: i32,
+        request: &crate::forms::ConfigureCloudFirewallRequest,
+    ) -> Result<crate::forms::ConfigureCloudFirewallResponse, CliError> {
+        let url = format!("{}/server/{}/cloud-firewall", self.base_url, server_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target,
+                reason: format!(
+                    "Failed to configure cloud firewall for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<crate::forms::ConfigureCloudFirewallResponse> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target,
+            reason: "Cloud firewall operation returned no item".to_string(),
+        })
+    }
+
     /// Upload an existing SSH key pair to Vault for a server.
     pub async fn upload_ssh_key(
         &self,

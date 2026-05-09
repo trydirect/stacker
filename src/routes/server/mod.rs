@@ -1,4 +1,5 @@
 pub mod add;
+pub(crate) mod cloud_firewall;
 pub(crate) mod delete;
 pub(crate) mod get;
 pub(crate) mod secret;

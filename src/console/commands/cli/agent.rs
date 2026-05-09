@@ -746,49 +746,12 @@ impl AgentConfigureFirewallCommand {
         }
     }
 
-    /// Parse "80/tcp" or "443" into a FirewallPortRule (source defaults to 0.0.0.0/0).
     fn parse_public_port(s: &str) -> Result<crate::forms::status_panel::FirewallPortRule, String> {
-        let (port, protocol) = Self::parse_port_proto(s)?;
-        Ok(crate::forms::status_panel::FirewallPortRule {
-            port,
-            protocol,
-            source: "0.0.0.0/0".to_string(),
-            comment: None,
-        })
+        crate::forms::firewall::parse_public_port(s)
     }
 
-    /// Parse "5432/tcp:10.0.0.0/8" or "5432:10.0.0.0/8" into a FirewallPortRule.
     fn parse_private_port(s: &str) -> Result<crate::forms::status_panel::FirewallPortRule, String> {
-        // Split on first ':' that separates port/proto from source
-        // Format: port[/proto]:source
-        let parts: Vec<&str> = s.splitn(2, ':').collect();
-        if parts.len() != 2 || parts[1].is_empty() {
-            return Err(format!(
-                "Invalid private port '{}'. Expected format: port[/proto]:source (e.g. 5432/tcp:10.0.0.0/8)",
-                s
-            ));
-        }
-        let (port, protocol) = Self::parse_port_proto(parts[0])?;
-        Ok(crate::forms::status_panel::FirewallPortRule {
-            port,
-            protocol,
-            source: parts[1].to_string(),
-            comment: None,
-        })
-    }
-
-    fn parse_port_proto(s: &str) -> Result<(u16, String), String> {
-        if let Some((port_s, proto)) = s.split_once('/') {
-            let port: u16 = port_s
-                .parse()
-                .map_err(|_| format!("Invalid port number: {}", port_s))?;
-            Ok((port, proto.to_string()))
-        } else {
-            let port: u16 = s
-                .parse()
-                .map_err(|_| format!("Invalid port number: {}", s))?;
-            Ok((port, "tcp".to_string()))
-        }
+        crate::forms::firewall::parse_private_port(s)
     }
 }
 

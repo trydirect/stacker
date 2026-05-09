@@ -33,7 +33,7 @@
   - [SSH Key Management](#stacker-ssh-key--ssh-key-management)
   - [Service Template Catalog](#stacker-service--service-template-catalog)
   - [Agent Control](#stacker-agent--agent-control)
-  - [Firewall Management](#firewall-management--iptables)
+  - [Firewall Management](#firewall-management)
 - [Recipes](#recipes)
 - [FAQ](#faq)
 
@@ -1217,7 +1217,40 @@ stacker ai --write
 > add elasticsearch and kibana for logging
 ```
 
-### Firewall Management (iptables)
+### Firewall Management
+
+Stacker has two firewall surfaces:
+
+| Command | Scope | Requires SSH/agent |
+|---------|-------|--------------------|
+| `stacker cloud firewall` | Cloud-provider firewall such as Hetzner Cloud Firewall | No SSH required |
+| `stacker agent configure-firewall` | Guest OS firewall rules on the deployed server | Requires Status Panel agent |
+
+#### Cloud provider firewall
+
+Use `stacker cloud firewall` when a provider firewall blocks a public app port
+after deployment. For example, Coolify publishes port `8000`, so this opens the
+Hetzner Cloud Firewall without SSH-ing to the server:
+
+```bash
+stacker cloud firewall add --public-ports 8000/tcp
+stacker cloud firewall add --server-id 42 --public-ports 8000/tcp
+stacker cloud firewall remove --server-id 42 --public-ports 8000/tcp
+stacker cloud firewall list --server-id 42
+```
+
+The CLI sends a provider-neutral `stacker.cloud_firewall.v1` message to Stacker
+API. Stacker validates server/cloud ownership, hydrates cloud credentials
+server-side, then publishes `install.firewall.{provider}.v1` to Install Service.
+The CLI never receives cloud provider tokens.
+
+Existing protocol note: the Status Panel agent schema already defines a
+`FirewallPortRule` shape (`port`, `protocol`, `source`, `comment`) and cloud
+deploy already sends `client_public_ports`/`ports_list` for initial provisioning.
+Those are reused where appropriate, but `stacker.cloud_firewall.v1` is the
+canonical post-deploy provider firewall protocol.
+
+#### Guest OS firewall (iptables)
 
 Stacker provides MCP tools for configuring iptables firewall rules on target servers. Rules can be derived from Ansible role port definitions or specified manually.
 

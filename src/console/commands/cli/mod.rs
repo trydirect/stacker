@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod ai;
 pub mod ci;
+pub mod cloud_firewall;
 pub mod config;
 pub mod connect;
 pub mod deploy;

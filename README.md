@@ -147,6 +147,9 @@ The end-user tool. No server required for local deploys.
 | `stacker ai ask "question"` | Ask the AI about your stack |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
+| `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH, for example `--public-ports 8000/tcp` on Hetzner |
+| `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
+| `stacker cloud firewall list` | List cloud-provider firewall rules for a server |
 | `stacker ssh-key generate` | Generate a new SSH key pair for a server (Vault-backed) |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
@@ -160,6 +163,7 @@ The end-user tool. No server required for local deploys.
 | `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime |
 | `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved on the agent from Vault) |
+| `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent; use `stacker cloud firewall` for provider firewalls |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
 | `stacker pipe scan` | Discover local endpoints/resources from running containers (when target is `local`) |
