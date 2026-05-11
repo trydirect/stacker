@@ -59,10 +59,8 @@ pub async fn configure(
         JsonResponse::<ConfigureCloudFirewallResponse>::build()
             .bad_request(format!("Unsupported cloud provider: {}", cloud.provider))
     })?;
-    if provider == "htz" && cloud.cloud_token.as_deref().unwrap_or("").is_empty() {
-        return Err(JsonResponse::<ConfigureCloudFirewallResponse>::build()
-            .bad_request("Hetzner cloud firewall operations require a cloud token"));
-    }
+    let credentials = prepare_cloud_firewall_credentials(provider, cloud)
+        .map_err(|err| JsonResponse::<ConfigureCloudFirewallResponse>::build().bad_request(err))?;
 
     let server_public_ip = server
         .srv_ip
@@ -116,12 +114,7 @@ pub async fn configure(
         dry_run: form.dry_run,
         target,
         rules,
-        credentials: CloudFirewallCredentials {
-            provider: provider.to_string(),
-            token: cloud.cloud_token,
-            key: cloud.cloud_key,
-            secret: cloud.cloud_secret,
-        },
+        credentials,
         provider_context,
         requested_by: CloudFirewallRequestedBy {
             user_id: user.id.clone(),
@@ -143,4 +136,98 @@ pub async fn configure(
             ..response
         })
         .ok("Cloud firewall operation accepted"))
+}
+
+fn prepare_cloud_firewall_credentials(
+    provider: &str,
+    cloud: models::Cloud,
+) -> Result<CloudFirewallCredentials, String> {
+    let cloud = if cloud.save_token == Some(true) {
+        crate::forms::CloudForm::decode_model(cloud, true)
+    } else {
+        cloud
+    };
+    let token = non_empty_secret(cloud.cloud_token);
+    let key = non_empty_secret(cloud.cloud_key);
+    let secret = non_empty_secret(cloud.cloud_secret);
+
+    if provider == "htz" && token.is_none() {
+        return Err(
+            "Hetzner cloud firewall operations require a valid cloud token. Please delete and re-add your Hetzner cloud credentials."
+                .to_string(),
+        );
+    }
+
+    Ok(CloudFirewallCredentials {
+        provider: provider.to_string(),
+        token,
+        key,
+        secret,
+    })
+}
+
+fn non_empty_secret(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::forms::CloudForm;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    const TEST_SECURITY_KEY: &str = "01234567890123456789012345678901";
+
+    fn encrypted_cloud(token: &str) -> models::Cloud {
+        let form = CloudForm {
+            user_id: Some("user-1".to_string()),
+            project_id: None,
+            name: Some("prod-hetzner".to_string()),
+            provider: "htz".to_string(),
+            cloud_token: Some(token.to_string()),
+            cloud_key: None,
+            cloud_secret: None,
+            save_token: Some(true),
+        };
+
+        (&form).into()
+    }
+
+    fn plaintext_cloud(token: &str) -> models::Cloud {
+        models::Cloud::new(
+            "user-1".to_string(),
+            "prod-hetzner".to_string(),
+            "htz".to_string(),
+            Some(token.to_string()),
+            None,
+            None,
+            Some(false),
+        )
+    }
+
+    #[test]
+    fn prepare_cloud_firewall_credentials_decodes_saved_token() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("SECURITY_KEY", TEST_SECURITY_KEY);
+        let cloud = encrypted_cloud("live-hcloud-token");
+        let encrypted_token = cloud.cloud_token.clone();
+
+        let credentials = prepare_cloud_firewall_credentials("htz", cloud).unwrap();
+
+        assert_eq!(credentials.token.as_deref(), Some("live-hcloud-token"));
+        assert_ne!(credentials.token, encrypted_token);
+        std::env::remove_var("SECURITY_KEY");
+    }
+
+    #[test]
+    fn prepare_cloud_firewall_credentials_accepts_plaintext_token() {
+        let cloud = plaintext_cloud("plain-hcloud-token");
+
+        let credentials = prepare_cloud_firewall_credentials("htz", cloud).unwrap();
+
+        assert_eq!(credentials.token.as_deref(), Some("plain-hcloud-token"));
+    }
 }
