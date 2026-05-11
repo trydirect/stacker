@@ -470,6 +470,7 @@ stacker init --with-ai  # no Ollama running → template fallback
 #### REST API Routes (`/project/{id}/apps/*`)
 - `GET /project/{id}/apps` - List all apps for a project
 - `GET /project/{id}/apps/{code}` - Get single app details
+- `DELETE /project/{id}/apps/{code}` - Delete a saved app from a project
 - `GET /project/{id}/apps/{code}/config` - Get full app configuration
 - `GET /project/{id}/apps/{code}/env` - Get environment variables (sensitive values redacted)
 - `PUT /project/{id}/apps/{code}/env` - Update environment variables
