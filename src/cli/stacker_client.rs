@@ -3033,6 +3033,7 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
     // app format.  The main `app` section is the primary web application;
     // additional `services` are supporting containers.
     let mut web_apps: Vec<serde_json::Value> = Vec::new();
+    let mut service_apps: Vec<serde_json::Value> = Vec::new();
 
     // Include the main app (if it has an image)
     if let Some(main_app) = app_source_to_app_json(config, &network_ids) {
@@ -3045,13 +3046,14 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
             | crate::cli::config_parser::ProxyType::NginxProxyManager
     );
 
-    // Include additional services. Managed proxy services are installed via
-    // extended_features, not as project apps, to avoid duplicate NPM containers.
+    // Include additional services as service targets. Managed proxy services
+    // are installed via extended_features, not as project apps, to avoid
+    // duplicate NPM containers.
     for svc in &config.services {
         if proxy_is_managed && is_nginx_proxy_manager_service(svc) {
             continue;
         }
-        web_apps.push(service_to_app_json(svc, &network_ids));
+        service_apps.push(service_to_app_json(svc, &network_ids));
     }
 
     serde_json::json!({
@@ -3060,7 +3062,7 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
             "project_name": config.name.clone(),
             "web": web_apps,
             "feature": [],
-            "service": [],
+            "service": service_apps,
             "networks": [{
                 "id": network_id,
                 "name": "default_network",
@@ -3748,12 +3750,48 @@ mod tests {
             .unwrap();
 
         let body = build_project_body(&config);
-        let web = body["custom"]["web"].as_array().unwrap();
-        let codes = web
+        let service = body["custom"]["service"].as_array().unwrap();
+        let codes = service
             .iter()
             .filter_map(|app| app["code"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(codes, vec!["redis"]);
+    }
+
+    #[test]
+    fn test_scn_001_stacker_yml_service_serializes_as_service_target() {
+        let upload_service = ServiceDefinition {
+            name: "upload".to_string(),
+            image: "ghcr.io/example/upload:1.0".to_string(),
+            ports: vec!["8081:8080".to_string()],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("Device API")
+            .project_identity("device-api")
+            .app_image("ghcr.io/example/device-api:1.0")
+            .add_service(upload_service)
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let web_codes = body["custom"]["web"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+        let service_codes = body["custom"]["service"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(web_codes, vec!["device-api"]);
+        assert_eq!(service_codes, vec!["upload"]);
     }
 
     #[test]

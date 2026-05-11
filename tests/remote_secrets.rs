@@ -427,6 +427,90 @@ async fn test_render_bundle_merges_service_secrets_and_overrides_plain_env() {
 }
 
 #[tokio::test]
+async fn test_scn_003_service_secret_injects_only_into_registered_service_target() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let mut project = db::project::fetch(&app.db_pool, project_id)
+        .await
+        .expect("project fetch failed")
+        .expect("project missing");
+    project.request_json = json!({
+        "report": {
+            "deployment_hash": "deploy-hash-upload"
+        }
+    });
+
+    let device_api = create_test_project_app(&app.db_pool, project_id, "device-api").await;
+    let mut upload = create_test_project_app(&app.db_pool, project_id, "upload").await;
+    upload.environment = Some(json!({
+        "S3_BUCKET": "plain-value"
+    }));
+    let upload = db::project_app::update(&app.db_pool, &upload)
+        .await
+        .expect("upload app update failed");
+
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_BUCKET",
+        common::USER_A_ID,
+        project_id,
+        upload.code
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &upload.code,
+        "S3_BUCKET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    Mock::given(method("GET"))
+        .and(path_regex(format!(r"/v1/{}", vault_path)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "data": {
+                    "value": "superbucket"
+                }
+            }
+        })))
+        .mount(&app.vault_server)
+        .await;
+
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+    configuration.vault.address = app.vault_server.uri();
+    configuration.vault.token = "test-vault-token".to_string();
+    configuration.vault.api_prefix = "v1".to_string();
+    configuration.vault.agent_path_prefix = "agent".to_string();
+    let vault_service =
+        VaultService::from_settings(&configuration.vault).expect("failed to build vault service");
+    let renderer = ConfigRenderer::with_vault(vault_service).expect("renderer init failed");
+
+    let bundle = renderer
+        .render_bundle(
+            &app.db_pool,
+            &project,
+            &[device_api.clone(), upload.clone()],
+            "deploy-hash-upload",
+        )
+        .await
+        .expect("render bundle failed");
+
+    let upload_env = &bundle.app_configs.get("upload").unwrap().content;
+    let device_api_env = &bundle.app_configs.get("device-api").unwrap().content;
+
+    assert!(upload_env.contains("S3_BUCKET=superbucket"));
+    assert!(!upload_env.contains("S3_BUCKET=plain-value"));
+    assert!(!device_api_env.contains("S3_BUCKET="));
+}
+
+#[tokio::test]
 async fn test_get_env_vars_includes_remote_secret_placeholders() {
     let Some(app) = common::spawn_app_with_vault().await else {
         return;

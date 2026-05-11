@@ -4,6 +4,7 @@ pub mod ai_pipe_suggest;
 pub mod ai_scanner;
 pub mod ci_export;
 pub mod cloud_env;
+pub mod compose_targets;
 pub mod config_bundle;
 pub mod config_parser;
 pub mod credentials;

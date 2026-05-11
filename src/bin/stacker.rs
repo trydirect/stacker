@@ -609,8 +609,10 @@ enum SecretsCommands {
   Local .env secret:\n\
     stacker secrets set DB_PASSWORD=supersecret\n\
 \n\
-  Remote service secret (project.identity from stacker.yml):\n\
+  Remote deployable service/app target secret (project.identity from stacker.yml):\n\
     stacker secrets set S3_SECRET_KEY --scope service --service uploader --body supersecret\n\
+\n\
+  Use the target code listed by `stacker secrets apps` for --service.\n\
 \n\
   Remote server secret from stdin:\n\
     cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42")]
@@ -630,8 +632,8 @@ enum SecretsCommands {
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
-        /// App code for service-scoped secrets
-        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        /// Deployable service/app target code listed by `stacker secrets apps`
+        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
         #[arg(long, value_name = "SERVER_ID", requires = "scope")]
@@ -684,8 +686,8 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
-        /// App code for service-scoped secrets
-        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        /// Deployable service/app target code listed by `stacker secrets apps`
+        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
         #[arg(long, value_name = "SERVER_ID", requires = "scope")]
@@ -723,8 +725,8 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
-        /// App code for service-scoped secrets
-        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        /// Deployable service/app target code listed by `stacker secrets apps`
+        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
         #[arg(long, value_name = "SERVER_ID", requires = "scope")]
@@ -733,16 +735,16 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         #[arg(long, requires = "scope")]
         json: bool,
     },
-    /// List valid remote app codes for a project
+    /// List valid remote deployable service/app target codes (`stacker secrets apps`)
     #[command(
         visible_alias = "services",
         after_help = "Examples:\n\
-  List remote app codes using project.identity from stacker.yml:\n\
+  List remote target codes using project.identity from stacker.yml:\n\
     stacker secrets apps\n\
- \n\
-  List remote app codes for a project:\n\
+  \n\
+   List remote target codes for a project:\n\
     stacker secrets apps --project blog\n\
- \n\
+  \n\
   Output app metadata as JSON:\n\
     stacker secrets apps --json"
     )]
@@ -780,8 +782,8 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT", requires = "scope")]
         project: Option<String>,
-        /// App code for service-scoped secrets
-        #[arg(long, value_name = "APP_CODE", requires = "scope")]
+        /// Deployable service/app target code listed by `stacker secrets apps`
+        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
         #[arg(long, value_name = "SERVER_ID", requires = "scope")]
@@ -2242,7 +2244,19 @@ mod tests {
         assert!(help.contains("--scope service"));
         assert!(help.contains("--scope server"));
         assert!(help.contains("metadata-only"));
-        assert!(help.contains("List valid remote app codes for a project"));
+        assert!(help.contains("List valid remote deployable service/app target codes"));
+    }
+
+    #[test]
+    fn test_secrets_help_describes_service_scope_as_deployable_target() {
+        let mut command = Cli::command();
+        let secrets = command
+            .find_subcommand_mut("secrets")
+            .expect("secrets subcommand should exist");
+        let help = render_command_help(secrets);
+
+        assert!(help.contains("deployable service/app target"));
+        assert!(help.contains("stacker secrets apps"));
     }
 
     #[test]

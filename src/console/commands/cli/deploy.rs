@@ -6,6 +6,8 @@ use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
 use crate::cli::cloud_env;
+#[cfg(test)]
+use crate::cli::compose_targets::extract_compose_secret_target_services;
 use crate::cli::config_bundle::build_config_bundle;
 use crate::cli::config_parser::{
     AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, RegistryConfig,
@@ -3107,6 +3109,46 @@ mod tests {
             std::fs::write(&path, content).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn test_scn_004_compose_image_services_register_as_remote_secret_targets() {
+        let dir = setup_local_project(&[(
+            "docker-compose.yml",
+            r#"
+services:
+  app:
+    image: ghcr.io/example/device-api:1.0
+  upload:
+    image: ghcr.io/example/upload:1.0
+    ports:
+      - "8081:8080"
+    environment:
+      S3_BUCKET: "${S3_BUCKET}"
+  worker:
+    build: .
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+"#,
+        )]);
+        let config = StackerConfig {
+            name: "device-api".to_string(),
+            ..StackerConfig::default()
+        };
+
+        let services = extract_compose_secret_target_services(
+            dir.path().join("docker-compose.yml").as_path(),
+            &config,
+        )
+        .unwrap();
+        let service_names = services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(service_names, vec!["upload"]);
+        assert_eq!(services[0].image, "ghcr.io/example/upload:1.0");
+        assert_eq!(services[0].ports, vec!["8081:8080"]);
     }
 
     fn minimal_config_yaml() -> String {
