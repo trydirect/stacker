@@ -24,6 +24,7 @@ use crate::cli::install_runner::{
 use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
+use crate::helpers::ip::extract_ipv4_from_text;
 use crate::helpers::ssh_client;
 
 /// Default config filename.
@@ -2697,10 +2698,16 @@ fn fetch_server_for_project(
         let deploy_poll = Duration::from_secs(10);
         let deploy_timeout = Duration::from_secs(600);
         let deploy_start = std::time::Instant::now();
+        let mut fallback_server_ip: Option<String> = None;
 
         loop {
             match client.get_deployment_status_by_project(project_id).await {
                 Ok(Some(info)) if is_terminal(&info.status) => {
+                    fallback_server_ip = fallback_server_ip.or_else(|| {
+                        info.status_message
+                            .as_deref()
+                            .and_then(extract_ipv4_from_text)
+                    });
                     if info.status != "completed" {
                         eprintln!(
                             "  Deployment #{} finished with status '{}' — server IP may not be available.",
@@ -2710,6 +2717,11 @@ fn fetch_server_for_project(
                     break;
                 }
                 Ok(Some(info)) => {
+                    fallback_server_ip = fallback_server_ip.or_else(|| {
+                        info.status_message
+                            .as_deref()
+                            .and_then(extract_ipv4_from_text)
+                    });
                     if deploy_start.elapsed() > deploy_timeout {
                         eprintln!(
                             "  Deployment #{} still '{}' after extended wait — saving what we have.",
@@ -2741,6 +2753,10 @@ fn fetch_server_for_project(
             match server {
                 Some(ref s) if s.srv_ip.is_some() => {
                     return Ok(server);
+                }
+                Some(mut s) if fallback_server_ip.is_some() => {
+                    s.srv_ip = fallback_server_ip.clone();
+                    return Ok(Some(s));
                 }
                 Some(_) if attempt < ip_retries - 1 => {
                     eprintln!(
@@ -3254,6 +3270,19 @@ services:
             .expect("server with IP should be selected");
 
         assert_eq!(selected.id, 3);
+    }
+
+    #[test]
+    fn extracts_server_ip_from_deployment_status_message() {
+        assert_eq!(
+            extract_ipv4_from_text("178.104.222.170: Copy files is done"),
+            Some("178.104.222.170".to_string())
+        );
+        assert_eq!(extract_ipv4_from_text("Deployment still in progress"), None);
+        assert_eq!(
+            extract_ipv4_from_text("invalid 999.104.222.170: message"),
+            None
+        );
     }
 
     #[test]
