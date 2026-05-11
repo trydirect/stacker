@@ -16,6 +16,7 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 fn parse_template_requirements(
@@ -168,6 +169,223 @@ fn validate_project_locked_cloud_provider(
         "This project is locked to cloud provider '{}'. Deploying with '{}' is not allowed.",
         locked_provider, provider
     ))
+}
+
+fn normalized_provider(provider: &str) -> String {
+    provider.trim().to_ascii_lowercase()
+}
+
+fn is_hetzner_provider(provider: &str) -> bool {
+    matches!(normalized_provider(provider).as_str(), "htz" | "hetzner")
+}
+
+fn server_display_name(server: &models::Server) -> String {
+    server
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| server.srv_ip.clone())
+        .unwrap_or_else(|| format!("server #{}", server.id))
+}
+
+fn reveal_cloud_credentials(cloud: &models::Cloud) -> models::Cloud {
+    if cloud.save_token == Some(true) {
+        forms::cloud::CloudForm::decode_model(cloud.clone(), true)
+    } else {
+        cloud.clone()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServersResponse {
+    #[serde(default)]
+    servers: Vec<HetznerServer>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServer {
+    name: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    public_net: Option<HetznerPublicNet>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerPublicNet {
+    #[serde(default)]
+    ipv4: Option<HetznerIpv4>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerIpv4 {
+    ip: String,
+}
+
+fn hetzner_api_base_url() -> String {
+    std::env::var("STACKER_HETZNER_API_URL")
+        .unwrap_or_else(|_| "https://api.hetzner.cloud/v1".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn hetzner_server_ip(server: &HetznerServer) -> Option<&str> {
+    server
+        .public_net
+        .as_ref()?
+        .ipv4
+        .as_ref()
+        .map(|ipv4| ipv4.ip.as_str())
+}
+
+fn find_matching_hetzner_server<'a>(
+    servers: &'a [HetznerServer],
+    stacker_server: &models::Server,
+) -> Option<&'a HetznerServer> {
+    let expected_name = stacker_server
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let expected_ip = stacker_server
+        .srv_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty());
+
+    servers.iter().find(|server| {
+        expected_name.is_some_and(|name| server.name == name)
+            || expected_ip.is_some_and(|ip| hetzner_server_ip(server) == Some(ip))
+    })
+}
+
+async fn verify_tcp_reachable(host: &str, port: i32, timeout_secs: u64) -> Result<(), String> {
+    let port = u16::try_from(port).map_err(|_| format!("invalid SSH port {}", port))?;
+    let address = (host, port);
+
+    match tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        tokio::net::TcpStream::connect(address),
+    )
+    .await
+    {
+        Ok(Ok(_stream)) => Ok(()),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(format!("connection timed out after {}s", timeout_secs)),
+    }
+}
+
+async fn validate_hetzner_reused_server(
+    cloud: &models::Cloud,
+    server: &models::Server,
+) -> Result<(), String> {
+    let display_name = server_display_name(server);
+    let cloud = reveal_cloud_credentials(cloud);
+    let token = cloud
+        .cloud_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            "Could not verify connected Hetzner server because cloud credentials are unavailable. Re-add the cloud credential and retry.".to_string()
+        })?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("Could not initialize Hetzner API client: {}", err))?;
+    let response = client
+        .get(format!("{}/servers", hetzner_api_base_url()))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|err| {
+            format!(
+                "Could not verify connected Hetzner server '{}': {}",
+                display_name, err
+            )
+        })?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Could not verify connected Hetzner server '{}': Hetzner API returned HTTP {}. Check the saved cloud credential and retry.",
+            display_name,
+            response.status().as_u16()
+        ));
+    }
+
+    let body = response
+        .json::<HetznerServersResponse>()
+        .await
+        .map_err(|err| {
+            format!(
+                "Could not verify connected Hetzner server '{}': invalid Hetzner API response ({})",
+                display_name, err
+            )
+        })?;
+
+    let provider_server = find_matching_hetzner_server(&body.servers, server).ok_or_else(|| {
+        format!(
+            "Connected cloud server '{}' no longer exists in Hetzner. Run `stacker deploy --force-new` to provision a new server, or remove/reconnect the stale server in Stacker.",
+            display_name
+        )
+    })?;
+
+    if let Some(status) = provider_server.status.as_deref() {
+        if status != "running" {
+            return Err(format!(
+                "Connected cloud server '{}' exists in Hetzner but is '{}'. Start the server or run `stacker deploy --force-new` to provision a new one.",
+                display_name, status
+            ));
+        }
+    }
+
+    if let Some(ip) = server
+        .srv_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+    {
+        let ssh_port = server.ssh_port.unwrap_or(22);
+        verify_tcp_reachable(ip, ssh_port, 4)
+            .await
+            .map_err(|err| {
+                format!(
+                    "Connected cloud server '{}' exists in Hetzner but SSH is not reachable at {}:{} ({}). Fix the server/firewall or run `stacker deploy --force-new` to provision a new server.",
+                    display_name, ip, ssh_port, err
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+async fn validate_reused_cloud_server(
+    cloud: &models::Cloud,
+    server: &models::Server,
+) -> Result<(), String> {
+    let provider = normalized_provider(&cloud.provider);
+    let has_existing_ip = server
+        .srv_ip
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|ip| !ip.is_empty());
+
+    if provider == "own" || !has_existing_ip {
+        return Ok(());
+    }
+
+    if is_hetzner_provider(&provider) {
+        return validate_hetzner_reused_server(cloud, server).await;
+    }
+
+    tracing::warn!(
+        "Reused cloud server validation is not implemented for provider '{}'; proceeding with existing behavior",
+        cloud.provider
+    );
+    Ok(())
 }
 
 async fn validate_template_server_capacity_requirements(
@@ -1040,6 +1258,10 @@ pub async fn item(
             })?
     };
 
+    validate_reused_cloud_server(&cloud_creds, &server)
+        .await
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
     if let Some(template) = marketplace_template.as_ref() {
         let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
@@ -1273,6 +1495,10 @@ pub async fn saved_item(
             })?
     };
 
+    validate_reused_cloud_server(&cloud, &server)
+        .await
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
     if let Some(template) = marketplace_template.as_ref() {
         let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
@@ -1405,6 +1631,10 @@ pub async fn rollback(
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     let deploy_form = build_rollback_deploy_form(template_stack_code);
 
+    validate_reused_cloud_server(&cloud, &server)
+        .await
+        .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
     project.metadata = metadata;
     project.request_json = target_version.stack_definition;
     project.template_version = Some(target_version.version.clone());
@@ -1437,9 +1667,10 @@ pub async fn rollback(
 mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
-        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
-        sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
-        validate_min_ram_requirement,
+        find_matching_hetzner_server, hetzner_server_ip, preserve_marketplace_runtime_artifacts,
+        resolve_provided_ssh_keypair, sync_runtime_artifact_bundle, validate_min_cpu_requirement,
+        validate_min_disk_requirement, validate_min_ram_requirement, HetznerIpv4, HetznerPublicNet,
+        HetznerServer,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
@@ -1484,6 +1715,47 @@ mod tests {
             post_deploy_hooks: json!(null),
             update_mode_capabilities: None,
         }
+    }
+
+    fn htz_server(name: &str, ip: &str) -> HetznerServer {
+        HetznerServer {
+            name: name.to_string(),
+            status: Some("running".to_string()),
+            public_net: Some(HetznerPublicNet {
+                ipv4: Some(HetznerIpv4 { ip: ip.to_string() }),
+            }),
+        }
+    }
+
+    #[test]
+    fn hetzner_server_matching_prefers_name_or_ip() {
+        let provider_servers = vec![
+            htz_server("old-server", "203.0.113.10"),
+            htz_server("coolify-current", "203.0.113.42"),
+        ];
+        let stacker_server = models::Server {
+            name: Some("coolify-current".to_string()),
+            srv_ip: Some("198.51.100.5".to_string()),
+            ..Default::default()
+        };
+
+        let matched = find_matching_hetzner_server(&provider_servers, &stacker_server)
+            .expect("server should match by name");
+
+        assert_eq!(matched.name, "coolify-current");
+        assert_eq!(hetzner_server_ip(matched), Some("203.0.113.42"));
+    }
+
+    #[test]
+    fn hetzner_server_matching_returns_none_for_deleted_server() {
+        let provider_servers = vec![htz_server("different", "203.0.113.10")];
+        let stacker_server = models::Server {
+            name: Some("deleted-server".to_string()),
+            srv_ip: Some("203.0.113.42".to_string()),
+            ..Default::default()
+        };
+
+        assert!(find_matching_hetzner_server(&provider_servers, &stacker_server).is_none());
     }
 
     #[test]

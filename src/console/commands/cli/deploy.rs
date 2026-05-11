@@ -2366,7 +2366,11 @@ impl DeployCommand {
             return;
         };
 
-        let server = match fetch_server_for_project(project_id as i32, DeployTarget::Cloud) {
+        let server = match fetch_server_for_project(
+            project_id as i32,
+            DeployTarget::Cloud,
+            result.server_name.as_deref(),
+        ) {
             Ok(Some(server)) => server,
             Ok(None) => {
                 eprintln!(
@@ -2493,7 +2497,11 @@ impl DeployCommand {
                 }
 
                 if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(project_id as i32, DeployTarget::Server) {
+                    match fetch_server_for_project(
+                        project_id as i32,
+                        DeployTarget::Server,
+                        result.server_name.as_deref(),
+                    ) {
                         Ok(Some(info)) => {
                             l = l.with_server_info(
                                 info.srv_ip.clone(),
@@ -2541,7 +2549,11 @@ impl DeployCommand {
 
                 // Try to fetch provisioned server details from the Stacker API
                 if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(project_id as i32, DeployTarget::Cloud) {
+                    match fetch_server_for_project(
+                        project_id as i32,
+                        DeployTarget::Cloud,
+                        result.server_name.as_deref(),
+                    ) {
                         Ok(Some(info)) => {
                             l = l.with_server_info(
                                 info.srv_ip.clone(),
@@ -2664,6 +2676,7 @@ fn resolve_saved_stacker_base_url(context: &str) -> Result<(String, StoredCreden
 fn fetch_server_for_project(
     project_id: i32,
     target: DeployTarget,
+    preferred_server_name: Option<&str>,
 ) -> Result<Option<stacker_client::ServerInfo>, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
@@ -2721,9 +2734,7 @@ fn fetch_server_for_project(
         for attempt in 0..ip_retries {
             let servers = client.list_servers().await?;
 
-            let server = servers
-                .into_iter()
-                .find(|s| s.project_id == project_id);
+            let server = choose_server_for_project(servers, project_id, preferred_server_name);
 
             match server {
                 Some(ref s) if s.srv_ip.is_some() => {
@@ -2759,6 +2770,49 @@ fn fetch_server_for_project(
 
         Ok(None)
     })
+}
+
+fn server_has_ip(server: &stacker_client::ServerInfo) -> bool {
+    server
+        .srv_ip
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|ip| !ip.is_empty())
+}
+
+fn choose_server_for_project(
+    servers: Vec<stacker_client::ServerInfo>,
+    project_id: i32,
+    preferred_server_name: Option<&str>,
+) -> Option<stacker_client::ServerInfo> {
+    let mut matching: Vec<stacker_client::ServerInfo> = servers
+        .into_iter()
+        .filter(|server| server.project_id == project_id)
+        .collect();
+
+    if let Some(preferred_name) = preferred_server_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if let Some(position) = matching.iter().position(|server| {
+            server.name.as_deref() == Some(preferred_name) && server_has_ip(server)
+        }) {
+            return Some(matching.remove(position));
+        }
+
+        if let Some(position) = matching
+            .iter()
+            .position(|server| server.name.as_deref() == Some(preferred_name))
+        {
+            return Some(matching.remove(position));
+        }
+    }
+
+    if let Some(position) = matching.iter().position(server_has_ip) {
+        return Some(matching.remove(position));
+    }
+
+    matching.into_iter().next()
 }
 
 // ── Local container health-check after `docker compose up` ───
@@ -3080,6 +3134,33 @@ mod tests {
         }
     }
 
+    fn server_info(
+        id: i32,
+        project_id: i32,
+        name: Option<&str>,
+        srv_ip: Option<&str>,
+    ) -> stacker_client::ServerInfo {
+        stacker_client::ServerInfo {
+            id,
+            user_id: "user".to_string(),
+            project_id,
+            cloud_id: Some(7),
+            cloud: Some("htz".to_string()),
+            region: Some("fsn1".to_string()),
+            zone: None,
+            server: Some("cpx22".to_string()),
+            os: Some("docker-ce".to_string()),
+            disk_type: None,
+            srv_ip: srv_ip.map(ToOwned::to_owned),
+            ssh_port: Some(22),
+            ssh_user: Some("root".to_string()),
+            name: name.map(ToOwned::to_owned),
+            vault_key_path: None,
+            connection_mode: "status_panel".to_string(),
+            key_status: "active".to_string(),
+        }
+    }
+
     #[test]
     fn backup_key_authorization_runs_only_after_real_cloud_deploy_with_project_id() {
         assert!(should_install_cloud_backup_key(
@@ -3102,6 +3183,35 @@ mod tests {
             &deploy_result_for_target(DeployTarget::Cloud, None),
             false
         ));
+    }
+
+    #[test]
+    fn choose_server_for_project_prefers_requested_server_name_with_ip() {
+        let servers = vec![
+            server_info(1, 75, Some("old"), Some("203.0.113.10")),
+            server_info(2, 75, Some("coolify-current"), Some("203.0.113.42")),
+            server_info(3, 75, Some("coolify-current"), None),
+        ];
+
+        let selected = choose_server_for_project(servers, 75, Some("coolify-current"))
+            .expect("matching server should be selected");
+
+        assert_eq!(selected.id, 2);
+        assert_eq!(selected.srv_ip.as_deref(), Some("203.0.113.42"));
+    }
+
+    #[test]
+    fn choose_server_for_project_ignores_other_projects_and_prefers_ip() {
+        let servers = vec![
+            server_info(1, 10, Some("wrong-project"), Some("203.0.113.1")),
+            server_info(2, 75, Some("pending"), None),
+            server_info(3, 75, Some("ready"), Some("203.0.113.42")),
+        ];
+
+        let selected = choose_server_for_project(servers, 75, None)
+            .expect("server with IP should be selected");
+
+        assert_eq!(selected.id, 3);
     }
 
     #[test]
