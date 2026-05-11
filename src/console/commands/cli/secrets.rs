@@ -332,29 +332,59 @@ fn resolve_project(
         .ok_or_else(|| CliError::ConfigValidation(format!("Project '{}' was not found", reference)))
 }
 
+#[cfg(test)]
 fn project_app_codes(project: &ProjectInfo) -> Vec<String> {
-    let mut codes: Vec<String> = project
-        .metadata
-        .get("custom")
-        .and_then(|custom| custom.get("web"))
-        .and_then(|web| web.as_array())
-        .map(|apps| {
-            apps.iter()
-                .filter_map(|app| app.get("code").and_then(|code| code.as_str()))
-                .map(|code| code.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut codes: Vec<String> = Vec::new();
+    for group in ["web", "service", "feature"] {
+        if let Some(apps) = project
+            .metadata
+            .get("custom")
+            .and_then(|custom| custom.get(group))
+            .and_then(|web| web.as_array())
+        {
+            codes.extend(
+                apps.iter()
+                    .filter_map(|app| app.get("code").and_then(|code| code.as_str()))
+                    .map(|code| code.to_string()),
+            );
+        }
+    }
 
     codes.sort();
     codes.dedup();
     codes
 }
 
-fn resolve_remote_service_code(project: &ProjectInfo, requested: &str) -> Result<String, CliError> {
-    let available_codes = project_app_codes(project);
+fn resolve_remote_service_code(
+    ctx: &CliRuntime,
+    project: &ProjectInfo,
+    requested: &str,
+    operation: &str,
+) -> Result<String, CliError> {
+    let apps = ctx
+        .block_on(ctx.client.list_project_apps(project.id))
+        .map_err(|error| remap_remote_secret_error(operation, error))?;
+
+    resolve_remote_service_code_from_apps(&project.name, &apps, requested)
+}
+
+fn resolve_remote_service_code_from_apps(
+    project_name: &str,
+    apps: &[ProjectAppInfo],
+    requested: &str,
+) -> Result<String, CliError> {
+    let mut available_codes = apps
+        .iter()
+        .map(|app| app.code.clone())
+        .collect::<Vec<String>>();
+    available_codes.sort();
+    available_codes.dedup();
+
     if available_codes.is_empty() {
-        return Ok(requested.to_string());
+        return Err(CliError::ConfigValidation(format!(
+            "No remote secret targets are registered for project '{}'. Run `stacker deploy --target <target>` to sync project/service registration, then run `stacker secrets apps` to list valid targets.",
+            project_name
+        )));
     }
 
     let requested_lower = requested.to_lowercase();
@@ -366,9 +396,9 @@ fn resolve_remote_service_code(project: &ProjectInfo, requested: &str) -> Result
     }
 
     Err(CliError::ConfigValidation(format!(
-        "Service '{}' was not found in project '{}'. Available app codes: {}",
+        "Unknown remote secret target '{}' for project '{}'. Available targets: {}. Run `stacker deploy --target <target>` to sync project/service registration, then run `stacker secrets apps`.",
         requested,
-        project.name,
+        project_name,
         available_codes.join(", ")
     )))
 }
@@ -385,7 +415,7 @@ fn print_remote_secret(secret: &RemoteSecretMetadataInfo, json: bool) -> Result<
             println!("Project ID: {}", project_id);
         }
         if let Some(app_code) = &secret.app_code {
-            println!("Service: {}", app_code);
+            println!("Target: {}", app_code);
         }
         if let Some(server_id) = secret.server_id {
             println!("Server ID: {}", server_id);
@@ -422,7 +452,7 @@ fn print_remote_secret_list(
     println!("{}", "─".repeat(92));
     for secret in secrets {
         let target = if let Some(app_code) = &secret.app_code {
-            format!("app:{app_code}")
+            app_code.to_string()
         } else if let Some(server_id) = secret.server_id {
             format!("server:{server_id}")
         } else {
@@ -446,13 +476,13 @@ fn print_project_app_list(apps: &[ProjectAppInfo], json: bool) -> Result<(), Cli
     }
 
     if apps.is_empty() {
-        println!("(no project apps found)");
+        println!("(no remote secret targets found)");
         return Ok(());
     }
 
     println!(
         "{:<24} {:<24} {:<8} {:<12} {}",
-        "CODE", "NAME", "ENABLED", "PARENT", "IMAGE"
+        "TARGET", "NAME", "ENABLED", "PARENT", "IMAGE"
     );
     println!("{}", "─".repeat(96));
     for app in apps {
@@ -562,7 +592,7 @@ impl SecretsSetCommand {
                         "Service-scoped secrets require --service".to_string(),
                     )
                 })?;
-                let app_code = resolve_remote_service_code(&project, app_code)?;
+                let app_code = resolve_remote_service_code(&ctx, &project, app_code, operation)?;
                 let secret = ctx
                     .block_on(ctx.client.set_service_secret(
                         project.id,
@@ -694,7 +724,8 @@ impl CallableTrait for SecretsGetCommand {
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        let app_code = resolve_remote_service_code(&project, app_code)?;
+                        let app_code =
+                            resolve_remote_service_code(&ctx, &project, app_code, operation)?;
                         ctx.block_on(ctx.client.get_service_secret_metadata(
                             project.id,
                             &app_code,
@@ -816,7 +847,8 @@ impl CallableTrait for SecretsListCommand {
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        let app_code = resolve_remote_service_code(&project, app_code)?;
+                        let app_code =
+                            resolve_remote_service_code(&ctx, &project, app_code, operation)?;
                         ctx.block_on(ctx.client.list_service_secrets(project.id, &app_code))
                             .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
@@ -958,7 +990,8 @@ impl CallableTrait for SecretsDeleteCommand {
                                 "Service-scoped secrets require --service".to_string(),
                             )
                         })?;
-                        let app_code = resolve_remote_service_code(&project, app_code)?;
+                        let app_code =
+                            resolve_remote_service_code(&ctx, &project, app_code, operation)?;
                         ctx.block_on(ctx.client.delete_service_secret(project.id, &app_code, key))
                             .map_err(|error| remap_remote_secret_error(operation, error))?;
                         println!("✓ Deleted service secret {} from {}", key, app_code);
@@ -1081,6 +1114,19 @@ impl CallableTrait for SecretsValidateCommand {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn project_app_info(id: i32, code: &str) -> ProjectAppInfo {
+        ProjectAppInfo {
+            id,
+            project_id: 7,
+            code: code.to_string(),
+            name: code.to_string(),
+            image: "nginx:stable".to_string(),
+            enabled: true,
+            deploy_order: None,
+            parent_app_code: None,
+        }
+    }
 
     // ── SECURITY: Path traversal via --file flag ──────
     // CWE-22: Improper Limitation of a Pathname to a Restricted Directory
@@ -1482,49 +1528,50 @@ mod tests {
 
     #[test]
     fn test_resolve_remote_service_code_matches_case_insensitively() {
-        let project = ProjectInfo {
-            id: 7,
-            name: "syncopia".to_string(),
-            user_id: "user-1".to_string(),
-            metadata: serde_json::json!({
-                "custom": {
-                    "web": [
-                        {"code": "device-apis"}
-                    ]
-                }
-            }),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        };
+        let apps = vec![project_app_info(1, "device-apis")];
 
         assert_eq!(
-            resolve_remote_service_code(&project, "Device-APIs").unwrap(),
+            resolve_remote_service_code_from_apps("syncopia", &apps, "Device-APIs").unwrap(),
             "device-apis"
         );
     }
 
     #[test]
     fn test_resolve_remote_service_code_reports_available_codes() {
-        let project = ProjectInfo {
-            id: 7,
-            name: "syncopia".to_string(),
-            user_id: "user-1".to_string(),
-            metadata: serde_json::json!({
-                "custom": {
-                    "web": [
-                        {"code": "app"},
-                        {"code": "device-apis"}
-                    ]
-                }
-            }),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        };
+        let apps = vec![
+            project_app_info(1, "app"),
+            project_app_info(2, "device-apis"),
+        ];
 
-        let error = resolve_remote_service_code(&project, "device-api")
+        let error = resolve_remote_service_code_from_apps("syncopia", &apps, "device-api")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("Available app codes: app, device-apis"));
+        assert!(error.contains("Available targets: app, device-apis"));
+    }
+
+    #[test]
+    fn test_scn_001_remote_target_resolution_accepts_registered_service_code() {
+        let apps = vec![project_app_info(2, "upload")];
+
+        let resolved = resolve_remote_service_code_from_apps("syncopia", &apps, "UPLOAD").unwrap();
+
+        assert_eq!(resolved, "upload");
+    }
+
+    #[test]
+    fn test_scn_007_unknown_remote_target_error_lists_available_targets() {
+        let apps = vec![
+            project_app_info(1, "device-api"),
+            project_app_info(2, "upload"),
+        ];
+
+        let error = resolve_remote_service_code_from_apps("syncopia", &apps, "media")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Unknown remote secret target 'media'"));
+        assert!(error.contains("Available targets: device-api, upload"));
+        assert!(error.contains("stacker deploy --target"));
     }
 
     #[test]

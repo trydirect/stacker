@@ -290,6 +290,7 @@ cargo run --bin server                           # http://127.0.0.1:8000
 | `POST /project` | Create a project from a stack definition |
 | `POST /{id}/deploy/{cloud_id}` | Deploy to a cloud provider |
 | `GET /project/{id}/apps` | List apps in a project |
+| `DELETE /project/{id}/apps/{code}` | Remove an app from a project |
 | `PUT /project/{id}/apps/{code}/env` | Update app environment variables |
 | `GET /project/{id}/apps/{code}/secrets` | List service-scoped secret metadata for an app |
 | `PUT /project/{id}/apps/{code}/secrets/{name}` | Create or update a Vault-backed service secret |

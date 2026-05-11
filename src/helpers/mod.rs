@@ -19,6 +19,7 @@ pub use vault::*;
 pub(crate) mod cloud;
 pub(crate) mod compressor;
 pub mod dockerhub;
+pub(crate) mod ip;
 
 pub use dockerhub::*;
 

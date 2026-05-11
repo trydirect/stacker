@@ -4,6 +4,7 @@
 //! - POST /project/{project_id}/apps - Create or update an app in a project
 //! - GET /project/{project_id}/apps - List all apps in a project
 //! - GET /project/{project_id}/apps/{code} - Get a specific app
+//! - DELETE /project/{project_id}/apps/{code} - Delete a specific app
 //! - GET /project/{project_id}/apps/{code}/config - Get app configuration
 //! - PUT /project/{project_id}/apps/{code}/config - Update app configuration
 //! - GET /project/{project_id}/apps/{code}/env - Get environment variables
@@ -138,6 +139,11 @@ pub struct UpdateDomainRequest {
     pub domain: Option<String>,
     #[serde(default)]
     pub ssl_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteAppQuery {
+    pub deployment_hash: Option<String>,
 }
 
 /// Request to create or update an app in a project
@@ -338,6 +344,63 @@ pub async fn get_app(
     let hydrated = hydrate_single_app(pg_pool.get_ref(), &project, app).await?;
 
     Ok(JsonResponse::build().set_item(Some(hydrated)).ok("OK"))
+}
+
+/// Delete a specific app by code
+#[tracing::instrument(name = "Delete project app", skip_all)]
+#[delete("/{project_id}/apps/{code}")]
+pub async fn delete_app(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32, String)>,
+    query: web::Query<DeleteAppQuery>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let (project_id, code) = path.into_inner();
+
+    let project = db::project::fetch(pg_pool.get_ref(), project_id)
+        .await
+        .map_err(|e| JsonResponse::internal_server_error(e))?
+        .ok_or_else(|| JsonResponse::not_found("Project not found"))?;
+
+    if project.user_id != user.id {
+        return Err(JsonResponse::not_found("Project not found"));
+    }
+
+    let app = db::project_app::fetch_by_project_and_code(pg_pool.get_ref(), project_id, &code)
+        .await
+        .map_err(|e| JsonResponse::internal_server_error(e))?
+        .ok_or_else(|| JsonResponse::not_found("App not found"))?;
+
+    let app_service = if let Some(deployment_hash) = query.deployment_hash.as_deref() {
+        let service = ProjectAppService::new(Arc::new(pg_pool.get_ref().clone()))
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e))?;
+        (service, deployment_hash.to_string())
+    } else {
+        let service = ProjectAppService::new_without_sync(Arc::new(pg_pool.get_ref().clone()))
+            .map_err(|e| JsonResponse::<()>::build().internal_server_error(e))?;
+        (service, String::new())
+    };
+
+    let deleted = app_service
+        .0
+        .delete(app.id, &app_service.1)
+        .await
+        .map_err(|e| JsonResponse::<()>::build().internal_server_error(e.to_string()))?;
+
+    tracing::info!(
+        user_id = %user.id,
+        project_id = project_id,
+        app_code = %code,
+        deleted = deleted,
+        "Deleted project app"
+    );
+
+    Ok(JsonResponse::build()
+        .set_item(Some(json!({
+            "success": deleted,
+            "message": if deleted { "App removed from project" } else { "App was not removed" }
+        })))
+        .ok("OK"))
 }
 
 /// Get app configuration (env vars, ports, domain, etc.)

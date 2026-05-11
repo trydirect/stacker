@@ -34,6 +34,7 @@ fn project_scope(path: &str) -> actix_web::Scope {
         .service(crate::routes::project::app::list_apps)
         .service(crate::routes::project::app::create_app)
         .service(crate::routes::project::app::get_app)
+        .service(crate::routes::project::app::delete_app)
         .service(crate::routes::project::app::get_app_config)
         .service(crate::routes::project::app::get_env_vars)
         .service(crate::routes::project::app::update_env_vars)

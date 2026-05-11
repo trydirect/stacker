@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::cloud_env;
+use crate::cli::compose_targets;
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
@@ -515,7 +516,12 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 1: Resolve or auto-create project
                     eprintln!("  Resolving project '{}'...", project_name);
-                    let mut project_body = stacker_client::build_project_body(config);
+                    let project_config =
+                        compose_targets::config_with_compose_secret_target_services(
+                            config,
+                            &context.compose_path,
+                        )?;
+                    let mut project_body = stacker_client::build_project_body(&project_config);
                     if let Some(bundle) = &context.config_bundle {
                         stacker_client::attach_config_bundle_to_project_body(
                             &mut project_body,
@@ -1371,7 +1377,11 @@ impl DeployStrategy for ServerDeploy {
             .as_ref()
             .ok_or(CliError::ServerHostMissing)?;
         let project_name = resolve_remote_project_name(config, context);
-        let mut project_body = stacker_client::build_project_body(config);
+        let project_config = compose_targets::config_with_compose_secret_target_services(
+            config,
+            &context.compose_path,
+        )?;
+        let mut project_body = stacker_client::build_project_body(&project_config);
         if let Some(bundle) = &context.config_bundle {
             stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
         }

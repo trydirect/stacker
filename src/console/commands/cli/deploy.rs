@@ -6,6 +6,8 @@ use crate::cli::ai_client::{
     build_prompt, create_provider, ollama_complete_streaming, AiTask, PromptContext,
 };
 use crate::cli::cloud_env;
+#[cfg(test)]
+use crate::cli::compose_targets::extract_compose_secret_target_services;
 use crate::cli::config_bundle::build_config_bundle;
 use crate::cli::config_parser::{
     AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, RegistryConfig,
@@ -22,6 +24,7 @@ use crate::cli::install_runner::{
 use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
+use crate::helpers::ip::extract_ipv4_from_text;
 use crate::helpers::ssh_client;
 
 /// Default config filename.
@@ -2695,10 +2698,16 @@ fn fetch_server_for_project(
         let deploy_poll = Duration::from_secs(10);
         let deploy_timeout = Duration::from_secs(600);
         let deploy_start = std::time::Instant::now();
+        let mut fallback_server_ip: Option<String> = None;
 
         loop {
             match client.get_deployment_status_by_project(project_id).await {
                 Ok(Some(info)) if is_terminal(&info.status) => {
+                    fallback_server_ip = fallback_server_ip.or_else(|| {
+                        info.status_message
+                            .as_deref()
+                            .and_then(extract_ipv4_from_text)
+                    });
                     if info.status != "completed" {
                         eprintln!(
                             "  Deployment #{} finished with status '{}' — server IP may not be available.",
@@ -2708,6 +2717,11 @@ fn fetch_server_for_project(
                     break;
                 }
                 Ok(Some(info)) => {
+                    fallback_server_ip = fallback_server_ip.or_else(|| {
+                        info.status_message
+                            .as_deref()
+                            .and_then(extract_ipv4_from_text)
+                    });
                     if deploy_start.elapsed() > deploy_timeout {
                         eprintln!(
                             "  Deployment #{} still '{}' after extended wait — saving what we have.",
@@ -2739,6 +2753,10 @@ fn fetch_server_for_project(
             match server {
                 Some(ref s) if s.srv_ip.is_some() => {
                     return Ok(server);
+                }
+                Some(mut s) if fallback_server_ip.is_some() => {
+                    s.srv_ip = fallback_server_ip.clone();
+                    return Ok(Some(s));
                 }
                 Some(_) if attempt < ip_retries - 1 => {
                     eprintln!(
@@ -3109,6 +3127,46 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn test_scn_004_compose_image_services_register_as_remote_secret_targets() {
+        let dir = setup_local_project(&[(
+            "docker-compose.yml",
+            r#"
+services:
+  app:
+    image: ghcr.io/example/device-api:1.0
+  upload:
+    image: ghcr.io/example/upload:1.0
+    ports:
+      - "8081:8080"
+    environment:
+      S3_BUCKET: "${S3_BUCKET}"
+  worker:
+    build: .
+  nginx_proxy_manager:
+    image: jc21/nginx-proxy-manager:latest
+"#,
+        )]);
+        let config = StackerConfig {
+            name: "device-api".to_string(),
+            ..StackerConfig::default()
+        };
+
+        let services = extract_compose_secret_target_services(
+            dir.path().join("docker-compose.yml").as_path(),
+            &config,
+        )
+        .unwrap();
+        let service_names = services
+            .iter()
+            .map(|service| service.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(service_names, vec!["upload"]);
+        assert_eq!(services[0].image, "ghcr.io/example/upload:1.0");
+        assert_eq!(services[0].ports, vec!["8081:8080"]);
+    }
+
     fn minimal_config_yaml() -> String {
         "name: test-app\napp:\n  type: static\n  path: .\n".to_string()
     }
@@ -3212,6 +3270,19 @@ mod tests {
             .expect("server with IP should be selected");
 
         assert_eq!(selected.id, 3);
+    }
+
+    #[test]
+    fn extracts_server_ip_from_deployment_status_message() {
+        assert_eq!(
+            extract_ipv4_from_text("178.104.222.170: Copy files is done"),
+            Some("178.104.222.170".to_string())
+        );
+        assert_eq!(extract_ipv4_from_text("Deployment still in progress"), None);
+        assert_eq!(
+            extract_ipv4_from_text("invalid 999.104.222.170: message"),
+            None
+        );
     }
 
     #[test]
