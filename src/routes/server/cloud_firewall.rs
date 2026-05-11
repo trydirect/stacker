@@ -126,7 +126,7 @@ pub async fn configure(
 
     if message.action == CloudFirewallAction::List {
         let routing_key = routing_key(&message.target.provider).unwrap_or_default();
-        let firewall = list_cloud_firewall(&message.credentials, &firewall_name)
+        let firewall = list_cloud_firewall(&message.credentials, &firewall_name, &message.target)
             .await
             .map_err(|err| {
                 JsonResponse::<ConfigureCloudFirewallResponse>::build().bad_request(err)
@@ -178,11 +178,57 @@ struct HetznerFirewall {
     name: String,
     #[serde(default)]
     rules: Vec<CloudFirewallProviderRule>,
+    #[serde(default)]
+    applied_to: Vec<HetznerFirewallAppliedTo>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerFirewallAppliedTo {
+    #[serde(default)]
+    server: Option<HetznerAppliedServer>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerAppliedServer {
+    id: i64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerServersResponse {
+    #[serde(default)]
+    servers: Vec<HetznerServer>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerServer {
+    id: i64,
+    name: String,
+    #[serde(default)]
+    public_net: Option<HetznerServerPublicNet>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerServerPublicNet {
+    #[serde(default)]
+    ipv4: Option<HetznerServerIpv4>,
+    #[serde(default)]
+    firewalls: Vec<HetznerServerFirewall>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerServerIpv4 {
+    ip: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerServerFirewall {
+    id: i64,
 }
 
 async fn list_cloud_firewall(
     credentials: &CloudFirewallCredentials,
     firewall_name: &str,
+    target: &CloudFirewallTarget,
 ) -> Result<CloudFirewallDetails, String> {
     let token = credentials
         .token
@@ -215,13 +261,114 @@ async fn list_cloud_firewall(
         .json()
         .await
         .map_err(|err| format!("Invalid Hetzner firewall response: {}", err))?;
-    let firewall = select_single_hetzner_firewall(body.firewalls, firewall_name)?;
+    let firewall = match select_single_hetzner_firewall(body.firewalls, firewall_name) {
+        Ok(firewall) => firewall,
+        Err(err) if err.starts_with("Hetzner firewall not found:") => {
+            list_hetzner_firewall_attached_to_server(&client, token, target)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "{}. No firewall attached to server {} was found either",
+                        err, target.server_public_ip
+                    )
+                })?
+        }
+        Err(err) => return Err(err),
+    };
 
     Ok(CloudFirewallDetails {
         id: Some(firewall.id),
         name: firewall.name,
         rules: firewall.rules,
     })
+}
+
+async fn list_hetzner_firewall_attached_to_server(
+    client: &reqwest::Client,
+    token: &str,
+    target: &CloudFirewallTarget,
+) -> Result<Option<HetznerFirewall>, String> {
+    let response = client
+        .get("https://api.hetzner.cloud/v1/servers")
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to query Hetzner servers: {}", err))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Hetzner server lookup failed with status {} while resolving firewall for {}",
+            status.as_u16(),
+            target.server_public_ip
+        ));
+    }
+
+    let body: HetznerServersResponse = response
+        .json()
+        .await
+        .map_err(|err| format!("Invalid Hetzner server response: {}", err))?;
+    let server = select_hetzner_server_for_target(body.servers, target);
+    let Some(server) = server else {
+        return Ok(None);
+    };
+
+    if let Some(firewall_id) = server
+        .public_net
+        .as_ref()
+        .and_then(|public_net| public_net.firewalls.first())
+        .map(|firewall| firewall.id)
+    {
+        let response = client
+            .get(format!(
+                "https://api.hetzner.cloud/v1/firewalls/{}",
+                firewall_id
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|err| format!("Failed to query Hetzner firewall {}: {}", firewall_id, err))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!(
+                "Hetzner firewall {} lookup failed with status {}",
+                firewall_id,
+                status.as_u16()
+            ));
+        }
+        return response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|err| format!("Invalid Hetzner firewall response: {}", err))?
+            .get("firewall")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|err| format!("Invalid Hetzner firewall response: {}", err));
+    }
+
+    let response = client
+        .get("https://api.hetzner.cloud/v1/firewalls")
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to query Hetzner firewalls: {}", err))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Hetzner firewall lookup failed with status {} while resolving attached firewall",
+            status.as_u16()
+        ));
+    }
+    let body: HetznerFirewallsResponse = response
+        .json()
+        .await
+        .map_err(|err| format!("Invalid Hetzner firewall response: {}", err))?;
+
+    Ok(body
+        .firewalls
+        .into_iter()
+        .find(|firewall| firewall_applies_to_server(firewall, server.id)))
 }
 
 fn select_single_hetzner_firewall(
@@ -237,6 +384,32 @@ fn select_single_hetzner_firewall(
             firewall_name
         )),
     }
+}
+
+fn select_hetzner_server_for_target(
+    servers: Vec<HetznerServer>,
+    target: &CloudFirewallTarget,
+) -> Option<HetznerServer> {
+    let target_ip = target.server_public_ip.trim();
+    let target_name = target.server_name.as_deref().unwrap_or("").trim();
+
+    servers.into_iter().find(|server| {
+        let server_ip = server
+            .public_net
+            .as_ref()
+            .and_then(|public_net| public_net.ipv4.as_ref())
+            .map(|ipv4| ipv4.ip.as_str());
+        (!target_ip.is_empty() && server_ip == Some(target_ip))
+            || (!target_name.is_empty() && server.name == target_name)
+    })
+}
+
+fn firewall_applies_to_server(firewall: &HetznerFirewall, server_id: i64) -> bool {
+    firewall
+        .applied_to
+        .iter()
+        .filter_map(|target| target.server.as_ref())
+        .any(|server| server.id == server_id)
 }
 
 fn prepare_cloud_firewall_credentials(
@@ -339,16 +512,65 @@ mod tests {
                 id: 1,
                 name: "frw-test".to_string(),
                 rules: Vec::new(),
+                applied_to: Vec::new(),
             },
             HetznerFirewall {
                 id: 2,
                 name: "frw-test".to_string(),
                 rules: Vec::new(),
+                applied_to: Vec::new(),
             },
         ];
 
         let error = select_single_hetzner_firewall(firewalls, "frw-test").unwrap_err();
 
         assert!(error.contains("Multiple Hetzner firewalls"));
+    }
+
+    #[test]
+    fn select_hetzner_server_for_target_prefers_public_ip() {
+        let target = CloudFirewallTarget {
+            provider: "htz".to_string(),
+            cloud_id: 1,
+            server_id: 10,
+            project_id: 20,
+            deployment_hash: None,
+            server_public_ip: "203.0.113.10".to_string(),
+            provider_server_id: None,
+            server_name: Some("stale-name".to_string()),
+            region: None,
+            zone: None,
+            firewall_id: None,
+            firewall_name: None,
+        };
+        let servers = vec![HetznerServer {
+            id: 123,
+            name: "current-name".to_string(),
+            public_net: Some(HetznerServerPublicNet {
+                ipv4: Some(HetznerServerIpv4 {
+                    ip: "203.0.113.10".to_string(),
+                }),
+                firewalls: vec![HetznerServerFirewall { id: 456 }],
+            }),
+        }];
+
+        let server = select_hetzner_server_for_target(servers, &target).unwrap();
+
+        assert_eq!(server.id, 123);
+    }
+
+    #[test]
+    fn firewall_applies_to_server_matches_applied_server_id() {
+        let firewall = HetznerFirewall {
+            id: 456,
+            name: "frw-current".to_string(),
+            rules: Vec::new(),
+            applied_to: vec![HetznerFirewallAppliedTo {
+                server: Some(HetznerAppliedServer { id: 123 }),
+            }],
+        };
+
+        assert!(firewall_applies_to_server(&firewall, 123));
+        assert!(!firewall_applies_to_server(&firewall, 124));
     }
 }
