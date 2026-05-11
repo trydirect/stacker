@@ -80,7 +80,7 @@ pub async fn configure(
             .insert("stacker.server_id".to_string(), server.id.to_string());
     }
 
-    let target = CloudFirewallTarget {
+    let mut target = CloudFirewallTarget {
         provider: provider.to_string(),
         cloud_id,
         server_id: server.id,
@@ -94,13 +94,18 @@ pub async fn configure(
         firewall_id: None,
         firewall_name: None,
     };
+    let default_firewall_name = default_firewall_name(&target);
+    let resolved_firewall = list_cloud_firewall(&credentials, &default_firewall_name, &target)
+        .await
+        .map_err(|err| JsonResponse::<ConfigureCloudFirewallResponse>::build().bad_request(err))?;
+    apply_resolved_firewall_to_target(&mut target, &resolved_firewall);
 
     let mut provider_context = BTreeMap::new();
     provider_context.insert(
         provider.to_string(),
-        serde_json::json!({ "firewall_name": default_firewall_name(&target) }),
+        serde_json::json!({ "firewall_name": resolved_firewall.name.clone() }),
     );
-    let firewall_name = default_firewall_name(&target);
+    let firewall_name = resolved_firewall.name.clone();
 
     let operation_id = format!("cfw_{}", uuid::Uuid::new_v4());
     for rule in &mut rules {
@@ -126,11 +131,6 @@ pub async fn configure(
 
     if message.action == CloudFirewallAction::List {
         let routing_key = routing_key(&message.target.provider).unwrap_or_default();
-        let firewall = list_cloud_firewall(&message.credentials, &firewall_name, &message.target)
-            .await
-            .map_err(|err| {
-                JsonResponse::<ConfigureCloudFirewallResponse>::build().bad_request(err)
-            })?;
 
         return Ok(JsonResponse::build()
             .set_item(ConfigureCloudFirewallResponse {
@@ -144,7 +144,7 @@ pub async fn configure(
                 routing_key,
                 message: "Cloud firewall list retrieved".to_string(),
                 firewall_name: Some(firewall_name),
-                firewall: Some(firewall),
+                firewall: Some(resolved_firewall),
             })
             .ok("Cloud firewall list retrieved"));
     }
@@ -412,6 +412,14 @@ fn firewall_applies_to_server(firewall: &HetznerFirewall, server_id: i64) -> boo
         .any(|server| server.id == server_id)
 }
 
+fn apply_resolved_firewall_to_target(
+    target: &mut CloudFirewallTarget,
+    firewall: &CloudFirewallDetails,
+) {
+    target.firewall_id = firewall.id.map(|id| id.to_string());
+    target.firewall_name = Some(firewall.name.clone());
+}
+
 fn prepare_cloud_firewall_credentials(
     provider: &str,
     cloud: models::Cloud,
@@ -525,6 +533,37 @@ mod tests {
         let error = select_single_hetzner_firewall(firewalls, "frw-test").unwrap_err();
 
         assert!(error.contains("Multiple Hetzner firewalls"));
+    }
+
+    #[test]
+    fn apply_resolved_firewall_sets_target_identity() {
+        let mut target = CloudFirewallTarget {
+            provider: "htz".to_string(),
+            cloud_id: 1,
+            server_id: 10,
+            project_id: 20,
+            deployment_hash: None,
+            server_public_ip: "203.0.113.10".to_string(),
+            provider_server_id: None,
+            server_name: Some("stale-name".to_string()),
+            region: None,
+            zone: None,
+            firewall_id: None,
+            firewall_name: None,
+        };
+        let firewall = CloudFirewallDetails {
+            id: Some(10957668),
+            name: "frw-coolify-zxiuehu1".to_string(),
+            rules: Vec::new(),
+        };
+
+        apply_resolved_firewall_to_target(&mut target, &firewall);
+
+        assert_eq!(target.firewall_id.as_deref(), Some("10957668"));
+        assert_eq!(
+            target.firewall_name.as_deref(),
+            Some("frw-coolify-zxiuehu1")
+        );
     }
 
     #[test]
