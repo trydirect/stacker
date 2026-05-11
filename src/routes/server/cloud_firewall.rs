@@ -8,9 +8,10 @@ use crate::connectors::install_service::InstallServiceConnector;
 use crate::db;
 use crate::forms::cloud_firewall::{
     default_firewall_name, idempotency_key, normalize_provider, routing_key, rules_from_request,
-    validate_request, CloudFirewallCredentials, CloudFirewallOperationMessage,
-    CloudFirewallRequestedBy, CloudFirewallTarget, ConfigureCloudFirewallRequest,
-    ConfigureCloudFirewallResponse, CLOUD_FIREWALL_PROTOCOL_VERSION,
+    validate_request, CloudFirewallAction, CloudFirewallCredentials, CloudFirewallDetails,
+    CloudFirewallOperationMessage, CloudFirewallProviderRule, CloudFirewallRequestedBy,
+    CloudFirewallTarget, ConfigureCloudFirewallRequest, ConfigureCloudFirewallResponse,
+    CLOUD_FIREWALL_PROTOCOL_VERSION,
 };
 use crate::helpers::{JsonResponse, MqManager};
 use crate::models;
@@ -99,6 +100,7 @@ pub async fn configure(
         provider.to_string(),
         serde_json::json!({ "firewall_name": default_firewall_name(&target) }),
     );
+    let firewall_name = default_firewall_name(&target);
 
     let operation_id = format!("cfw_{}", uuid::Uuid::new_v4());
     for rule in &mut rules {
@@ -122,6 +124,31 @@ pub async fn configure(
         },
     };
 
+    if message.action == CloudFirewallAction::List {
+        let routing_key = routing_key(&message.target.provider).unwrap_or_default();
+        let firewall = list_cloud_firewall(&message.credentials, &firewall_name)
+            .await
+            .map_err(|err| {
+                JsonResponse::<ConfigureCloudFirewallResponse>::build().bad_request(err)
+            })?;
+
+        return Ok(JsonResponse::build()
+            .set_item(ConfigureCloudFirewallResponse {
+                operation_id,
+                accepted: true,
+                protocol_version: CLOUD_FIREWALL_PROTOCOL_VERSION.to_string(),
+                provider: provider.to_string(),
+                server_id: server.id,
+                action: CloudFirewallAction::List,
+                rules: Vec::new(),
+                routing_key,
+                message: "Cloud firewall list retrieved".to_string(),
+                firewall_name: Some(firewall_name),
+                firewall: Some(firewall),
+            })
+            .ok("Cloud firewall list retrieved"));
+    }
+
     let response = install_service
         .configure_cloud_firewall(message, mq_manager.get_ref())
         .await
@@ -133,9 +160,83 @@ pub async fn configure(
     Ok(JsonResponse::build()
         .set_item(ConfigureCloudFirewallResponse {
             routing_key,
+            firewall_name: Some(firewall_name),
             ..response
         })
         .ok("Cloud firewall operation accepted"))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerFirewallsResponse {
+    #[serde(default)]
+    firewalls: Vec<HetznerFirewall>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HetznerFirewall {
+    id: i64,
+    name: String,
+    #[serde(default)]
+    rules: Vec<CloudFirewallProviderRule>,
+}
+
+async fn list_cloud_firewall(
+    credentials: &CloudFirewallCredentials,
+    firewall_name: &str,
+) -> Result<CloudFirewallDetails, String> {
+    let token = credentials
+        .token
+        .as_deref()
+        .ok_or_else(|| "Hetzner cloud firewall list requires a valid cloud token".to_string())?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("Failed to initialize Hetzner API client: {}", err))?;
+    let response = client
+        .get("https://api.hetzner.cloud/v1/firewalls")
+        .bearer_auth(token)
+        .query(&[("name", firewall_name)])
+        .send()
+        .await
+        .map_err(|err| format!("Failed to query Hetzner firewalls: {}", err))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            401 | 403 => {
+                "Hetzner rejected the saved cloud token. Please delete and re-add your Hetzner cloud credentials.".to_string()
+            }
+            _ => format!("Hetzner firewall list failed with status {}", status.as_u16()),
+        });
+    }
+
+    let body: HetznerFirewallsResponse = response
+        .json()
+        .await
+        .map_err(|err| format!("Invalid Hetzner firewall response: {}", err))?;
+    let firewall = select_single_hetzner_firewall(body.firewalls, firewall_name)?;
+
+    Ok(CloudFirewallDetails {
+        id: Some(firewall.id),
+        name: firewall.name,
+        rules: firewall.rules,
+    })
+}
+
+fn select_single_hetzner_firewall(
+    firewalls: Vec<HetznerFirewall>,
+    firewall_name: &str,
+) -> Result<HetznerFirewall, String> {
+    let mut firewalls = firewalls.into_iter();
+    match (firewalls.next(), firewalls.next()) {
+        (None, _) => Err(format!("Hetzner firewall not found: {}", firewall_name)),
+        (Some(firewall), None) => Ok(firewall),
+        (Some(_), Some(_)) => Err(format!(
+            "Multiple Hetzner firewalls found with name '{}'; expected exactly one",
+            firewall_name
+        )),
+    }
 }
 
 fn prepare_cloud_firewall_credentials(
@@ -229,5 +330,25 @@ mod tests {
         let credentials = prepare_cloud_firewall_credentials("htz", cloud).unwrap();
 
         assert_eq!(credentials.token.as_deref(), Some("plain-hcloud-token"));
+    }
+
+    #[test]
+    fn select_single_hetzner_firewall_rejects_ambiguous_matches() {
+        let firewalls = vec![
+            HetznerFirewall {
+                id: 1,
+                name: "frw-test".to_string(),
+                rules: Vec::new(),
+            },
+            HetznerFirewall {
+                id: 2,
+                name: "frw-test".to_string(),
+                rules: Vec::new(),
+            },
+        ];
+
+        let error = select_single_hetzner_firewall(firewalls, "frw-test").unwrap_err();
+
+        assert!(error.contains("Multiple Hetzner firewalls"));
     }
 }

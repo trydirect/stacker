@@ -3,6 +3,7 @@ use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
 use crate::forms::{
     parse_private_port, parse_public_port, CloudFirewallAction, ConfigureCloudFirewallRequest,
+    ConfigureCloudFirewallResponse,
 };
 
 pub struct CloudFirewallCommand {
@@ -112,31 +113,98 @@ impl CallableTrait for CloudFirewallCommand {
             return Ok(());
         }
 
-        println!(
-            "Cloud firewall {} accepted for server {} ({})",
-            response.action.as_str(),
-            response.server_id,
-            response.provider
-        );
-        println!("Operation: {}", response.operation_id);
-        println!("Route: {}", response.routing_key);
-        for rule in response.rules {
-            println!(
-                "- {} {}/{} from {}",
-                rule.direction.as_str(),
-                rule.port,
-                rule.protocol,
-                rule.source
-            );
+        for line in format_response_lines(&response) {
+            println!("{}", line);
         }
 
         Ok(())
     }
 }
 
+fn format_response_lines(response: &ConfigureCloudFirewallResponse) -> Vec<String> {
+    let mut lines = Vec::new();
+    if response.action == CloudFirewallAction::List {
+        lines.push(format!(
+            "Cloud firewall list for server {} ({})",
+            response.server_id, response.provider
+        ));
+    } else {
+        lines.push(format!(
+            "Cloud firewall {} accepted for server {} ({})",
+            response.action.as_str(),
+            response.server_id,
+            response.provider
+        ));
+    }
+    lines.push(format!("Operation: {}", response.operation_id));
+    lines.push(format!("Route: {}", response.routing_key));
+
+    if let Some(firewall) = &response.firewall {
+        let id = firewall
+            .id
+            .map(|id| format!(" (#{})", id))
+            .unwrap_or_default();
+        lines.push(format!("Firewall: {}{}", firewall.name, id));
+        if firewall.rules.is_empty() {
+            lines.push("Rules: none".to_string());
+        } else {
+            lines.push("Rules:".to_string());
+            for rule in &firewall.rules {
+                lines.push(format_provider_rule(rule));
+            }
+        }
+        return lines;
+    }
+
+    if let Some(name) = &response.firewall_name {
+        lines.push(format!("Firewall: {}", name));
+    }
+
+    for rule in &response.rules {
+        lines.push(format!(
+            "- {} {}/{} from {}",
+            rule.direction.as_str(),
+            rule.port,
+            rule.protocol,
+            rule.source
+        ));
+    }
+    lines
+}
+
+fn format_provider_rule(rule: &crate::forms::CloudFirewallProviderRule) -> String {
+    let peer_label = if rule.source_ips.is_empty() {
+        "to"
+    } else {
+        "from"
+    };
+    let peers = if rule.source_ips.is_empty() {
+        rule.destination_ips.join(", ")
+    } else {
+        rule.source_ips.join(", ")
+    };
+    let peers = if peers.is_empty() {
+        "-"
+    } else {
+        peers.as_str()
+    };
+    let description = rule
+        .description
+        .as_deref()
+        .filter(|description| !description.trim().is_empty())
+        .map(|description| format!(" ({})", description))
+        .unwrap_or_default();
+
+    format!(
+        "- {} {}/{} {} {}{}",
+        rule.direction, rule.port, rule.protocol, peer_label, peers, description
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forms::{CloudFirewallDetails, CloudFirewallProviderRule};
 
     #[test]
     fn cloud_firewall_command_stores_action_and_ports() {
@@ -152,5 +220,38 @@ mod tests {
         assert_eq!(command.server_id, Some(42));
         assert_eq!(command.public_ports, vec!["8000/tcp"]);
         assert_eq!(command.action, CloudFirewallAction::Add);
+    }
+
+    #[test]
+    fn cloud_firewall_list_output_includes_firewall_name_and_rules() {
+        let response = ConfigureCloudFirewallResponse {
+            operation_id: "cfw_test".to_string(),
+            accepted: true,
+            protocol_version: "stacker.cloud_firewall.v1".to_string(),
+            provider: "htz".to_string(),
+            server_id: 80,
+            action: CloudFirewallAction::List,
+            rules: Vec::new(),
+            routing_key: "install.firewall.htz.v1".to_string(),
+            message: "Cloud firewall list retrieved".to_string(),
+            firewall_name: Some("frw-coolify-86b8".to_string()),
+            firewall: Some(CloudFirewallDetails {
+                id: Some(123),
+                name: "frw-coolify-86b8".to_string(),
+                rules: vec![CloudFirewallProviderRule {
+                    direction: "in".to_string(),
+                    protocol: "tcp".to_string(),
+                    port: "8000".to_string(),
+                    source_ips: vec!["0.0.0.0/0".to_string()],
+                    destination_ips: Vec::new(),
+                    description: Some("Coolify".to_string()),
+                }],
+            }),
+        };
+
+        let lines = format_response_lines(&response);
+
+        assert!(lines.contains(&"Firewall: frw-coolify-86b8 (#123)".to_string()));
+        assert!(lines.contains(&"- in 8000/tcp from 0.0.0.0/0 (Coolify)".to_string()));
     }
 }

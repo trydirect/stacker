@@ -48,6 +48,31 @@ pub struct ConfigureCloudFirewallResponse {
     pub rules: Vec<CloudFirewallRule>,
     pub routing_key: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firewall_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firewall: Option<CloudFirewallDetails>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct CloudFirewallDetails {
+    pub id: Option<i64>,
+    pub name: String,
+    #[serde(default)]
+    pub rules: Vec<CloudFirewallProviderRule>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct CloudFirewallProviderRule {
+    pub direction: String,
+    pub protocol: String,
+    pub port: String,
+    #[serde(default)]
+    pub source_ips: Vec<String>,
+    #[serde(default)]
+    pub destination_ips: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]

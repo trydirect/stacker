@@ -50,6 +50,8 @@ impl InstallServiceConnector for MockInstallServiceConnector {
             rules: message.rules,
             routing_key,
             message: "Cloud firewall operation accepted".to_string(),
+            firewall_name: None,
+            firewall: None,
         })
     }
 }
