@@ -11,6 +11,7 @@ async fn main() {
     }
 
     StepWorld::cucumber()
+        .max_concurrent_scenarios(1)
         .fail_on_skipped()
         .run_and_exit("tests/features")
         .await;
