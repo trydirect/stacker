@@ -31,7 +31,7 @@ pub async fn list_approved(
             t.slug,
             t.short_description,
             t.long_description,
-            c.name AS "category_code?",
+            c.name AS category_code,
             t.product_id,
             t.tags,
             t.tech_stack,
@@ -55,11 +55,11 @@ pub async fn list_approved(
         WHERE t.status = 'approved'"#,
     );
 
-    if category.is_some() {
-        base.push_str(" AND c.name = $1");
-    }
-    if tag.is_some() {
-        base.push_str(" AND t.tags ? $2");
+    match (category.is_some(), tag.is_some()) {
+        (true, true) => base.push_str(" AND c.name = $1 AND t.tags ? $2"),
+        (true, false) => base.push_str(" AND c.name = $1"),
+        (false, true) => base.push_str(" AND t.tags ? $1"),
+        (false, false) => {}
     }
 
     match sort.unwrap_or("recent") {
