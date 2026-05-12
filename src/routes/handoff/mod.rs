@@ -464,6 +464,7 @@ mod tests {
             email: "user@example.com".to_string(),
             role: "group_user".to_string(),
             email_confirmed: true,
+            mfa_verified: false,
             access_token: Some(token.to_string()),
         }
     }

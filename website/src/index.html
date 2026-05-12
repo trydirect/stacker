@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stacker v0.2.7 — AI Infrastructure CLI by TryDirect</title>
-  <meta name="description" content="Stacker v0.2.7 scans your project, generates stacker.yml with AI, deploys to cloud or bare metal, manages agents, and links apps with pipes — all from your terminal.">
+  <title>Stacker v0.2.8 — AI Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Stacker v0.2.8 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
   <meta name="theme-color" content="#7e57c2">
   <link rel="icon" type="image/png" href="assets/stacker-logo.png">
   <link rel="stylesheet" href="styles.css">
@@ -52,7 +52,7 @@
       <div class="hero__content">
         <div class="hero__badge" data-animate="fade-up">
           <span class="hero__badge-dot"></span>
-          New Release v0.2.7 &middot; AI-Powered &middot; Cloud + Bare Metal
+          New Release v0.2.8 &middot; AI-Powered &middot; Cloud + Bare Metal
         </div>
         <h1 class="hero__title" data-animate="fade-up" data-delay="100">
           Ship your stack from code to server<br>
@@ -74,17 +74,16 @@
           </a>
         </div>
         <div class="hero__release" data-animate="fade-up" data-delay="350">
-          <div class="hero__release-version">v0.2.7</div>
+          <div class="hero__release-version">v0.2.8</div>
           <p class="hero__release-text">
-            Latest release includes <strong>pipes</strong>, <strong>agent control + firewall</strong>,
-            <strong>Kata runtime</strong>, <strong>marketplace submit/status/logs</strong>, and
-            <strong>multi-user security hardening</strong>.
+            Latest release includes <strong>remote service secrets</strong>, <strong>cloud firewalls</strong>,
+            <strong>IP persistence</strong>, <strong>MCP secret tools</strong>, and hardened agent operations.
           </p>
           <div class="hero__release-chips">
-            <span class="hero__release-chip">Pipe automation</span>
-            <span class="hero__release-chip">Agent ops</span>
-            <span class="hero__release-chip">Kata isolation</span>
-            <span class="hero__release-chip">Marketplace flows</span>
+            <span class="hero__release-chip">Service secrets</span>
+            <span class="hero__release-chip">Cloud firewall</span>
+            <span class="hero__release-chip">IP retention</span>
+            <span class="hero__release-chip">MCP tools</span>
           </div>
         </div>
         <div class="hero__terminal" data-animate="fade-up" data-delay="400">
@@ -200,29 +199,29 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Latest Release</span>
-        <h2 class="section__title">Stacker v0.2.7<br><span class="gradient-text">brings the operator tools.</span></h2>
-        <p class="section__desc">The newest release expands Stacker from deployment setup into ongoing operations, app-to-app automation, secure runtime options, and marketplace delivery.</p>
+        <h2 class="section__title">Stacker v0.2.8<br><span class="gradient-text">brings safer operator workflows.</span></h2>
+        <p class="section__desc">The newest release improves remote service secrets, cloud firewall operations, paused install recovery, and MCP coverage for AI-driven infrastructure work.</p>
       </div>
       <div class="release__grid">
         <article class="release-card" data-animate="fade-up" data-delay="0">
-          <span class="release-card__eyebrow">Automation</span>
-          <h3 class="release-card__title">Pipes</h3>
-          <p class="release-card__desc">Create, activate, trigger, replay, and inspect pipe executions to move data between apps without building glue code first.</p>
+          <span class="release-card__eyebrow">Secrets</span>
+          <h3 class="release-card__title">Remote service targets</h3>
+          <p class="release-card__desc">Store Vault-backed secrets for deployable service/app targets from stacker.yml and supported Compose services, with metadata-only reads.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="100">
           <span class="release-card__eyebrow">Operations</span>
-          <h3 class="release-card__title">Remote agent control</h3>
-          <p class="release-card__desc">Health checks, logs, deploy-app, configure-proxy, and configure-firewall are now first-class CLI workflows for live environments.</p>
+          <h3 class="release-card__title">Cloud firewall controls</h3>
+          <p class="release-card__desc">Open, remove, and list provider firewall rules without SSH, while guest OS firewall operations remain available through the agent.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="200">
           <span class="release-card__eyebrow">Security</span>
-          <h3 class="release-card__title">Kata runtime + hardening</h3>
-          <p class="release-card__desc">Choose <code>kata</code> for stronger container isolation and ship with tightened cross-user access controls backed by new IDOR coverage.</p>
+          <h3 class="release-card__title">Paused install recovery</h3>
+          <p class="release-card__desc">Cloud/server deployments now keep discovered IP addresses even when installers pause or fail, improving SSH repair and retry workflows.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="300">
-          <span class="release-card__eyebrow">Distribution</span>
-          <h3 class="release-card__title">Marketplace workflows</h3>
-          <p class="release-card__desc">Submit stacks for review, track approval status, and inspect reviewer feedback directly from the CLI.</p>
+          <span class="release-card__eyebrow">MCP</span>
+          <h3 class="release-card__title">Remote secret tools</h3>
+          <p class="release-card__desc">AI clients can list remote secret targets and manage service secret metadata while plaintext values stay in Vault.</p>
         </article>
       </div>
     </div>
@@ -362,7 +361,7 @@ stacker deploy --target server
 Make sure that your SSH key is correctly set up and that the user has the necessary permissions on the server.</code></pre>
         </article>
         <article class="example-card" data-animate="fade-up" data-delay="100">
-          <div class="example-card__label">New in v0.2.7</div>
+          <div class="example-card__label">New in v0.2.8</div>
           <h3 class="example-card__title">Open ports and keep your database private</h3>
           <pre class="example-card__output"><code>❯ stacker agent configure-firewall \
     --public-ports 80/tcp,443/tcp \
@@ -562,7 +561,7 @@ Make sure that your SSH key is correctly set up and that the user has the necess
           <div class="command-card__header">
             <code class="command-card__cmd">stacker secrets</code>
           </div>
-          <p class="command-card__desc">Manage <code>.env</code> values, mask secrets in output, and validate config references before deploys.</p>
+          <p class="command-card__desc">Manage <code>.env</code> values plus remote Vault-backed service/app target secrets with metadata-only reads.</p>
         </div>
         <div class="command-card" data-command="ci">
           <div class="command-card__header">
@@ -640,7 +639,7 @@ Make sure that your SSH key is correctly set up and that the user has the necess
       <div class="cta__inner" data-animate="fade-up">
         <div class="cta__glow" aria-hidden="true"></div>
         <h2 class="cta__title">Ready to deploy<br><span class="gradient-text">smarter?</span></h2>
-        <p class="cta__desc">Ship with the current Stacker release: AI config, bare-metal deploys, pipes, agent ops, and marketplace workflows in one place.</p>
+        <p class="cta__desc">Ship with the current Stacker release: AI config, bare-metal deploys, service secrets, cloud firewalls, pipes, and agent ops in one place.</p>
         <div class="cta__actions">
           <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="btn btn--primary btn--lg">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>

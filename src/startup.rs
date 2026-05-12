@@ -79,8 +79,7 @@ pub async fn run(
     let vault_client = helpers::VaultClient::new(&settings.vault);
     let vault_client = web::Data::new(vault_client);
 
-    let oauth_http_client = build_oauth_http_client(&settings)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+    let oauth_http_client = build_oauth_http_client(&settings).map_err(std::io::Error::other)?;
     let oauth_http_client = web::Data::new(oauth_http_client);
 
     let oauth_cache = web::Data::new(middleware::authentication::OAuthCache::new(
@@ -432,6 +431,7 @@ pub async fn run(
             .app_data(mq_manager.clone())
             .app_data(vault_client.clone())
             .app_data(mcp_registry.clone())
+            .app_data(web::Data::new(authorization.clone()))
             .app_data(user_service_connector.clone())
             .app_data(install_service_connector.clone())
             .app_data(dockerhub_connector.clone())

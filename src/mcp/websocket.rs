@@ -1,6 +1,7 @@
 use crate::configuration::Settings;
 use crate::models;
 use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
+use actix_casbin_auth::CasbinService;
 use actix_web::{web, Error, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
 use sqlx::PgPool;
@@ -27,6 +28,7 @@ pub struct McpWebSocket {
     registry: Arc<ToolRegistry>,
     pg_pool: PgPool,
     settings: web::Data<Settings>,
+    casbin_service: CasbinService,
     hb: Instant,
 }
 
@@ -36,6 +38,7 @@ impl McpWebSocket {
         registry: Arc<ToolRegistry>,
         pg_pool: PgPool,
         settings: web::Data<Settings>,
+        casbin_service: CasbinService,
     ) -> Self {
         Self {
             user,
@@ -43,6 +46,7 @@ impl McpWebSocket {
             registry,
             pg_pool,
             settings,
+            casbin_service,
             hb: Instant::now(),
         }
     }
@@ -169,6 +173,19 @@ impl McpWebSocket {
 
         match self.registry.get(&call_req.name) {
             Some(handler) => {
+                if let Err(err) = self
+                    .registry
+                    .authorize_call(&call_req.name, &self.user, self.casbin_service.clone())
+                    .await
+                {
+                    tracing::warn!(tool = %call_req.name, error = %err, "MCP tool authorization failed");
+                    let response = CallToolResponse::error(format!("Error: {}", err));
+                    return JsonRpcResponse::success(
+                        req.id,
+                        serde_json::to_value(response).unwrap(),
+                    );
+                }
+
                 let context = ToolContext {
                     user: self.user.clone(),
                     pg_pool: self.pg_pool.clone(),
@@ -264,6 +281,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for McpWebSocket {
                 let registry = self.registry.clone();
                 let pg_pool = self.pg_pool.clone();
                 let settings = self.settings.clone();
+                let casbin_service = self.casbin_service.clone();
 
                 let fut = async move {
                     let ws = McpWebSocket {
@@ -272,6 +290,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for McpWebSocket {
                         registry,
                         pg_pool,
                         settings,
+                        casbin_service,
                         hb: Instant::now(),
                     };
                     ws.handle_jsonrpc(request).await
@@ -323,7 +342,7 @@ impl actix::Handler<SendResponse> for McpWebSocket {
 /// WebSocket route handler - entry point for MCP connections
 #[tracing::instrument(
     name = "MCP WebSocket connection",
-    skip(req, stream, user, registry, pg_pool, settings)
+    skip(req, stream, user, registry, pg_pool, settings, casbin_service)
 )]
 pub async fn mcp_websocket(
     req: HttpRequest,
@@ -332,6 +351,7 @@ pub async fn mcp_websocket(
     registry: web::Data<Arc<ToolRegistry>>,
     pg_pool: web::Data<PgPool>,
     settings: web::Data<Settings>,
+    casbin_service: web::Data<CasbinService>,
 ) -> Result<HttpResponse, Error> {
     tracing::info!(
         "New MCP WebSocket connection request from user: {}",
@@ -343,6 +363,7 @@ pub async fn mcp_websocket(
         registry.get_ref().clone(),
         pg_pool.get_ref().clone(),
         settings.clone(),
+        casbin_service.get_ref().clone(),
     );
 
     // The MCP SDK requests subprotocol "mcp" via Sec-WebSocket-Protocol header.
