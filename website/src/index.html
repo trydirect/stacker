@@ -80,6 +80,10 @@
             <strong>IP persistence</strong>, <strong>MCP secret tools</strong>, and hardened agent operations.
           </p>
           <div class="hero__release-chips">
+            <span class="hero__release-chip">Pipe automation</span>
+            <span class="hero__release-chip">Agent ops</span>
+            <span class="hero__release-chip">Kata isolation</span>
+            <span class="hero__release-chip">Marketplace flows</span>
             <span class="hero__release-chip">Service secrets</span>
             <span class="hero__release-chip">Cloud firewall</span>
             <span class="hero__release-chip">IP retention</span>
@@ -222,6 +226,26 @@
           <span class="release-card__eyebrow">MCP</span>
           <h3 class="release-card__title">Remote secret tools</h3>
           <p class="release-card__desc">AI clients can list remote secret targets and manage service secret metadata while plaintext values stay in Vault.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="0">
+          <span class="release-card__eyebrow">Automation</span>
+          <h3 class="release-card__title">Pipes</h3>
+          <p class="release-card__desc">Create, activate, trigger, replay, and inspect pipe executions to move data between apps without building glue code first.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="100">
+          <span class="release-card__eyebrow">Operations</span>
+          <h3 class="release-card__title">Remote agent control</h3>
+          <p class="release-card__desc">Health checks, logs, deploy-app, configure-proxy, and configure-firewall remain first-class CLI workflows for live environments.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="200">
+          <span class="release-card__eyebrow">Runtime</span>
+          <h3 class="release-card__title">Kata runtime isolation</h3>
+          <p class="release-card__desc">Choose <code>kata</code> for stronger container isolation while keeping <code>runc</code> as the fast default for standard workloads.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="300">
+          <span class="release-card__eyebrow">Distribution</span>
+          <h3 class="release-card__title">Marketplace workflows</h3>
+          <p class="release-card__desc">Submit stacks for review, track approval status, and inspect reviewer feedback directly from the CLI.</p>
         </article>
       </div>
     </div>
@@ -371,6 +395,24 @@ Make sure that your SSH key is correctly set up and that the user has the necess
 ✓ Opened 80/tcp and 443/tcp to the public internet
 ✓ Restricted 5432/tcp to 10.0.0.0/8
 ✓ Firewall rules persisted for future reboots</code></pre>
+        </article>
+        <article class="example-card" data-animate="fade-up" data-delay="200">
+          <div class="example-card__label">Agent compose essentials</div>
+          <h3 class="example-card__title">Mount the host paths agent operations need</h3>
+          <pre class="example-card__output"><code>agent:
+  image: trydirect/status:unstable
+  container_name: statuspanel_agent
+  volumes:
+    # Agent needs Docker socket for container monitoring and logs
+    - /var/run/docker.sock:/var/run/docker.sock
+    # Mount docker CLI from host for deploy_app/remove_app commands
+    - /usr/bin/docker:/usr/bin/docker:ro
+    - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
+    # Mount host paths for compose, config files, and managed installs
+    - /home/trydirect:/home/trydirect
+    - /opt:/opt
+  env_file:
+    - .env</code></pre>
         </article>
       </div>
     </div>
