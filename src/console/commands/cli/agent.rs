@@ -635,6 +635,7 @@ impl CallableTrait for AgentDeployAppCommand {
             pull: true,
             force_recreate: self.force_recreate,
             runtime: self.runtime.clone(),
+            registry_auth: None,
         };
 
         let request = AgentEnqueueRequest::new(&hash, "deploy_app")

@@ -5,8 +5,8 @@ use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
 use crate::project_app::{
-    is_platform_managed_app_code, normalize_app_code, store_configs_to_vault_from_params,
-    upsert_app_config_for_deploy,
+    is_platform_managed_app_code, normalize_app_code, parse_registry_auth_config,
+    store_configs_to_vault_from_params, upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
 use crate::services::{ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
@@ -387,6 +387,45 @@ async fn enrich_deploy_app_with_compose(
             return Some(params);
         }
     };
+
+    if params.get("registry_auth").is_none() {
+        match vault
+            .fetch_app_config(deployment_hash, REGISTRY_AUTH_VAULT_KEY)
+            .await
+        {
+            Ok(registry_config) => match parse_registry_auth_config(&registry_config) {
+                Ok(registry_auth) => {
+                    tracing::info!(
+                        deployment_hash = %deployment_hash,
+                        "Enriched deploy_app command with stored registry auth"
+                    );
+                    if let Some(obj) = params.as_object_mut() {
+                        obj.insert("registry_auth".to_string(), json!(registry_auth));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        deployment_hash = %deployment_hash,
+                        error = %error,
+                        "Failed to parse stored registry auth from Vault"
+                    );
+                }
+            },
+            Err(crate::services::vault_service::VaultError::NotFound(_)) => {
+                tracing::debug!(
+                    deployment_hash = %deployment_hash,
+                    "No stored registry auth found for deploy_app enrichment"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    deployment_hash = %deployment_hash,
+                    error = %error,
+                    "Failed to fetch registry auth from Vault during deploy_app enrichment"
+                );
+            }
+        }
+    }
 
     // If compose_content is not already provided, fetch from Vault
     if params

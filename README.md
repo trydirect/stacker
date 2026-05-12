@@ -204,6 +204,13 @@ After a successful cloud deploy, Stacker creates or reuses a local backup key at
 authorizes its public key on the server when possible. The CLI prints a normal
 `ssh -i ...` command, while the Vault private key remains server-side.
 
+When a cloud/server deploy includes `deploy.registry` credentials (or the
+equivalent `STACKER_DOCKER_*` environment variables), Stacker stores that
+registry auth securely and reuses it for later Status-managed image refreshes
+such as `stacker agent deploy-app`. This keeps private-image redeploys working
+without depending on host-level `docker login` state or mounting `/root/.docker`
+into the agent container.
+
 ### Secrets workflow
 
 ```bash

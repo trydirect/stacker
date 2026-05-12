@@ -582,6 +582,14 @@ Docker registry credentials for pulling private images during cloud/server deplo
 
 Credentials can be specified in `stacker.yml` or via environment variables. Environment variables take precedence.
 
+For deployments managed by the Status agent, Stacker also persists this auth in
+its trusted secret storage and reuses it for later image refreshes such as
+`stacker agent deploy-app`. The agent performs the pull with a temporary Docker
+auth directory and immediate cleanup, so private-image redeploys do not depend
+on whatever `docker login` state happens to exist on the host. If no stored
+registry auth exists, Stacker keeps the current anonymous-pull behavior and may
+still redeploy successfully when the image is already cached locally.
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `username` | `string` | **yes** | — | Registry username |

@@ -121,6 +121,9 @@ pub struct DeployAppCommandRequest {
     /// Container runtime to use: "runc" (default) or "kata"
     #[serde(default = "default_runtime")]
     pub runtime: String,
+    /// Optional private registry credentials reused for image pull refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<RegistryAuthCommandRequest>,
 }
 
 fn default_deploy_pull() -> bool {
@@ -129,6 +132,23 @@ fn default_deploy_pull() -> bool {
 
 fn default_runtime() -> String {
     "runc".to_string()
+}
+
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct RegistryAuthCommandRequest {
+    pub registry: String,
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for RegistryAuthCommandRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryAuthCommandRequest")
+            .field("registry", &self.registry)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1602,6 +1622,38 @@ mod tests {
         let result = validate_command_parameters("deploy_app", &Some(params));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("runtime must be one of"));
+    }
+
+    #[test]
+    fn deploy_app_accepts_registry_auth() {
+        let params = json!({
+            "app_code": "web",
+            "registry_auth": {
+                "registry": "docker.io",
+                "username": "optimum",
+                "password": "supersecret"
+            }
+        });
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["registry_auth"]["registry"], "docker.io");
+        assert_eq!(val["registry_auth"]["username"], "optimum");
+        assert_eq!(val["registry_auth"]["password"], "supersecret");
+    }
+
+    #[test]
+    fn registry_auth_debug_redacts_password() {
+        let auth = RegistryAuthCommandRequest {
+            registry: "docker.io".to_string(),
+            username: "optimum".to_string(),
+            password: "supersecret".to_string(),
+        };
+
+        let rendered = format!("{:?}", auth);
+        assert!(rendered.contains("docker.io"));
+        assert!(rendered.contains("optimum"));
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains("supersecret"));
     }
 
     #[test]

@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Reuse private registry auth for agent-managed pulls
+
+- Deploy-time `deploy.registry` credentials are now stored in trusted Stacker
+  secret storage and reused for later Status-managed pulls such as
+  `stacker agent deploy-app`.
+- The Status agent now performs private-image pulls with a temporary
+  `DOCKER_CONFIG` auth context and cleans it up immediately after the pull,
+  instead of relying on host Docker login state.
+- When no stored registry auth exists, pull behavior remains backward
+  compatible: anonymous pull is attempted first and cached local images can
+  still allow the redeploy to complete with warnings.
+
 ## [0.2.8] — 2026-05-12
 
 ### Added — Remote service/app target secrets

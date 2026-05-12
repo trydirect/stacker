@@ -1059,13 +1059,13 @@ async fn execute_deployment(
         None
     };
 
-    install_service
+    let deploy_result = install_service
         .deploy(
             user.id.clone(),
             user.email.clone(),
             id,
             deployment_id,
-            deployment_hash,
+            deployment_hash.clone(),
             &dc.project,
             cloud,
             server,
@@ -1077,8 +1077,18 @@ async fn execute_deployment(
             new_private_key,
         )
         .await
-        .map(|project_id| (project_id, deployment_id))
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
+    if let Some(registry) = form.registry.as_ref() {
+        crate::project_app::store_registry_auth_to_vault(
+            &deployment_hash,
+            registry,
+            &settings.vault,
+        )
+        .await;
+    }
+
+    Ok((deploy_result, deployment_id))
 }
 
 #[tracing::instrument(name = "Deploy for every user", skip_all)]
