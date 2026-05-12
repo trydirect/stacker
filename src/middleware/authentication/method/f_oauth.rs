@@ -133,8 +133,8 @@ pub async fn try_oauth(req: &mut ServiceRequest) -> Result<bool, String> {
         .await
         .map_err(|err| format!("{err}"))?;
 
-    // Attach the access token to the user for proxy requests to other services
-    user.access_token = Some(token);
+    // Attach the access token to the user for proxy requests and MFA-sensitive checks.
+    user = user.with_token(token);
 
     // control access using user role
     tracing::debug!("ACL check for role: {}", user.role.clone());
@@ -179,6 +179,7 @@ pub async fn fetch_user(
                     email: "test@example.com".to_string(),
                     role: "group_user".to_string(),
                     email_confirmed: true,
+                    mfa_verified: false,
                     access_token: None,
                 };
                 return Ok(user);

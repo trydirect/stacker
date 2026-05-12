@@ -610,7 +610,7 @@ enum SecretsCommands {
     stacker secrets set DB_PASSWORD=supersecret\n\
 \n\
   Remote deployable service/app target secret (project.identity from stacker.yml):\n\
-    stacker secrets set S3_SECRET_KEY --scope service --service uploader --body supersecret\n\
+    stacker secrets set S3_SECRET_KEY --service uploader --body supersecret\n\
 \n\
   Use the target code listed by `stacker secrets apps` for --service.\n\
 \n\
@@ -630,29 +630,19 @@ enum SecretsCommands {
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
-        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
         /// Deployable service/app target code listed by `stacker secrets apps`
-        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
+        #[arg(long, value_name = "TARGET_CODE")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
-        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        #[arg(long, value_name = "SERVER_ID")]
         server_id: Option<i32>,
         /// Inline secret value for remote mode
-        #[arg(
-            long,
-            value_name = "VALUE",
-            requires = "scope",
-            conflicts_with = "body_file"
-        )]
+        #[arg(long, value_name = "VALUE", conflicts_with = "body_file")]
         body: Option<String>,
         /// Read the secret value from a file in remote mode
-        #[arg(
-            long = "body-file",
-            value_name = "FILE",
-            requires = "scope",
-            conflicts_with = "body"
-        )]
+        #[arg(long = "body-file", value_name = "FILE", conflicts_with = "body")]
         body_file: Option<String>,
     },
     /// Get a local .env secret or remote secret metadata
@@ -663,8 +653,8 @@ enum SecretsCommands {
   Local plaintext value:\n\
     stacker secrets get DB_PASSWORD --show\n\
 \n\
-  Remote metadata only:\n\
-    stacker secrets get S3_SECRET_KEY --scope service --service uploader --json\n\
+   Remote metadata only:\n\
+    stacker secrets get S3_SECRET_KEY --service uploader --json\n\
 \n\
 Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     Get {
@@ -684,16 +674,16 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
-        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
         /// Deployable service/app target code listed by `stacker secrets apps`
-        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
+        #[arg(long, value_name = "TARGET_CODE")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
-        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        #[arg(long, value_name = "SERVER_ID")]
         server_id: Option<i32>,
         /// Output metadata as JSON in remote mode
-        #[arg(long, requires = "scope")]
+        #[arg(long)]
         json: bool,
     },
     /// List local .env secrets or remote secret metadata
@@ -702,7 +692,7 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
     stacker secrets list\n\
 \n\
   Remote service secrets:\n\
-    stacker secrets list --scope service --service uploader\n\
+    stacker secrets list --service uploader\n\
 \n\
   Remote server secrets as JSON:\n\
     stacker secrets list --scope server --server-id 42 --json\n\
@@ -723,32 +713,40 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
-        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
         /// Deployable service/app target code listed by `stacker secrets apps`
-        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
+        #[arg(long, value_name = "TARGET_CODE")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
-        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        #[arg(long, value_name = "SERVER_ID")]
         server_id: Option<i32>,
         /// Output metadata as JSON in remote mode
-        #[arg(long, requires = "scope")]
+        #[arg(long)]
         json: bool,
     },
     /// List valid remote deployable service/app target codes (`stacker secrets apps`)
     #[command(
         visible_alias = "services",
         after_help = "Examples:\n\
-  List remote target codes using project.identity from stacker.yml:\n\
-    stacker secrets apps\n\
-  \n\
+     List remote target codes using project.identity from stacker.yml:\n\
+     stacker secrets apps\n\
+   \n\
+   Register one local stacker.yml service as a remote target:\n\
+     stacker secrets apps register upload\n\
+   \n\
+   Sync all local stacker.yml services as remote targets:\n\
+     stacker secrets apps sync\n\
+   \n\
    List remote target codes for a project:\n\
-    stacker secrets apps --project blog\n\
+     stacker secrets apps --project blog\n\
   \n\
   Output app metadata as JSON:\n\
     stacker secrets apps --json"
     )]
     Apps {
+        #[command(subcommand)]
+        command: Option<SecretsAppsCommands>,
         /// Project name or ID (defaults to project.identity in stacker.yml)
         #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
@@ -761,8 +759,8 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
   Local delete:\n\
     stacker secrets delete DB_PASSWORD\n\
 \n\
-  Remote service secret delete:\n\
-    stacker secrets delete S3_SECRET_KEY --scope service --service uploader\n\
+   Remote service secret delete:\n\
+    stacker secrets delete S3_SECRET_KEY --service uploader\n\
 \n\
   Remote server secret delete:\n\
     stacker secrets delete NPM_TOKEN --scope server --server-id 42")]
@@ -780,13 +778,13 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         #[arg(long, value_enum)]
         scope: Option<RemoteSecretScope>,
         /// Project name or ID for service-scoped secrets (defaults to project.identity in stacker.yml)
-        #[arg(long, value_name = "PROJECT", requires = "scope")]
+        #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
         /// Deployable service/app target code listed by `stacker secrets apps`
-        #[arg(long, value_name = "TARGET_CODE", requires = "scope")]
+        #[arg(long, value_name = "TARGET_CODE")]
         service: Option<String>,
         /// Server ID for server-scoped secrets
-        #[arg(long, value_name = "SERVER_ID", requires = "scope")]
+        #[arg(long, value_name = "SERVER_ID")]
         server_id: Option<i32>,
     },
     /// Validate all ${VAR} references in stacker.yml are set in .env or environment
@@ -794,6 +792,30 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         /// Path to stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretsAppsCommands {
+    /// Register one local stacker.yml service as a remote secret target
+    Register {
+        /// Local service name from stacker.yml
+        service: String,
+        /// Project name or ID (defaults to project.identity in stacker.yml)
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+        /// Output registered app metadata as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Register/update all local stacker.yml services as remote secret targets
+    Sync {
+        /// Project name or ID (defaults to project.identity in stacker.yml)
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+        /// Output registered app metadata as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1237,6 +1259,48 @@ enum ProxyCommands {
     },
 }
 
+fn inferred_remote_secret_scope(
+    scope: Option<RemoteSecretScope>,
+    service: &Option<String>,
+    server_id: Option<i32>,
+) -> Option<RemoteSecretScope> {
+    scope.or_else(|| {
+        if service.is_some() {
+            Some(RemoteSecretScope::Service)
+        } else if server_id.is_some() {
+            Some(RemoteSecretScope::Server)
+        } else {
+            None
+        }
+    })
+}
+
+fn should_use_remote_secret_set(
+    scope: Option<RemoteSecretScope>,
+    project: &Option<String>,
+    service: &Option<String>,
+    server_id: Option<i32>,
+    body: &Option<String>,
+    body_file: &Option<String>,
+) -> bool {
+    scope.is_some()
+        || project.is_some()
+        || service.is_some()
+        || server_id.is_some()
+        || body.is_some()
+        || body_file.is_some()
+}
+
+fn should_use_remote_secret_metadata(
+    scope: Option<RemoteSecretScope>,
+    project: &Option<String>,
+    service: &Option<String>,
+    server_id: Option<i32>,
+    json: bool,
+) -> bool {
+    scope.is_some() || project.is_some() || service.is_some() || server_id.is_some() || json
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -1539,7 +1603,11 @@ fn get_command(
                 body,
                 body_file,
             } => {
-                if let Some(scope) = scope {
+                if should_use_remote_secret_set(
+                    scope, &project, &service, server_id, &body, &body_file,
+                ) {
+                    let scope = inferred_remote_secret_scope(scope, &service, server_id)
+                        .unwrap_or(RemoteSecretScope::Service);
                     Box::new(
                         stacker::console::commands::cli::secrets::SecretsSetCommand::new_remote(
                             input, scope, project, service, server_id, body, body_file,
@@ -1563,7 +1631,9 @@ fn get_command(
                 server_id,
                 json,
             } => {
-                if let Some(scope) = scope {
+                if should_use_remote_secret_metadata(scope, &project, &service, server_id, json) {
+                    let scope = inferred_remote_secret_scope(scope, &service, server_id)
+                        .unwrap_or(RemoteSecretScope::Service);
                     Box::new(
                         stacker::console::commands::cli::secrets::SecretsGetCommand::new_remote(
                             key, scope, project, service, server_id, json,
@@ -1586,7 +1656,9 @@ fn get_command(
                 server_id,
                 json,
             } => {
-                if let Some(scope) = scope {
+                if should_use_remote_secret_metadata(scope, &project, &service, server_id, json) {
+                    let scope = inferred_remote_secret_scope(scope, &service, server_id)
+                        .unwrap_or(RemoteSecretScope::Service);
                     Box::new(
                         stacker::console::commands::cli::secrets::SecretsListCommand::new_remote(
                             scope, project, service, server_id, json,
@@ -1600,9 +1672,37 @@ fn get_command(
                     )
                 }
             }
-            SecretsCommands::Apps { project, json } => Box::new(
-                stacker::console::commands::cli::secrets::SecretsAppsCommand::new(project, json),
-            ),
+            SecretsCommands::Apps {
+                command,
+                project,
+                json,
+            } => match command {
+                Some(SecretsAppsCommands::Register {
+                    service,
+                    project: command_project,
+                    json: command_json,
+                }) => Box::new(
+                    stacker::console::commands::cli::secrets::SecretsAppsCommand::register(
+                        service,
+                        command_project.or(project),
+                        json || command_json,
+                    ),
+                ),
+                Some(SecretsAppsCommands::Sync {
+                    project: command_project,
+                    json: command_json,
+                }) => Box::new(
+                    stacker::console::commands::cli::secrets::SecretsAppsCommand::sync(
+                        command_project.or(project),
+                        json || command_json,
+                    ),
+                ),
+                None => Box::new(
+                    stacker::console::commands::cli::secrets::SecretsAppsCommand::new(
+                        project, json,
+                    ),
+                ),
+            },
             SecretsCommands::Delete {
                 key,
                 file,
@@ -1611,7 +1711,10 @@ fn get_command(
                 service,
                 server_id,
             } => {
-                if let Some(scope) = scope {
+                if scope.is_some() || project.is_some() || service.is_some() || server_id.is_some()
+                {
+                    let scope = inferred_remote_secret_scope(scope, &service, server_id)
+                        .unwrap_or(RemoteSecretScope::Service);
                     Box::new(
                         stacker::console::commands::cli::secrets::SecretsDeleteCommand::new_remote(
                             key, scope, project, service, server_id,
@@ -2164,8 +2267,6 @@ mod tests {
             "secrets",
             "set",
             "S3_SECRET_KEY",
-            "--scope",
-            "service",
             "--project",
             "blog",
             "--service",
@@ -2177,6 +2278,27 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "remote service secret syntax should parse successfully"
+        );
+    }
+
+    #[test]
+    fn test_secrets_set_still_parses_explicit_remote_service_scope() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "set",
+            "S3_SECRET_KEY",
+            "--scope",
+            "service",
+            "--service",
+            "uploader",
+            "--body",
+            "supersecret",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "explicit remote service scope should remain supported"
         );
     }
 
@@ -2207,8 +2329,6 @@ mod tests {
             "stacker",
             "secrets",
             "list",
-            "--scope",
-            "service",
             "--project",
             "blog",
             "--service",
@@ -2223,6 +2343,41 @@ mod tests {
     }
 
     #[test]
+    fn test_secrets_get_parses_service_without_scope() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "get",
+            "S3_BUCKET",
+            "--service",
+            "upload",
+            "--json",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "remote service get should infer service scope from --service"
+        );
+    }
+
+    #[test]
+    fn test_secrets_delete_parses_service_without_scope() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "delete",
+            "S3_BUCKET",
+            "--service",
+            "upload",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "remote service delete should infer service scope from --service"
+        );
+    }
+
+    #[test]
     fn test_secrets_apps_parses_project_lookup_flags() {
         let parsed = Cli::try_parse_from(["stacker", "secrets", "apps", "--json"]);
 
@@ -2230,6 +2385,27 @@ mod tests {
             parsed.is_ok(),
             "remote secrets apps syntax should parse successfully"
         );
+    }
+
+    #[test]
+    fn test_secrets_apps_parses_register_and_sync() {
+        let register = Cli::try_parse_from([
+            "stacker",
+            "secrets",
+            "apps",
+            "register",
+            "upload",
+            "--project",
+            "blog",
+            "--json",
+        ]);
+        let sync = Cli::try_parse_from(["stacker", "secrets", "apps", "sync", "--json"]);
+
+        assert!(
+            register.is_ok(),
+            "secrets apps register should parse successfully"
+        );
+        assert!(sync.is_ok(), "secrets apps sync should parse successfully");
     }
 
     #[test]
@@ -2271,7 +2447,7 @@ mod tests {
         let help = render_command_help(get);
 
         assert!(help.contains("metadata-only"));
-        assert!(help.contains("--scope service"));
+        assert!(help.contains("--scope <SCOPE>"));
         assert!(help.contains("--json"));
     }
 }

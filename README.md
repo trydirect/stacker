@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.7-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.2.8-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -12,6 +12,12 @@
 </div>
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
+
+**v0.2.8 highlights:** remote Vault-backed secrets now work for deployable
+service/app targets from `stacker.yml` and supported Compose services, paused or
+failed cloud/server installs retain discovered IP addresses, cloud-provider
+firewalls can be managed without SSH, and MCP now exposes remote service secret
+tools.
 
 
 ## Quick Start
@@ -111,7 +117,7 @@ Full schema reference: [docs/STACKER_YML_REFERENCE.md](docs/STACKER_YML_REFERENC
 │  Stacker CLI │────────►│  Stacker Server  │────────►│  Status Panel Agent │
 │              │  REST   │                  │  queue  │  (on target server) │
 │  stacker.yml │  API    │  Stack Builder UI│  pull   │                     │
-│  init/deploy │         │  48+ MCP tools   │◄────────│  health / logs /    │
+│  init/deploy │         │  85+ MCP tools   │◄────────│  health / logs /    │
 │  status/logs │         │  Vault · AMQP    │  HMAC   │  restart / exec /   │
 └──────────────┘         └──────────────────┘         │  deploy_app / proxy │
                                 │                     └─────────────────────┘
@@ -204,7 +210,10 @@ authorizes its public key on the server when possible. The CLI prints a normal
 # Local project .env secret
 stacker secrets set DB_PASSWORD=supersecret
 
-# Remote service secret used at render/deploy time for one app
+# Discover valid remote deployable service/app targets first
+stacker secrets apps
+
+# Remote service secret used at render/deploy time for one target
 stacker secrets set S3_SECRET_KEY \
   --scope service \
   --service uploader \
@@ -220,14 +229,13 @@ stacker secrets set NPM_TOKEN \
 stacker secrets list --scope service --service uploader --json
 stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 
-# Discover valid remote service app codes for the current stacker.yml project
-stacker secrets apps
 ```
 
 - Local mode remains the default and reads/writes the project `.env` file.
 - Remote mode is enabled only with `--scope service` or `--scope server`.
 - Service-scoped remote commands default `--project` from `stacker.yml -> project.identity`; `--project` still overrides it explicitly.
-- Service-scoped secrets are merged into rendered app env at deploy time.
+- Service-scoped secrets target deployable service/app codes listed by `stacker secrets apps`, including registered `stacker.yml` services and supported image-backed Compose services after a deploy/update sync.
+- Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
 - Remote `get` and `list` do **not** return plaintext values in v1.
 
 ### Marketplace workflow (for stack developers)
@@ -255,6 +263,7 @@ curl -sL https://marketplace.try.direct/<purchase-token>/install.sh | sh
 - **Auto-detection** — identifies Node, Python, Rust, Go, PHP, static sites from project files
 - **Dockerfile generation** — produces optimised multi-stage Dockerfiles per app type
 - **Docker Compose generation** — wires app + services + proxy + monitoring
+- **Remote service secrets** — Vault-backed service/app target secrets are metadata-only when read and isolated to the selected service
 - **AI-assisted config** — scans project, calls LLM to generate tailored `stacker.yml`
 - **AI troubleshooting** — on deploy failure, suggests fixes via AI or deterministic fallback hints
 - **Service catalog** — 20+ built-in service templates (Postgres, Redis, WordPress, etc.) — add with `stacker service add`
@@ -263,7 +272,8 @@ curl -sL https://marketplace.try.direct/<purchase-token>/install.sh | sh
 - **SSH key management** — generate, view, upload, and repair server SSH keys
   (Vault-backed), with automatic local backup SSH access after cloud deploy
 - **Reverse proxy** — auto-detects Nginx / Nginx Proxy Manager, configures domains + SSL
-- **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode
+- **Cloud deployment** — Hetzner, DigitalOcean, AWS, Linode, with provider firewall operations and paused/failed install IP retention
+- **MCP Server** — 85+ tools, including deployment, agent control, config, proxy, firewall, and remote service secret management
 - **Marketplace** — submit stacks for review, auto-publish on approval, check status from CLI
 - **Buyer install** — purchase tokens, one-liner install scripts, agent self-registration
 

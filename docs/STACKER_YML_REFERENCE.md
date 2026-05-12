@@ -954,6 +954,7 @@ Configuration issues:
 | `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
+| `stacker secrets` | Manage local `.env` secrets or remote Vault-backed service/server secrets |
 | `stacker destroy` | Tear down the stack |
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
@@ -962,6 +963,9 @@ Configuration issues:
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
+| `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
+| `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
+| `stacker cloud firewall list` | List cloud-provider firewall rules for a server |
 | `stacker ssh-key generate` | Generate a Vault-backed SSH key pair for a server |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
@@ -974,7 +978,8 @@ Configuration issues:
 | `stacker agent restart <app>` | Restart a container via the agent |
 | `stacker agent deploy-app` | Deploy or update an app container on the target server |
 | `stacker agent remove-app` | Remove an app container (optional volume/image cleanup) |
-| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts |
+| `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent |
 | `stacker agent history` | Show recent agent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
 | `stacker update` | Check for CLI updates |
@@ -1034,6 +1039,32 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 > local backup key in the user-scoped Stacker config directory and authorizes its
 > public key on the server when possible. It prints a copy-paste-ready `ssh -i`
 > command; the Vault private key is not exported to the CLI.
+> **IP persistence:** If a cloud/server install pauses or fails after the
+> installer has reported an IP address, Stacker saves that discovered IP in the
+> local deployment context and persists it server-side when possible.
+
+### Remote secrets
+
+```bash
+# Discover deployable service/app targets for the current project
+stacker secrets apps
+
+# Store a Vault-backed secret for one service/app target
+stacker secrets set S3_BUCKET \
+  --scope service \
+  --service upload \
+  --body superbucket
+
+# Remote reads return metadata only, never plaintext values
+stacker secrets list --scope service --service upload --json
+stacker secrets get S3_BUCKET --scope service --service upload --json
+```
+
+Service-scoped remote secrets target the codes listed by `stacker secrets apps`.
+Those codes include the main app, registered `stacker.yml` services, and
+supported image-backed services extracted from `deploy.compose_file` during
+cloud/server deploy preparation. A service secret is rendered only into the
+matching service/app target.
 
 ### Other commands
 

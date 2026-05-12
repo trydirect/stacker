@@ -397,7 +397,7 @@ impl ToolHandler for ConfigureProxyAgentTool {
                     },
                     "ssl_enabled": {
                         "type": "boolean",
-                        "description": "Enable SSL with Let's Encrypt (default: true)"
+                        "description": "Enable SSL with Let's Encrypt; set false for plain HTTP hosts (default: true)"
                     },
                     "action": {
                         "type": "string",

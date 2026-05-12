@@ -3,6 +3,15 @@
 ## Overview
 This document outlines the implementation plan for adding Model Context Protocol (MCP) server capabilities to the Stacker backend. The MCP server will expose Stacker's functionality as tools that AI assistants can use to help users build and deploy application stacks.
 
+> **Current status:** The original 17-tool MVP has been surpassed. As of
+> v0.2.8 the registry exposes 85+ tools, including remote service secret
+> management (`list_remote_secret_targets`, `list_remote_service_secrets`,
+> `get_remote_service_secret`, `set_remote_service_secret`,
+> `delete_remote_service_secret`) with metadata-only reads and Vault-backed
+> writes. All tool calls require explicit per-tool Casbin `CALL` policies under
+> `/mcp/tools/<tool_name>`; sensitive write/destructive tools additionally
+> require verified 2FA/MFA.
+
 ## Architecture
 
 ```

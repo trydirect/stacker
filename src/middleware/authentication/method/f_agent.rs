@@ -159,6 +159,7 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
         last_name: format!("#{}", &agent.id.to_string()[..8]), // First 8 chars of UUID
         email: format!("agent+{}@system.local", agent.deployment_hash),
         email_confirmed: true,
+        mfa_verified: false,
         access_token: None,
     };
 

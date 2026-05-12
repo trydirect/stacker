@@ -63,6 +63,28 @@ pub struct ProjectAppInfo {
     pub parent_app_code: Option<String>,
 }
 
+/// Project app registration payload for `POST /project/{id}/apps`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectAppRegistrationRequest {
+    pub code: String,
+    pub name: Option<String>,
+    pub image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ports: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deploy_order: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_hash: Option<String>,
+}
+
 /// Cloud credentials as returned by `/cloud` endpoints
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudInfo {
@@ -567,6 +589,47 @@ impl StackerClient {
             })?;
 
         Ok(api.list.unwrap_or_default())
+    }
+
+    /// Create or update one project app target.
+    pub async fn upsert_project_app(
+        &self,
+        project_id: i32,
+        request: &ProjectAppRegistrationRequest,
+    ) -> Result<ProjectAppInfo, CliError> {
+        let body =
+            serde_json::to_value(request).map_err(|e| CliError::ConfigValidation(e.to_string()))?;
+        let resp = self
+            .send_project_request(
+                reqwest::Method::POST,
+                &format!("/{}/apps", project_id),
+                Some(&body),
+                "POST /project/{id}/apps",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target,
+                reason: format!(
+                    "Stacker server POST /project/{}/apps failed ({}): {}",
+                    project_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<ProjectAppInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target,
+            reason: "Stacker server did not return a project app".to_string(),
+        })
     }
 
     // ── Deployments ───────────────────────────────────

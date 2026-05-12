@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.8] — 2026-05-12
+
+### Added — Remote service/app target secrets
+
+- `stacker secrets set --scope service --service <target>` now supports real
+  deployable service/app targets, not only the main app code. Valid targets are
+  discovered with `stacker secrets apps`.
+- Stacker.yml `services:` entries are synced as service targets while the main
+  `app:` remains the web target, so remote secrets can be scoped to support
+  services such as `upload`, `worker`, or `postgres`.
+- Image-backed services from `deploy.compose_file` are registered as service
+  targets during cloud/server deploy preparation when they can be represented
+  safely; build-only and platform-managed services are skipped with warnings.
+- Service-scoped remote secrets remain isolated per target and are rendered only
+  into the matching service; metadata APIs and CLI output still never return
+  plaintext Vault values.
+- CLI help and errors now use "deployable service/app target" wording and list
+  available targets when an unknown service code is requested.
+
+### Added — MCP remote service secret tools
+
+- Added MCP tools for the remote service secret lifecycle:
+  `list_remote_secret_targets`, `list_remote_service_secrets`,
+  `get_remote_service_secret`, `set_remote_service_secret`, and
+  `delete_remote_service_secret`.
+- MCP remote secret reads are metadata-only, match the CLI/API target model, and
+  write secret values directly to Vault without returning plaintext values.
+- All MCP tool calls now require explicit per-tool Casbin `CALL` permission under
+  `/mcp/tools/<tool_name>` before the handler executes; marketplace admin tools
+  are granted only to `group_admin`.
+- Sensitive MCP write/destructive operations, including remote secret writes and
+  deletes, additionally require a token or auth profile with verified 2FA/MFA
+  before Vault or deployment state is touched.
+
 ### Added — Cloud provider firewall operations
 
 - Added `stacker cloud firewall add|remove|list` for cloud-provider firewall
@@ -58,6 +92,15 @@ All notable changes to this project will be documented in this file.
   and passes them into project metadata before invoking the installer, so
   provider firewalls receive app ports such as Coolify's `8000:8080` instead of
   the generic custom-app fallback `8080`.
+
+### Fixed — Deployment IP persistence on paused/failed installs
+
+- Cloud/server deploy status handling now extracts a server IP from installer
+  progress messages such as `178.104.222.170: Copy files is done` when the
+  structured server record has not populated `srv_ip` yet.
+- The CLI saves that fallback IP into the local deployment context, and the MQ
+  listener persists the IP server-side so paused or failed deployments still
+  retain a usable host address for SSH repair and retry workflows.
 
 ### Changed — Agent proxy SSL control
 

@@ -50,8 +50,8 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
         }
     };
 
-    // Attach the access token to the user for proxy requests to other services
-    user.access_token = Some(token);
+    // Attach the access token to the user for proxy requests and MFA-sensitive checks.
+    user = user.with_token(token);
 
     // Control access using user role
     tracing::debug!("ACL check for role (cookie auth): {}", user.role.clone());

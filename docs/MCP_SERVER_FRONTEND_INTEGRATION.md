@@ -30,11 +30,44 @@ This document provides comprehensive guidance for integrating the Stacker MCP (M
                      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  Stacker Backend (MCP Server)                               │
-│  - Tool Registry (17+ tools)                                │
+│  - Tool Registry (85+ tools)                                │
 │  - Session Management                                       │
 │  - OAuth Authentication                                     │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+## Current v0.2.8 Tool Coverage
+
+The MCP server now exposes project/deployment, cloud credential discovery,
+container operations, Status Panel agent control, proxy configuration, guest OS
+firewall tools, Vault config tools, and remote service secret tools. The remote
+secret tools mirror the CLI/API target model:
+
+- `list_remote_secret_targets` — list deployable service/app target codes for a
+  project.
+- `list_remote_service_secrets` — list metadata for Vault-backed service-scope
+  secrets on one target.
+- `get_remote_service_secret` — read metadata for one service secret.
+- `set_remote_service_secret` — write one service secret value to Vault.
+- `delete_remote_service_secret` — delete one service secret.
+
+Remote secret reads are metadata-only; plaintext values are written to Vault but
+never returned to MCP clients.
+
+Every MCP tool call is checked against Casbin before its handler executes. Clients
+must have a `CALL` policy for `/mcp/tools/<tool_name>`. Marketplace admin tools
+are granted only to `group_admin`; regular project, deployment, cloud,
+container, proxy, firewall, Vault, and remote-secret tools use the normal user
+group policies plus their existing project/ownership checks.
+
+`set_remote_service_secret` and `delete_remote_service_secret` are sensitive
+write operations. They also require:
+
+- Casbin permission for `/mcp/tools/set_remote_service_secret` or
+  `/mcp/tools/delete_remote_service_secret` with action `CALL`.
+- A verified 2FA/MFA marker from the authenticated user profile or access token
+  (`mfa_verified`, `two_factor_verified`, `amr` containing `totp`, `otp`,
+  `webauthn`, etc.).
 
 ## Technology Stack
 

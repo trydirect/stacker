@@ -15,10 +15,12 @@ use std::fmt;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use crate::cli::config_parser::StackerConfig;
+use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
-use crate::cli::stacker_client::{ProjectAppInfo, ProjectInfo, RemoteSecretMetadataInfo};
+use crate::cli::stacker_client::{
+    ProjectAppInfo, ProjectAppRegistrationRequest, ProjectInfo, RemoteSecretMetadataInfo,
+};
 use crate::console::commands::CallableTrait;
 use clap::ValueEnum;
 
@@ -403,6 +405,149 @@ fn resolve_remote_service_code_from_apps(
     )))
 }
 
+fn available_project_app_codes(apps: &[ProjectAppInfo]) -> Vec<String> {
+    let mut available_codes = apps
+        .iter()
+        .map(|app| app.code.clone())
+        .collect::<Vec<String>>();
+    available_codes.sort();
+    available_codes.dedup();
+    available_codes
+}
+
+fn local_service_names(config: &StackerConfig) -> Vec<String> {
+    let mut names = config
+        .services
+        .iter()
+        .map(|service| service.name.clone())
+        .collect::<Vec<String>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn find_local_service<'a>(
+    config: &'a StackerConfig,
+    requested: &str,
+) -> Option<&'a ServiceDefinition> {
+    let requested_lower = requested.to_lowercase();
+    config
+        .services
+        .iter()
+        .find(|service| service.name.to_lowercase() == requested_lower)
+}
+
+fn service_registration_request(
+    service: &ServiceDefinition,
+    deployment_hash: Option<String>,
+) -> ProjectAppRegistrationRequest {
+    let env = if service.environment.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(service.environment))
+    };
+    let ports = if service.ports.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(service.ports))
+    };
+    let volumes = if service.volumes.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(service.volumes))
+    };
+    let depends_on = if service.depends_on.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(service.depends_on))
+    };
+
+    ProjectAppRegistrationRequest {
+        code: service.name.clone(),
+        name: Some(service.name.clone()),
+        image: service.image.clone(),
+        env,
+        ports,
+        volumes,
+        depends_on,
+        enabled: Some(true),
+        deploy_order: None,
+        deployment_hash,
+    }
+}
+
+fn active_deployment_hash(ctx: &CliRuntime, project: &ProjectInfo) -> Option<String> {
+    ctx.block_on(ctx.client.agent_snapshot_by_project(project.id))
+        .ok()
+        .map(|(_, hash)| hash)
+}
+
+fn register_service_target(
+    ctx: &CliRuntime,
+    project: &ProjectInfo,
+    service: &ServiceDefinition,
+    operation: &str,
+) -> Result<ProjectAppInfo, CliError> {
+    let deployment_hash = active_deployment_hash(ctx, project);
+    let request = service_registration_request(service, deployment_hash);
+    ctx.block_on(ctx.client.upsert_project_app(project.id, &request))
+        .map_err(|error| remap_remote_secret_error(operation, error))
+}
+
+fn register_local_service_target(
+    ctx: &CliRuntime,
+    project: &ProjectInfo,
+    requested: &str,
+    operation: &str,
+    remote_apps: &[ProjectAppInfo],
+) -> Result<ProjectAppInfo, CliError> {
+    let config_path = Path::new(DEFAULT_CONFIG_FILE);
+    let config = StackerConfig::from_file(config_path)?;
+    let Some(service) = find_local_service(&config, requested) else {
+        let local = local_service_names(&config);
+        let remote = available_project_app_codes(remote_apps);
+        return Err(CliError::ConfigValidation(format!(
+            "Unknown service target '{}'. Local services in stacker.yml: {}. Remote targets: {}.",
+            requested,
+            if local.is_empty() {
+                "(none)".to_string()
+            } else {
+                local.join(", ")
+            },
+            if remote.is_empty() {
+                "(none)".to_string()
+            } else {
+                remote.join(", ")
+            }
+        )));
+    };
+
+    register_service_target(ctx, project, service, operation)
+}
+
+fn resolve_or_register_remote_service_code(
+    ctx: &CliRuntime,
+    project: &ProjectInfo,
+    requested: &str,
+    operation: &str,
+) -> Result<String, CliError> {
+    let apps = ctx
+        .block_on(ctx.client.list_project_apps(project.id))
+        .map_err(|error| remap_remote_secret_error(operation, error))?;
+
+    match resolve_remote_service_code_from_apps(&project.name, &apps, requested) {
+        Ok(code) => Ok(code),
+        Err(_) => {
+            let app = register_local_service_target(ctx, project, requested, operation, &apps)?;
+            eprintln!(
+                "✓ Registered remote secret target '{}' for project {}",
+                app.code, project.id
+            );
+            Ok(app.code)
+        }
+    }
+}
+
 fn print_remote_secret(secret: &RemoteSecretMetadataInfo, json: bool) -> Result<(), CliError> {
     if json {
         let rendered = serde_json::to_string_pretty(secret)
@@ -592,7 +737,8 @@ impl SecretsSetCommand {
                         "Service-scoped secrets require --service".to_string(),
                     )
                 })?;
-                let app_code = resolve_remote_service_code(&ctx, &project, app_code, operation)?;
+                let app_code =
+                    resolve_or_register_remote_service_code(&ctx, &project, app_code, operation)?;
                 let secret = ctx
                     .block_on(ctx.client.set_service_secret(
                         project.id,
@@ -875,27 +1021,101 @@ impl CallableTrait for SecretsListCommand {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct SecretsAppsCommand {
+    action: SecretsAppsAction,
     project: Option<String>,
     json: bool,
 }
 
+enum SecretsAppsAction {
+    List,
+    Register { service: String },
+    Sync,
+}
+
 impl SecretsAppsCommand {
     pub fn new(project: Option<String>, json: bool) -> Self {
-        Self { project, json }
+        Self {
+            action: SecretsAppsAction::List,
+            project,
+            json,
+        }
+    }
+
+    pub fn register(service: String, project: Option<String>, json: bool) -> Self {
+        Self {
+            action: SecretsAppsAction::Register { service },
+            project,
+            json,
+        }
+    }
+
+    pub fn sync(project: Option<String>, json: bool) -> Self {
+        Self {
+            action: SecretsAppsAction::Sync,
+            project,
+            json,
+        }
+    }
+
+    fn print_registered_app(&self, app: &ProjectAppInfo) -> Result<(), CliError> {
+        if self.json {
+            let json = serde_json::to_string_pretty(app)
+                .map_err(|e| CliError::ConfigValidation(e.to_string()))?;
+            println!("{}", json);
+        } else {
+            println!(
+                "✓ Registered remote secret target {} (image: {})",
+                app.code, app.image
+            );
+        }
+        Ok(())
     }
 }
 
 impl CallableTrait for SecretsAppsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let operation = "remote project apps list";
+        let operation = "remote project apps";
         let ctx = CliRuntime::new(operation)?;
         let project_ref = resolve_service_project_reference(self.project.as_deref())?;
         let project = resolve_project(&ctx, &project_ref, operation)?;
-        let apps = ctx
-            .block_on(ctx.client.list_project_apps(project.id))
-            .map_err(|error| remap_remote_secret_error(operation, error))?;
 
-        print_project_app_list(&apps, self.json)?;
+        match &self.action {
+            SecretsAppsAction::List => {
+                let apps = ctx
+                    .block_on(ctx.client.list_project_apps(project.id))
+                    .map_err(|error| remap_remote_secret_error(operation, error))?;
+                print_project_app_list(&apps, self.json)?;
+            }
+            SecretsAppsAction::Register { service } => {
+                let apps = ctx
+                    .block_on(ctx.client.list_project_apps(project.id))
+                    .map_err(|error| remap_remote_secret_error(operation, error))?;
+                let app = register_local_service_target(&ctx, &project, service, operation, &apps)?;
+                self.print_registered_app(&app)?;
+            }
+            SecretsAppsAction::Sync => {
+                let config = StackerConfig::from_file(Path::new(DEFAULT_CONFIG_FILE))?;
+                let mut registered = Vec::new();
+                for service in &config.services {
+                    registered.push(register_service_target(&ctx, &project, service, operation)?);
+                }
+
+                if self.json {
+                    let json = serde_json::to_string_pretty(&registered)
+                        .map_err(|e| CliError::ConfigValidation(e.to_string()))?;
+                    println!("{}", json);
+                } else {
+                    println!(
+                        "✓ Synced {} remote secret target(s) for project {}",
+                        registered.len(),
+                        project.id
+                    );
+                    for app in registered {
+                        println!("- {} ({})", app.code, app.image);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -1126,6 +1346,67 @@ mod tests {
             deploy_order: None,
             parent_app_code: None,
         }
+    }
+
+    fn service_definition(name: &str) -> ServiceDefinition {
+        ServiceDefinition {
+            name: name.to_string(),
+            image: "optimum/syncopia-upload:latest".to_string(),
+            ports: vec!["8000:8000".to_string()],
+            environment: std::collections::HashMap::from([(
+                "RUST_LOG".to_string(),
+                "info".to_string(),
+            )]),
+            volumes: vec!["upload-data:/data".to_string()],
+            depends_on: vec!["postgres".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_service_registration_request_maps_local_service() {
+        let service = service_definition("upload");
+        let request = service_registration_request(&service, Some("deployment_abc".to_string()));
+
+        assert_eq!(request.code, "upload");
+        assert_eq!(request.name.as_deref(), Some("upload"));
+        assert_eq!(request.image, "optimum/syncopia-upload:latest");
+        assert_eq!(request.enabled, Some(true));
+        assert_eq!(request.deployment_hash.as_deref(), Some("deployment_abc"));
+        assert_eq!(
+            request.env.unwrap(),
+            serde_json::json!({"RUST_LOG": "info"})
+        );
+        assert_eq!(request.ports.unwrap(), serde_json::json!(["8000:8000"]));
+        assert_eq!(
+            request.volumes.unwrap(),
+            serde_json::json!(["upload-data:/data"])
+        );
+        assert_eq!(request.depends_on.unwrap(), serde_json::json!(["postgres"]));
+    }
+
+    #[test]
+    fn test_find_local_service_matches_case_insensitively() {
+        let config = StackerConfig {
+            name: "syncopia".to_string(),
+            version: None,
+            organization: None,
+            project: Default::default(),
+            app: Default::default(),
+            services: vec![service_definition("upload")],
+            proxy: Default::default(),
+            deploy: Default::default(),
+            environments: Default::default(),
+            ai: Default::default(),
+            monitoring: Default::default(),
+            hooks: Default::default(),
+            env_file: None,
+            env: Default::default(),
+        };
+
+        assert_eq!(
+            find_local_service(&config, "UPLOAD").map(|service| service.name.as_str()),
+            Some("upload")
+        );
     }
 
     // ── SECURITY: Path traversal via --file flag ──────
