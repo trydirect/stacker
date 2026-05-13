@@ -665,6 +665,7 @@ impl CallableTrait for AgentDeployAppCommand {
             env_vars: None,
             pull: true,
             force_recreate: self.force_recreate,
+            force_config_overwrite: self.force_recreate,
             runtime: self.runtime.clone(),
             registry_auth: resolve_registry_auth_for_agent_deploy(&project_dir),
         };

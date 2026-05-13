@@ -118,6 +118,9 @@ pub struct DeployAppCommandRequest {
     /// Whether to remove existing container before deploying
     #[serde(default)]
     pub force_recreate: bool,
+    /// Whether to overwrite drifted runtime config files such as .env
+    #[serde(default)]
+    pub force_config_overwrite: bool,
     /// Container runtime to use: "runc" (default) or "kata"
     #[serde(default = "default_runtime")]
     pub runtime: String,
@@ -1598,6 +1601,20 @@ mod tests {
         let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
         let val = result.unwrap();
         assert_eq!(val["runtime"], "runc");
+        assert_eq!(val["force_config_overwrite"], false);
+    }
+
+    #[test]
+    fn deploy_app_accepts_force_config_overwrite() {
+        let params = json!({
+            "app_code": "web",
+            "force_recreate": true,
+            "force_config_overwrite": true
+        });
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["force_recreate"], true);
+        assert_eq!(val["force_config_overwrite"], true);
     }
 
     #[test]

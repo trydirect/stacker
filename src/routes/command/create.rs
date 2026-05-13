@@ -583,6 +583,11 @@ async fn enrich_deploy_app_with_compose(
 
     // Also fetch .env file from Vault (stored under "{app_code}_env" key)
     let env_key = format!("{}_env", app_code);
+    let force_config_overwrite = params
+        .get("force_config_overwrite")
+        .or_else(|| params.get("force_recreate"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     tracing::debug!(
         deployment_hash = %deployment_hash,
         env_key = %env_key,
@@ -605,6 +610,11 @@ async fn enrich_deploy_app_with_compose(
                 "file_mode": env_config.file_mode,
                 "owner": env_config.owner,
                 "group": env_config.group,
+                "force_overwrite": force_config_overwrite,
+                "drift_check": {
+                    "enabled": true,
+                    "hash_source": "stacker-render-header"
+                },
             });
             config_files.push(env_file);
         }

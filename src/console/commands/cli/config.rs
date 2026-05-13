@@ -9,6 +9,7 @@ use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -790,6 +791,39 @@ pub fn run_show(config_path: &str) -> Result<String, CliError> {
     Ok(yaml)
 }
 
+pub fn run_show_resolved(config_path: &str) -> Result<String, CliError> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Err(CliError::ConfigNotFound {
+            path: PathBuf::from(config_path),
+        });
+    }
+
+    let config = StackerConfig::from_file(path)?;
+    let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let local_env_file = config
+        .resolve_environment_config(None)?
+        .and_then(|(_, environment_config)| environment_config.env_file)
+        .or_else(|| config.env_file.clone())
+        .map(|env_file| resolve_display_path(config_dir, &env_file))
+        .unwrap_or_else(|| "<none>".to_string());
+
+    Ok(format!(
+        "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  layers:\n    - base\n    - server (requires inherit_server_secrets: true)\n    - service\n    - compose_environment\n",
+        local_env_file,
+        remote_runtime_env_path(),
+        compose_env_file_reference()
+    ))
+}
+
+fn resolve_display_path(config_dir: &Path, env_file: &Path) -> String {
+    if env_file.is_absolute() {
+        env_file.display().to_string()
+    } else {
+        config_dir.join(env_file).display().to_string()
+    }
+}
+
 /// `stacker config validate [--file stacker.yml]`
 ///
 /// Validates a stacker.yml configuration file.
@@ -826,6 +860,7 @@ impl CallableTrait for ConfigValidateCommand {
 /// Displays the resolved configuration (with env vars substituted).
 pub struct ConfigShowCommand {
     pub file: Option<String>,
+    pub resolved: bool,
 }
 
 /// `stacker config fix [--file stacker.yml] [--interactive]`
@@ -925,16 +960,20 @@ impl CallableTrait for ConfigFixCommand {
 }
 
 impl ConfigShowCommand {
-    pub fn new(file: Option<String>) -> Self {
-        Self { file }
+    pub fn new(file: Option<String>, resolved: bool) -> Self {
+        Self { file, resolved }
     }
 }
 
 impl CallableTrait for ConfigShowCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = resolve_config_path(&self.file);
-        let yaml = run_show(&path)?;
-        println!("{}", yaml);
+        let output = if self.resolved {
+            run_show_resolved(&path)?
+        } else {
+            run_show(&path)?
+        };
+        println!("{}", output);
         Ok(())
     }
 }

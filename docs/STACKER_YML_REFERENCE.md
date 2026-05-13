@@ -792,6 +792,24 @@ MINIO_PASSWORD=admin123
 OPENAI_API_KEY=sk-...
 ```
 
+For remote deployments, Stacker renders the effective runtime env to the
+canonical host path `/home/trydirect/project/.env`. Generated compose files
+reference it as `env_file: .env`, relative to `docker-compose.yml`.
+
+The rendered runtime env is built from these layers, lowest to highest:
+
+1. Base app env and local authoring inputs.
+2. Server-scope secrets, only for services that opt in with
+   `inherit_server_secrets: true`.
+3. Service-scope secrets for the selected service/app target.
+4. Compose `environment:` keys, which Docker Compose applies above `env_file`.
+
+User-provided runtime env keys must match `^[A-Z_][A-Z0-9_]*$`. Keys beginning
+with `STACKER_`, `DOCKER_`, `VAULT_`, or `AGENT_` are reserved and rejected.
+Use `stacker config show --resolved` to inspect the local env source path,
+remote runtime path, config hash/version metadata, and contributing layers
+without printing secret values.
+
 ---
 
 ## Environment Variable Interpolation
@@ -1073,6 +1091,11 @@ Those codes include the main app, registered `stacker.yml` services, and
 supported image-backed services extracted from `deploy.compose_file` during
 cloud/server deploy preparation. A service secret is rendered only into the
 matching service/app target.
+
+Deleting a service-scoped secret removes it from the next rendered
+`/home/trydirect/project/.env`; stale values are not preserved. If the remote
+runtime env changed outside Stacker, Stacker refuses to overwrite it unless the
+operation is explicitly forced.
 
 ### Other commands
 

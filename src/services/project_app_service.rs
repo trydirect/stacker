@@ -6,7 +6,7 @@
 use crate::db;
 use crate::forms::project::Payload;
 use crate::models::{Project, ProjectApp};
-use crate::services::config_renderer::ConfigRenderer;
+use crate::services::config_renderer::{env_body_hash, ConfigRenderer};
 use crate::services::vault_service::{VaultError, VaultService};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -251,6 +251,18 @@ impl ProjectAppService {
 
         // Sync to Vault
         let sync_result = renderer.sync_to_vault(&bundle).await?;
+        for app in &apps {
+            let env_key = format!("{}_env", app.code);
+            if !sync_result.synced.iter().any(|key| key == &env_key) {
+                continue;
+            }
+            if let Some(config) = bundle.app_configs.get(&app.code) {
+                let config_hash = env_body_hash(&config.content);
+                db::project_app::update_sync_metadata(&self.pool, app.id, &config_hash)
+                    .await
+                    .map_err(ProjectAppError::Database)?;
+            }
+        }
 
         Ok(SyncSummary {
             total_apps: apps.len(),
@@ -262,17 +274,22 @@ impl ProjectAppService {
     }
 
     /// Sync a single app to Vault
-    async fn sync_app_to_vault(
+    pub async fn sync_app_to_vault(
         &self,
         app: &ProjectApp,
         project: &Project,
         deployment_hash: &str,
     ) -> Result<()> {
         let renderer = self.config_renderer.read().await;
-        renderer
+        let config_hash = renderer
             .sync_app_to_vault(&self.pool, app, project, deployment_hash)
             .await
-            .map_err(ProjectAppError::VaultSync)
+            .map_err(ProjectAppError::VaultSync)?;
+        crate::db::project_app::update_sync_metadata(&self.pool, app.id, &config_hash)
+            .await
+            .map_err(ProjectAppError::Database)?;
+
+        Ok(())
     }
 
     /// Delete an app config from Vault

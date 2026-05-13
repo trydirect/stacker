@@ -558,6 +558,9 @@ enum ConfigCommands {
     Show {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Show paths, hash/version metadata, and contributing layers without values
+        #[arg(long)]
+        resolved: bool,
     },
     /// Print a full commented `stacker.yml` reference example
     Example,
@@ -1462,9 +1465,9 @@ fn get_command(
             ConfigCommands::Validate { file } => {
                 Box::new(stacker::console::commands::cli::config::ConfigValidateCommand::new(file))
             }
-            ConfigCommands::Show { file } => {
-                Box::new(stacker::console::commands::cli::config::ConfigShowCommand::new(file))
-            }
+            ConfigCommands::Show { file, resolved } => Box::new(
+                stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
+            ),
             ConfigCommands::Example => {
                 Box::new(stacker::console::commands::cli::config::ConfigExampleCommand::new())
             }

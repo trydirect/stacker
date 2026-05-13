@@ -1,5 +1,6 @@
 use crate::cli::error::CliError;
 use crate::console::commands::CallableTrait;
+use crate::helpers::fs::write_atomic;
 use flate2::read::GzDecoder;
 use std::env;
 use std::fs;
@@ -146,27 +147,7 @@ fn extract_binary_from_targz(
 /// Replace the running executable with `new_bytes`.
 fn replace_current_exe(new_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     let current_exe: PathBuf = env::current_exe()?;
-
-    // Write new binary to a sibling temp file, then atomically rename.
-    let parent = current_exe
-        .parent()
-        .ok_or("Cannot determine binary parent directory")?;
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".stacker-update-")
-        .tempfile_in(parent)?;
-    io::Write::write_all(&mut tmp, &new_bytes)?;
-
-    // Make executable (Unix)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = tmp.as_file().metadata()?.permissions();
-        perms.set_mode(0o755);
-        tmp.as_file().set_permissions(perms)?;
-    }
-
-    let (_, tmp_path) = tmp.keep()?;
-    fs::rename(&tmp_path, &current_exe)?;
+    write_atomic(&current_exe, &new_bytes, 0o755)?;
     Ok(())
 }
 

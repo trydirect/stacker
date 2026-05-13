@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Canonical runtime environment rendering
+
+- Remote runtime environment files now use the canonical host path
+  `/home/trydirect/project/.env`; generated compose files reference it as
+  `env_file: .env`.
+- `stacker config show --resolved` prints the local env source path, canonical
+  remote env path, compose env reference, config hash/version metadata, and
+  contributing layers without printing secret values.
+- Runtime env rendering now has deterministic precedence and hashing, rejects
+  reserved `STACKER_*`, `DOCKER_*`, `VAULT_*`, and `AGENT_*` keys, and provides
+  drift checks that require `--force` before overwriting changed remote env
+  content.
+
 ### Fixed — Reuse private registry auth for agent-managed pulls
 
 - Deploy-time `deploy.registry` credentials are now stored in trusted Stacker

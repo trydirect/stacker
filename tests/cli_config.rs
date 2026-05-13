@@ -86,6 +86,39 @@ deploy:
 }
 
 #[test]
+fn test_config_show_resolved_displays_paths_without_values() {
+    let dir = TempDir::new().unwrap();
+    let config = r#"
+name: resolved-test
+version: "1.0"
+env_file: docker/prod/.env
+env:
+  S3_BUCKET: superbucket
+app:
+  type: static
+  path: "."
+deploy:
+  target: server
+"#;
+    fs::write(dir.path().join("stacker.yml"), config).unwrap();
+
+    stacker_cmd()
+        .current_dir(dir.path())
+        .args(["config", "show", "--resolved"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local_env_file: docker/prod/.env"))
+        .stdout(predicate::str::contains(
+            "remote_runtime_env_file: /home/trydirect/project/.env",
+        ))
+        .stdout(predicate::str::contains("compose_env_file: .env"))
+        .stdout(predicate::str::contains(
+            "config_hash: unavailable_until_deploy",
+        ))
+        .stdout(predicate::str::contains("superbucket").not());
+}
+
+#[test]
 fn test_config_show_missing_file_returns_error() {
     let dir = TempDir::new().unwrap();
 

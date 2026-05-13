@@ -10,14 +10,18 @@
 
 use crate::configuration::DeploymentSettings;
 use crate::db;
+use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
 use crate::models::{Project, ProjectApp};
 use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tera::{Context as TeraContext, Tera};
+
+const RESERVED_ENV_PREFIXES: &[&str] = &["STACKER_", "DOCKER_", "VAULT_", "AGENT_"];
 
 /// Rendered configuration bundle for a deployment
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +36,278 @@ pub struct ConfigBundle {
     pub app_configs: HashMap<String, AppConfig>,
     /// Timestamp when bundle was generated
     pub generated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RenderedEnv {
+    pub content: String,
+    pub hash: String,
+    pub inputs: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvRenderInput {
+    pub version: u64,
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub base: HashMap<String, String>,
+    pub server: HashMap<String, String>,
+    pub inherit_server_secrets: bool,
+    pub service: HashMap<String, String>,
+    pub compose_environment: HashMap<String, String>,
+}
+
+impl Default for EnvRenderInput {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            generated_at: chrono::Utc::now(),
+            base: HashMap::new(),
+            server: HashMap::new(),
+            inherit_server_secrets: false,
+            service: HashMap::new(),
+            compose_environment: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum EnvRenderError {
+    #[error("Invalid env key '{key}': must match ^[A-Z_][A-Z0-9_]*$")]
+    InvalidKey { key: String },
+    #[error(
+        "Reserved env key '{key}': prefixes STACKER_, DOCKER_, VAULT_, and AGENT_ are not allowed"
+    )]
+    ReservedKey { key: String },
+    #[error("Invalid env value for '{key}': multiline values are not supported")]
+    MultilineValue { key: String },
+    #[error("Runtime env drift detected: expected hash {expected_hash}, found {actual_hash}; rerun with --force to overwrite")]
+    DriftDetected {
+        expected_hash: String,
+        actual_hash: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvDriftCheck {
+    pub can_write: bool,
+    pub actual_hash: Option<String>,
+    pub forced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct EnvRenderAuditEvent {
+    pub user_id: String,
+    pub project_id: i32,
+    pub app_code: String,
+    pub version: u64,
+    pub hash: String,
+    pub inputs: Vec<String>,
+    pub forced: bool,
+    pub prior_hash: Option<String>,
+}
+
+pub fn render_env(input: EnvRenderInput) -> std::result::Result<RenderedEnv, EnvRenderError> {
+    let (environment, inputs) = merge_env_layers(&input);
+    validate_env(&environment)?;
+
+    let body = format_env_body(&environment);
+    let hash = sha256_hex(body.as_bytes());
+    let header = format_header_stamp(input.version, &hash, input.generated_at, &inputs);
+
+    Ok(RenderedEnv {
+        content: format!("{header}\n{body}"),
+        hash,
+        inputs,
+    })
+}
+
+pub fn format_header_stamp(
+    version: u64,
+    hash: &str,
+    generated_at: chrono::DateTime<chrono::Utc>,
+    inputs: &[&'static str],
+) -> String {
+    format!(
+        "# stacker-render version={} hash={} generated_at={} inputs={}",
+        version,
+        hash,
+        generated_at.to_rfc3339(),
+        inputs.join(",")
+    )
+}
+
+pub fn check_env_drift(
+    current_content: Option<&str>,
+    expected_hash: Option<&str>,
+    force: bool,
+) -> std::result::Result<EnvDriftCheck, EnvRenderError> {
+    let Some(current_content) = current_content else {
+        return Ok(EnvDriftCheck {
+            can_write: true,
+            actual_hash: None,
+            forced: force,
+        });
+    };
+    let Some(expected_hash) = expected_hash else {
+        return Ok(EnvDriftCheck {
+            can_write: true,
+            actual_hash: Some(env_body_hash(current_content)),
+            forced: force,
+        });
+    };
+
+    let actual_hash = env_body_hash(current_content);
+    if actual_hash == expected_hash || force {
+        let forced = force && actual_hash != expected_hash;
+        return Ok(EnvDriftCheck {
+            can_write: true,
+            actual_hash: Some(actual_hash),
+            forced,
+        });
+    }
+
+    Err(EnvRenderError::DriftDetected {
+        expected_hash: expected_hash.to_string(),
+        actual_hash,
+    })
+}
+
+pub fn build_env_render_audit_event(
+    user_id: &str,
+    project_id: i32,
+    app_code: &str,
+    rendered: &RenderedEnv,
+    forced: bool,
+    prior_hash: Option<String>,
+) -> EnvRenderAuditEvent {
+    EnvRenderAuditEvent {
+        user_id: user_id.to_string(),
+        project_id,
+        app_code: app_code.to_string(),
+        version: rendered
+            .content
+            .lines()
+            .next()
+            .and_then(parse_header_version)
+            .unwrap_or_default(),
+        hash: rendered.hash.clone(),
+        inputs: rendered
+            .inputs
+            .iter()
+            .map(|input| input.to_string())
+            .collect(),
+        forced,
+        prior_hash,
+    }
+}
+
+pub fn emit_env_render_audit(event: &EnvRenderAuditEvent) {
+    tracing::info!(
+        user_id = %event.user_id,
+        project_id = event.project_id,
+        app_code = %event.app_code,
+        version = event.version,
+        hash = %event.hash,
+        inputs = ?event.inputs,
+        forced = event.forced,
+        prior_hash = ?event.prior_hash,
+        "Rendered runtime env file"
+    );
+}
+
+fn merge_env_layers(input: &EnvRenderInput) -> (BTreeMap<String, String>, Vec<&'static str>) {
+    let mut environment = BTreeMap::new();
+    let mut inputs = Vec::new();
+
+    merge_layer(&mut environment, &input.base);
+    if !input.base.is_empty() {
+        inputs.push("base");
+    }
+
+    if input.inherit_server_secrets {
+        merge_layer(&mut environment, &input.server);
+        if !input.server.is_empty() {
+            inputs.push("server");
+        }
+    }
+
+    merge_layer(&mut environment, &input.service);
+    if !input.service.is_empty() {
+        inputs.push("service");
+    }
+
+    merge_layer(&mut environment, &input.compose_environment);
+    if !input.compose_environment.is_empty() {
+        inputs.push("compose");
+    }
+
+    (environment, inputs)
+}
+
+fn merge_layer(target: &mut BTreeMap<String, String>, layer: &HashMap<String, String>) {
+    for (key, value) in layer {
+        target.insert(key.clone(), value.clone());
+    }
+}
+
+fn validate_env(environment: &BTreeMap<String, String>) -> std::result::Result<(), EnvRenderError> {
+    for (key, value) in environment {
+        if !is_valid_env_key(key) {
+            return Err(EnvRenderError::InvalidKey { key: key.clone() });
+        }
+        if RESERVED_ENV_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        {
+            return Err(EnvRenderError::ReservedKey { key: key.clone() });
+        }
+        if value.contains('\n') || value.contains('\r') {
+            return Err(EnvRenderError::MultilineValue { key: key.clone() });
+        }
+    }
+
+    Ok(())
+}
+
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_uppercase() => {}
+        _ => return false,
+    }
+
+    chars.all(|char| char == '_' || char.is_ascii_uppercase() || char.is_ascii_digit())
+}
+
+fn format_env_body(environment: &BTreeMap<String, String>) -> String {
+    let mut body = String::new();
+    for (key, value) in environment {
+        body.push_str(key);
+        body.push('=');
+        body.push_str(value);
+        body.push('\n');
+    }
+    body
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("{:x}", digest)
+}
+
+pub fn env_body_hash(content: &str) -> String {
+    let body = content
+        .strip_prefix("# stacker-render ")
+        .and_then(|_| content.split_once('\n').map(|(_, body)| body))
+        .unwrap_or(content);
+    sha256_hex(body.as_bytes())
+}
+
+fn parse_header_version(header: &str) -> Option<u64> {
+    header
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("version="))
+        .and_then(|version| version.parse::<u64>().ok())
 }
 
 /// App environment rendering context
@@ -115,8 +391,6 @@ impl ConfigRenderer {
         // Register embedded templates
         tera.add_raw_template("docker-compose.yml.tera", DOCKER_COMPOSE_TEMPLATE)
             .context("Failed to add docker-compose template")?;
-        tera.add_raw_template("env.tera", ENV_FILE_TEMPLATE)
-            .context("Failed to add env template")?;
         tera.add_raw_template("service.tera", SERVICE_TEMPLATE)
             .context("Failed to add service template")?;
 
@@ -173,12 +447,12 @@ impl ConfigRenderer {
             let environment = self.resolve_app_environment(pool, project, app).await?;
             app_contexts.push(self.project_app_to_context(app, environment.clone())?);
 
-            let env_content = self.render_env_file(app, deployment_hash, &environment)?;
+            let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
             let config = AppConfig {
-                content: env_content,
+                content: rendered_env.content,
                 content_type: "env".to_string(),
-                destination_path: format!("{}/{}.env", self.deploy_dir(deployment_hash), app.code),
-                file_mode: "0640".to_string(),
+                destination_path: remote_runtime_env_path().to_string(),
+                file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
             };
@@ -556,6 +830,7 @@ impl ConfigRenderer {
         context.insert("apps", apps);
         context.insert("project_name", &project.name);
         context.insert("project_id", &project.stack_id.to_string());
+        context.insert("env_file", compose_env_file_reference());
 
         // Extract network configuration from project metadata
         let default_network = project
@@ -577,18 +852,23 @@ impl ConfigRenderer {
         app: &ProjectApp,
         deployment_hash: &str,
         environment: &HashMap<String, String>,
-    ) -> Result<String> {
-        let mut context = TeraContext::new();
-        context.insert("app_code", &app.code);
-        context.insert("app_name", &app.name);
-        context.insert("deployment_hash", deployment_hash);
-        context.insert("environment", environment);
-        context.insert("domain", &app.domain);
-        context.insert("ssl_enabled", &app.ssl_enabled.unwrap_or(false));
+    ) -> Result<RenderedEnv> {
+        let mut base = environment.clone();
+        base.insert("DEPLOYMENT_HASH".to_string(), deployment_hash.to_string());
 
-        self.tera
-            .render("env.tera", &context)
-            .context("Failed to render env template")
+        if let Some(domain) = &app.domain {
+            base.insert("APP_DOMAIN".to_string(), domain.clone());
+        }
+        if app.ssl_enabled.unwrap_or(false) {
+            base.insert("SSL_ENABLED".to_string(), "true".to_string());
+        }
+
+        render_env(EnvRenderInput {
+            base,
+            generated_at: chrono::Utc::now(),
+            ..EnvRenderInput::default()
+        })
+        .context("Failed to render env file")
     }
 
     /// Sync all app configs to Vault
@@ -655,7 +935,7 @@ impl ConfigRenderer {
         app: &ProjectApp,
         project: &Project,
         deployment_hash: &str,
-    ) -> Result<(), VaultError> {
+    ) -> Result<String, VaultError> {
         tracing::debug!(
             "Syncing config for app {} (deployment {}) to Vault",
             app.code,
@@ -671,15 +951,15 @@ impl ConfigRenderer {
             .await
             .map_err(|e| VaultError::Other(format!("Secret resolution failed: {}", e)))?;
 
-        let env_content = self
+        let rendered_env = self
             .render_env_file(app, deployment_hash, &environment)
             .map_err(|e| VaultError::Other(format!("Render failed: {}", e)))?;
 
         let config = AppConfig {
-            content: env_content,
+            content: rendered_env.content,
             content_type: "env".to_string(),
-            destination_path: format!("{}/{}.env", self.deploy_dir(deployment_hash), app.code),
-            file_mode: "0640".to_string(),
+            destination_path: remote_runtime_env_path().to_string(),
+            file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
         };
@@ -693,7 +973,9 @@ impl ConfigRenderer {
         let env_key = format!("{}_env", app.code);
         vault
             .store_app_config(deployment_hash, &env_key, &config)
-            .await
+            .await?;
+
+        Ok(rendered_env.hash)
     }
 }
 
@@ -728,6 +1010,8 @@ services:
   {{ app.code }}:
     image: {{ app.image }}
     container_name: {{ app.code }}
+    env_file:
+      - {{ env_file }}
 {% if app.runtime %}
     runtime: {{ app.runtime }}
 {% endif %}
@@ -821,24 +1105,6 @@ networks:
     driver: bridge
 "#;
 
-/// Environment file template
-const ENV_FILE_TEMPLATE: &str = r#"# Environment configuration for {{ app_code }}
-# Deployment: {{ deployment_hash }}
-# Generated by TryDirect ConfigRenderer
-
-{% for key, value in environment -%}
-{{ key }}={{ value }}
-{% endfor -%}
-
-{% if domain -%}
-# Domain Configuration
-APP_DOMAIN={{ domain }}
-{% if ssl_enabled -%}
-SSL_ENABLED=true
-{% endif -%}
-{% endif -%}
-"#;
-
 /// Individual service template (for partial updates)
 const SERVICE_TEMPLATE: &str = r#"
   {{ app.code }}:
@@ -893,6 +1159,223 @@ mod tests {
             "postgres://localhost/db"
         );
         assert_eq!(result.get("PORT").unwrap(), "8080");
+    }
+
+    #[test]
+    fn render_env_applies_precedence() {
+        let generated_at = chrono::DateTime::parse_from_rfc3339("2026-05-13T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let rendered = render_env(EnvRenderInput {
+            version: 7,
+            generated_at,
+            base: HashMap::from([
+                ("SHARED".to_string(), "base".to_string()),
+                ("BASE_ONLY".to_string(), "yes".to_string()),
+            ]),
+            server: HashMap::from([("SHARED".to_string(), "server".to_string())]),
+            inherit_server_secrets: true,
+            service: HashMap::from([("SHARED".to_string(), "service".to_string())]),
+            compose_environment: HashMap::from([("SHARED".to_string(), "compose".to_string())]),
+        })
+        .unwrap();
+
+        assert!(rendered.content.contains("BASE_ONLY=yes\n"));
+        assert!(rendered.content.contains("SHARED=compose\n"));
+        assert_eq!(
+            rendered.inputs,
+            vec!["base", "server", "service", "compose"]
+        );
+    }
+
+    #[test]
+    fn render_env_skips_server_layer_without_opt_in() {
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("VALUE".to_string(), "base".to_string())]),
+            server: HashMap::from([("VALUE".to_string(), "server".to_string())]),
+            inherit_server_secrets: false,
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        assert!(rendered.content.contains("VALUE=base\n"));
+        assert_eq!(rendered.inputs, vec!["base"]);
+    }
+
+    #[test]
+    fn render_env_deletion_removes_missing_service_key() {
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("KEEP".to_string(), "yes".to_string())]),
+            service: HashMap::new(),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        assert!(rendered.content.contains("KEEP=yes\n"));
+        assert!(!rendered.content.contains("S3_BUCKET="));
+    }
+
+    #[test]
+    fn render_env_rejects_reserved_prefix() {
+        let result = render_env(EnvRenderInput {
+            base: HashMap::from([("STACKER_TOKEN".to_string(), "secret".to_string())]),
+            ..EnvRenderInput::default()
+        });
+
+        assert_eq!(
+            result.unwrap_err(),
+            EnvRenderError::ReservedKey {
+                key: "STACKER_TOKEN".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn render_env_rejects_bad_key_name() {
+        let result = render_env(EnvRenderInput {
+            base: HashMap::from([("lowercase".to_string(), "value".to_string())]),
+            ..EnvRenderInput::default()
+        });
+
+        assert_eq!(
+            result.unwrap_err(),
+            EnvRenderError::InvalidKey {
+                key: "lowercase".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn render_env_rejects_multiline_value() {
+        let result = render_env(EnvRenderInput {
+            base: HashMap::from([("SECRET".to_string(), "line1\nline2".to_string())]),
+            ..EnvRenderInput::default()
+        });
+
+        assert_eq!(
+            result.unwrap_err(),
+            EnvRenderError::MultilineValue {
+                key: "SECRET".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn render_env_hash_is_stable_for_same_body() {
+        let generated_at = chrono::DateTime::parse_from_rfc3339("2026-05-13T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let input = EnvRenderInput {
+            version: 1,
+            generated_at,
+            base: HashMap::from([
+                ("B".to_string(), "2".to_string()),
+                ("A".to_string(), "1".to_string()),
+            ]),
+            ..EnvRenderInput::default()
+        };
+
+        let first = render_env(input.clone()).unwrap();
+        let second = render_env(input).unwrap();
+
+        assert_eq!(first.hash, second.hash);
+        assert_eq!(first.content, second.content);
+        assert!(first.content.ends_with("A=1\nB=2\n"));
+    }
+
+    #[test]
+    fn format_header_stamp_is_deterministic() {
+        let generated_at = chrono::DateTime::parse_from_rfc3339("2026-05-13T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let header = format_header_stamp(3, "abc123", generated_at, &["base", "service"]);
+
+        assert_eq!(
+            header,
+            "# stacker-render version=3 hash=abc123 generated_at=2026-05-13T17:00:00+00:00 inputs=base,service"
+        );
+    }
+
+    #[test]
+    fn check_env_drift_allows_matching_hash() {
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("KEY".to_string(), "value".to_string())]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        let check = check_env_drift(Some(&rendered.content), Some(&rendered.hash), false).unwrap();
+
+        assert!(check.can_write);
+        assert_eq!(check.actual_hash.as_deref(), Some(rendered.hash.as_str()));
+        assert!(!check.forced);
+    }
+
+    #[test]
+    fn check_env_drift_refuses_mismatch_without_force() {
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("KEY".to_string(), "value".to_string())]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        let result = check_env_drift(Some(&rendered.content), Some("different"), false);
+
+        assert!(matches!(
+            result,
+            Err(EnvRenderError::DriftDetected {
+                expected_hash,
+                actual_hash: _
+            }) if expected_hash == "different"
+        ));
+    }
+
+    #[test]
+    fn check_env_drift_allows_forced_mismatch() {
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("KEY".to_string(), "value".to_string())]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        let check = check_env_drift(Some(&rendered.content), Some("different"), true).unwrap();
+
+        assert!(check.can_write);
+        assert!(check.forced);
+        assert_eq!(check.actual_hash.as_deref(), Some(rendered.hash.as_str()));
+    }
+
+    #[test]
+    fn build_env_render_audit_event_redacts_values() {
+        let rendered = render_env(EnvRenderInput {
+            version: 5,
+            base: HashMap::from([("SECRET".to_string(), "supersecret".to_string())]),
+            service: HashMap::from([("TOKEN".to_string(), "token-value".to_string())]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        let event = build_env_render_audit_event(
+            "user-1",
+            42,
+            "upload",
+            &rendered,
+            true,
+            Some("old-hash".to_string()),
+        );
+        let serialized = serde_json::to_string(&event).unwrap();
+
+        assert_eq!(event.version, 5);
+        assert_eq!(event.hash, rendered.hash);
+        assert_eq!(
+            event.inputs,
+            vec!["base".to_string(), "service".to_string()]
+        );
+        assert!(event.forced);
+        assert_eq!(event.prior_hash.as_deref(), Some("old-hash"));
+        assert!(!serialized.contains("supersecret"));
+        assert!(!serialized.contains("token-value"));
     }
 
     #[test]
@@ -954,15 +1437,7 @@ mod tests {
     #[test]
     fn test_env_destination_path_format() {
         // Test that .env files have correct destination paths
-        let deployment_hash = "deployment_abc123";
-        let app_code = "telegraf";
-        let base_path = "/home/trydirect";
-
-        let expected_path = format!("{}/{}/{}.env", base_path, deployment_hash, app_code);
-        assert_eq!(
-            expected_path,
-            "/home/trydirect/deployment_abc123/telegraf.env"
-        );
+        assert_eq!(remote_runtime_env_path(), "/home/trydirect/project/.env");
     }
 
     #[test]
@@ -971,15 +1446,15 @@ mod tests {
         let config = AppConfig {
             content: "FOO=bar\nBAZ=qux".to_string(),
             content_type: "env".to_string(),
-            destination_path: "/home/trydirect/hash123/app.env".to_string(),
-            file_mode: "0640".to_string(),
+            destination_path: remote_runtime_env_path().to_string(),
+            file_mode: "0600".to_string(),
             owner: Some("trydirect".to_string()),
             group: Some("docker".to_string()),
         };
 
         assert_eq!(config.content_type, "env");
-        assert_eq!(config.file_mode, "0640"); // More restrictive for env files
-        assert!(config.destination_path.ends_with(".env"));
+        assert_eq!(config.file_mode, "0600");
+        assert_eq!(config.destination_path, remote_runtime_env_path());
     }
 
     #[test]
@@ -1003,8 +1478,6 @@ mod tests {
     #[test]
     fn test_config_bundle_structure() {
         // Test the structure of ConfigBundle
-        let deployment_hash = "test_hash_123";
-
         // Simulated app_configs HashMap as created by render_bundle
         let mut app_configs: std::collections::HashMap<String, AppConfig> =
             std::collections::HashMap::new();
@@ -1014,8 +1487,8 @@ mod tests {
             AppConfig {
                 content: "INFLUX_TOKEN=xxx".to_string(),
                 content_type: "env".to_string(),
-                destination_path: format!("/home/trydirect/{}/telegraf.env", deployment_hash),
-                file_mode: "0640".to_string(),
+                destination_path: remote_runtime_env_path().to_string(),
+                file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
             },
@@ -1026,8 +1499,8 @@ mod tests {
             AppConfig {
                 content: "DOMAIN=example.com".to_string(),
                 content_type: "env".to_string(),
-                destination_path: format!("/home/trydirect/{}/nginx.env", deployment_hash),
-                file_mode: "0640".to_string(),
+                destination_path: remote_runtime_env_path().to_string(),
+                file_mode: "0600".to_string(),
                 owner: Some("trydirect".to_string()),
                 group: Some("docker".to_string()),
             },
@@ -1162,5 +1635,35 @@ mod tests {
         };
         let json = serde_json::to_value(&ctx).unwrap();
         assert!(json.get("runtime").is_none() || json["runtime"].is_null());
+    }
+
+    #[test]
+    fn render_compose_references_relative_env_file() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "demo".to_string(),
+            ..Project::default()
+        };
+        let ctx = AppRenderContext {
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels: HashMap::new(),
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[ctx], &project).unwrap();
+
+        assert!(compose.contains("env_file:\n      - .env"));
     }
 }

@@ -245,6 +245,15 @@ stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 - Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
 - Remote `get` and `list` do **not** return plaintext values in v1.
 
+Remote deploys render runtime env into one canonical host file:
+`/home/trydirect/project/.env`. Generated compose uses `env_file: .env`, so the
+path is relative to the deployed compose file. To inspect paths and contributing
+layers without exposing values, run:
+
+```bash
+stacker config show --resolved
+```
+
 ### Marketplace workflow (for stack developers)
 
 ```bash
