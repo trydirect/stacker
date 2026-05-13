@@ -57,6 +57,18 @@ pub(crate) async fn store_registry_auth_to_vault(
         return;
     };
 
+    store_registry_auth_command_to_vault(deployment_hash, &auth, vault_settings).await;
+}
+
+pub(crate) async fn store_registry_auth_command_to_vault(
+    deployment_hash: &str,
+    auth: &RegistryAuthCommandRequest,
+    vault_settings: &VaultSettings,
+) {
+    if auth.username.trim().is_empty() || auth.password.trim().is_empty() {
+        return;
+    }
+
     let vault = match VaultService::from_settings(vault_settings) {
         Ok(v) => v,
         Err(e) => {

@@ -8,8 +8,8 @@ pub(crate) use mapping::{merge_project_app, project_app_from_post};
 pub(crate) use sync::sync_project_level_apps_from_form;
 pub(crate) use upsert::upsert_app_config_for_deploy;
 pub(crate) use vault::{
-    parse_registry_auth_config, store_configs_to_vault_from_params, store_registry_auth_to_vault,
-    REGISTRY_AUTH_VAULT_KEY,
+    parse_registry_auth_config, store_configs_to_vault_from_params,
+    store_registry_auth_command_to_vault, store_registry_auth_to_vault, REGISTRY_AUTH_VAULT_KEY,
 };
 
 const PLATFORM_MANAGED_APP_CODES: &[&str] = &["nginx_proxy_manager", "statuspanel"];

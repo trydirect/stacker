@@ -11,10 +11,12 @@
 
 use crate::cli::error::CliError;
 use crate::cli::fmt;
+use crate::cli::install_runner::resolve_docker_registry_credentials;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{AgentCommandInfo, AgentEnqueueRequest};
 use crate::console::commands::CallableTrait;
+use std::path::Path;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Deployment hash resolution
@@ -88,6 +90,34 @@ fn resolve_deployment_hash(
          Use --deployment <HASH>, or run from a directory with a deployment lock or stacker.yml."
             .to_string(),
     ))
+}
+
+fn resolve_registry_auth_for_agent_deploy(
+    project_dir: &Path,
+) -> Option<crate::forms::status_panel::RegistryAuthCommandRequest> {
+    let config_path = project_dir.join("stacker.yml");
+    let config = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+        .ok()?;
+    let creds = resolve_docker_registry_credentials(&config);
+    let username = creds.get("docker_username")?.as_str()?.trim();
+    let password = creds.get("docker_password")?.as_str()?.trim();
+    if username.is_empty() || password.is_empty() {
+        return None;
+    }
+
+    let registry = creds
+        .get("docker_registry")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("docker.io");
+
+    Some(crate::forms::status_panel::RegistryAuthCommandRequest {
+        registry: registry.to_string(),
+        username: username.to_string(),
+        password: password.to_string(),
+    })
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -623,6 +653,7 @@ impl AgentDeployAppCommand {
 impl CallableTrait for AgentDeployAppCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("agent deploy-app")?;
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
         check_active_connections(&ctx, &hash, self.force_recreate)?;
@@ -635,7 +666,7 @@ impl CallableTrait for AgentDeployAppCommand {
             pull: true,
             force_recreate: self.force_recreate,
             runtime: self.runtime.clone(),
-            registry_auth: None,
+            registry_auth: resolve_registry_auth_for_agent_deploy(&project_dir),
         };
 
         let request = AgentEnqueueRequest::new(&hash, "deploy_app")
@@ -1937,5 +1968,41 @@ mod tests {
         );
 
         assert!(!command.ssl);
+    }
+
+    #[test]
+    fn resolve_registry_auth_for_agent_deploy_reads_env_overrides() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        std::fs::write(
+            temp_dir.path().join("stacker.yml"),
+            "name: syncopia\napp:\n  type: static\ndeploy:\n  target: server\n",
+        )
+        .expect("write stacker.yml");
+
+        let old_username = std::env::var("STACKER_DOCKER_USERNAME").ok();
+        let old_password = std::env::var("STACKER_DOCKER_PASSWORD").ok();
+        let old_registry = std::env::var("STACKER_DOCKER_REGISTRY").ok();
+
+        std::env::set_var("STACKER_DOCKER_USERNAME", "optimum");
+        std::env::set_var("STACKER_DOCKER_PASSWORD", "secret");
+        std::env::set_var("STACKER_DOCKER_REGISTRY", "docker.io");
+
+        let auth = resolve_registry_auth_for_agent_deploy(temp_dir.path()).expect("registry auth");
+        assert_eq!(auth.username, "optimum");
+        assert_eq!(auth.password, "secret");
+        assert_eq!(auth.registry, "docker.io");
+
+        match old_username {
+            Some(value) => std::env::set_var("STACKER_DOCKER_USERNAME", value),
+            None => std::env::remove_var("STACKER_DOCKER_USERNAME"),
+        }
+        match old_password {
+            Some(value) => std::env::set_var("STACKER_DOCKER_PASSWORD", value),
+            None => std::env::remove_var("STACKER_DOCKER_PASSWORD"),
+        }
+        match old_registry {
+            Some(value) => std::env::set_var("STACKER_DOCKER_REGISTRY", value),
+            None => std::env::remove_var("STACKER_DOCKER_REGISTRY"),
+        }
     }
 }

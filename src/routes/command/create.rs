@@ -6,7 +6,8 @@ use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
 use crate::project_app::{
     is_platform_managed_app_code, normalize_app_code, parse_registry_auth_config,
-    store_configs_to_vault_from_params, upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
+    store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
+    upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
 use crate::services::{ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
@@ -68,6 +69,15 @@ pub async fn create_handler(
 
     // For deploy_app commands, upsert app config and sync to Vault before enriching parameters
     let final_parameters = if req.command_type == "deploy_app" {
+        if let Some(registry_auth) = extract_registry_auth_from_params(&validated_parameters) {
+            store_registry_auth_command_to_vault(
+                &req.deployment_hash,
+                &registry_auth,
+                &settings.vault,
+            )
+            .await;
+        }
+
         // Try to get deployment_id from parameters, or look it up by deployment_hash
         // If no deployment exists, auto-create project and deployment records
         let deployment_id = match req
@@ -354,6 +364,13 @@ pub async fn create_handler(
     Ok(JsonResponse::build()
         .set_item(Some(response))
         .created("Command created successfully"))
+}
+
+fn extract_registry_auth_from_params(
+    params: &Option<serde_json::Value>,
+) -> Option<status_panel::RegistryAuthCommandRequest> {
+    let value = params.as_ref()?.get("registry_auth")?.clone();
+    serde_json::from_value(value).ok()
 }
 
 /// Enrich deploy_app command parameters with compose_content and config_files from Vault
@@ -924,5 +941,31 @@ mod tests {
             "postgres",
             Some("postgres:16-alpine")
         ));
+    }
+
+    #[test]
+    fn extract_registry_auth_from_params_reads_command_payload() {
+        let params = Some(serde_json::json!({
+            "app_code": "upload",
+            "registry_auth": {
+                "registry": "docker.io",
+                "username": "optimum",
+                "password": "secret"
+            }
+        }));
+
+        let auth = extract_registry_auth_from_params(&params).expect("registry auth");
+
+        assert_eq!(auth.registry, "docker.io");
+        assert_eq!(auth.username, "optimum");
+        assert_eq!(auth.password, "secret");
+    }
+
+    #[test]
+    fn extract_registry_auth_from_params_ignores_missing_payload() {
+        assert!(extract_registry_auth_from_params(&Some(serde_json::json!({
+            "app_code": "upload"
+        })))
+        .is_none());
     }
 }
