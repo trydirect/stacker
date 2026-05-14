@@ -24,5 +24,6 @@ pub mod fs;
 pub(crate) mod ip;
 
 pub use dockerhub::*;
+pub use env_path::*;
 
 pub use cloud::*;
