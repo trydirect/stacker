@@ -796,6 +796,19 @@ For remote deployments, Stacker renders the effective runtime env to the
 canonical host path `/home/trydirect/project/.env`. Generated compose files
 reference it as `env_file: .env`, relative to `docker-compose.yml`.
 
+Top-level `env_file` is a Stacker config input: it is loaded before
+`stacker.yml` is parsed so `${VAR}` placeholders can be resolved. It does not
+automatically inject variables into a container. Container injection is still
+controlled by Docker Compose `env_file` entries under each compose service.
+
+For app-only remote updates, `stacker agent deploy-app <app>` resolves the
+environment/profile from `--env`, then `.stacker/active-env`, then
+`deploy.environment`. If `<app>/docker/<env>/compose.yml` exists, Stacker uses
+that app-local compose file and resolves `env_file` entries relative to it. A
+service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
+config bundle, and Vault-rendered service secrets for that app are appended to
+that same remote `.env` before the Status agent writes it.
+
 The rendered runtime env is built from these layers, lowest to highest:
 
 1. Base app env and local authoring inputs.
@@ -985,6 +998,7 @@ Configuration issues:
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
 | `stacker config fix` | Interactively fix missing required config fields |
+| `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
@@ -1002,7 +1016,7 @@ Configuration issues:
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
-| `stacker agent deploy-app` | Deploy or update an app container on the target server |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server; use `--env <name>` to select an environment/profile |
 | `stacker agent remove-app` | Remove an app container (optional volume/image cleanup) |
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts |
 | `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent |
@@ -1087,6 +1101,7 @@ stacker secrets get S3_BUCKET --scope service --service upload --json
 
 # Push stored remote secrets into the target's runtime env
 stacker secrets push --service upload
+stacker secrets push --service upload --env prod
 # Aliases: stacker secrets deploy --service upload
 #          stacker secrets apply --service upload
 ```
@@ -1104,7 +1119,10 @@ operation is explicitly forced.
 
 `stacker secrets push --service <target>` is the explicit "apply stored secrets
 now" command. It renders the runtime env for that target and sends it to the
-Status agent; it does not create, update, or reveal secret values.
+Status agent; it does not create, update, or reveal secret values. Use
+`--env <name>` for one command, or `stacker env <name>` to persist the active
+environment/profile for later `stacker agent deploy-app` and
+`stacker secrets push` commands.
 
 ### Other commands
 

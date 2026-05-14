@@ -166,7 +166,7 @@ The end-user tool. No server required for local deploys.
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
-| `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime; `--env <name>` selects the deploy environment/profile |
 | `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
 | `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved on the agent from Vault) |
 | `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent; use `stacker cloud firewall` for provider firewalls |
@@ -183,7 +183,8 @@ The end-user tool. No server required for local deploys.
 | `stacker pipe deploy <id>` | Promote a local pipe to a remote deployment |
 | `stacker pipe history <id>` | View execution history for a pipe |
 | `stacker pipe replay <exec-id>` | Re-run a previous pipe execution |
-| `stacker target [local\|cloud\|server]` | Switch deployment target mode (affects all pipe commands) |
+| `stacker target [local\|cloud\|server]` | Switch deployment target mode |
+| `stacker env [local\|dev\|prod]` | Show or persist the active deploy environment/profile used by app-only updates |
 | `stacker submit` | Package current stack and submit to marketplace for review |
 | `stacker marketplace status` | Check submission status for your marketplace templates |
 | `stacker marketplace logs <name>` | Show review comments and history for a submission |
@@ -238,6 +239,7 @@ stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 
 # Push stored remote secrets into the target's runtime env
 stacker secrets push --service uploader
+stacker secrets push --service uploader --env prod
 # Aliases: stacker secrets deploy --service uploader
 #          stacker secrets apply --service uploader
 
@@ -248,7 +250,7 @@ stacker secrets push --service uploader
 - Service-scoped remote commands default `--project` from `stacker.yml -> project.identity`; `--project` still overrides it explicitly.
 - Service-scoped secrets target deployable service/app codes listed by `stacker secrets apps`, including registered `stacker.yml` services and supported image-backed Compose services after a deploy/update sync.
 - Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
-- `stacker secrets push --service <target>` applies stored service secrets to the remote runtime env without changing secret values. Use `--force` only when the remote env drift check reports an out-of-band change.
+- `stacker secrets push --service <target>` applies stored service secrets to the remote runtime env without changing secret values. Use `--env <name>` for a one-off environment selection, or `stacker env <name>` to persist the active environment/profile for future app-only updates. Use `--force` only when the remote env drift check reports an out-of-band change.
 - Remote `get` and `list` do **not** return plaintext values in v1.
 
 Remote deploys render runtime env into one canonical host file:
@@ -259,6 +261,14 @@ layers without exposing values, run:
 ```bash
 stacker config show --resolved
 ```
+
+For app-only updates, `stacker agent deploy-app <target>` resolves the deploy
+environment from `--env`, then `.stacker/active-env`, then `stacker.yml`. If
+`<target>/docker/<env>/compose.yml` exists, that app-local compose file is used
+instead of the project-level compose file. Any app-local `.env` referenced by
+that compose file is uploaded in the config bundle, and Stacker appends the
+Vault-rendered service secrets for the same target to that file before the agent
+writes it on the server.
 
 ### Marketplace workflow (for stack developers)
 

@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — App-only deploy environment selection
+
+- Added `stacker env [environment]` to show or persist the active deploy
+  environment/profile in `.stacker/active-env`.
+- `stacker agent deploy-app` and `stacker secrets push` now accept
+  `--env <environment>` / `--environment <environment>` for one-off environment
+  selection during app-only updates.
+
+### Fixed — App-local compose env files for deploy-app
+
+- `stacker agent deploy-app <app>` now prefers
+  `<app>/docker/<env>/compose.yml` when that app-local compose file exists,
+  instead of always using the project-level environment compose file.
+- App-local `env_file` references are uploaded in the deploy-app config bundle,
+  and Vault-rendered service secrets for the same target are merged into the
+  matching remote `.env` file before the Status agent writes it.
+- If an app-local `.env` exists but the selected compose service has no
+  `env_file` entry, the CLI prints a warning explaining that Docker Compose will
+  not inject local or remote-rendered env values into that container.
+
 ### Added — Canonical runtime environment rendering
 
 - Remote runtime environment files now use the canonical host path
