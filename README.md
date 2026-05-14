@@ -236,6 +236,11 @@ stacker secrets set NPM_TOKEN \
 stacker secrets list --scope service --service uploader --json
 stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 
+# Push stored remote secrets into the target's runtime env
+stacker secrets push --service uploader
+# Aliases: stacker secrets deploy --service uploader
+#          stacker secrets apply --service uploader
+
 ```
 
 - Local mode remains the default and reads/writes the project `.env` file.
@@ -243,6 +248,7 @@ stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 - Service-scoped remote commands default `--project` from `stacker.yml -> project.identity`; `--project` still overrides it explicitly.
 - Service-scoped secrets target deployable service/app codes listed by `stacker secrets apps`, including registered `stacker.yml` services and supported image-backed Compose services after a deploy/update sync.
 - Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
+- `stacker secrets push --service <target>` applies stored service secrets to the remote runtime env without changing secret values. Use `--force` only when the remote env drift check reports an out-of-band change.
 - Remote `get` and `list` do **not** return plaintext values in v1.
 
 Remote deploys render runtime env into one canonical host file:

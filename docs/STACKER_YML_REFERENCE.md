@@ -1084,6 +1084,11 @@ stacker secrets set S3_BUCKET \
 # Remote reads return metadata only, never plaintext values
 stacker secrets list --scope service --service upload --json
 stacker secrets get S3_BUCKET --scope service --service upload --json
+
+# Push stored remote secrets into the target's runtime env
+stacker secrets push --service upload
+# Aliases: stacker secrets deploy --service upload
+#          stacker secrets apply --service upload
 ```
 
 Service-scoped remote secrets target the codes listed by `stacker secrets apps`.
@@ -1096,6 +1101,10 @@ Deleting a service-scoped secret removes it from the next rendered
 `/home/trydirect/project/.env`; stale values are not preserved. If the remote
 runtime env changed outside Stacker, Stacker refuses to overwrite it unless the
 operation is explicitly forced.
+
+`stacker secrets push --service <target>` is the explicit "apply stored secrets
+now" command. It renders the runtime env for that target and sends it to the
+Status agent; it does not create, update, or reveal secret values.
 
 ### Other commands
 

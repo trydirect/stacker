@@ -21,6 +21,7 @@ use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{
     ProjectAppInfo, ProjectAppRegistrationRequest, ProjectInfo, RemoteSecretMetadataInfo,
 };
+use crate::console::commands::cli::agent::AgentDeployAppCommand;
 use crate::console::commands::CallableTrait;
 use clap::ValueEnum;
 
@@ -149,6 +150,20 @@ struct RemoteSecretListOptions {
 }
 
 impl RemoteSecretListOptions {
+    fn validate(&self) -> Result<(), CliError> {
+        self.target.validate()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteSecretPushOptions {
+    target: RemoteSecretTarget,
+    force: bool,
+    json: bool,
+    deployment: Option<String>,
+}
+
+impl RemoteSecretPushOptions {
     fn validate(&self) -> Result<(), CliError> {
         self.target.validate()
     }
@@ -1161,6 +1176,81 @@ impl SecretsDeleteCommand {
                 target: RemoteSecretTarget::new(scope, project, service, server_id),
             },
         }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// secrets push
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker secrets push --service <target> [--force] [--deployment <hash>]`
+pub struct SecretsPushCommand {
+    options: RemoteSecretPushOptions,
+}
+
+impl SecretsPushCommand {
+    pub fn new(
+        project: Option<String>,
+        service: String,
+        force: bool,
+        json: bool,
+        deployment: Option<String>,
+    ) -> Self {
+        Self {
+            options: RemoteSecretPushOptions {
+                target: RemoteSecretTarget::new(
+                    RemoteSecretScope::Service,
+                    project,
+                    Some(service),
+                    None,
+                ),
+                force,
+                json,
+                deployment,
+            },
+        }
+    }
+}
+
+impl CallableTrait for SecretsPushCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.options.validate()?;
+        let operation = "remote secrets push";
+        let ctx = CliRuntime::new(operation)?;
+        let project_ref = resolve_service_project_reference(self.options.target.project_ref())?;
+        let project = resolve_project(&ctx, &project_ref, operation)?;
+        let requested = self.options.target.service_code().ok_or_else(|| {
+            CliError::ConfigValidation("Service-scoped secrets require --service".to_string())
+        })?;
+        let app_code = resolve_remote_service_code(&ctx, &project, requested, operation)?;
+        let deployment = match &self.options.deployment {
+            Some(deployment) if !deployment.trim().is_empty() => Some(deployment.clone()),
+            _ => {
+                let (_, hash) = ctx
+                    .block_on(ctx.client.agent_snapshot_by_project(project.id))
+                    .map_err(|error| remap_remote_secret_error(operation, error))?;
+                Some(hash)
+            }
+        };
+
+        AgentDeployAppCommand::new(
+            app_code.clone(),
+            None,
+            self.options.force,
+            "runc".to_string(),
+            self.options.json,
+            deployment,
+        )
+        .call()?;
+
+        if !self.options.json {
+            println!(
+                "✓ Pushed stored remote secrets to runtime env for {}",
+                app_code
+            );
+        }
+
+        Ok(())
     }
 }
 

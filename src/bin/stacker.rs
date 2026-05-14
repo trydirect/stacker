@@ -757,6 +757,39 @@ Remote get is metadata-only in v1 and does not reveal plaintext values.")]
         #[arg(long)]
         json: bool,
     },
+    /// Push stored remote secrets for a service/app target into runtime env
+    #[command(
+        visible_aliases = ["deploy", "apply"],
+        after_help = "Examples:\n\
+  Push stored remote secrets into the runtime env for a target:\n\
+    stacker secrets push --service device-api\n\
+\n\
+  Overwrite a drifted remote runtime .env if needed:\n\
+    stacker secrets push --service device-api --force\n\
+\n\
+Aliases:\n\
+  stacker secrets deploy --service device-api\n\
+  stacker secrets apply --service device-api\n\
+\n\
+This does not create or change secret values. Use `stacker secrets set` first."
+    )]
+    Push {
+        /// Deployable service/app target code listed by `stacker secrets apps`
+        #[arg(long, value_name = "TARGET_CODE")]
+        service: String,
+        /// Project name or ID (defaults to project.identity in stacker.yml)
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+        /// Overwrite a drifted remote runtime .env and recreate the container
+        #[arg(long)]
+        force: bool,
+        /// Output command result as JSON
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
     /// Delete a local .env secret or a remote Vault-backed secret
     #[command(after_help = "Examples:\n\
   Local delete:\n\
@@ -1706,6 +1739,17 @@ fn get_command(
                     ),
                 ),
             },
+            SecretsCommands::Push {
+                service,
+                project,
+                force,
+                json,
+                deployment,
+            } => Box::new(
+                stacker::console::commands::cli::secrets::SecretsPushCommand::new(
+                    project, service, force, json, deployment,
+                ),
+            ),
             SecretsCommands::Delete {
                 key,
                 file,
