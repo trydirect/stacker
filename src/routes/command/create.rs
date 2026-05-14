@@ -382,7 +382,7 @@ fn extract_registry_auth_from_params(
 /// Enrich deploy_app command parameters with compose_content and config_files from Vault
 /// Falls back to fetching templates from Install Service if not in Vault
 /// If compose_content is already provided in the request, keep it as-is
-async fn enrich_deploy_app_with_compose(
+pub(crate) async fn enrich_deploy_app_with_compose(
     deployment_hash: &str,
     params: Option<serde_json::Value>,
     vault_settings: &crate::configuration::VaultSettings,
@@ -600,6 +600,14 @@ async fn enrich_deploy_app_with_compose(
         "Looking up .env file in Vault"
     );
 
+    let has_app_local_env_file = has_app_env_config_file(
+        &config_files,
+        params
+            .get("compose_content")
+            .and_then(|value| value.as_str()),
+        &app_code,
+    );
+
     if let Some((env_config, _config_hash)) = render_project_env_for_deploy_app(
         pg_pool,
         project_id,
@@ -623,6 +631,11 @@ async fn enrich_deploy_app_with_compose(
             &app_code,
             &env_config.content,
         );
+        if has_app_local_env_file && merged_into_bundle == 0 {
+            return Err(format!(
+                "deploy_app target '{app_code}' has an app-local .env config file, but Stacker could not merge the rendered runtime env into it"
+            ));
+        }
         if merged_into_bundle > 0 {
             tracing::info!(
                 deployment_hash = %deployment_hash,
@@ -647,6 +660,11 @@ async fn enrich_deploy_app_with_compose(
         });
         config_files.push(env_file);
     } else {
+        if has_app_local_env_file {
+            return Err(format!(
+                "deploy_app target '{app_code}' has an app-local .env config file, but Stacker could not render the runtime env; refusing to deploy a partial .env without Vault-backed service secrets"
+            ));
+        }
         match vault.fetch_app_config(deployment_hash, &env_key).await {
             Ok(env_config) => {
                 tracing::info!(
@@ -696,6 +714,26 @@ async fn enrich_deploy_app_with_compose(
     }
 
     Ok(Some(params))
+}
+
+fn has_app_env_config_file(
+    config_files: &[serde_json::Value],
+    compose_content: Option<&str>,
+    app_code: &str,
+) -> bool {
+    let compose_env_paths = compose_content
+        .map(|content| compose_env_file_destinations_for_app(content, app_code))
+        .unwrap_or_default();
+
+    config_files.iter().any(|config_file| {
+        config_file
+            .get("destination_path")
+            .and_then(|value| value.as_str())
+            .map(|destination_path| {
+                is_app_env_config_file(destination_path, app_code, &compose_env_paths)
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn merge_rendered_env_into_app_env_files(
@@ -1384,6 +1422,34 @@ services:
 
         assert_eq!(merged, 0);
         assert_eq!(config_files[0]["content"], "port = 5050\n");
+    }
+
+    #[test]
+    fn has_app_env_config_file_detects_app_local_env_for_relative_compose_env_file() {
+        let config_files = vec![json!({
+            "content": "RUST_LOG=debug\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+        })];
+
+        assert!(has_app_env_config_file(
+            &config_files,
+            Some("services:\n  device-api:\n    env_file: .env\n"),
+            "device-api"
+        ));
+    }
+
+    #[test]
+    fn has_app_env_config_file_ignores_other_app_env_files() {
+        let config_files = vec![json!({
+            "content": "UPLOAD_ONLY=true\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/upload/docker/prod/.env"
+        })];
+
+        assert!(!has_app_env_config_file(
+            &config_files,
+            Some("services:\n  device-api:\n    env_file: .env\n"),
+            "device-api"
+        ));
     }
 
     #[tokio::test]

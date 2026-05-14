@@ -27,6 +27,10 @@ All notable changes to this project will be documented in this file.
 - Deploy-app command creation now fails if Stacker cannot render the target's
   runtime env, instead of silently falling back to a stale/raw `.env` that may
   omit Vault-backed service secrets.
+- `stacker agent deploy-app` and `stacker secrets push` now use the same
+  server-side deploy-app enrichment path when enqueueing agent commands, so
+  app-local `.env` files receive Vault-rendered service secrets during direct
+  agent pushes as well as command-create flows.
 - Missing config-bundle file errors now include the resolved path instead of a
   bare `No such file or directory` message.
 - If an app-local `.env` exists but the selected compose service has no
