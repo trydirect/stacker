@@ -14,9 +14,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed — App-local compose env files for deploy-app
 
-- `stacker agent deploy-app <app>` now prefers
-  `<app>/docker/<env>/compose.yml` when that app-local compose file exists,
-  instead of always using the project-level environment compose file.
+- `stacker agent deploy-app <app>` now reads
+  `<app>/docker/<env>/compose.yml` when that app-local compose file exists and
+  merges that app's service definition into the full project-level compose,
+  instead of replacing the remote stack compose with a single-service file.
 - App-local `env_file` references are uploaded in the deploy-app config bundle,
   and Vault-rendered service secrets for the same target are merged into the
   matching remote `.env` file before the Status agent writes it.

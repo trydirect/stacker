@@ -804,10 +804,13 @@ controlled by Docker Compose `env_file` entries under each compose service.
 For app-only remote updates, `stacker agent deploy-app <app>` resolves the
 environment/profile from `--env`, then `.stacker/active-env`, then
 `deploy.environment`. If `<app>/docker/<env>/compose.yml` exists, Stacker uses
-that app-local compose file and resolves `env_file` entries relative to it. A
-service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
-config bundle, and Vault-rendered service secrets for that app are appended to
-that same remote `.env` before the Status agent writes it.
+the app-local service definition for that app and resolves its `env_file`
+entries relative to that compose file, then merges the service definition back
+into the full project-level compose before sending it to the agent. This keeps
+other services in the remote `docker-compose.yml` intact. A service-local file
+such as `<app>/docker/prod/.env` is uploaded to the remote config bundle, and
+Vault-rendered service secrets for that app are appended to that same remote
+`.env` before the Status agent writes it.
 
 The rendered runtime env is built from these layers, lowest to highest:
 

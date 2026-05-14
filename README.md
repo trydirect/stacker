@@ -264,11 +264,13 @@ stacker config show --resolved
 
 For app-only updates, `stacker agent deploy-app <target>` resolves the deploy
 environment from `--env`, then `.stacker/active-env`, then `stacker.yml`. If
-`<target>/docker/<env>/compose.yml` exists, that app-local compose file is used
-instead of the project-level compose file. Any app-local `.env` referenced by
-that compose file is uploaded in the config bundle, and Stacker appends the
-Vault-rendered service secrets for the same target to that file before the agent
-writes it on the server.
+`<target>/docker/<env>/compose.yml` exists, Stacker uses the app-local service
+definition for that target but merges it into the full project-level compose
+file before sending it to the agent. This prevents app-only updates from
+replacing the remote stack compose with a single-service compose file. Any
+app-local `.env` referenced by that compose file is uploaded in the config
+bundle, and Stacker appends the Vault-rendered service secrets for the same
+target to that file before the agent writes it on the server.
 
 ### Marketplace workflow (for stack developers)
 

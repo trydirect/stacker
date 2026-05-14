@@ -746,15 +746,16 @@ fn local_config_files_for_agent_deploy(
     let Some(configured_compose_file) = config.deploy.compose_file.as_ref() else {
         return Ok(result);
     };
-    let compose_path = resolve_deploy_app_compose_path(
-        project_dir,
-        app_code,
-        &environment,
-        configured_compose_file,
-    );
-    if !compose_path.exists() {
+    let configured_compose_path = resolve_compose_path(project_dir, configured_compose_file);
+    if !configured_compose_path.exists() {
         return Ok(result);
     }
+    let app_local_compose_path = app_local_compose_path(project_dir, app_code, &environment);
+    let compose_path = if app_local_compose_path.exists() {
+        app_local_compose_path.as_path()
+    } else {
+        configured_compose_path.as_path()
+    };
 
     if !compose_service_has_env_file(&compose_path, app_code)? {
         let conventional_env = project_dir
@@ -772,19 +773,31 @@ fn local_config_files_for_agent_deploy(
         }
     }
 
-    let bundle = build_config_bundle(
+    let project_bundle = build_config_bundle(
         project_dir,
         &environment,
-        &compose_path,
+        &configured_compose_path,
         config.env_file.as_deref(),
     )?;
 
-    result.compose_content = bundle
-        .config_files
-        .iter()
-        .find(|file| file.get("name").and_then(|name| name.as_str()) == Some("docker-compose.yml"))
-        .and_then(|file| file.get("content").and_then(|content| content.as_str()))
-        .map(ToOwned::to_owned);
+    let bundle = if compose_path == configured_compose_path.as_path() {
+        project_bundle
+    } else {
+        let app_bundle = build_config_bundle(project_dir, &environment, compose_path, None)?;
+        let project_compose = bundle_compose_content(&project_bundle)?;
+        let app_compose = bundle_compose_content(&app_bundle)?;
+        result.compose_content = Some(merge_compose_service(
+            &project_compose,
+            &app_compose,
+            app_code,
+        )?);
+        merge_bundle_config_files(project_bundle, app_bundle)
+    };
+
+    if result.compose_content.is_none() {
+        result.compose_content = Some(bundle_compose_content(&bundle)?);
+    }
+
     let absolute_config_files: Vec<_> = bundle
         .config_files
         .into_iter()
@@ -801,26 +814,128 @@ fn local_config_files_for_agent_deploy(
     Ok(result)
 }
 
-fn resolve_deploy_app_compose_path(
-    project_dir: &Path,
+fn bundle_compose_content(
+    bundle: &crate::cli::config_bundle::ConfigBundleArtifacts,
+) -> Result<String, CliError> {
+    bundle
+        .config_files
+        .iter()
+        .find(|file| file.get("name").and_then(|name| name.as_str()) == Some("docker-compose.yml"))
+        .and_then(|file| file.get("content").and_then(|content| content.as_str()))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            CliError::ConfigValidation("config bundle missing docker-compose.yml".into())
+        })
+}
+
+fn merge_bundle_config_files(
+    mut project_bundle: crate::cli::config_bundle::ConfigBundleArtifacts,
+    app_bundle: crate::cli::config_bundle::ConfigBundleArtifacts,
+) -> crate::cli::config_bundle::ConfigBundleArtifacts {
+    for app_file in app_bundle.config_files {
+        let app_destination = app_file
+            .get("destination_path")
+            .and_then(|path| path.as_str())
+            .map(ToOwned::to_owned);
+        if let Some(app_destination) = app_destination {
+            project_bundle.config_files.retain(|project_file| {
+                project_file
+                    .get("destination_path")
+                    .and_then(|path| path.as_str())
+                    != Some(app_destination.as_str())
+            });
+        }
+        project_bundle.config_files.push(app_file);
+    }
+
+    project_bundle
+}
+
+fn merge_compose_service(
+    project_compose: &str,
+    app_compose: &str,
     app_code: &str,
-    environment: &str,
-    configured_compose_file: &Path,
-) -> PathBuf {
-    let app_local_compose = project_dir
+) -> Result<String, CliError> {
+    let mut project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
+    let app_doc: serde_yaml::Value = serde_yaml::from_str(app_compose)?;
+
+    let app_service = app_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|services| services.get(serde_yaml::Value::String(app_code.to_string())))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "app-local compose does not define service '{app_code}'"
+            ))
+        })?;
+
+    let project_services = project_doc
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .ok_or_else(|| {
+            CliError::ConfigValidation("project compose does not define services".into())
+        })?;
+    project_services.insert(serde_yaml::Value::String(app_code.to_string()), app_service);
+
+    merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+    merge_compose_top_level_mapping(&mut project_doc, &app_doc, "volumes");
+
+    serde_yaml::to_string(&project_doc)
+        .map_err(|err| CliError::ConfigValidation(format!("failed to merge compose: {err}")))
+}
+
+fn merge_compose_top_level_mapping(
+    project_doc: &mut serde_yaml::Value,
+    app_doc: &serde_yaml::Value,
+    key: &str,
+) {
+    let Some(app_mapping) = app_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String(key.to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return;
+    };
+
+    let Some(project_root) = project_doc.as_mapping_mut() else {
+        return;
+    };
+    let project_key = serde_yaml::Value::String(key.to_string());
+    if !project_root.contains_key(&project_key) {
+        project_root.insert(
+            project_key.clone(),
+            serde_yaml::Value::Mapping(Default::default()),
+        );
+    }
+    let Some(project_mapping) = project_root
+        .get_mut(&project_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return;
+    };
+
+    for (name, value) in app_mapping {
+        project_mapping.insert(name.clone(), value.clone());
+    }
+}
+
+fn resolve_compose_path(project_dir: &Path, compose_file: &Path) -> PathBuf {
+    if compose_file.is_absolute() {
+        compose_file.to_path_buf()
+    } else {
+        project_dir.join(compose_file)
+    }
+}
+
+fn app_local_compose_path(project_dir: &Path, app_code: &str, environment: &str) -> PathBuf {
+    project_dir
         .join(app_code)
         .join("docker")
         .join(environment)
-        .join("compose.yml");
-    if app_local_compose.exists() {
-        return app_local_compose;
-    }
-
-    if configured_compose_file.is_absolute() {
-        configured_compose_file.to_path_buf()
-    } else {
-        project_dir.join(configured_compose_file)
-    }
+        .join("compose.yml")
 }
 
 fn active_environment_path(project_dir: &Path) -> std::path::PathBuf {
@@ -1980,7 +2095,7 @@ environments:
     }
 
     #[test]
-    fn local_config_files_prefers_app_local_compose_for_deploy_app() {
+    fn local_config_files_merges_app_local_service_into_project_compose() {
         let dir = TempDir::new().expect("temp dir");
         let root = dir.path();
         std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
@@ -2019,7 +2134,9 @@ environments:
 
         let compose = config.compose_content.expect("compose content");
         assert!(compose.contains("syncopia/device-api:prod"));
-        assert!(!compose.contains("postgres:17-alpine"));
+        assert!(compose.contains("postgres:17-alpine"));
+        assert!(!compose.contains("syncopia/device-api:latest"));
+        assert!(compose.contains("/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"));
         assert!(config.notices.is_empty());
         let config_files = config.config_files.expect("config files");
         assert!(config_files.iter().any(|file| {

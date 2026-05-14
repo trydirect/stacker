@@ -94,7 +94,8 @@ Each deployment receives its own Vault token, scoped to only access that deploym
 3. **Command Enrichment** (Stacker → Status Panel):
    - When `deploy_app` command is issued, Stacker enriches the command payload
    - Fetches from Vault: `{app_code}` (compose), `{app_code}_env` (runtime env), `{app_code}_configs` (bundle)
-   - For CLI-provided app-local config bundles, merges the freshly rendered
+   - For CLI-provided app-local config bundles, merges the app-local service
+     definition into the full project compose, then merges the freshly rendered
      service-secret env into any `.env` file referenced by that app's compose
      `env_file`
    - Adds all configs to `config_files` array in command payload
@@ -239,11 +240,15 @@ vault.store_app_config(deployment_hash, &format!("{}_configs", app_code), &bundl
 ```
 
 When a CLI request already includes `compose_content` and config files from an
-app-local compose bundle, Stacker keeps those files and appends the
+app-local compose bundle, Stacker uses the app-local service definition for the
+target app but merges it into the full project compose before sending
+`compose_content` to the Status agent. The agent still writes one
+`docker-compose.yml`, but it contains all project services plus the updated
+app-local service. Stacker also keeps the bundled config files and appends the
 Vault-rendered service secrets to the `.env` file referenced by the matching
 compose service. This lets `device-api/docker/prod/compose.yml` with
 `env_file: .env` receive both local `.env` content and Vault-backed service
-secrets without requiring the project-level compose file to contain that service.
+secrets without truncating the remote project compose file.
 
 ### 5. ProjectAppService
 
