@@ -98,6 +98,8 @@ Each deployment receives its own Vault token, scoped to only access that deploym
      definition into the full project compose, then merges the freshly rendered
      service-secret env into any `.env` file referenced by that app's compose
      `env_file`
+   - If runtime env rendering fails, command creation fails rather than falling
+     back to raw bundled `.env` content that could omit remote secrets
    - Adds all configs to `config_files` array in command payload
    - Status Panel receives complete config set ready to write
 
@@ -244,11 +246,16 @@ app-local compose bundle, Stacker uses the app-local service definition for the
 target app but merges it into the full project compose before sending
 `compose_content` to the Status agent. The agent still writes one
 `docker-compose.yml`, but it contains all project services plus the updated
-app-local service. Stacker also keeps the bundled config files and appends the
-Vault-rendered service secrets to the `.env` file referenced by the matching
-compose service. This lets `device-api/docker/prod/compose.yml` with
-`env_file: .env` receive both local `.env` content and Vault-backed service
-secrets without truncating the remote project compose file.
+app-local service. The CLI treats the project-level compose as topology in this
+path and bundles only files referenced by the target app-local compose, so a
+missing `env_file` for an unrelated service does not block app-only updates.
+Stacker also keeps the bundled config files and appends the Vault-rendered
+service secrets to the `.env` file referenced by the matching compose service.
+This lets `device-api/docker/prod/compose.yml` with `env_file: .env` receive
+both local `.env` content and Vault-backed service secrets without truncating
+the remote project compose file. If the server cannot render the runtime env
+for a registered target, the enqueue request fails so Status does not deploy a
+partial app-local `.env`.
 
 ### 5. ProjectAppService
 

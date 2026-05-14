@@ -773,25 +773,29 @@ fn local_config_files_for_agent_deploy(
         }
     }
 
-    let project_bundle = build_config_bundle(
-        project_dir,
-        &environment,
-        &configured_compose_path,
-        config.env_file.as_deref(),
-    )?;
-
     let bundle = if compose_path == configured_compose_path.as_path() {
-        project_bundle
+        build_config_bundle(
+            project_dir,
+            &environment,
+            &configured_compose_path,
+            config.env_file.as_deref(),
+        )?
     } else {
         let app_bundle = build_config_bundle(project_dir, &environment, compose_path, None)?;
-        let project_compose = bundle_compose_content(&project_bundle)?;
+        let project_compose = std::fs::read_to_string(&configured_compose_path).map_err(|err| {
+            CliError::ConfigValidation(format!(
+                "failed to read project compose {}: {}",
+                configured_compose_path.display(),
+                err
+            ))
+        })?;
         let app_compose = bundle_compose_content(&app_bundle)?;
         result.compose_content = Some(merge_compose_service(
             &project_compose,
             &app_compose,
             app_code,
         )?);
-        merge_bundle_config_files(project_bundle, app_bundle)
+        app_bundle
     };
 
     if result.compose_content.is_none() {
@@ -826,29 +830,6 @@ fn bundle_compose_content(
         .ok_or_else(|| {
             CliError::ConfigValidation("config bundle missing docker-compose.yml".into())
         })
-}
-
-fn merge_bundle_config_files(
-    mut project_bundle: crate::cli::config_bundle::ConfigBundleArtifacts,
-    app_bundle: crate::cli::config_bundle::ConfigBundleArtifacts,
-) -> crate::cli::config_bundle::ConfigBundleArtifacts {
-    for app_file in app_bundle.config_files {
-        let app_destination = app_file
-            .get("destination_path")
-            .and_then(|path| path.as_str())
-            .map(ToOwned::to_owned);
-        if let Some(app_destination) = app_destination {
-            project_bundle.config_files.retain(|project_file| {
-                project_file
-                    .get("destination_path")
-                    .and_then(|path| path.as_str())
-                    != Some(app_destination.as_str())
-            });
-        }
-        project_bundle.config_files.push(app_file);
-    }
-
-    project_bundle
 }
 
 fn merge_compose_service(
@@ -2143,6 +2124,63 @@ environments:
             file.get("destination_path")
                 .and_then(|path| path.as_str())
                 .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn local_config_files_app_local_deploy_does_not_require_unrelated_project_env_file() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).expect("app compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  upload:\n    image: syncopia/upload:prod\n    env_file:\n      - upload.env\n",
+        )
+        .expect("project compose");
+        std::fs::write(root.join("device-api/docker/prod/.env"), "RUST_LOG=debug\n")
+            .expect("app env");
+        std::fs::write(
+            root.join("device-api/docker/prod/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:prod\n    env_file: .env\n",
+        )
+        .expect("app compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+        let compose = config.compose_content.expect("compose content");
+
+        assert!(compose.contains("syncopia/device-api:prod"));
+        assert!(compose.contains("syncopia/upload:prod"));
+        assert!(compose.contains("upload.env"));
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .unwrap_or(false)
+        }));
+        assert!(!config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path.ends_with("/docker/prod/upload.env"))
                 .unwrap_or(false)
         }));
     }

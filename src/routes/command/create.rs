@@ -264,7 +264,15 @@ pub async fn create_handler(
             pg_pool.get_ref(),
             deployment_id,
         )
-        .await;
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                deployment_hash = %req.deployment_hash,
+                error = %error,
+                "Failed to enrich deploy_app command"
+            );
+            JsonResponse::<()>::build().internal_server_error(error)
+        })?;
 
         // Auto-discover child services from multi-service compose files
         if let (Some(project_id), Some(app_code)) = (deployment_id, app_code) {
@@ -380,7 +388,7 @@ async fn enrich_deploy_app_with_compose(
     vault_settings: &crate::configuration::VaultSettings,
     pg_pool: &PgPool,
     project_id: Option<i32>,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, String> {
     let mut params = params.unwrap_or_else(|| json!({}));
 
     // Get app_code from parameters - compose is stored under app_code key in Vault
@@ -399,7 +407,7 @@ async fn enrich_deploy_app_with_compose(
                 "Failed to initialize Vault: {}, cannot enrich deploy_app",
                 e
             );
-            return Some(params);
+            return Ok(Some(params));
         }
     };
 
@@ -599,7 +607,7 @@ async fn enrich_deploy_app_with_compose(
         &app_code,
         vault_settings,
     )
-    .await
+    .await?
     {
         tracing::info!(
             deployment_hash = %deployment_hash,
@@ -687,7 +695,7 @@ async fn enrich_deploy_app_with_compose(
         }
     }
 
-    Some(params)
+    Ok(Some(params))
 }
 
 fn merge_rendered_env_into_app_env_files(
@@ -806,8 +814,10 @@ async fn render_project_env_for_deploy_app(
     deployment_hash: &str,
     app_code: &str,
     vault_settings: &crate::configuration::VaultSettings,
-) -> Option<(AppConfig, String)> {
-    let project_id = project_id?;
+) -> Result<Option<(AppConfig, String)>, String> {
+    let Some(project_id) = project_id else {
+        return Ok(None);
+    };
     let project = match db::project::fetch(pg_pool, project_id).await {
         Ok(Some(project)) => project,
         Ok(None) => {
@@ -816,7 +826,7 @@ async fn render_project_env_for_deploy_app(
                 app_code,
                 "Cannot render deploy_app env because project was not found"
             );
-            return None;
+            return Ok(None);
         }
         Err(error) => {
             tracing::warn!(
@@ -825,7 +835,9 @@ async fn render_project_env_for_deploy_app(
                 error = %error,
                 "Cannot render deploy_app env because project fetch failed"
             );
-            return None;
+            return Err(format!(
+                "failed to fetch project for deploy_app env render: {error}"
+            ));
         }
     };
 
@@ -838,7 +850,7 @@ async fn render_project_env_for_deploy_app(
                 app_code,
                 "Cannot render deploy_app env because enabled app was not found"
             );
-            return None;
+            return Ok(None);
         }
         Err(error) => {
             tracing::warn!(
@@ -847,7 +859,9 @@ async fn render_project_env_for_deploy_app(
                 error = %error,
                 "Cannot render deploy_app env because app fetch failed"
             );
-            return None;
+            return Err(format!(
+                "failed to fetch deploy_app target '{app_code}' for env render: {error}"
+            ));
         }
     };
 
@@ -860,7 +874,9 @@ async fn render_project_env_for_deploy_app(
                 error = %error,
                 "Cannot render deploy_app env because Vault initialization failed"
             );
-            return None;
+            return Err(format!(
+                "failed to initialize Vault for deploy_app env render: {error}"
+            ));
         }
     };
     let renderer = match ConfigRenderer::with_vault(vault) {
@@ -872,7 +888,9 @@ async fn render_project_env_for_deploy_app(
                 error = %error,
                 "Cannot render deploy_app env because ConfigRenderer initialization failed"
             );
-            return None;
+            return Err(format!(
+                "failed to initialize config renderer for deploy_app env render: {error}"
+            ));
         }
     };
 
@@ -880,7 +898,7 @@ async fn render_project_env_for_deploy_app(
         .render_app_env_config(pg_pool, &app, &project, deployment_hash)
         .await
     {
-        Ok(config) => Some(config),
+        Ok(config) => Ok(Some(config)),
         Err(error) => {
             tracing::warn!(
                 project_id,
@@ -888,9 +906,16 @@ async fn render_project_env_for_deploy_app(
                 error = %error,
                 "Cannot render deploy_app env"
             );
-            None
+            Err(deploy_app_env_render_error(app_code, &error))
         }
     }
+}
+
+fn deploy_app_env_render_error(
+    app_code: &str,
+    error: &(dyn std::fmt::Display + Send + Sync),
+) -> String {
+    format!("failed to render deploy_app runtime env for target '{app_code}': {error}")
 }
 
 async fn render_project_compose_for_deploy_app(
@@ -1271,6 +1296,128 @@ services:
             .and_then(|value| value.as_str())
             .expect("upload env content");
         assert!(!upload_env.contains("S3_SECRET_KEY"));
+    }
+
+    #[test]
+    fn merge_rendered_env_preserves_local_env_and_appends_rendered_block_once() {
+        let mut config_files = vec![json!({
+            "content": "RUST_LOG=debug\n",
+            "content_type": "text/plain",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env",
+            "file_mode": "0644"
+        })];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(
+                r#"
+services:
+  device-api:
+    env_file: /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+"#,
+            ),
+            "device-api",
+            "# stacker-render version=1 hash=abc generated_at=now inputs=service\nS3_BUCKET=superbucket\n",
+        );
+
+        assert_eq!(merged, 1);
+        let env_content = config_files[0]["content"].as_str().expect("content");
+        assert_eq!(
+            env_content,
+            "RUST_LOG=debug\n\n# stacker-render version=1 hash=abc generated_at=now inputs=service\nS3_BUCKET=superbucket\n"
+        );
+        assert_eq!(config_files[0]["content_type"], "text/plain");
+        assert_eq!(config_files[0]["file_mode"], "0644");
+    }
+
+    #[test]
+    fn merge_rendered_env_matches_app_local_env_by_destination_when_compose_uses_relative_env_file()
+    {
+        let mut config_files = vec![
+            json!({
+                "content": "RUST_LOG=debug\n",
+                "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+            }),
+            json!({
+                "content": "SHARED=true\n",
+                "destination_path": "/opt/stacker/deployments/prod/files/shared/docker/prod/.env"
+            }),
+        ];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(
+                r#"
+services:
+  device-api:
+    env_file: .env
+"#,
+            ),
+            "device-api",
+            "# stacker-render version=1 hash=abc generated_at=now inputs=service\nS3_BUCKET=superbucket\n",
+        );
+
+        assert_eq!(merged, 1);
+        assert!(config_files[0]["content"]
+            .as_str()
+            .expect("device content")
+            .contains("S3_BUCKET=superbucket"));
+        assert!(!config_files[1]["content"]
+            .as_str()
+            .expect("shared content")
+            .contains("S3_BUCKET=superbucket"));
+    }
+
+    #[test]
+    fn merge_rendered_env_does_not_touch_non_env_config_files() {
+        let mut config_files = vec![json!({
+            "content": "port = 5050\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/default.toml"
+        })];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some("services:\n  device-api:\n    env_file: .env\n"),
+            "device-api",
+            "# stacker-render version=1 hash=abc generated_at=now inputs=service\nS3_BUCKET=superbucket\n",
+        );
+
+        assert_eq!(merged, 0);
+        assert_eq!(config_files[0]["content"], "port = 5050\n");
+    }
+
+    #[tokio::test]
+    async fn render_project_env_without_project_id_skips_without_error() {
+        let pg_pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/stacker_test")
+            .expect("lazy pool");
+        let vault_settings = crate::configuration::VaultSettings::default();
+
+        let rendered = render_project_env_for_deploy_app(
+            &pg_pool,
+            None,
+            "deployment_test",
+            "device-api",
+            &vault_settings,
+        )
+        .await
+        .expect("missing project id should be non-fatal");
+
+        assert!(rendered.is_none());
+    }
+
+    #[test]
+    fn deploy_app_env_render_error_names_target_without_secret_values() {
+        let error = deploy_app_env_render_error(
+            "device-api",
+            &std::io::Error::new(std::io::ErrorKind::PermissionDenied, "vault denied access"),
+        );
+
+        assert_eq!(
+            error,
+            "failed to render deploy_app runtime env for target 'device-api': vault denied access"
+        );
+        assert!(!error.contains("S3_BUCKET=superbucket"));
     }
 
     #[test]

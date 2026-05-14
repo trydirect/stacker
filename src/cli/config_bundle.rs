@@ -335,7 +335,13 @@ fn collect_file<'a>(
     path: PathBuf,
     collected: &'a mut BTreeMap<PathBuf, CollectedFile>,
 ) -> Result<&'a CollectedFile, CliError> {
-    let canonical = path.canonicalize()?;
+    let canonical = path.canonicalize().map_err(|err| {
+        validation_error(format!(
+            "config bundle referenced file does not exist or cannot be read: {} ({})",
+            path.display(),
+            err
+        ))
+    })?;
     ensure_inside_project(project_root, &canonical)?;
 
     if canonical.is_dir() {
@@ -363,7 +369,13 @@ fn collect_file<'a>(
                 source_path,
                 destination_path,
                 mode: "0644".to_string(),
-                bytes: std::fs::read(&canonical)?,
+                bytes: std::fs::read(&canonical).map_err(|err| {
+                    validation_error(format!(
+                        "failed to read config bundle file {}: {}",
+                        display_project_path(project_root, &canonical),
+                        err
+                    ))
+                })?,
             },
         );
     }
@@ -418,12 +430,25 @@ fn resolve_reference_path(
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        base_dir.join(reference).canonicalize()?
+        let joined = base_dir.join(reference);
+        joined.canonicalize().map_err(|err| {
+            validation_error(format!(
+                "config bundle referenced file does not exist or cannot be read: {} ({})",
+                joined.display(),
+                err
+            ))
+        })?
     } else {
         base_dir.join(reference)
     };
 
-    let canonical = base.canonicalize()?;
+    let canonical = base.canonicalize().map_err(|err| {
+        validation_error(format!(
+            "config bundle referenced file does not exist or cannot be read: {} ({})",
+            base.display(),
+            err
+        ))
+    })?;
     ensure_inside_project(project_root, &canonical)?;
     Ok(canonical)
 }
@@ -603,6 +628,38 @@ services:
         assert!(
             err.to_string()
                 .contains("directory mounts are not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_config_bundle_reports_missing_env_file_path() {
+        let dir = TempDir::new().unwrap();
+        let compose_dir = dir.path().join("docker/production");
+        std::fs::create_dir_all(&compose_dir).unwrap();
+        std::fs::write(
+            compose_dir.join("compose.yml"),
+            r#"
+services:
+  upload:
+    image: syncopia/upload:latest
+    env_file:
+      - upload.env
+"#,
+        )
+        .unwrap();
+
+        let err = build_config_bundle(
+            dir.path(),
+            "production",
+            &compose_dir.join("compose.yml"),
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("docker/production/upload.env")
+                || err.to_string().contains("docker/production\\upload.env"),
             "unexpected error: {err}"
         );
     }

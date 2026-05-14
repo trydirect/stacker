@@ -807,10 +807,13 @@ environment/profile from `--env`, then `.stacker/active-env`, then
 the app-local service definition for that app and resolves its `env_file`
 entries relative to that compose file, then merges the service definition back
 into the full project-level compose before sending it to the agent. This keeps
-other services in the remote `docker-compose.yml` intact. A service-local file
-such as `<app>/docker/prod/.env` is uploaded to the remote config bundle, and
-Vault-rendered service secrets for that app are appended to that same remote
-`.env` before the Status agent writes it.
+other services in the remote `docker-compose.yml` intact without requiring
+env/config files referenced only by unrelated project-level services. A
+service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
+config bundle, and Vault-rendered service secrets for that app are appended to
+that same remote `.env` before the Status agent writes it. If Stacker cannot
+render the target runtime env, command creation fails instead of deploying a
+raw app-local `.env` without the remote secrets.
 
 The rendered runtime env is built from these layers, lowest to highest:
 

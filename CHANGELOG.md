@@ -18,9 +18,17 @@ All notable changes to this project will be documented in this file.
   `<app>/docker/<env>/compose.yml` when that app-local compose file exists and
   merges that app's service definition into the full project-level compose,
   instead of replacing the remote stack compose with a single-service file.
+- App-local deploys now bundle only the target app-local config files while
+  using the project-level compose as topology, so missing env/config files for
+  unrelated services no longer block `deploy-app <app>`.
 - App-local `env_file` references are uploaded in the deploy-app config bundle,
   and Vault-rendered service secrets for the same target are merged into the
   matching remote `.env` file before the Status agent writes it.
+- Deploy-app command creation now fails if Stacker cannot render the target's
+  runtime env, instead of silently falling back to a stale/raw `.env` that may
+  omit Vault-backed service secrets.
+- Missing config-bundle file errors now include the resolved path instead of a
+  bare `No such file or directory` message.
 - If an app-local `.env` exists but the selected compose service has no
   `env_file` entry, the CLI prints a warning explaining that Docker Compose will
   not inject local or remote-rendered env values into that container.
