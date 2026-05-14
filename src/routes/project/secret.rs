@@ -2,7 +2,7 @@ use crate::db;
 use crate::forms::{RemoteSecretMetadataResponse, UpsertRemoteSecretRequest};
 use crate::helpers::JsonResponse;
 use crate::models;
-use crate::services::{ProjectAppService, VaultService};
+use crate::services::VaultService;
 use actix_web::{delete, get, put, web, Responder, Result};
 use serde_json::json;
 use serde_valid::Validate;
@@ -37,47 +37,6 @@ fn build_vault(
 ) -> Result<VaultService, actix_web::Error> {
     VaultService::from_settings(&settings.vault)
         .map_err(|error| JsonResponse::internal_server_error(error.to_string()))
-}
-
-async fn sync_app_runtime_env(
-    pool: &PgPool,
-    project: &models::Project,
-    app: &models::ProjectApp,
-) -> Result<(), actix_web::Error> {
-    let deployment_hash = resolve_deployment_hash(pool, project.id, app).await?;
-    let Some(deployment_hash) = deployment_hash.as_deref() else {
-        tracing::debug!(
-            project_id = project.id,
-            app_code = %app.code,
-            "Skipping runtime env sync because app has no deployment"
-        );
-        return Ok(());
-    };
-
-    let service = ProjectAppService::new(Arc::new(pool.clone()))
-        .map_err(|error| JsonResponse::internal_server_error(error.to_string()))?;
-    service
-        .sync_app_to_vault(app, project, deployment_hash)
-        .await
-        .map_err(|error| JsonResponse::internal_server_error(error.to_string()))
-}
-
-async fn resolve_deployment_hash(
-    pool: &PgPool,
-    project_id: i32,
-    app: &models::ProjectApp,
-) -> Result<Option<String>, actix_web::Error> {
-    if let Some(deployment_id) = app.deployment_id {
-        return db::deployment::fetch(pool, deployment_id)
-            .await
-            .map_err(JsonResponse::internal_server_error)
-            .map(|deployment| deployment.map(|deployment| deployment.deployment_hash));
-    }
-
-    db::deployment::fetch_by_project_id(pool, project_id)
-        .await
-        .map_err(JsonResponse::internal_server_error)
-        .map(|deployment| deployment.map(|deployment| deployment.deployment_hash))
 }
 
 #[tracing::instrument(name = "List service secrets", skip_all)]
@@ -145,7 +104,7 @@ pub async fn upsert(
     settings: web::Data<crate::configuration::Settings>,
 ) -> Result<impl Responder> {
     let (project_id, code, name) = path.into_inner();
-    let (project, app) =
+    let (_project, _app) =
         fetch_owned_project_and_app(pg_pool.get_ref(), &user, project_id, &code).await?;
     body.validate()
         .map_err(|e| JsonResponse::bad_request(e.to_string()))?;
@@ -170,8 +129,6 @@ pub async fn upsert(
     .await
     .map_err(JsonResponse::internal_server_error)?;
 
-    sync_app_runtime_env(pg_pool.get_ref(), &project, &app).await?;
-
     Ok(JsonResponse::build()
         .set_item(RemoteSecretMetadataResponse::from(secret))
         .ok("OK"))
@@ -186,7 +143,7 @@ pub async fn delete(
     settings: web::Data<crate::configuration::Settings>,
 ) -> Result<impl Responder> {
     let (project_id, code, name) = path.into_inner();
-    let (project, app) =
+    let (_project, _app) =
         fetch_owned_project_and_app(pg_pool.get_ref(), &user, project_id, &code).await?;
 
     let secret = db::remote_secret::fetch_service_secret(
@@ -209,8 +166,6 @@ pub async fn delete(
     db::remote_secret::delete_secret_by_id(pg_pool.get_ref(), secret.id)
         .await
         .map_err(JsonResponse::internal_server_error)?;
-
-    sync_app_runtime_env(pg_pool.get_ref(), &project, &app).await?;
 
     Ok(JsonResponse::<String>::build()
         .set_meta(json!({

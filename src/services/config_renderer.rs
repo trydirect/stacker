@@ -871,6 +871,28 @@ impl ConfigRenderer {
         .context("Failed to render env file")
     }
 
+    /// Render a single app runtime env config without storing it.
+    pub async fn render_app_env_config(
+        &self,
+        pool: &PgPool,
+        app: &ProjectApp,
+        project: &Project,
+        deployment_hash: &str,
+    ) -> Result<(AppConfig, String)> {
+        let environment = self.resolve_app_environment(pool, project, app).await?;
+        let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
+        let config = AppConfig {
+            content: rendered_env.content,
+            content_type: "env".to_string(),
+            destination_path: remote_runtime_env_path().to_string(),
+            file_mode: "0600".to_string(),
+            owner: Some("trydirect".to_string()),
+            group: Some("docker".to_string()),
+        };
+
+        Ok((config, rendered_env.hash))
+    }
+
     /// Sync all app configs to Vault
     pub async fn sync_to_vault(&self, bundle: &ConfigBundle) -> Result<SyncResult, VaultError> {
         let vault = match &self.vault_service {
@@ -946,23 +968,10 @@ impl ConfigRenderer {
             None => return Err(VaultError::NotConfigured),
         };
 
-        let environment = self
-            .resolve_app_environment(pool, project, app)
+        let (config, config_hash) = self
+            .render_app_env_config(pool, app, project, deployment_hash)
             .await
-            .map_err(|e| VaultError::Other(format!("Secret resolution failed: {}", e)))?;
-
-        let rendered_env = self
-            .render_env_file(app, deployment_hash, &environment)
             .map_err(|e| VaultError::Other(format!("Render failed: {}", e)))?;
-
-        let config = AppConfig {
-            content: rendered_env.content,
-            content_type: "env".to_string(),
-            destination_path: remote_runtime_env_path().to_string(),
-            file_mode: "0600".to_string(),
-            owner: Some("trydirect".to_string()),
-            group: Some("docker".to_string()),
-        };
 
         tracing::debug!(
             "Storing .env config for app {} at path {} in Vault",
@@ -975,7 +984,7 @@ impl ConfigRenderer {
             .store_app_config(deployment_hash, &env_key, &config)
             .await?;
 
-        Ok(rendered_env.hash)
+        Ok(config_hash)
     }
 }
 

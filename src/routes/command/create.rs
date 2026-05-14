@@ -9,7 +9,7 @@ use crate::project_app::{
     store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
     upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
-use crate::services::{ProjectAppService, VaultService};
+use crate::services::{AppConfig, ConfigRenderer, ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -594,37 +594,68 @@ async fn enrich_deploy_app_with_compose(
         "Looking up .env file in Vault"
     );
 
-    match vault.fetch_app_config(deployment_hash, &env_key).await {
-        Ok(env_config) => {
-            tracing::info!(
-                deployment_hash = %deployment_hash,
-                app_code = %app_code,
-                destination = %env_config.destination_path,
-                "Found .env file in Vault"
-            );
-            // Convert AppConfig to the format expected by status panel
-            let env_file = json!({
-                "content": env_config.content,
-                "content_type": env_config.content_type,
-                "destination_path": env_config.destination_path,
-                "file_mode": env_config.file_mode,
-                "owner": env_config.owner,
-                "group": env_config.group,
-                "force_overwrite": force_config_overwrite,
-                "drift_check": {
-                    "enabled": true,
-                    "hash_source": "stacker-render-header"
-                },
-            });
-            config_files.push(env_file);
-        }
-        Err(e) => {
-            tracing::debug!(
-                deployment_hash = %deployment_hash,
-                env_key = %env_key,
-                error = %e,
-                "No .env file found in Vault (this is normal for apps without environment config)"
-            );
+    if let Some((env_config, _config_hash)) = render_project_env_for_deploy_app(
+        pg_pool,
+        project_id,
+        deployment_hash,
+        &app_code,
+        vault_settings,
+    )
+    .await
+    {
+        tracing::info!(
+            deployment_hash = %deployment_hash,
+            app_code = %app_code,
+            destination = %env_config.destination_path,
+            "Enriched deploy_app command with freshly rendered runtime env"
+        );
+        let env_file = json!({
+            "content": env_config.content,
+            "content_type": env_config.content_type,
+            "destination_path": env_config.destination_path,
+            "file_mode": env_config.file_mode,
+            "owner": env_config.owner,
+            "group": env_config.group,
+            "force_overwrite": force_config_overwrite,
+            "drift_check": {
+                "enabled": true,
+                "hash_source": "stacker-render-header"
+            },
+        });
+        config_files.push(env_file);
+    } else {
+        match vault.fetch_app_config(deployment_hash, &env_key).await {
+            Ok(env_config) => {
+                tracing::info!(
+                    deployment_hash = %deployment_hash,
+                    app_code = %app_code,
+                    destination = %env_config.destination_path,
+                    "Found .env file in Vault"
+                );
+                // Convert AppConfig to the format expected by status panel
+                let env_file = json!({
+                    "content": env_config.content,
+                    "content_type": env_config.content_type,
+                    "destination_path": env_config.destination_path,
+                    "file_mode": env_config.file_mode,
+                    "owner": env_config.owner,
+                    "group": env_config.group,
+                    "force_overwrite": force_config_overwrite,
+                    "drift_check": {
+                        "enabled": true,
+                        "hash_source": "stacker-render-header"
+                    },
+                });
+                config_files.push(env_file);
+            }
+            Err(e) => {
+                tracing::debug!(
+                    deployment_hash = %deployment_hash,
+                    env_key = %env_key,
+                    error = %e,
+                    "No .env file found in Vault (this is normal for apps without environment config)"
+                );
+            }
         }
     }
 
@@ -642,6 +673,99 @@ async fn enrich_deploy_app_with_compose(
     }
 
     Some(params)
+}
+
+async fn render_project_env_for_deploy_app(
+    pg_pool: &PgPool,
+    project_id: Option<i32>,
+    deployment_hash: &str,
+    app_code: &str,
+    vault_settings: &crate::configuration::VaultSettings,
+) -> Option<(AppConfig, String)> {
+    let project_id = project_id?;
+    let project = match db::project::fetch(pg_pool, project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                "Cannot render deploy_app env because project was not found"
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app env because project fetch failed"
+            );
+            return None;
+        }
+    };
+
+    let app = match db::project_app::fetch_by_project_and_code(pg_pool, project_id, app_code).await
+    {
+        Ok(Some(app)) if app.is_enabled() => app,
+        Ok(Some(_)) | Ok(None) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                "Cannot render deploy_app env because enabled app was not found"
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app env because app fetch failed"
+            );
+            return None;
+        }
+    };
+
+    let vault = match VaultService::from_settings(vault_settings) {
+        Ok(vault) => vault,
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app env because Vault initialization failed"
+            );
+            return None;
+        }
+    };
+    let renderer = match ConfigRenderer::with_vault(vault) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app env because ConfigRenderer initialization failed"
+            );
+            return None;
+        }
+    };
+
+    match renderer
+        .render_app_env_config(pg_pool, &app, &project, deployment_hash)
+        .await
+    {
+        Ok(config) => Some(config),
+        Err(error) => {
+            tracing::warn!(
+                project_id,
+                app_code,
+                error = %error,
+                "Cannot render deploy_app env"
+            );
+            None
+        }
+    }
 }
 
 async fn render_project_compose_for_deploy_app(
