@@ -136,7 +136,7 @@ pub(crate) async fn store_configs_to_vault_from_params(
             let file_name = get_str(file, "name").unwrap_or("");
             let content = get_str(file, "content").unwrap_or("");
 
-            if is_env_filename(file_name) {
+            if is_legacy_env_file(file) {
                 env_content = Some(content.to_string());
                 continue;
             }
@@ -318,6 +318,24 @@ pub(crate) async fn store_configs_to_vault_from_params(
 
 fn is_env_filename(file_name: &str) -> bool {
     matches!(file_name, ".env" | "env")
+}
+
+fn is_legacy_env_file(file: &serde_json::Value) -> bool {
+    let Some(file_name) = get_str(file, "name") else {
+        return false;
+    };
+    if !is_env_filename(file_name) {
+        return false;
+    }
+
+    let destination = get_str(file, "destination_path")
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    !matches!(
+        destination,
+        Some(path) if path.starts_with("/opt/stacker/deployments/")
+    )
 }
 
 #[cfg(test)]

@@ -34,8 +34,14 @@ pub(crate) async fn upsert_app_config_for_deploy(
         deployment_hash
     );
     tracing::info!(
-        "[UPSERT_APP_CONFIG] Parameters: {}",
-        serde_json::to_string_pretty(parameters).unwrap_or_else(|_| parameters.to_string())
+        "[UPSERT_APP_CONFIG] Parameters summary - has_env: {}, config_files: {}, has_image: {}",
+        parameters.get("env").is_some(),
+        parameters
+            .get("config_files")
+            .and_then(|value| value.as_array())
+            .map(|files| files.len())
+            .unwrap_or(0),
+        parameters.get("image").is_some()
     );
 
     // Resolve the actual deployment record ID from deployment_hash

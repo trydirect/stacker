@@ -161,6 +161,7 @@ struct RemoteSecretPushOptions {
     force: bool,
     json: bool,
     deployment: Option<String>,
+    environment: Option<String>,
 }
 
 impl RemoteSecretPushOptions {
@@ -1195,6 +1196,7 @@ impl SecretsPushCommand {
         force: bool,
         json: bool,
         deployment: Option<String>,
+        environment: Option<String>,
     ) -> Self {
         Self {
             options: RemoteSecretPushOptions {
@@ -1207,6 +1209,7 @@ impl SecretsPushCommand {
                 force,
                 json,
                 deployment,
+                environment,
             },
         }
     }
@@ -1240,6 +1243,7 @@ impl CallableTrait for SecretsPushCommand {
             "runc".to_string(),
             self.options.json,
             deployment,
+            self.options.environment.clone(),
         )
         .call()?;
 

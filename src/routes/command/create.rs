@@ -14,6 +14,7 @@ use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -185,16 +186,12 @@ pub async fn create_handler(
             .and_then(|v| v.as_str());
         let app_params = req.parameters.as_ref().and_then(|p| p.get("parameters"));
 
-        // CRITICAL: Log incoming parameters for debugging env/config save issues
         tracing::info!(
-            "[DEPLOY_APP] deployment_id: {:?}, app_code: {:?}, has_app_params: {}, raw_params: {}",
+            "[DEPLOY_APP] deployment_id: {:?}, app_code: {:?}, has_app_params: {}, has_parameters: {}",
             deployment_id,
             app_code,
             app_params.is_some(),
-            req.parameters
-                .as_ref()
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "None".to_string())
+            req.parameters.is_some()
         );
 
         if let Some(params) = app_params.or(req.parameters.as_ref()) {
@@ -202,7 +199,8 @@ pub async fn create_handler(
                 "[DEPLOY_APP] Parameters contain - env: {}, config_files: {}, image: {}",
                 params
                     .get("env")
-                    .map(|v| v.to_string())
+                    .and_then(|v| v.as_object())
+                    .map(|env| format!("{} keys", env.len()))
                     .unwrap_or_else(|| "None".to_string()),
                 params
                     .get("config_files")
@@ -609,6 +607,23 @@ async fn enrich_deploy_app_with_compose(
             destination = %env_config.destination_path,
             "Enriched deploy_app command with freshly rendered runtime env"
         );
+        let merged_into_bundle = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            params
+                .get("compose_content")
+                .and_then(|value| value.as_str()),
+            &app_code,
+            &env_config.content,
+        );
+        if merged_into_bundle > 0 {
+            tracing::info!(
+                deployment_hash = %deployment_hash,
+                app_code = %app_code,
+                merged_file_count = merged_into_bundle,
+                "Merged rendered runtime env into deploy_app config bundle env files"
+            );
+        }
+
         let env_file = json!({
             "content": env_config.content,
             "content_type": env_config.content_type,
@@ -673,6 +688,116 @@ async fn enrich_deploy_app_with_compose(
     }
 
     Some(params)
+}
+
+fn merge_rendered_env_into_app_env_files(
+    config_files: &mut [serde_json::Value],
+    compose_content: Option<&str>,
+    app_code: &str,
+    rendered_env_content: &str,
+) -> usize {
+    let compose_env_paths = compose_content
+        .map(|content| compose_env_file_destinations_for_app(content, app_code))
+        .unwrap_or_default();
+    let mut merged = 0;
+
+    for config_file in config_files {
+        let Some(destination_path) = config_file
+            .get("destination_path")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+
+        if !is_app_env_config_file(&destination_path, app_code, &compose_env_paths) {
+            continue;
+        }
+
+        let existing_content = config_file
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let merged_content = append_rendered_env(existing_content, rendered_env_content);
+
+        if let Some(obj) = config_file.as_object_mut() {
+            obj.insert("content".to_string(), json!(merged_content));
+            obj.insert("content_type".to_string(), json!("text/plain"));
+            obj.entry("file_mode".to_string()).or_insert(json!("0600"));
+            obj.entry("owner".to_string()).or_insert(json!("trydirect"));
+            obj.entry("group".to_string()).or_insert(json!("docker"));
+        }
+        merged += 1;
+    }
+
+    merged
+}
+
+fn is_app_env_config_file(
+    destination_path: &str,
+    app_code: &str,
+    compose_env_paths: &HashSet<String>,
+) -> bool {
+    if !destination_path.ends_with(".env") {
+        return false;
+    }
+
+    if compose_env_paths.contains(destination_path) {
+        return true;
+    }
+
+    destination_path.contains(&format!("/{app_code}/docker/"))
+}
+
+fn append_rendered_env(existing_content: &str, rendered_env_content: &str) -> String {
+    let existing_content = existing_content.trim_end();
+    if existing_content.is_empty() {
+        return rendered_env_content.to_string();
+    }
+
+    format!("{existing_content}\n\n{rendered_env_content}")
+}
+
+fn compose_env_file_destinations_for_app(compose_content: &str, app_code: &str) -> HashSet<String> {
+    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(compose_content) else {
+        return HashSet::new();
+    };
+    let Some(env_file_value) = doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|services| services.get(serde_yaml::Value::String(app_code.to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|service| service.get(serde_yaml::Value::String("env_file".to_string())))
+    else {
+        return HashSet::new();
+    };
+
+    let mut paths = HashSet::new();
+    collect_env_file_destinations(env_file_value, &mut paths);
+    paths
+}
+
+fn collect_env_file_destinations(value: &serde_yaml::Value, paths: &mut HashSet<String>) {
+    match value {
+        serde_yaml::Value::String(path) => {
+            paths.insert(path.clone());
+        }
+        serde_yaml::Value::Sequence(values) => {
+            for value in values {
+                collect_env_file_destinations(value, paths);
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            if let Some(path) = map
+                .get(serde_yaml::Value::String("path".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+            {
+                paths.insert(path.to_string());
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn render_project_env_for_deploy_app(
@@ -1101,5 +1226,66 @@ mod tests {
             "app_code": "upload"
         })))
         .is_none());
+    }
+
+    #[test]
+    fn merge_rendered_env_updates_app_local_compose_env_file() {
+        let compose_content = r#"
+services:
+  device-api:
+    image: syncopia/device-api:prod
+    env_file:
+      - /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+  upload:
+    image: syncopia/upload:prod
+    env_file:
+      - /opt/stacker/deployments/prod/files/upload/docker/prod/.env
+"#;
+        let mut config_files = vec![
+            json!({
+                "content": "# Auto-created empty env file\n",
+                "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+            }),
+            json!({
+                "content": "UPLOAD_ONLY=true\n",
+                "destination_path": "/opt/stacker/deployments/prod/files/upload/docker/prod/.env"
+            }),
+        ];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(compose_content),
+            "device-api",
+            "# stacker-render version=1 hash=abc generated_at=now inputs=service\nS3_SECRET_KEY=supersecret\n",
+        );
+
+        assert_eq!(merged, 1);
+        let device_env = config_files[0]
+            .get("content")
+            .and_then(|value| value.as_str())
+            .expect("device env content");
+        assert!(device_env.contains("# Auto-created empty env file"));
+        assert!(device_env.contains("S3_SECRET_KEY=supersecret"));
+        let upload_env = config_files[1]
+            .get("content")
+            .and_then(|value| value.as_str())
+            .expect("upload env content");
+        assert!(!upload_env.contains("S3_SECRET_KEY"));
+    }
+
+    #[test]
+    fn compose_env_file_destinations_supports_compose_mapping_syntax() {
+        let compose_content = r#"
+services:
+  device-api:
+    env_file:
+      - path: /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+        required: false
+"#;
+
+        let destinations = compose_env_file_destinations_for_app(compose_content, "device-api");
+
+        assert!(destinations
+            .contains("/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"));
     }
 }

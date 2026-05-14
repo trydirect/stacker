@@ -9,6 +9,8 @@
 //! The CLI never connects to the agent directly. All communication is mediated
 //! by the Stacker server.
 
+use crate::cli::config_bundle::build_config_bundle;
+use crate::cli::config_parser::StackerConfig;
 use crate::cli::error::CliError;
 use crate::cli::fmt;
 use crate::cli::install_runner::resolve_docker_registry_credentials;
@@ -16,7 +18,7 @@ use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{AgentCommandInfo, AgentEnqueueRequest};
 use crate::console::commands::CallableTrait;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Deployment hash resolution
@@ -628,6 +630,7 @@ pub struct AgentDeployAppCommand {
     pub runtime: String,
     pub json: bool,
     pub deployment: Option<String>,
+    pub environment: Option<String>,
 }
 
 impl AgentDeployAppCommand {
@@ -638,6 +641,7 @@ impl AgentDeployAppCommand {
         runtime: String,
         json: bool,
         deployment: Option<String>,
+        environment: Option<String>,
     ) -> Self {
         Self {
             app_code,
@@ -646,6 +650,7 @@ impl AgentDeployAppCommand {
             runtime,
             json,
             deployment,
+            environment,
         }
     }
 }
@@ -657,10 +662,18 @@ impl CallableTrait for AgentDeployAppCommand {
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
         check_active_connections(&ctx, &hash, self.force_recreate)?;
+        let local_config = local_config_files_for_agent_deploy(
+            &project_dir,
+            &self.app_code,
+            self.environment.as_deref(),
+        )?;
+        for notice in &local_config.notices {
+            eprintln!("  ⚠ {notice}");
+        }
 
         let params = crate::forms::status_panel::DeployAppCommandRequest {
             app_code: self.app_code.clone(),
-            compose_content: None,
+            compose_content: local_config.compose_content,
             image: self.image.clone(),
             env_vars: None,
             pull: true,
@@ -668,6 +681,7 @@ impl CallableTrait for AgentDeployAppCommand {
             force_config_overwrite: self.force_recreate,
             runtime: self.runtime.clone(),
             registry_auth: resolve_registry_auth_for_agent_deploy(&project_dir),
+            config_files: local_config.config_files,
         };
 
         let request = AgentEnqueueRequest::new(&hash, "deploy_app")
@@ -679,6 +693,171 @@ impl CallableTrait for AgentDeployAppCommand {
         print_command_result(&info, self.json);
         Ok(())
     }
+}
+
+#[derive(Debug, Default)]
+struct LocalDeployAppConfig {
+    compose_content: Option<String>,
+    config_files: Option<Vec<serde_json::Value>>,
+    notices: Vec<String>,
+}
+
+fn local_config_files_for_agent_deploy(
+    project_dir: &Path,
+    app_code: &str,
+    environment_override: Option<&str>,
+) -> Result<LocalDeployAppConfig, CliError> {
+    let mut result = LocalDeployAppConfig::default();
+    let config_path = project_dir.join("stacker.yml");
+    if !config_path.exists() {
+        return Ok(result);
+    }
+
+    let active_target =
+        crate::cli::deployment_lock::DeploymentLock::read_active_target(project_dir)?;
+    let mut config = StackerConfig::from_file(&config_path)?
+        .with_resolved_deploy_target(active_target.as_deref())?;
+    let active_environment = read_active_environment(project_dir)?;
+    let requested_environment = environment_override.or(active_environment.as_deref());
+    let Some((environment, environment_config)) =
+        config.resolve_environment_config(requested_environment)?
+    else {
+        return Ok(result);
+    };
+
+    if environment_override.is_none() && active_environment.is_none() {
+        if let Some(active_target) = active_target.as_deref() {
+            if active_target != "local" && environment == "local" {
+                result.notices.push(format!(
+                    "Active target is '{}', but resolved environment is 'local'; use `stacker agent deploy-app {} --env prod` or `stacker env prod` if this should use production config.",
+                    active_target, app_code
+                ));
+            }
+        }
+    }
+
+    if let Some(compose_file) = environment_config.compose_file {
+        config.deploy.compose_file = Some(compose_file);
+    }
+    if let Some(env_file) = environment_config.env_file {
+        config.env_file = Some(env_file);
+    }
+
+    let Some(configured_compose_file) = config.deploy.compose_file.as_ref() else {
+        return Ok(result);
+    };
+    let compose_path = resolve_deploy_app_compose_path(
+        project_dir,
+        app_code,
+        &environment,
+        configured_compose_file,
+    );
+    if !compose_path.exists() {
+        return Ok(result);
+    }
+
+    if !compose_service_has_env_file(&compose_path, app_code)? {
+        let conventional_env = project_dir
+            .join(app_code)
+            .join("docker")
+            .join(&environment)
+            .join(".env");
+        if conventional_env.exists() {
+            result.notices.push(format!(
+                "{} exists, but service '{}' in {} has no env_file entry; Docker Compose will not inject local or remote-rendered env values into that container.",
+                conventional_env.display(),
+                app_code,
+                compose_path.display()
+            ));
+        }
+    }
+
+    let bundle = build_config_bundle(
+        project_dir,
+        &environment,
+        &compose_path,
+        config.env_file.as_deref(),
+    )?;
+
+    result.compose_content = bundle
+        .config_files
+        .iter()
+        .find(|file| file.get("name").and_then(|name| name.as_str()) == Some("docker-compose.yml"))
+        .and_then(|file| file.get("content").and_then(|content| content.as_str()))
+        .map(ToOwned::to_owned);
+    let absolute_config_files: Vec<_> = bundle
+        .config_files
+        .into_iter()
+        .filter(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path.starts_with("/opt/stacker/deployments/"))
+                .unwrap_or(false)
+        })
+        .collect();
+    if !absolute_config_files.is_empty() {
+        result.config_files = Some(absolute_config_files);
+    }
+    Ok(result)
+}
+
+fn resolve_deploy_app_compose_path(
+    project_dir: &Path,
+    app_code: &str,
+    environment: &str,
+    configured_compose_file: &Path,
+) -> PathBuf {
+    let app_local_compose = project_dir
+        .join(app_code)
+        .join("docker")
+        .join(environment)
+        .join("compose.yml");
+    if app_local_compose.exists() {
+        return app_local_compose;
+    }
+
+    if configured_compose_file.is_absolute() {
+        configured_compose_file.to_path_buf()
+    } else {
+        project_dir.join(configured_compose_file)
+    }
+}
+
+fn active_environment_path(project_dir: &Path) -> std::path::PathBuf {
+    project_dir.join(".stacker").join("active-env")
+}
+
+fn read_active_environment(project_dir: &Path) -> Result<Option<String>, CliError> {
+    let path = active_environment_path(project_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let value = std::fs::read_to_string(path).map_err(CliError::Io)?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn compose_service_has_env_file(compose_path: &Path, app_code: &str) -> Result<bool, CliError> {
+    let raw = std::fs::read_to_string(compose_path).map_err(CliError::Io)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)?;
+    let Some(service) = doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|services| services.get(serde_yaml::Value::String(app_code.to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(false);
+    };
+
+    Ok(service
+        .get(serde_yaml::Value::String("env_file".to_string()))
+        .is_some())
 }
 
 // ── Remove App ───────────────────────────────────────
@@ -1682,6 +1861,173 @@ mod tests {
             connection_mode: "ssh".to_string(),
             key_status: "uploaded".to_string(),
         }
+    }
+
+    #[test]
+    fn compose_service_has_env_file_detects_service_topology() {
+        let dir = TempDir::new().expect("temp dir");
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  device-api:
+    image: syncopia/device-api:latest
+    env_file:
+      - ../../device-api/docker/prod/.env
+  upload:
+    image: syncopia/upload:latest
+"#,
+        )
+        .expect("compose");
+
+        assert!(compose_service_has_env_file(&compose_path, "device-api").unwrap());
+        assert!(!compose_service_has_env_file(&compose_path, "upload").unwrap());
+    }
+
+    #[test]
+    fn local_config_files_warns_when_conventional_env_is_not_in_compose_topology() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("docker prod");
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).expect("service env dir");
+        std::fs::write(
+            root.join("docker/prod/.env"),
+            "DEVICE_API_IMAGE=syncopia/device-api\n",
+        )
+        .expect("project env");
+        std::fs::write(root.join("device-api/docker/prod/.env"), "RUST_LOG=debug\n")
+            .expect("service env");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            r#"
+services:
+  device-api:
+    image: ${DEVICE_API_IMAGE}
+"#,
+        )
+        .expect("compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: server
+  environment: prod
+  server:
+    host: 203.0.113.10
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+    env_file: docker/prod/.env
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+
+        assert!(config.config_files.is_some());
+        assert!(config.compose_content.is_some());
+        assert_eq!(config.notices.len(), 1);
+        assert!(config.notices[0].contains("has no env_file entry"));
+    }
+
+    #[test]
+    fn local_config_files_uses_environment_override() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/local")).expect("docker local");
+        std::fs::create_dir_all(root.join("docker/prod")).expect("docker prod");
+        std::fs::write(
+            root.join("docker/local/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:local\n",
+        )
+        .expect("local compose");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:prod\n",
+        )
+        .expect("prod compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: local
+  environment: local
+environments:
+  local:
+    compose_file: docker/local/compose.yml
+  prod:
+    compose_file: docker/prod/compose.yml
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", Some("prod")).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("syncopia/device-api:prod"));
+        assert!(!compose.contains("syncopia/device-api:local"));
+    }
+
+    #[test]
+    fn local_config_files_prefers_app_local_compose_for_deploy_app() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::create_dir_all(root.join("device-api/docker/prod")).expect("app compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  database:\n    image: postgres:17-alpine\n",
+        )
+        .expect("project compose");
+        std::fs::write(root.join("device-api/docker/prod/.env"), "RUST_LOG=debug\n")
+            .expect("app env");
+        std::fs::write(
+            root.join("device-api/docker/prod/compose.yml"),
+            "services:\n  device-api:\n    image: syncopia/device-api:prod\n    env_file: .env\n",
+        )
+        .expect("app compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/device-api:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "device-api", None).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("syncopia/device-api:prod"));
+        assert!(!compose.contains("postgres:17-alpine"));
+        assert!(config.notices.is_empty());
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .unwrap_or(false)
+        }));
     }
 
     #[test]

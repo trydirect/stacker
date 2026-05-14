@@ -325,6 +325,11 @@ Use explicit --scope service or --scope server to activate remote mode.",
         /// Target to switch to: local, cloud, or server. Omit to show current.
         target: Option<String>,
     },
+    /// Switch or show the active deploy environment/profile
+    Env {
+        /// Environment to switch to. Omit to show current.
+        environment: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -789,6 +794,9 @@ This does not create or change secret values. Use `stacker secrets set` first."
         /// Deployment hash
         #[arg(long)]
         deployment: Option<String>,
+        /// Deploy environment/profile, e.g. local, dev, prod
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
     },
     /// Delete a local .env secret or a remote Vault-backed secret
     #[command(after_help = "Examples:\n\
@@ -1082,6 +1090,9 @@ enum AgentCommands {
         /// Deployment hash
         #[arg(long)]
         deployment: Option<String>,
+        /// Deploy environment/profile, e.g. local, dev, prod
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
     },
     /// Remove an app container from the remote deployment
     #[command(name = "remove-app")]
@@ -1337,6 +1348,86 @@ fn should_use_remote_secret_metadata(
     scope.is_some() || project.is_some() || service.is_some() || server_id.is_some() || json
 }
 
+fn active_environment_path(project_dir: &std::path::Path) -> std::path::PathBuf {
+    project_dir.join(".stacker").join("active-env")
+}
+
+fn read_active_environment(
+    project_dir: &std::path::Path,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let path = active_environment_path(project_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let value = std::fs::read_to_string(path)?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn write_active_environment(
+    project_dir: &std::path::Path,
+    environment: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stacker_dir = project_dir.join(".stacker");
+    std::fs::create_dir_all(&stacker_dir)?;
+    std::fs::write(
+        active_environment_path(project_dir),
+        format!("{environment}\n"),
+    )?;
+    Ok(())
+}
+
+fn validate_environment_name(
+    project_dir: &std::path::Path,
+    environment: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if environment.trim().is_empty() {
+        return Err("Environment name cannot be empty".into());
+    }
+
+    let config_path = project_dir.join("stacker.yml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let config = stacker::cli::config_parser::StackerConfig::from_file(&config_path)?;
+    if !config.environments.is_empty() && !config.environments.contains_key(environment) {
+        let available = config
+            .environments
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Unknown environment '{environment}'. Available environments: {available}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+fn resolved_config_environment(
+    project_dir: &std::path::Path,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let config_path = project_dir.join("stacker.yml");
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let active_target =
+        stacker::cli::deployment_lock::DeploymentLock::read_active_target(project_dir)?;
+    let config = stacker::cli::config_parser::StackerConfig::from_file(&config_path)?
+        .with_resolved_deploy_target(active_target.as_deref())?;
+
+    Ok(config.selected_environment(None))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -1393,6 +1484,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("No active target set. Use: stacker target <local|cloud|server>");
                 }
             },
+        }
+        return Ok(());
+    }
+
+    if let StackerCommands::Env { environment } = subcommand {
+        let project_dir = std::env::current_dir()?;
+        match environment {
+            Some(environment) => {
+                validate_environment_name(&project_dir, &environment)?;
+                write_active_environment(&project_dir, &environment)?;
+                eprintln!("✓ Active environment switched to: {}", environment);
+            }
+            None => {
+                let active = read_active_environment(&project_dir)?;
+                let configured = resolved_config_environment(&project_dir)?;
+                match (active, configured) {
+                    (Some(active), Some(configured)) => {
+                        println!("{}", active);
+                        if active != configured {
+                            eprintln!("Configured default environment: {}", configured);
+                        }
+                    }
+                    (Some(active), None) => println!("{}", active),
+                    (None, Some(configured)) => println!("{}", configured),
+                    (None, None) => {
+                        eprintln!("No active environment set. Use: stacker env <environment>");
+                    }
+                }
+            }
         }
         return Ok(());
     }
@@ -1745,9 +1865,15 @@ fn get_command(
                 force,
                 json,
                 deployment,
+                environment,
             } => Box::new(
                 stacker::console::commands::cli::secrets::SecretsPushCommand::new(
-                    project, service, force, json, deployment,
+                    project,
+                    service,
+                    force,
+                    json,
+                    deployment,
+                    environment,
                 ),
             ),
             SecretsCommands::Delete {
@@ -1919,8 +2045,15 @@ fn get_command(
                     runtime,
                     json,
                     deployment,
+                    environment,
                 } => Box::new(agent::AgentDeployAppCommand::new(
-                    app, image, force, runtime, json, deployment,
+                    app,
+                    image,
+                    force,
+                    runtime,
+                    json,
+                    deployment,
+                    environment,
                 )),
                 AgentCommands::RemoveApp {
                     app,
@@ -2097,6 +2230,8 @@ fn get_command(
         StackerCommands::Completion { .. } => unreachable!(),
         // Target is handled in main() before this function is called.
         StackerCommands::Target { .. } => unreachable!(),
+        // Env is handled in main() before this function is called.
+        StackerCommands::Env { .. } => unreachable!(),
     };
 
     Ok(cmd)

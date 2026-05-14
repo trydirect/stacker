@@ -112,6 +112,9 @@ pub struct DeployAppCommandRequest {
     /// Optional: environment variables to set
     #[serde(default)]
     pub env_vars: Option<std::collections::HashMap<String, String>>,
+    /// Optional config files to write before deploying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_files: Option<Vec<serde_json::Value>>,
     /// Whether to pull the image before starting (default: true)
     #[serde(default = "default_deploy_pull")]
     pub pull: bool,
@@ -1615,6 +1618,29 @@ mod tests {
         let val = result.unwrap();
         assert_eq!(val["force_recreate"], true);
         assert_eq!(val["force_config_overwrite"], true);
+    }
+
+    #[test]
+    fn deploy_app_preserves_config_files() {
+        let params = json!({
+            "app_code": "web",
+            "config_files": [{
+                "name": ".env",
+                "content": "RUST_LOG=debug\n",
+                "content_type": "text/plain",
+                "destination_path": "/opt/stacker/deployments/prod/files/web/.env",
+                "file_mode": "0644"
+            }]
+        });
+
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+
+        assert_eq!(val["config_files"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            val["config_files"][0]["destination_path"],
+            "/opt/stacker/deployments/prod/files/web/.env"
+        );
     }
 
     #[test]
