@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl --version)",
+      "WebSearch",
+      "WebFetch(domain:docs.n8n.io)",
+      "WebFetch(domain:blog.n8n.io)",
+      "WebFetch(domain:community.n8n.io)",
+      "Bash(find /Users/vasilipascal/work/try.direct/stacker -name status_panel.rs -o -name pipe.rs -o -name *pipe* -type f)",
+      "Bash(SQLX_OFFLINE=true cargo test --lib models::pipe::tests -- 2>&1)",
+      "Bash(SQLX_OFFLINE=true cargo test --lib forms::status_panel::tests --)",
+      "Bash(SQLX_OFFLINE=true cargo test --lib console::commands::cli::pipe::tests --)",
+      "Bash(SQLX_OFFLINE=true cargo test --lib --)",
+      "Bash(cd:*)",
+      "Bash(cargo test:*)"
+    ]
+  }
+}

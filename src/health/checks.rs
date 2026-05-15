@@ -157,18 +157,27 @@ impl HealthChecker {
                         health.with_details(details)
                     }
                     Err(e) => {
-                        tracing::error!("Failed to create RabbitMQ channel: {:?}", e);
-                        ComponentHealth::unhealthy(format!("RabbitMQ channel error: {}", e))
+                        tracing::warn!("Failed to create RabbitMQ channel: {:?}", e);
+                        ComponentHealth::degraded(
+                            format!("RabbitMQ optional service unavailable: {}", e),
+                            None,
+                        )
                     }
                 },
                 Err(e) => {
-                    tracing::error!("Failed to get RabbitMQ connection: {:?}", e);
-                    ComponentHealth::unhealthy(format!("RabbitMQ connection error: {}", e))
+                    tracing::warn!("Failed to get RabbitMQ connection: {:?}", e);
+                    ComponentHealth::degraded(
+                        format!("RabbitMQ optional service unavailable: {}", e),
+                        None,
+                    )
                 }
             },
             Err(e) => {
-                tracing::error!("Failed to create RabbitMQ pool: {:?}", e);
-                ComponentHealth::unhealthy(format!("RabbitMQ config error: {}", e))
+                tracing::warn!("Failed to create RabbitMQ pool: {:?}", e);
+                ComponentHealth::degraded(
+                    format!("RabbitMQ optional service unavailable: {}", e),
+                    None,
+                )
             }
         }
     }
@@ -205,20 +214,26 @@ impl HealthChecker {
 
                         health.with_details(details)
                     } else {
-                        ComponentHealth::unhealthy(format!(
-                            "Docker Hub returned status: {}",
-                            response.status()
-                        ))
+                        ComponentHealth::degraded(
+                            format!(
+                                "Docker Hub returned status: {} (optional service)",
+                                response.status()
+                            ),
+                            Some(start.elapsed().as_millis() as u64),
+                        )
                     }
                 }
                 Err(e) => {
                     tracing::warn!("Docker Hub health check failed: {:?}", e);
-                    ComponentHealth::unhealthy(format!("Docker Hub error: {}", e))
+                    ComponentHealth::degraded(
+                        format!("Docker Hub optional service unavailable: {}", e),
+                        None,
+                    )
                 }
             },
             Err(e) => {
-                tracing::error!("Failed to create HTTP client: {:?}", e);
-                ComponentHealth::unhealthy(format!("HTTP client error: {}", e))
+                tracing::warn!("Failed to create HTTP client for Docker Hub: {:?}", e);
+                ComponentHealth::degraded(format!("HTTP client error: {}", e), None)
             }
         }
     }
@@ -405,20 +420,26 @@ impl HealthChecker {
 
                             health.with_details(details)
                         }
-                        _ => ComponentHealth::unhealthy(format!(
-                            "User Service returned status: {}",
-                            status_code
-                        )),
+                        _ => ComponentHealth::degraded(
+                            format!(
+                                "User Service returned status: {} (optional service)",
+                                status_code
+                            ),
+                            Some(elapsed),
+                        ),
                     }
                 }
                 Err(e) => {
                     tracing::warn!("User Service health check failed: {:?}", e);
-                    ComponentHealth::unhealthy(format!("User Service error: {}", e))
+                    ComponentHealth::degraded(
+                        format!("User Service optional service unavailable: {}", e),
+                        None,
+                    )
                 }
             },
             Err(e) => {
-                tracing::error!("Failed to create HTTP client for User Service: {:?}", e);
-                ComponentHealth::unhealthy(format!("HTTP client error: {}", e))
+                tracing::warn!("Failed to create HTTP client for User Service: {:?}", e);
+                ComponentHealth::degraded(format!("HTTP client error: {}", e), None)
             }
         }
     }
@@ -462,20 +483,26 @@ impl HealthChecker {
 
                             health.with_details(details)
                         }
-                        _ => ComponentHealth::unhealthy(format!(
-                            "Install Service returned status: {}",
-                            status_code
-                        )),
+                        _ => ComponentHealth::degraded(
+                            format!(
+                                "Install Service returned status: {} (optional service)",
+                                status_code
+                            ),
+                            Some(elapsed),
+                        ),
                     }
                 }
                 Err(e) => {
                     tracing::warn!("Install Service health check failed: {:?}", e);
-                    ComponentHealth::unhealthy(format!("Install Service error: {}", e))
+                    ComponentHealth::degraded(
+                        format!("Install Service optional service unavailable: {}", e),
+                        None,
+                    )
                 }
             },
             Err(e) => {
-                tracing::error!("Failed to create HTTP client for Install Service: {:?}", e);
-                ComponentHealth::unhealthy(format!("HTTP client error: {}", e))
+                tracing::warn!("Failed to create HTTP client for Install Service: {:?}", e);
+                ComponentHealth::degraded(format!("HTTP client error: {}", e), None)
             }
         }
     }

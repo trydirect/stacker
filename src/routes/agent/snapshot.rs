@@ -2,6 +2,7 @@ use crate::db;
 use crate::forms::status_panel::HealthCommandReport;
 use crate::helpers::{AgentPgPool, JsonResponse};
 use crate::models::{Command, ProjectApp};
+use crate::project_app::is_platform_managed_app_code;
 use actix_web::{get, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -44,6 +45,12 @@ pub struct SnapshotQuery {
 
 fn default_command_limit() -> i64 {
     50
+}
+
+fn visible_project_apps(apps: Vec<ProjectApp>) -> Vec<ProjectApp> {
+    apps.into_iter()
+        .filter(|app| !is_platform_managed_app_code(&app.code))
+        .collect()
 }
 
 #[tracing::instrument(name = "Get deployment snapshot", skip_all)]
@@ -99,6 +106,7 @@ pub async fn snapshot_handler(
     } else {
         vec![]
     };
+    let apps = visible_project_apps(apps);
 
     tracing::debug!("[SNAPSHOT HANDLER] Apps : {:?}", apps);
 
@@ -259,6 +267,7 @@ pub async fn project_snapshot_handler(
     } else {
         vec![]
     };
+    let apps = visible_project_apps(apps);
 
     let health_commands =
         db::command::fetch_recent_by_deployment(agent_pool.get_ref(), &deployment_hash, 10, false)
@@ -305,4 +314,28 @@ pub async fn project_snapshot_handler(
     Ok(JsonResponse::build()
         .set_item(resp)
         .ok("Snapshot fetched successfully"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(code: &str) -> ProjectApp {
+        ProjectApp {
+            code: code.to_string(),
+            ..ProjectApp::default()
+        }
+    }
+
+    #[test]
+    fn visible_project_apps_excludes_platform_managed_apps() {
+        let apps = visible_project_apps(vec![
+            app("coolify"),
+            app("nginx_proxy_manager"),
+            app("statuspanel"),
+        ]);
+
+        let codes = apps.iter().map(|app| app.code.as_str()).collect::<Vec<_>>();
+        assert_eq!(codes, vec!["coolify"]);
+    }
 }

@@ -20,7 +20,7 @@ pub async fn disable_handler(
         .map_err(|msg| JsonResponse::<models::Client>::build().internal_server_error(msg))
         .and_then(|client| match client {
             Some(client) if client.user_id != user.id => {
-                Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner"))
+                Err(JsonResponse::<models::Client>::build().not_found("not found"))
             }
             Some(client) => Ok(client),
             None => Err(JsonResponse::<models::Client>::build().not_found("not found")),

@@ -5,6 +5,7 @@ use actix_web::{delete, get, post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Request body for uploading an existing SSH key pair
 #[derive(Debug, Deserialize)]
@@ -35,6 +36,25 @@ pub struct GenerateKeyResponseWithPrivate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_key: Option<String>,
     pub fingerprint: Option<String>,
+    pub message: String,
+}
+
+/// Request body for authorizing a caller-provided public key on the server
+#[derive(Debug, Deserialize)]
+pub struct AuthorizePublicKeyRequest {
+    pub public_key: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+}
+
+/// Response for public key authorization
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AuthorizePublicKeyResponse {
+    pub server_id: i32,
+    pub srv_ip: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub authorized: bool,
     pub message: String,
 }
 
@@ -244,6 +264,116 @@ pub async fn get_public_key(
     };
 
     Ok(JsonResponse::build().set_item(Some(response)).ok("OK"))
+}
+
+/// Authorize a caller-provided public key on the remote server.
+///
+/// POST /server/{id}/ssh-key/authorize-public-key
+///
+/// The caller sends only public key material. Stacker retrieves the server's
+/// Vault-managed private key and uses it server-side to append the provided
+/// public key to `authorized_keys` idempotently.
+#[tracing::instrument(name = "Authorize public SSH key for server.", skip_all)]
+#[post("/{id}/ssh-key/authorize-public-key")]
+pub async fn authorize_public_key(
+    path: web::Path<(i32,)>,
+    form: web::Json<AuthorizePublicKeyRequest>,
+    user: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+    vault_client: web::Data<VaultClient>,
+) -> Result<impl Responder> {
+    use crate::helpers::ssh_client;
+
+    let server_id = path.0;
+    let server = verify_server_ownership(pg_pool.get_ref(), server_id, &user.id).await?;
+
+    if server.key_status != "active" {
+        return Err(
+            JsonResponse::<AuthorizePublicKeyResponse>::build().bad_request(format!(
+                "SSH key status is '{}', not active",
+                server.key_status
+            )),
+        );
+    }
+
+    if server.vault_key_path.is_none() {
+        return Err(JsonResponse::<AuthorizePublicKeyResponse>::build().bad_request(
+            "SSH key is not stored in Vault. Regenerate the server SSH key before authorizing a backup key.",
+        ));
+    }
+
+    let public_key = form.public_key.trim();
+    ssh_key::PublicKey::from_openssh(public_key).map_err(|e| {
+        JsonResponse::<AuthorizePublicKeyResponse>::build()
+            .bad_request(format!("Invalid public key format: {}", e))
+    })?;
+
+    let srv_ip = server
+        .srv_ip
+        .as_deref()
+        .filter(|ip| !ip.trim().is_empty())
+        .ok_or_else(|| {
+            JsonResponse::<AuthorizePublicKeyResponse>::build()
+                .bad_request("Server IP address not configured")
+        })?
+        .to_string();
+
+    let private_key = vault_client
+        .get_ref()
+        .fetch_ssh_key(&user.id, server_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Failed to fetch SSH key from Vault while authorizing backup key: {}",
+                e
+            );
+            JsonResponse::<AuthorizePublicKeyResponse>::build()
+                .bad_request("SSH key could not be retrieved from secure storage")
+        })?;
+
+    let ssh_user = form
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| server.ssh_user.clone())
+        .unwrap_or_else(|| "root".to_string());
+    let ssh_port = form
+        .port
+        .unwrap_or_else(|| server.ssh_port.unwrap_or(22) as u16);
+
+    ssh_client::authorize_public_key(
+        &srv_ip,
+        ssh_port,
+        &ssh_user,
+        &private_key,
+        public_key,
+        Duration::from_secs(4),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(
+            "Failed to authorize backup public key for server {}: {}",
+            server_id,
+            e
+        );
+        JsonResponse::<AuthorizePublicKeyResponse>::build()
+            .bad_request(format!("Failed to authorize public key on server: {}", e))
+    })?;
+
+    let response = AuthorizePublicKeyResponse {
+        server_id,
+        srv_ip,
+        ssh_user,
+        ssh_port,
+        authorized: true,
+        message: "Public key authorized successfully".to_string(),
+    };
+
+    Ok(JsonResponse::build()
+        .set_item(Some(response))
+        .ok("Public key authorized"))
 }
 
 /// Response for SSH validation with full system check

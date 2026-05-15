@@ -1,7 +1,7 @@
 # Stacker — Build, Deploy & Manage Containerised Apps
 
 [![Discord](https://img.shields.io/discord/578119430391988232?label=discord&logo=discord&color=5865F2)](https://discord.gg/mNhsa8VdYX)
-[![Version](https://img.shields.io/badge/version-0.2.7-blue)](https://github.com/trydirect/stacker/releases)
+[![Version](https://img.shields.io/badge/version-0.2.8-blue)](https://github.com/trydirect/stacker/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/trydirect/stacker/blob/main/LICENSE)
 [![GitHub](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/trydirect/stacker)
 
@@ -16,7 +16,7 @@
 │  Stacker CLI │────────▶│  Stacker Server  │────────▶│  Status Panel Agent │
 │              │  REST   │                  │  queue  │  (on target server) │
 │  stacker.yml │  API    │  Stack Builder UI│  pull   │                     │
-│  init/deploy │         │  48+ MCP tools   │◀────────│  health / logs /    │
+│  init/deploy │         │  85+ MCP tools   │◀────────│  health / logs /    │
 │  status/logs │         │  Vault · AMQP    │  HMAC   │  restart / exec /   │
 └──────────────┘         └──────────────────┘         │  deploy_app / proxy │
                                 │                     └─────────────────────┘
@@ -123,12 +123,12 @@ The `trydirect/stacker` image contains the **Stacker Server** — a Rust-built b
 - Role-based access control (Casbin)
 
 ### MCP Server (Model Context Protocol)
-48+ tools exposed over WebSocket, enabling AI agents (Claude, GPT, etc.) to manage infrastructure programmatically:
+85+ tools exposed over WebSocket, enabling AI agents (Claude, GPT, etc.) to manage infrastructure programmatically:
 - Project & deployment management
 - Container operations (start, stop, restart, exec)
 - Log analysis & error summaries
-- Vault config read/write
-- Proxy configuration
+- Vault config and remote service secret management
+- Proxy and firewall configuration
 - Server resource monitoring
 - Docker Compose generation & preview
 
@@ -156,6 +156,8 @@ The CLI (`stacker-cli`) is a standalone binary — no server required for local 
 | `stacker deploy` | Build & deploy the stack (local, cloud, or server) |
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
+| `stacker secrets` | Manage local `.env` secrets and remote Vault-backed service/server secrets |
+| `stacker cloud firewall` | Manage provider firewall rules without SSH |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker ai ask` | Ask AI about your stack, or let it modify config |
 | `stacker service add` | Add from 20+ built-in service templates |
@@ -286,7 +288,7 @@ Stacker auto-detects and generates optimised multi-stage Dockerfiles for:
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release |
-| `x.y.z` | Specific version (e.g. `0.2.7`) |
+| `x.y.z` | Specific version (e.g. `0.2.8`) |
 | `test` | Development/testing builds |
 
 ---

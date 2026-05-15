@@ -21,7 +21,7 @@ pub async fn update_handler(
         .ok_or_else(|| JsonResponse::<models::Client>::build().not_found("not found"))?;
 
     if client.user_id != user.id {
-        return Err(JsonResponse::<models::Client>::build().bad_request("client is not the owner"));
+        return Err(JsonResponse::<models::Client>::build().not_found("not found"));
     }
 
     update_client(pg_pool.get_ref(), client).await

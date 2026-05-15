@@ -44,6 +44,16 @@ async fn test_deployment_free_template_allowed() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // Should allow deployment of free template
@@ -84,6 +94,16 @@ async fn test_deployment_plan_requirement_validated() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // Should allow deployment (mock user has professional plan)
@@ -128,6 +148,16 @@ async fn test_deployment_owned_paid_template_allowed() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // The validator passes template.id to user_owns_template, but mock checks the string representation
@@ -164,6 +194,13 @@ fn test_webhook_payload_for_template_approval() {
         view_count: Some(100),
         approved_at: Some("2026-02-11T00:00:00Z".to_string()),
         required_plan_name: None,
+        review_reason: None,
+        next_action_hint: None,
+        vendor_email: None,
+        infrastructure_requirements: Some(serde_json::json!({
+            "supported_clouds": ["hetzner"],
+            "min_ram_mb": 2048
+        })),
     };
 
     // Verify payload has all required fields for approval
@@ -171,6 +208,13 @@ fn test_webhook_payload_for_template_approval() {
     assert_eq!(payload.code, Some("ai-agent-pro".to_string()));
     assert_eq!(payload.price, Some(99.99));
     assert!(payload.vendor_user_id.is_some());
+    assert_eq!(
+        payload.infrastructure_requirements,
+        Some(serde_json::json!({
+            "supported_clouds": ["hetzner"],
+            "min_ram_mb": 2048
+        }))
+    );
 
     // Should serialize without errors
     let json = serde_json::to_string(&payload).expect("Should serialize");
@@ -201,10 +245,24 @@ fn test_webhook_payload_for_template_update_price() {
         view_count: None,
         approved_at: None,
         required_plan_name: None,
+        review_reason: None,
+        next_action_hint: None,
+        vendor_email: None,
+        infrastructure_requirements: Some(serde_json::json!({
+            "supported_os": ["ubuntu-22.04"],
+            "min_disk_gb": 20
+        })),
     };
 
     assert_eq!(payload.action, "template_updated");
     assert_eq!(payload.price, Some(129.99));
+    assert_eq!(
+        payload.infrastructure_requirements,
+        Some(serde_json::json!({
+            "supported_os": ["ubuntu-22.04"],
+            "min_disk_gb": 20
+        }))
+    );
 }
 
 /// Test webhook payload for template rejection
@@ -233,12 +291,59 @@ fn test_webhook_payload_for_template_rejection() {
         view_count: None,
         approved_at: None,
         required_plan_name: None,
+        review_reason: None,
+        next_action_hint: None,
+        vendor_email: None,
+        infrastructure_requirements: None,
     };
 
     assert_eq!(payload.action, "template_rejected");
     // Rejection payload should be minimal
     assert!(payload.code.is_none());
     assert!(payload.price.is_none());
+}
+
+/// Test webhook payload for template update-required notification.
+#[test]
+fn test_webhook_payload_for_template_needs_changes() {
+    let template_id = Uuid::new_v4().to_string();
+
+    let payload = MarketplaceWebhookPayload {
+        action: "template_needs_changes".to_string(),
+        stack_template_id: template_id.clone(),
+        external_id: template_id,
+        code: Some("ai-agent-stack-pro".to_string()),
+        name: Some("AI Agent Stack Pro".to_string()),
+        description: Some("Advanced AI agent stack".to_string()),
+        price: Some(99.99),
+        billing_cycle: Some("one_time".to_string()),
+        currency: Some("USD".to_string()),
+        vendor_user_id: Some("456".to_string()),
+        vendor_name: Some("Vendor Example".to_string()),
+        category: Some("AI Agents".to_string()),
+        tags: Some(serde_json::json!(["ai", "agents"])),
+        long_description: Some("Long description".to_string()),
+        tech_stack: Some(serde_json::json!({"apps": ["n8n"]})),
+        creator_name: Some("Vendor Example".to_string()),
+        deploy_count: Some(10),
+        view_count: Some(25),
+        approved_at: None,
+        required_plan_name: None,
+        review_reason: Some("Please document bare metal prerequisites.".to_string()),
+        next_action_hint: Some(
+            "Update the template based on the review feedback and resubmit it for review."
+                .to_string(),
+        ),
+        vendor_email: None,
+        infrastructure_requirements: Some(serde_json::json!({"min_ram_mb": 2048})),
+    };
+
+    assert_eq!(payload.action, "template_needs_changes");
+    assert_eq!(
+        payload.review_reason,
+        Some("Please document bare metal prerequisites.".to_string())
+    );
+    assert_eq!(payload.vendor_user_id, Some("456".to_string()));
 }
 
 /// Test complete deployment validation flow with connector
@@ -272,6 +377,16 @@ async fn test_deployment_validation_flow_with_connector() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -304,6 +419,16 @@ async fn test_deployment_validation_flow_with_connector() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -417,6 +542,16 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -449,6 +584,16 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     let result = validator
@@ -486,6 +631,16 @@ async fn test_multiple_deployments_mixed_templates() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     // The result will depend on whether the validator can verify ownership
@@ -540,6 +695,16 @@ fn test_template_status_values() {
         updated_at: Some(Utc::now()),
         approved_at: Some(Utc::now()),
         verifications: serde_json::json!({}),
+        infrastructure_requirements: serde_json::json!({}),
+        public_ports: None,
+        vendor_url: None,
+        version: None,
+        changelog: None,
+        config_files: serde_json::json!([]),
+        assets: serde_json::json!([]),
+        seed_jobs: serde_json::json!([]),
+        post_deploy_hooks: serde_json::json!([]),
+        update_mode_capabilities: None,
     };
 
     assert_eq!(template.status, "approved");

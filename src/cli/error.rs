@@ -65,6 +65,12 @@ pub enum CliError {
     // Proxy errors
     ProxyConfigFailed(String),
 
+    // Feature-scoped command errors
+    FeatureFailed {
+        feature: String,
+        reason: String,
+    },
+
     // Secrets/env errors
     EnvFileNotFound {
         path: std::path::PathBuf,
@@ -177,6 +183,9 @@ impl fmt::Display for CliError {
             }
             Self::ProxyConfigFailed(msg) => {
                 write!(f, "Proxy configuration failed: {msg}")
+            }
+            Self::FeatureFailed { feature, reason } => {
+                write!(f, "{feature} failed: {reason}")
             }
             Self::EnvFileNotFound { path } => {
                 write!(f, "Env file not found: {}", path.display())

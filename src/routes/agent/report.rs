@@ -1,4 +1,7 @@
-use crate::{db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models};
+use crate::{
+    db, forms::status_panel, helpers, helpers::AgentPgPool, helpers::MqManager, models,
+    models::pipe::PipeExecution,
+};
 use actix_web::{post, web, HttpRequest, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -11,6 +14,8 @@ pub struct CommandCompletedEvent {
     pub deployment_hash: String,
     pub command_type: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executed_by: Option<String>,
     pub has_result: bool,
     pub has_error: bool,
     pub agent_id: uuid::Uuid,
@@ -31,6 +36,8 @@ pub struct CommandReportRequest {
     #[allow(dead_code)]
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub completed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub executed_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -140,13 +147,19 @@ pub async fn report_handler(
         result_payload = Some(json!({ "status": payload.status.clone() }));
     }
 
+    let metadata_patch = payload
+        .executed_by
+        .as_ref()
+        .map(|executed_by| json!({ "executed_by": executed_by }));
+
     // Update command in database with result
-    match db::command::update_result(
+    match db::command::update_result_with_metadata(
         agent_pool.as_ref(),
         &payload.command_id,
         &status,
         result_payload.clone(),
         error_payload.clone(),
+        metadata_patch.clone(),
     )
     .await
     {
@@ -221,6 +234,120 @@ pub async fn report_handler(
                 }
             }
 
+            // Persist trigger_pipe results as pipe execution history
+            if command.r#type == "trigger_pipe" {
+                if let Some(ref result) = result_payload {
+                    if let Ok(report) = serde_json::from_value::<
+                        status_panel::TriggerPipeCommandReport,
+                    >(result.clone())
+                    {
+                        if let Ok(instance_id) = uuid::Uuid::parse_str(&report.pipe_instance_id) {
+                            let created_by = payload
+                                .executed_by
+                                .clone()
+                                .unwrap_or_else(|| agent.id.to_string());
+
+                            let normalized_status =
+                                if report.success { "success" } else { "failed" };
+                            let source_data = report.source_data.as_ref();
+                            let mapped_data = report.mapped_data.as_ref();
+                            let target_response = report.target_response.as_ref();
+                            let error = report.error.as_deref().or(Some("Unknown error"));
+
+                            let persisted = if report.trigger_type == "replay" {
+                                match db::pipe::find_pending_replay_execution(
+                                    agent_pool.as_ref(),
+                                    &instance_id,
+                                    &payload.deployment_hash,
+                                )
+                                .await
+                                {
+                                    Ok(Some(existing)) => {
+                                        db::pipe::update_execution_result(
+                                            agent_pool.as_ref(),
+                                            &existing.id,
+                                            normalized_status,
+                                            source_data,
+                                            mapped_data,
+                                            target_response,
+                                            if report.success { None } else { error },
+                                            None,
+                                        )
+                                        .await
+                                    }
+                                    Ok(None) => {
+                                        let execution = PipeExecution::new(
+                                            instance_id,
+                                            Some(payload.deployment_hash.clone()),
+                                            report.trigger_type.clone(),
+                                            created_by.clone(),
+                                        );
+                                        let execution = if report.success {
+                                            execution.complete_success(
+                                                report.source_data.clone().unwrap_or(json!(null)),
+                                                report.mapped_data.clone().unwrap_or(json!(null)),
+                                                report
+                                                    .target_response
+                                                    .clone()
+                                                    .unwrap_or(json!(null)),
+                                            )
+                                        } else {
+                                            execution.complete_failure(
+                                                report
+                                                    .error
+                                                    .clone()
+                                                    .unwrap_or_else(|| "Unknown error".to_string()),
+                                            )
+                                        };
+                                        db::pipe::insert_execution(agent_pool.as_ref(), &execution)
+                                            .await
+                                    }
+                                    Err(e) => Err(e),
+                                }
+                            } else {
+                                let execution = PipeExecution::new(
+                                    instance_id,
+                                    Some(payload.deployment_hash.clone()),
+                                    report.trigger_type.clone(),
+                                    created_by,
+                                );
+                                let execution = if report.success {
+                                    execution.complete_success(
+                                        report.source_data.clone().unwrap_or(json!(null)),
+                                        report.mapped_data.clone().unwrap_or(json!(null)),
+                                        report.target_response.clone().unwrap_or(json!(null)),
+                                    )
+                                } else {
+                                    execution.complete_failure(
+                                        report
+                                            .error
+                                            .clone()
+                                            .unwrap_or_else(|| "Unknown error".to_string()),
+                                    )
+                                };
+                                db::pipe::insert_execution(agent_pool.as_ref(), &execution).await
+                            };
+
+                            if let Err(e) = persisted {
+                                tracing::warn!(
+                                    pipe_instance_id = %report.pipe_instance_id,
+                                    trigger_type = %report.trigger_type,
+                                    "Failed to persist pipe execution: {}",
+                                    e
+                                );
+                            }
+
+                            let _ = db::pipe::increment_trigger_count(
+                                agent_pool.as_ref(),
+                                &instance_id,
+                                report.success,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
             // Log audit event
             let audit_log = models::AuditLog::new(
                 Some(agent.id),
@@ -234,6 +361,7 @@ pub async fn report_handler(
                 "has_result": result_payload.is_some(),
                 "has_error": error_payload.is_some(),
                 "reported_status": payload.status,
+                "executed_by": payload.executed_by,
             }));
 
             let _ = db::agent::log_audit(agent_pool.as_ref(), audit_log).await;
@@ -244,6 +372,7 @@ pub async fn report_handler(
                 deployment_hash: payload.deployment_hash.clone(),
                 command_type: command.r#type.clone(),
                 status: status.to_string(),
+                executed_by: payload.executed_by.clone(),
                 has_result: result_payload.is_some(),
                 has_error: error_payload.is_some(),
                 agent_id: agent.id,

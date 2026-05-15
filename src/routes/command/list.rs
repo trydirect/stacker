@@ -1,6 +1,8 @@
+use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::User;
+use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
 use actix_web::{get, web, Responder, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -24,21 +26,18 @@ pub async fn list_handler(
     path: web::Path<String>,
     query: web::Query<CommandListQuery>,
     pg_pool: web::Data<PgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     let deployment_hash = path.into_inner();
     let limit = query.limit.unwrap_or(50).max(1).min(500);
 
-    // Verify deployment belongs to the requesting user
-    let deployment = db::deployment::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
-        .await
-        .map_err(|err| JsonResponse::internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => {
-            return Err(JsonResponse::not_found("Deployment not found"));
-        }
-    }
+    resolve_owned_deployment_by_hash(
+        pg_pool.get_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &deployment_hash,
+    )
+    .await?;
 
     let commands = if let Some(since_raw) = &query.since {
         let since = DateTime::parse_from_rfc3339(since_raw)

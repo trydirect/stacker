@@ -25,15 +25,17 @@
 ## Command to run the application
 #CMD ["npm", "run", "serve"]
 
-FROM node:16-alpine as builder
+FROM node:16-alpine AS builder
 WORKDIR /app
+COPY package*.json ./
+RUN npm ci
 COPY . .
-RUN npm install --only=production
 RUN npm run build
 
 # Stage 2: Final production image
 FROM node:16-alpine
 WORKDIR /app
+RUN npm install -g serve
 COPY --from=builder /app/dist ./dist
 EXPOSE 3456
-CMD ["npm", "run", "serve"]
+CMD ["serve", "-s", "dist", "-l", "3456"]

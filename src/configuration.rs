@@ -7,6 +7,10 @@ pub struct Settings {
     pub app_port: u16,
     pub app_host: String,
     pub auth_url: String,
+    #[serde(default = "Settings::default_auth_request_timeout_secs")]
+    pub auth_request_timeout_secs: u64,
+    #[serde(default = "Settings::default_auth_connect_timeout_secs")]
+    pub auth_connect_timeout_secs: u64,
     #[serde(default = "Settings::default_user_service_url")]
     pub user_service_url: String,
     pub max_clients_number: i64,
@@ -26,6 +30,8 @@ pub struct Settings {
     pub connectors: ConnectorConfig,
     #[serde(default)]
     pub deployment: DeploymentSettings,
+    #[serde(default)]
+    pub marketplace_assets: MarketplaceAssetSettings,
 }
 
 impl std::fmt::Debug for Settings {
@@ -35,6 +41,8 @@ impl std::fmt::Debug for Settings {
             .field("app_port", &self.app_port)
             .field("app_host", &self.app_host)
             .field("auth_url", &self.auth_url)
+            .field("auth_request_timeout_secs", &self.auth_request_timeout_secs)
+            .field("auth_connect_timeout_secs", &self.auth_connect_timeout_secs)
             .field("user_service_url", &self.user_service_url)
             .field("max_clients_number", &self.max_clients_number)
             .field(
@@ -54,6 +62,7 @@ impl std::fmt::Debug for Settings {
             .field("vault", &self.vault)
             .field("connectors", &self.connectors)
             .field("deployment", &self.deployment)
+            .field("marketplace_assets", &self.marketplace_assets)
             .finish()
     }
 }
@@ -65,6 +74,8 @@ impl Default for Settings {
             app_port: 8000,
             app_host: "127.0.0.1".to_string(),
             auth_url: "http://localhost:8080/me".to_string(),
+            auth_request_timeout_secs: Self::default_auth_request_timeout_secs(),
+            auth_connect_timeout_secs: Self::default_auth_connect_timeout_secs(),
             user_service_url: Self::default_user_service_url(),
             max_clients_number: 10,
             agent_command_poll_timeout_secs: Self::default_agent_command_poll_timeout_secs(),
@@ -75,6 +86,7 @@ impl Default for Settings {
             vault: VaultSettings::default(),
             connectors: ConnectorConfig::default(),
             deployment: DeploymentSettings::default(),
+            marketplace_assets: MarketplaceAssetSettings::default(),
         }
     }
 }
@@ -82,6 +94,14 @@ impl Default for Settings {
 impl Settings {
     fn default_user_service_url() -> String {
         "http://user:4100".to_string()
+    }
+
+    fn default_auth_request_timeout_secs() -> u64 {
+        5
+    }
+
+    fn default_auth_connect_timeout_secs() -> u64 {
+        2
     }
 
     fn default_agent_command_poll_timeout_secs() -> u64 {
@@ -179,6 +199,136 @@ impl Default for DeploymentSettings {
         Self {
             config_base_path: Self::default_config_base_path(),
         }
+    }
+}
+
+#[derive(serde::Deserialize, Clone)]
+pub struct MarketplaceAssetSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "MarketplaceAssetSettings::default_current_env")]
+    pub current_env: String,
+    #[serde(default)]
+    pub endpoint_url: String,
+    #[serde(default = "MarketplaceAssetSettings::default_region")]
+    pub region: String,
+    #[serde(default)]
+    pub access_key_id: String,
+    #[serde(default)]
+    pub secret_access_key: String,
+    #[serde(default = "MarketplaceAssetSettings::default_bucket_dev")]
+    pub bucket_dev: String,
+    #[serde(default = "MarketplaceAssetSettings::default_bucket_test")]
+    pub bucket_test: String,
+    #[serde(default = "MarketplaceAssetSettings::default_bucket_staging")]
+    pub bucket_staging: String,
+    #[serde(default = "MarketplaceAssetSettings::default_bucket_prod")]
+    pub bucket_prod: String,
+    #[serde(default)]
+    pub server_side_encryption: Option<String>,
+    #[serde(default = "MarketplaceAssetSettings::default_presign_put_ttl_secs")]
+    pub presign_put_ttl_secs: u64,
+    #[serde(default = "MarketplaceAssetSettings::default_presign_get_ttl_secs")]
+    pub presign_get_ttl_secs: u64,
+}
+
+impl std::fmt::Debug for MarketplaceAssetSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MarketplaceAssetSettings")
+            .field("enabled", &self.enabled)
+            .field("current_env", &self.current_env)
+            .field("endpoint_url", &self.endpoint_url)
+            .field("region", &self.region)
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"[REDACTED]")
+            .field("bucket_dev", &self.bucket_dev)
+            .field("bucket_test", &self.bucket_test)
+            .field("bucket_staging", &self.bucket_staging)
+            .field("bucket_prod", &self.bucket_prod)
+            .field("server_side_encryption", &self.server_side_encryption)
+            .field("presign_put_ttl_secs", &self.presign_put_ttl_secs)
+            .field("presign_get_ttl_secs", &self.presign_get_ttl_secs)
+            .finish()
+    }
+}
+
+impl Default for MarketplaceAssetSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            current_env: Self::default_current_env(),
+            endpoint_url: String::new(),
+            region: Self::default_region(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            bucket_dev: Self::default_bucket_dev(),
+            bucket_test: Self::default_bucket_test(),
+            bucket_staging: Self::default_bucket_staging(),
+            bucket_prod: Self::default_bucket_prod(),
+            server_side_encryption: Some("AES256".to_string()),
+            presign_put_ttl_secs: Self::default_presign_put_ttl_secs(),
+            presign_get_ttl_secs: Self::default_presign_get_ttl_secs(),
+        }
+    }
+}
+
+impl MarketplaceAssetSettings {
+    fn default_current_env() -> String {
+        let current = std::env::var("STACKER_ENV")
+            .or_else(|_| std::env::var("APP_ENV"))
+            .or_else(|_| std::env::var("NODE_ENV"))
+            .unwrap_or_else(|_| "dev".to_string());
+
+        match current.as_str() {
+            "production" => "prod".to_string(),
+            "development" => "dev".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    fn default_region() -> String {
+        "eu-central".to_string()
+    }
+
+    fn default_bucket_dev() -> String {
+        "marketplace-assets-dev".to_string()
+    }
+
+    fn default_bucket_test() -> String {
+        "marketplace-assets-test".to_string()
+    }
+
+    fn default_bucket_staging() -> String {
+        "marketplace-assets-staging".to_string()
+    }
+
+    fn default_bucket_prod() -> String {
+        "marketplace-assets-prod".to_string()
+    }
+
+    fn default_presign_put_ttl_secs() -> u64 {
+        900
+    }
+
+    fn default_presign_get_ttl_secs() -> u64 {
+        300
+    }
+
+    pub fn active_bucket(&self) -> &str {
+        match self.current_env.as_str() {
+            "test" => &self.bucket_test,
+            "staging" => &self.bucket_staging,
+            "prod" | "production" => &self.bucket_prod,
+            _ => &self.bucket_dev,
+        }
+    }
+
+    pub fn is_configured(&self) -> bool {
+        self.enabled
+            && !self.endpoint_url.trim().is_empty()
+            && !self.access_key_id.trim().is_empty()
+            && !self.secret_access_key.trim().is_empty()
+            && !self.active_bucket().trim().is_empty()
     }
 }
 
@@ -334,6 +484,18 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
         }
     }
 
+    if let Ok(timeout) = std::env::var("STACKER_AUTH_REQUEST_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.auth_request_timeout_secs = parsed;
+        }
+    }
+
+    if let Ok(timeout) = std::env::var("STACKER_AUTH_CONNECT_TIMEOUT_SECS") {
+        if let Ok(parsed) = timeout.parse::<u64>() {
+            config.auth_connect_timeout_secs = parsed;
+        }
+    }
+
     if let Ok(enabled) = std::env::var("STACKER_CASBIN_RELOAD_ENABLED") {
         config.casbin_reload_enabled = parse_bool_env(&enabled);
     }
@@ -389,5 +551,13 @@ mod tests {
         assert!(!parse_bool_env("no"));
         assert!(!parse_bool_env("True")); // Case-sensitive
         assert!(!parse_bool_env("invalid"));
+    }
+
+    #[test]
+    fn test_default_auth_timeouts_are_bounded() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.auth_request_timeout_secs, 5);
+        assert_eq!(settings.auth_connect_timeout_secs, 2);
     }
 }

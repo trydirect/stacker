@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub use crate::forms::firewall::FirewallPortRule;
+
 fn default_include_metrics() -> bool {
     true
 }
@@ -110,15 +112,24 @@ pub struct DeployAppCommandRequest {
     /// Optional: environment variables to set
     #[serde(default)]
     pub env_vars: Option<std::collections::HashMap<String, String>>,
+    /// Optional config files to write before deploying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_files: Option<Vec<serde_json::Value>>,
     /// Whether to pull the image before starting (default: true)
     #[serde(default = "default_deploy_pull")]
     pub pull: bool,
     /// Whether to remove existing container before deploying
     #[serde(default)]
     pub force_recreate: bool,
+    /// Whether to overwrite drifted runtime config files such as .env
+    #[serde(default)]
+    pub force_config_overwrite: bool,
     /// Container runtime to use: "runc" (default) or "kata"
     #[serde(default = "default_runtime")]
     pub runtime: String,
+    /// Optional private registry credentials reused for image pull refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<RegistryAuthCommandRequest>,
 }
 
 fn default_deploy_pull() -> bool {
@@ -127,6 +138,23 @@ fn default_deploy_pull() -> bool {
 
 fn default_runtime() -> String {
     "runc".to_string()
+}
+
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct RegistryAuthCommandRequest {
+    pub registry: String,
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for RegistryAuthCommandRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryAuthCommandRequest")
+            .field("registry", &self.registry)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -169,14 +197,6 @@ fn default_firewall_action() -> String {
     "add".to_string()
 }
 
-fn default_firewall_protocol() -> String {
-    "tcp".to_string()
-}
-
-fn default_firewall_source() -> String {
-    "0.0.0.0/0".to_string()
-}
-
 /// Request to configure iptables firewall rules on the target server
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ConfigureFirewallCommandRequest {
@@ -199,21 +219,6 @@ pub struct ConfigureFirewallCommandRequest {
 
 fn default_persist_rules() -> bool {
     true
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct FirewallPortRule {
-    /// Port number (e.g., 80, 443, 5432)
-    pub port: u16,
-    /// Protocol: "tcp" or "udp"
-    #[serde(default = "default_firewall_protocol")]
-    pub protocol: String,
-    /// Source IP/CIDR (e.g., "0.0.0.0/0" for any, "10.0.0.0/8" for internal)
-    #[serde(default = "default_firewall_source")]
-    pub source: String,
-    /// Optional description/comment for the rule
-    #[serde(default)]
-    pub comment: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -583,13 +588,46 @@ pub fn validate_command_parameters(
                 );
             }
             // Validate trigger_type
-            let valid_triggers = ["webhook", "poll", "manual"];
+            let valid_triggers = [
+                "webhook",
+                "poll",
+                "manual",
+                "websocket",
+                "ws",
+                "grpc",
+                "amqp",
+                "rabbitmq",
+            ];
             if !valid_triggers.contains(&params.trigger_type.as_str()) {
                 return Err(format!(
                     "activate_pipe: trigger_type must be one of: {}; got '{}'",
                     valid_triggers.join(", "),
                     params.trigger_type
                 ));
+            }
+            if matches!(params.trigger_type.as_str(), "amqp" | "rabbitmq") {
+                if params
+                    .source_broker_url
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .is_none()
+                {
+                    return Err(
+                        "activate_pipe: source_broker_url is required for rabbitmq trigger_type"
+                            .to_string(),
+                    );
+                }
+                if params
+                    .source_queue
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .is_none()
+                {
+                    return Err(
+                        "activate_pipe: source_queue is required for rabbitmq trigger_type"
+                            .to_string(),
+                    );
+                }
             }
             // Validate poll_interval for poll trigger
             if params.trigger_type == "poll"
@@ -799,6 +837,26 @@ pub fn validate_command_result(
                 return Err("trigger_pipe result deployment_hash mismatch".to_string());
             }
 
+            // Validate trigger_type if present
+            let valid_trigger_types = [
+                "manual",
+                "webhook",
+                "poll",
+                "replay",
+                "websocket",
+                "ws",
+                "grpc",
+                "amqp",
+                "rabbitmq",
+            ];
+            if !valid_trigger_types.contains(&report.trigger_type.as_str()) {
+                return Err(format!(
+                    "trigger_pipe: trigger_type must be one of: {}; got '{}'",
+                    valid_trigger_types.join(", "),
+                    report.trigger_type
+                ));
+            }
+
             serde_json::to_value(report)
                 .map(Some)
                 .map_err(|err| format!("Failed to encode trigger_pipe result: {}", err))
@@ -833,11 +891,16 @@ pub struct ProbeEndpointsCommandRequest {
     /// Timeout per probe request in seconds
     #[serde(default = "default_probe_timeout")]
     pub probe_timeout: u32,
+    /// Whether to capture sample responses from discovered endpoints
+    #[serde(default)]
+    pub capture_samples: bool,
 }
 
 /// A discovered API endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProbeEndpoint {
+    #[serde(default)]
+    pub container: Option<String>,
     pub protocol: String,
     pub base_url: String,
     pub spec_url: String,
@@ -853,14 +916,56 @@ pub struct ProbeOperation {
     pub summary: String,
     #[serde(default)]
     pub fields: Vec<String>,
+    /// Sample response captured during probing (when capture_samples=true)
+    #[serde(default)]
+    pub sample_response: Option<serde_json::Value>,
 }
 
 /// A discovered HTML form
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProbeForm {
+    #[serde(default)]
+    pub container: Option<String>,
     pub id: String,
     pub action: String,
     pub method: String,
+    pub fields: Vec<String>,
+}
+
+/// A matched container in a local probe run
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeContainer {
+    pub name: String,
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub network: String,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+}
+
+/// A discovered non-HTTP resource (DB table, queue, topic, stream, etc.)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeResource {
+    #[serde(default)]
+    pub container: String,
+    pub protocol: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub items: Vec<ProbeResourceItem>,
+}
+
+/// A single discovered resource item
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeResourceItem {
+    pub resource_type: String,
+    pub name: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
     pub fields: Vec<String>,
 }
 
@@ -884,7 +989,11 @@ pub struct ProbeEndpointsCommandReport {
     pub deployment_hash: String,
     pub app_code: String,
     pub protocols_detected: Vec<String>,
+    #[serde(default)]
+    pub containers: Vec<ProbeContainer>,
     pub endpoints: Vec<ProbeEndpoint>,
+    #[serde(default)]
+    pub resources: Vec<ProbeResource>,
     pub forms: Vec<ProbeForm>,
     pub probed_at: String,
 }
@@ -899,12 +1008,26 @@ pub struct ActivatePipeCommandRequest {
     /// UUID of the pipe instance to activate
     pub pipe_instance_id: String,
     /// Source container name
-    pub source_container: String,
+    #[serde(default)]
+    pub source_container: Option<String>,
     /// Source endpoint path to watch
+    #[serde(default = "default_pipe_source_endpoint")]
     pub source_endpoint: String,
     /// Source HTTP method (GET, POST, etc.)
     #[serde(default = "default_source_method")]
     pub source_method: String,
+    /// Broker URL for broker-backed source activation
+    #[serde(default)]
+    pub source_broker_url: Option<String>,
+    /// Broker queue for AMQP / RabbitMQ source activation
+    #[serde(default)]
+    pub source_queue: Option<String>,
+    /// Optional exchange to bind when consuming broker-backed sources
+    #[serde(default)]
+    pub source_exchange: Option<String>,
+    /// Optional routing key used when binding broker-backed sources
+    #[serde(default)]
+    pub source_routing_key: Option<String>,
     /// Target container name (for internal pipes)
     #[serde(default)]
     pub target_container: Option<String>,
@@ -912,12 +1035,14 @@ pub struct ActivatePipeCommandRequest {
     #[serde(default)]
     pub target_url: Option<String>,
     /// Target endpoint path
+    #[serde(default = "default_pipe_target_endpoint")]
     pub target_endpoint: String,
     /// Target HTTP method
     #[serde(default = "default_target_method")]
     pub target_method: String,
     /// Field mapping (JSONPath expressions)
-    pub field_mapping: serde_json::Value,
+    #[serde(default)]
+    pub field_mapping: Option<serde_json::Value>,
     /// Trigger type: "webhook", "poll", "manual"
     #[serde(default = "default_trigger_type")]
     pub trigger_type: String,
@@ -929,14 +1054,23 @@ pub struct ActivatePipeCommandRequest {
 fn default_source_method() -> String {
     "GET".to_string()
 }
+fn default_pipe_source_endpoint() -> String {
+    "/".to_string()
+}
 fn default_target_method() -> String {
     "POST".to_string()
+}
+fn default_pipe_target_endpoint() -> String {
+    "/".to_string()
 }
 fn default_trigger_type() -> String {
     "webhook".to_string()
 }
 fn default_poll_interval() -> u32 {
     300
+}
+fn default_trigger_type_manual() -> String {
+    "manual".to_string()
 }
 
 /// Request to deactivate a pipe instance on the agent
@@ -954,6 +1088,33 @@ pub struct TriggerPipeCommandRequest {
     /// Optional input data to feed into the pipe (overrides source fetch)
     #[serde(default)]
     pub input_data: Option<serde_json::Value>,
+    /// Optional source container override
+    #[serde(default)]
+    pub source_container: Option<String>,
+    /// Optional source endpoint override
+    #[serde(default = "default_pipe_source_endpoint")]
+    pub source_endpoint: String,
+    /// Optional source method override
+    #[serde(default = "default_source_method")]
+    pub source_method: String,
+    /// Optional external target override
+    #[serde(default)]
+    pub target_url: Option<String>,
+    /// Optional internal target override
+    #[serde(default)]
+    pub target_container: Option<String>,
+    /// Optional target endpoint override
+    #[serde(default = "default_pipe_target_endpoint")]
+    pub target_endpoint: String,
+    /// Optional target method override
+    #[serde(default = "default_target_method")]
+    pub target_method: String,
+    /// Optional field mapping override
+    #[serde(default)]
+    pub field_mapping: Option<serde_json::Value>,
+    /// Trigger type reported back by the agent
+    #[serde(default = "default_trigger_type_manual")]
+    pub trigger_type: String,
 }
 
 /// Result of a pipe activation
@@ -963,12 +1124,23 @@ pub struct ActivatePipeCommandReport {
     pub command_type: String,
     pub deployment_hash: String,
     pub pipe_instance_id: String,
-    pub status: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub replaced: Option<bool>,
+    #[serde(default)]
+    pub reactivated: Option<bool>,
+    #[serde(default = "default_trigger_type")]
     pub trigger_type: String,
     /// Agent-assigned listener ID (for webhook type) or schedule ID (for poll type)
     #[serde(default)]
     pub listener_id: Option<String>,
-    pub activated_at: String,
+    #[serde(default)]
+    pub activated_at: Option<String>,
+    #[serde(default)]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 /// Result of a pipe deactivation
@@ -978,8 +1150,16 @@ pub struct DeactivatePipeCommandReport {
     pub command_type: String,
     pub deployment_hash: String,
     pub pipe_instance_id: String,
-    pub status: String,
-    pub deactivated_at: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub removed: Option<bool>,
+    #[serde(default)]
+    pub deactivated_at: Option<String>,
+    #[serde(default)]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 /// Result of a pipe trigger (one-shot execution)
@@ -1003,11 +1183,57 @@ pub struct TriggerPipeCommandReport {
     #[serde(default)]
     pub error: Option<String>,
     pub triggered_at: String,
+    /// Trigger type: manual, webhook, poll
+    #[serde(default = "default_trigger_type_manual")]
+    pub trigger_type: String,
+    #[serde(default)]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(path: &str) -> serde_json::Value {
+        let body = match path {
+            "activate_pipe.webhook.command.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/activate_pipe.webhook.command.json"
+            ),
+            "activate_pipe.rabbitmq.command.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/activate_pipe.rabbitmq.command.json"
+            ),
+            "deactivate_pipe.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/deactivate_pipe.command.json")
+            }
+            "trigger_pipe.manual.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.manual.command.json")
+            }
+            "trigger_pipe.replay.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.command.json")
+            }
+            "activate_pipe.success.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/activate_pipe.success.report.json")
+            }
+            "deactivate_pipe.success.report.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/deactivate_pipe.success.report.json"
+            ),
+            "trigger_pipe.success.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.success.report.json")
+            }
+            "trigger_pipe.failure.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.failure.report.json")
+            }
+            "trigger_pipe.replay.report.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.report.json")
+            }
+            "npm_credentials.v1_email_password.json" => {
+                include_str!("../../tests/fixtures/npm_credentials/v1_email_password.json")
+            }
+            other => panic!("unknown fixture: {}", other),
+        };
+
+        serde_json::from_str(body).expect("fixture should be valid json")
+    }
 
     #[test]
     fn health_parameters_apply_defaults() {
@@ -1378,6 +1604,43 @@ mod tests {
         let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
         let val = result.unwrap();
         assert_eq!(val["runtime"], "runc");
+        assert_eq!(val["force_config_overwrite"], false);
+    }
+
+    #[test]
+    fn deploy_app_accepts_force_config_overwrite() {
+        let params = json!({
+            "app_code": "web",
+            "force_recreate": true,
+            "force_config_overwrite": true
+        });
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["force_recreate"], true);
+        assert_eq!(val["force_config_overwrite"], true);
+    }
+
+    #[test]
+    fn deploy_app_preserves_config_files() {
+        let params = json!({
+            "app_code": "web",
+            "config_files": [{
+                "name": ".env",
+                "content": "RUST_LOG=debug\n",
+                "content_type": "text/plain",
+                "destination_path": "/opt/stacker/deployments/prod/files/web/.env",
+                "file_mode": "0644"
+            }]
+        });
+
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+
+        assert_eq!(val["config_files"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            val["config_files"][0]["destination_path"],
+            "/opt/stacker/deployments/prod/files/web/.env"
+        );
     }
 
     #[test]
@@ -1402,6 +1665,38 @@ mod tests {
         let result = validate_command_parameters("deploy_app", &Some(params));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("runtime must be one of"));
+    }
+
+    #[test]
+    fn deploy_app_accepts_registry_auth() {
+        let params = json!({
+            "app_code": "web",
+            "registry_auth": {
+                "registry": "docker.io",
+                "username": "optimum",
+                "password": "supersecret"
+            }
+        });
+        let result = validate_command_parameters("deploy_app", &Some(params)).unwrap();
+        let val = result.unwrap();
+        assert_eq!(val["registry_auth"]["registry"], "docker.io");
+        assert_eq!(val["registry_auth"]["username"], "optimum");
+        assert_eq!(val["registry_auth"]["password"], "supersecret");
+    }
+
+    #[test]
+    fn registry_auth_debug_redacts_password() {
+        let auth = RegistryAuthCommandRequest {
+            registry: "docker.io".to_string(),
+            username: "optimum".to_string(),
+            password: "supersecret".to_string(),
+        };
+
+        let rendered = format!("{:?}", auth);
+        assert!(rendered.contains("docker.io"));
+        assert!(rendered.contains("optimum"));
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains("supersecret"));
     }
 
     #[test]
@@ -1463,6 +1758,24 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_accepts_shared_webhook_fixture() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(fixture("activate_pipe.webhook.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn activate_pipe_accepts_shared_rabbitmq_fixture() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(fixture("activate_pipe.rabbitmq.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn trigger_pipe_requires_instance_id() {
         let err =
             validate_command_parameters("trigger_pipe", &Some(json!({ "pipe_instance_id": "" })));
@@ -1481,12 +1794,41 @@ mod tests {
     }
 
     #[test]
+    fn trigger_pipe_accepts_shared_manual_fixture() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(fixture("trigger_pipe.manual.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_accepts_shared_replay_fixture() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(fixture("trigger_pipe.replay.command.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "replay");
+    }
+
+    #[test]
     fn deactivate_pipe_accepts_valid_params() {
         let result = validate_command_parameters(
             "deactivate_pipe",
             &Some(json!({
                 "pipe_instance_id": "abc-123"
             })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deactivate_pipe_accepts_shared_fixture() {
+        let result = validate_command_parameters(
+            "deactivate_pipe",
+            &Some(fixture("deactivate_pipe.command.json")),
         );
         assert!(result.is_ok());
     }
@@ -1509,6 +1851,19 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "activate_pipe",
+            "dep-123",
+            &Some(fixture("activate_pipe.success.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["active"], true);
+        assert_eq!(payload["lifecycle"]["state"], "active");
+    }
+
+    #[test]
     fn trigger_pipe_result_validates() {
         let result = validate_command_result(
             "trigger_pipe",
@@ -1522,5 +1877,271 @@ mod tests {
             })),
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deactivate_pipe_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "deactivate_pipe",
+            "dep-123",
+            &Some(fixture("deactivate_pipe.success.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["removed"], true);
+        assert_eq!(payload["lifecycle"]["state"], "inactive");
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_capture_samples_defaults_false() {
+        let params = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "wordpress"
+            })),
+        )
+        .expect("should validate")
+        .expect("should have params");
+
+        assert_eq!(params["capture_samples"], false);
+    }
+
+    #[test]
+    fn probe_endpoints_parameters_capture_samples_true() {
+        let params = validate_command_parameters(
+            "probe_endpoints",
+            &Some(json!({
+                "app_code": "wordpress",
+                "capture_samples": true
+            })),
+        )
+        .expect("should validate")
+        .expect("should have params");
+
+        assert_eq!(params["capture_samples"], true);
+    }
+
+    #[test]
+    fn configure_proxy_parameters_strip_legacy_npm_overrides() {
+        let npm_credentials = fixture("npm_credentials.v1_email_password.json");
+        let params = validate_command_parameters(
+            "configure_proxy",
+            &Some(json!({
+                "app_code": "wordpress",
+                "domain_names": ["wordpress.example.com"],
+                "forward_port": 80,
+                "npm_host": npm_credentials["host"],
+                "npm_email": npm_credentials["email"],
+                "npm_password": npm_credentials["password"],
+            })),
+        )
+        .expect("configure_proxy params should validate")
+        .expect("configure_proxy params should be present");
+
+        assert!(params.get("npm_host").is_none());
+        assert!(params.get("npm_email").is_none());
+        assert!(params.get("npm_password").is_none());
+    }
+
+    #[test]
+    fn probe_endpoints_result_with_sample_response() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "deploy-hash",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "deploy-hash",
+                "app_code": "wordpress",
+                "protocols_detected": ["openapi"],
+                "endpoints": [{
+                    "protocol": "openapi",
+                    "base_url": "http://wordpress:80",
+                    "spec_url": "http://wordpress:80/wp-json",
+                    "operations": [{
+                        "path": "/wp/v2/posts",
+                        "method": "GET",
+                        "summary": "List posts",
+                        "fields": ["id", "title", "author"],
+                        "sample_response": {
+                            "id": 1,
+                            "title": {"rendered": "Hello World"},
+                            "author": 42
+                        }
+                    }]
+                }],
+                "forms": [],
+                "probed_at": "2026-04-10T12:00:00Z"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        let sample = &payload["endpoints"][0]["operations"][0]["sample_response"];
+        assert_eq!(sample["id"], 1);
+        assert_eq!(sample["author"], 42);
+    }
+
+    #[test]
+    fn probe_endpoints_result_accepts_local_resources_and_containers() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "local",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "local",
+                "app_code": "device-api",
+                "protocols_detected": ["openapi", "postgres"],
+                "containers": [{
+                    "name": "local-device-api-1",
+                    "image": "example/device-api:local",
+                    "network": "app-network",
+                    "ports": [],
+                    "addresses": ["172.18.0.20:5050"]
+                }],
+                "endpoints": [{
+                    "protocol": "openapi",
+                    "base_url": "http://172.18.0.20:5050",
+                    "spec_url": "/openapi.json",
+                    "operations": [{
+                        "path": "/devices",
+                        "method": "GET",
+                        "summary": "List devices",
+                        "fields": ["id", "name"]
+                    }]
+                }],
+                "resources": [{
+                    "container": "local-postgres-1",
+                    "protocol": "postgres",
+                    "address": "postgres://postgres@172.18.0.10:5432/app",
+                    "items": [{
+                        "resource_type": "table",
+                        "name": "public.devices",
+                        "summary": "CDC candidate",
+                        "fields": ["id", "name"]
+                    }]
+                }],
+                "forms": [],
+                "probed_at": "2026-04-17T18:00:00Z"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["containers"][0]["name"], "local-device-api-1");
+        assert_eq!(payload["resources"][0]["protocol"], "postgres");
+        assert_eq!(
+            payload["resources"][0]["items"][0]["name"],
+            "public.devices"
+        );
+    }
+
+    #[test]
+    fn trigger_pipe_result_with_trigger_type() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": true,
+                "triggered_at": "2026-01-01T00:00:00Z",
+                "trigger_type": "webhook"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "webhook");
+    }
+
+    #[test]
+    fn trigger_pipe_success_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.success.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["lifecycle"]["state"], "active");
+        assert_eq!(payload["target_response"]["transport"], "http");
+    }
+
+    #[test]
+    fn trigger_pipe_failure_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.failure.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["lifecycle"]["state"], "failed");
+    }
+
+    #[test]
+    fn trigger_pipe_result_rejects_invalid_trigger_type() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": true,
+                "triggered_at": "2026-01-01T00:00:00Z",
+                "trigger_type": "invalid_type"
+            })),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("trigger_type"));
+    }
+
+    #[test]
+    fn trigger_pipe_result_accepts_replay_trigger_type() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": true,
+                "triggered_at": "2026-01-01T00:00:00Z",
+                "trigger_type": "replay"
+            })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_replay_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.replay.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "replay");
+        assert_eq!(payload["lifecycle"]["trigger_count"], 2);
+    }
+
+    #[test]
+    fn trigger_pipe_result_trigger_type_defaults_manual() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "deploy-hash",
+            &Some(json!({
+                "type": "trigger_pipe",
+                "deployment_hash": "deploy-hash",
+                "pipe_instance_id": "abc-123",
+                "success": false,
+                "error": "Connection refused",
+                "triggered_at": "2026-01-01T00:00:00Z"
+            })),
+        );
+        assert!(result.is_ok());
+        let payload = result.unwrap().unwrap();
+        assert_eq!(payload["trigger_type"], "manual");
     }
 }

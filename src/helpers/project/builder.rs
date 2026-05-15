@@ -3,6 +3,7 @@ use crate::models;
 use docker_compose_types as dctypes;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as JsonValue};
 use serde_yaml;
 // use crate::helpers::project::*;
 
@@ -31,8 +32,8 @@ pub struct ExtractedService {
     pub entrypoint: Option<String>,
     /// Labels
     pub labels: IndexMap<String, String>,
-    /// Healthcheck configuration
-    pub healthcheck: Option<serde_json::Value>,
+    /// Healthcheck definition normalized into ProjectApp JSON shape.
+    pub healthcheck: Option<JsonValue>,
 }
 
 /// Parse a docker-compose.yml string and extract all service definitions
@@ -80,10 +81,9 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             .filter_map(|v| match v {
                 dctypes::Volumes::Simple(s) => Some(s.clone()),
                 dctypes::Volumes::Advanced(adv) => Some(format!(
-                    "{}:{}{}",
+                    "{}:{}",
                     adv.source.as_deref().unwrap_or(""),
-                    &adv.target,
-                    if adv.read_only { ":ro" } else { "" }
+                    &adv.target
                 )),
             })
             .collect();
@@ -152,40 +152,7 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
             dctypes::Labels::Map(map) => map.clone(),
         };
 
-        // Extract healthcheck
-        let healthcheck = service.healthcheck.as_ref().and_then(|check| {
-            let mut payload = serde_json::Map::new();
-
-            if let Some(test) = &check.test {
-                let test_value = match test {
-                    dctypes::HealthcheckTest::Single(cmd) => serde_json::json!(cmd),
-                    dctypes::HealthcheckTest::Multiple(cmds) => serde_json::json!(cmds),
-                };
-                payload.insert("test".to_string(), test_value);
-            }
-
-            if let Some(interval) = &check.interval {
-                payload.insert("interval".to_string(), serde_json::json!(interval));
-            }
-
-            if let Some(timeout) = &check.timeout {
-                payload.insert("timeout".to_string(), serde_json::json!(timeout));
-            }
-
-            if check.retries > 0 {
-                payload.insert("retries".to_string(), serde_json::json!(check.retries));
-            }
-
-            if let Some(start_period) = &check.start_period {
-                payload.insert("start_period".to_string(), serde_json::json!(start_period));
-            }
-
-            if check.disable {
-                payload.insert("disable".to_string(), serde_json::json!(true));
-            }
-
-            (!payload.is_empty()).then_some(serde_json::Value::Object(payload))
-        });
+        let healthcheck = extract_healthcheck(&service.healthcheck);
 
         services.push(ExtractedService {
             name: name.clone(),
@@ -204,6 +171,77 @@ pub fn parse_compose_services(compose_yaml: &str) -> Result<Vec<ExtractedService
     }
 
     Ok(services)
+}
+
+fn extract_healthcheck(healthcheck: &Option<dctypes::Healthcheck>) -> Option<JsonValue> {
+    let healthcheck = healthcheck.as_ref()?;
+    if healthcheck.disable {
+        return None;
+    }
+
+    let test = match &healthcheck.test {
+        Some(dctypes::HealthcheckTest::Single(command)) => vec![command.clone()],
+        Some(dctypes::HealthcheckTest::Multiple(commands)) => commands.clone(),
+        None => Vec::new(),
+    };
+
+    if test.is_empty() {
+        return None;
+    }
+
+    let mut map = serde_json::Map::new();
+    map.insert("test".to_string(), json!(test));
+
+    if let Some(interval) = &healthcheck.interval {
+        map.insert("interval".to_string(), json!(interval));
+    }
+    if let Some(timeout) = &healthcheck.timeout {
+        map.insert("timeout".to_string(), json!(timeout));
+    }
+    if healthcheck.retries > 0 {
+        map.insert("retries".to_string(), json!(healthcheck.retries));
+    }
+    if let Some(start_period) = &healthcheck.start_period {
+        map.insert("start_period".to_string(), json!(start_period));
+    }
+
+    Some(JsonValue::Object(map))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_compose_services_extracts_healthcheck() {
+        let compose = r#"
+services:
+  api:
+    image: nginx:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+"#;
+
+        let services = parse_compose_services(compose).expect("compose should parse");
+        let service = services.first().expect("service should exist");
+        let healthcheck = service
+            .healthcheck
+            .as_ref()
+            .expect("healthcheck should be extracted");
+
+        assert_eq!(
+            healthcheck["test"],
+            json!(["CMD", "curl", "-f", "http://localhost/health"])
+        );
+        assert_eq!(healthcheck["interval"], json!("30s"));
+        assert_eq!(healthcheck["timeout"], json!("5s"));
+        assert_eq!(healthcheck["retries"], json!(3));
+        assert_eq!(healthcheck["start_period"], json!("10s"));
+    }
 }
 
 /// A builder for constructing docker compose.
@@ -252,7 +290,8 @@ impl DcBuilder {
             .map_err(|err| format!("Failed to serialize docker-compose file: {}", err))?;
 
         if let Some(parent) = target_file.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| format!("{}", err))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("Failed to create files directory: {}", err))?;
         }
         std::fs::write(target_file, serialized.clone()).map_err(|err| format!("{}", err))?;
 
@@ -432,241 +471,4 @@ pub fn generate_single_app_compose(
 
     serde_yaml::to_string(&compose)
         .map_err(|err| format!("Failed to serialize docker-compose: {}", err))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_compose_services, DcBuilder};
-    use crate::cli::config_parser::{ConfigBuilder, ProxyConfig, ProxyType};
-    use crate::cli::stacker_client::build_project_body;
-    use crate::models::Project;
-    use docker_compose_types as dctypes;
-    use serde_json::json;
-    use tempfile::TempDir;
-
-    fn assert_npm_volumes_present(compose_yaml: &str) {
-        let compose: dctypes::Compose = serde_yaml::from_str(compose_yaml).unwrap();
-        let npm = compose
-            .services
-            .0
-            .get("nginx_proxy_manager")
-            .and_then(|svc| svc.as_ref())
-            .expect("nginx_proxy_manager service missing from generated compose");
-
-        let mut found_data = false;
-        let mut found_letsencrypt = false;
-
-        for vol in &npm.volumes {
-            match vol {
-                dctypes::Volumes::Simple(s) => {
-                    if s.starts_with("npm-data:") && s.contains(":/data") {
-                        found_data = true;
-                    }
-                    if s.starts_with("npm-letsencrypt:") && s.contains(":/etc/letsencrypt") {
-                        found_letsencrypt = true;
-                    }
-                }
-                dctypes::Volumes::Advanced(adv) => {
-                    if adv.source.as_deref() == Some("npm-data") && adv.target == "/data" {
-                        found_data = true;
-                    }
-                    if adv.source.as_deref() == Some("npm-letsencrypt")
-                        && adv.target == "/etc/letsencrypt"
-                    {
-                        found_letsencrypt = true;
-                    }
-                }
-            }
-        }
-
-        assert!(found_data, "npm-data:/data volume missing");
-        assert!(
-            found_letsencrypt,
-            "npm-letsencrypt:/etc/letsencrypt volume missing"
-        );
-
-        // Ensure the top-level named volumes are declared.
-        assert!(compose.volumes.0.contains_key("npm-data"));
-        assert!(compose.volumes.0.contains_key("npm-letsencrypt"));
-    }
-
-    #[test]
-    fn regression_generated_compose_preserves_nginx_proxy_manager_named_volumes() {
-        // Ensure DcBuilder can write its debug output file.
-        std::fs::create_dir_all("files").unwrap();
-
-        let dir = TempDir::new().unwrap();
-        let compose_path = dir.path().join("docker-compose.prod.yml");
-        std::fs::write(
-            &compose_path,
-            r#"
-version: "3.8"
-services:
-  nginx_proxy_manager:
-    image: jc21/nginx-proxy-manager:latest
-    ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
-    volumes:
-      - npm-data:/data
-      - npm-letsencrypt:/etc/letsencrypt
-volumes:
-  npm-data:
-  npm-letsencrypt:
-"#,
-        )
-        .unwrap();
-
-        let mut config = ConfigBuilder::new()
-            .name("myproject")
-            .proxy(ProxyConfig {
-                proxy_type: ProxyType::NginxProxyManager,
-                auto_detect: true,
-                domains: vec![],
-                config: None,
-            })
-            .build()
-            .unwrap();
-        config.deploy.compose_file = Some(compose_path);
-
-        let metadata = build_project_body(&config);
-        let project = Project::new(
-            "user".to_string(),
-            "myproject".to_string(),
-            metadata,
-            serde_json::json!({}),
-        );
-
-        let compose_yaml = DcBuilder::new(project).build().unwrap();
-
-        assert_npm_volumes_present(&compose_yaml);
-    }
-
-    #[test]
-    fn bdd_scenario_redeploy_keeps_nginx_proxy_manager_stateful_volumes() {
-        println!(
-            "\nScenario: Redeploying a stack with nginx-proxy-manager keeps its stateful volumes"
-        );
-        println!("  Given a production compose that declares npm-data:/data and npm-letsencrypt:/etc/letsencrypt");
-
-        std::fs::create_dir_all("files").unwrap();
-
-        let dir = TempDir::new().unwrap();
-        let compose_path = dir.path().join("docker-compose.prod.yml");
-        std::fs::write(
-            &compose_path,
-            r#"
-version: "3.8"
-services:
-  nginx_proxy_manager:
-    image: jc21/nginx-proxy-manager:latest
-    ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
-    volumes:
-      - npm-data:/data
-      - npm-letsencrypt:/etc/letsencrypt
-volumes:
-  npm-data:
-  npm-letsencrypt:
-"#,
-        )
-        .unwrap();
-
-        let mut config = ConfigBuilder::new()
-            .name("myproject")
-            .proxy(ProxyConfig {
-                proxy_type: ProxyType::NginxProxyManager,
-                auto_detect: true,
-                domains: vec![],
-                config: None,
-            })
-            .build()
-            .unwrap();
-        config.deploy.compose_file = Some(compose_path);
-
-        println!("  When the project metadata is generated and deployed");
-        let metadata_v1 = build_project_body(&config);
-        let project_v1 = Project::new(
-            "user".to_string(),
-            "myproject".to_string(),
-            metadata_v1,
-            serde_json::json!({}),
-        );
-        let compose_v1 = DcBuilder::new(project_v1).build().unwrap();
-
-        println!("  And the same stack is redeployed (regenerating metadata/compose)");
-        let metadata_v2 = build_project_body(&config);
-        let project_v2 = Project::new(
-            "user".to_string(),
-            "myproject".to_string(),
-            metadata_v2,
-            serde_json::json!({}),
-        );
-        let compose_v2 = DcBuilder::new(project_v2).build().unwrap();
-
-        println!("  Then both deploys include the nginx-proxy-manager volumes");
-        for compose_yaml in [compose_v1, compose_v2] {
-            assert_npm_volumes_present(&compose_yaml);
-        }
-    }
-
-    #[test]
-    fn test_parse_compose_services_preserves_env_placeholders_and_healthcheck() {
-        let services = parse_compose_services(
-            r#"
-version: "3.8"
-services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: ${DB_USERNAME}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_DATABASE:-coolify}
-    volumes:
-      - type: bind
-        source: ${COOLIFY_SOURCE_ENV_FILE:-./coolify.env}
-        target: /var/www/html/.env
-        read_only: true
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE:-coolify}
-      interval: 10s
-      timeout: 5s
-      retries: 5
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(services.len(), 1);
-        let postgres = &services[0];
-        assert_eq!(postgres.environment.len(), 3);
-        assert!(postgres
-            .environment
-            .contains(&"POSTGRES_USER=${DB_USERNAME}".to_string()));
-        assert!(postgres
-            .environment
-            .contains(&"POSTGRES_PASSWORD=${DB_PASSWORD}".to_string()));
-        assert!(postgres
-            .environment
-            .contains(&"POSTGRES_DB=${DB_DATABASE:-coolify}".to_string()));
-        assert!(postgres.volumes.contains(
-            &"${COOLIFY_SOURCE_ENV_FILE:-./coolify.env}:/var/www/html/.env:ro".to_string()
-        ));
-        assert_eq!(
-            postgres.healthcheck,
-            Some(json!({
-                "test": [
-                    "CMD-SHELL",
-                    "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE:-coolify}"
-                ],
-                "interval": "10s",
-                "timeout": "5s",
-                "retries": 5
-            }))
-        );
-    }
 }

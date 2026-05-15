@@ -22,13 +22,13 @@ variable "server_name" {
 variable "server_type" {
   description = <<-EOT
     Hetzner server type. Use dedicated-vCPU types for reliable KVM support:
-      - ccx13  (2 vCPU / 8 GB)   — smallest dedicated, good for testing
+      - cx23  (2 vCPU / 8 GB)   — smallest dedicated, good for testing
       - ccx23  (4 vCPU / 16 GB)  — light production
       - ccx33  (8 vCPU / 32 GB)  — production
     Shared-vCPU types (cx*) may work but KVM is not guaranteed.
   EOT
   type        = string
-  default     = "ccx13"
+  default     = "cx23"
 }
 
 variable "location" {

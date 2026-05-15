@@ -3,12 +3,14 @@
 //! All operations call the Stacker server REST API (`/server/{id}/ssh-key/*`)
 //! which stores keys in HashiCorp Vault. Requires `stacker login` first.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::cli::credentials::CredentialsManager;
+use crate::cli::credentials::FileCredentialStore;
 use crate::cli::error::CliError;
-use crate::cli::stacker_client::{self, StackerClient};
+use crate::cli::runtime::CliRuntime;
+use crate::cli::stacker_client::{AuthorizePublicKeyResponse, ServerInfo, StackerClient};
 use crate::console::commands::CallableTrait;
+use crate::helpers::VaultClient;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ssh-key generate
@@ -35,20 +37,10 @@ impl CallableTrait for SshKeyGenerateCommand {
         let server_id = self.server_id;
         let save_to = self.save_to.clone();
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key generate")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key generate")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let result = client.generate_ssh_key(server_id).await?;
+        ctx.block_on(async {
+            let result = ctx.client.generate_ssh_key(server_id).await?;
 
             println!("✓ SSH key generated for server {}", server_id);
             println!();
@@ -104,20 +96,10 @@ impl CallableTrait for SshKeyShowCommand {
         let server_id = self.server_id;
         let json = self.json;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key show")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key show")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let result = client.get_ssh_public_key(server_id).await?;
+        ctx.block_on(async {
+            let result = ctx.client.get_ssh_public_key(server_id).await?;
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -179,20 +161,11 @@ impl CallableTrait for SshKeyUploadCommand {
             ))
         })?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key upload")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key upload")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-            let server = client
+        ctx.block_on(async {
+            let server = ctx
+                .client
                 .upload_ssh_key(server_id, public_key.trim(), private_key.trim())
                 .await?;
 
@@ -211,16 +184,187 @@ impl CallableTrait for SshKeyUploadCommand {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Local backup key helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Clone)]
+pub struct LocalBackupKeyAuthorization {
+    pub private_key_path: PathBuf,
+    pub public_key_path: PathBuf,
+    pub ssh_command: String,
+    pub response: AuthorizePublicKeyResponse,
+}
+
+#[derive(Debug, Clone)]
+struct LocalBackupKeypair {
+    private_key_path: PathBuf,
+    public_key_path: PathBuf,
+    public_key: String,
+}
+
+pub async fn ensure_local_backup_key_authorized(
+    client: &StackerClient,
+    server: &ServerInfo,
+) -> Result<LocalBackupKeyAuthorization, CliError> {
+    let keypair = ensure_local_backup_keypair(server.id)?;
+    let response = client
+        .authorize_ssh_public_key(server.id, keypair.public_key.trim(), None, None)
+        .await?;
+    let ssh_command = format_ssh_command(
+        &keypair.private_key_path,
+        &response.ssh_user,
+        &response.srv_ip,
+        response.ssh_port,
+    );
+
+    Ok(LocalBackupKeyAuthorization {
+        private_key_path: keypair.private_key_path,
+        public_key_path: keypair.public_key_path,
+        ssh_command,
+        response,
+    })
+}
+
+fn default_backup_ssh_dir() -> PathBuf {
+    FileCredentialStore::default_path()
+        .parent()
+        .map(|path| path.join("ssh"))
+        .unwrap_or_else(|| PathBuf::from("stacker").join("ssh"))
+}
+
+fn backup_key_paths_for_server(server_id: i32, ssh_dir: &Path) -> (PathBuf, PathBuf) {
+    let private_key_path = ssh_dir.join(format!("server-{}_ed25519", server_id));
+    let public_key_path = PathBuf::from(format!("{}.pub", private_key_path.display()));
+    (private_key_path, public_key_path)
+}
+
+fn ensure_local_backup_keypair(server_id: i32) -> Result<LocalBackupKeypair, CliError> {
+    ensure_local_backup_keypair_in_dir(server_id, &default_backup_ssh_dir())
+}
+
+fn ensure_local_backup_keypair_in_dir(
+    server_id: i32,
+    ssh_dir: &Path,
+) -> Result<LocalBackupKeypair, CliError> {
+    std::fs::create_dir_all(ssh_dir)?;
+    set_private_dir_permissions(ssh_dir)?;
+
+    let (private_key_path, public_key_path) = backup_key_paths_for_server(server_id, ssh_dir);
+
+    let public_key = if private_key_path.exists() {
+        let private_key = std::fs::read_to_string(&private_key_path).map_err(|e| {
+            CliError::Io(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to read backup SSH key {}: {}",
+                    private_key_path.display(),
+                    e
+                ),
+            ))
+        })?;
+        let public_key = derive_public_key_from_private(&private_key)?;
+        write_public_key_file(&public_key_path, &public_key)?;
+        public_key
+    } else {
+        let (public_key, private_key) = VaultClient::generate_ssh_keypair().map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to generate local backup SSH key: {}", e))
+        })?;
+        write_private_key_file(&private_key_path, &private_key)?;
+        write_public_key_file(&public_key_path, &public_key)?;
+        public_key
+    };
+
+    Ok(LocalBackupKeypair {
+        private_key_path,
+        public_key_path,
+        public_key,
+    })
+}
+
+fn derive_public_key_from_private(private_key: &str) -> Result<String, CliError> {
+    let private = ssh_key::PrivateKey::from_openssh(private_key).map_err(|e| {
+        CliError::ConfigValidation(format!("Invalid local backup SSH private key: {}", e))
+    })?;
+    private.public_key().to_openssh().map_err(|e| {
+        CliError::ConfigValidation(format!("Failed to derive local backup public key: {}", e))
+    })
+}
+
+fn write_private_key_file(path: &Path, private_key: &str) -> Result<(), CliError> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| {
+            CliError::Io(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to create backup SSH private key {}: {}",
+                    path.display(),
+                    e
+                ),
+            ))
+        })?;
+    file.write_all(private_key.as_bytes())?;
+    set_private_file_permissions(path)?;
+    Ok(())
+}
+
+fn write_public_key_file(path: &Path, public_key: &str) -> Result<(), CliError> {
+    std::fs::write(path, format!("{}\n", public_key.trim()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_dir_permissions(path: &Path) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_permissions(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+fn format_ssh_command(private_key_path: &Path, user: &str, host: &str, port: u16) -> String {
+    format!(
+        "ssh -i {} -p {} {}@{}",
+        private_key_path.display(),
+        port,
+        user,
+        host
+    )
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ssh-key inject
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// `stacker ssh-key inject --server-id <ID> --with-key <PATH> [--user <USER>] [--port <PORT>]`
 ///
-/// Fetches the vault-stored public key for a server and injects it into the
-/// server's `~/.ssh/authorized_keys` using a locally-available working private key.
+/// Fetches the Vault-stored public key for a server and bootstraps it into the
+/// server's `~/.ssh/authorized_keys` using a locally-available private key that
+/// already works for SSH login.
 ///
-/// Use this to repair a server whose `authorized_keys` doesn't contain the Stacker
-/// vault key (e.g. after a fresh key generation that failed to inject automatically).
+/// Use this to repair a server whose `authorized_keys` doesn't contain the
+/// Stacker-managed Vault key (for example after a fresh key generation that
+/// failed to inject automatically). If you want Stacker to use your local key
+/// pair instead, use `ssh-key upload`.
 pub struct SshKeyInjectCommand {
     pub server_id: i32,
     /// Path to a local private key that already grants SSH access to the server.
@@ -242,12 +386,25 @@ impl SshKeyInjectCommand {
     }
 }
 
+fn validate_bootstrap_private_key_path(key_path: &Path) -> Result<(), CliError> {
+    if key_path.extension().and_then(|ext| ext.to_str()) == Some("pub") {
+        return Err(CliError::ConfigValidation(format!(
+            "`--with-key` expects a private key file, not a public key: {}. Pass a private key that already grants SSH access to the server.",
+            key_path.display()
+        )));
+    }
+
+    Ok(())
+}
+
 impl CallableTrait for SshKeyInjectCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let server_id = self.server_id;
         let key_path = self.with_key.clone();
         let override_user = self.user.clone();
         let override_port = self.port;
+
+        validate_bootstrap_private_key_path(&key_path)?;
 
         // Read the local working private key
         let local_private_key = std::fs::read_to_string(&key_path).map_err(|e| {
@@ -257,22 +414,11 @@ impl CallableTrait for SshKeyInjectCommand {
             ))
         })?;
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("ssh-key inject")?;
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let ctx = CliRuntime::new("ssh-key inject")?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
-            })?;
-
-        rt.block_on(async {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-
+        ctx.block_on(async {
             // Fetch server info to get IP, port, and user
-            let servers = client.list_servers().await?;
+            let servers = ctx.client.list_servers().await?;
             let server_info = servers
                 .into_iter()
                 .find(|s| s.id == server_id)
@@ -298,7 +444,7 @@ impl CallableTrait for SshKeyInjectCommand {
                 .unwrap_or_else(|| "root".to_string());
 
             // Fetch the vault public key
-            let key_resp = client.get_ssh_public_key(server_id).await?;
+            let key_resp = ctx.client.get_ssh_public_key(server_id).await?;
             let vault_public_key = key_resp.public_key.trim().to_string();
 
             println!("Server:     {} (ID {})", host, server_id);
@@ -308,7 +454,9 @@ impl CallableTrait for SshKeyInjectCommand {
                 &vault_public_key[..vault_public_key.len().min(60)]
             );
             println!();
-            println!("Connecting to inject key into authorized_keys…");
+            println!(
+                "Connecting with the bootstrap key to add the Vault key into authorized_keys..."
+            );
 
             inject_key_via_ssh(
                 &host,
@@ -382,7 +530,8 @@ async fn inject_key_via_ssh(
 
     if !auth_res.success() {
         return Err(Box::new(CliError::ConfigValidation(
-            "Authentication failed — the provided key is not accepted by the server".to_string(),
+            "Authentication failed — the provided private key is not accepted by the server. `ssh-key inject` requires a bootstrap private key that already grants SSH access."
+                .to_string(),
         )));
     }
 
@@ -433,4 +582,103 @@ async fn inject_key_via_ssh(
     println!("You can now run:  stacker deploy");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        backup_key_paths_for_server, ensure_local_backup_keypair_in_dir, format_ssh_command,
+        validate_bootstrap_private_key_path,
+    };
+    use crate::cli::error::CliError;
+    use crate::helpers::VaultClient;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    #[test]
+    fn rejects_public_key_file_for_ssh_key_inject() {
+        let err = validate_bootstrap_private_key_path(Path::new("/tmp/id_ed25519.pub"))
+            .expect_err("public key paths must be rejected");
+
+        match err {
+            CliError::ConfigValidation(message) => {
+                assert!(message.contains("expects a private key file"));
+                assert!(message.contains("id_ed25519.pub"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn accepts_private_key_file_for_ssh_key_inject() {
+        validate_bootstrap_private_key_path(Path::new("/tmp/id_ed25519"))
+            .expect("private key paths should be accepted");
+    }
+
+    #[test]
+    fn backup_key_paths_use_config_scoped_ssh_directory() {
+        let ssh_dir = Path::new("/home/user/.config/stacker/ssh");
+        let (private_key_path, public_key_path) = backup_key_paths_for_server(42, ssh_dir);
+
+        assert_eq!(
+            private_key_path,
+            Path::new("/home/user/.config/stacker/ssh/server-42_ed25519")
+        );
+        assert_eq!(
+            public_key_path,
+            Path::new("/home/user/.config/stacker/ssh/server-42_ed25519.pub")
+        );
+    }
+
+    #[test]
+    fn local_backup_keypair_uses_existing_generate_keypair_helper_and_reuses_private_key() {
+        let dir = TempDir::new().expect("tempdir");
+        let keypair = ensure_local_backup_keypair_in_dir(7, dir.path()).expect("generate keypair");
+        let private_before =
+            std::fs::read_to_string(&keypair.private_key_path).expect("private key");
+        let public_before = std::fs::read_to_string(&keypair.public_key_path).expect("public key");
+
+        let regenerated =
+            ensure_local_backup_keypair_in_dir(7, dir.path()).expect("reuse existing keypair");
+        let private_after =
+            std::fs::read_to_string(&regenerated.private_key_path).expect("private key");
+        let public_after =
+            std::fs::read_to_string(&regenerated.public_key_path).expect("public key");
+
+        assert_eq!(private_before, private_after);
+        assert_eq!(public_before, public_after);
+        assert!(private_before.contains("OPENSSH PRIVATE KEY"));
+        assert!(public_before.starts_with("ssh-ed25519 "));
+    }
+
+    #[test]
+    fn local_backup_keypair_derives_public_key_when_pub_file_is_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        let (public_key, private_key) = VaultClient::generate_ssh_keypair().expect("keypair");
+        let (private_key_path, public_key_path) = backup_key_paths_for_server(8, dir.path());
+        std::fs::write(&private_key_path, private_key).expect("write private key");
+
+        let keypair = ensure_local_backup_keypair_in_dir(8, dir.path()).expect("reuse keypair");
+
+        assert_eq!(keypair.public_key, public_key);
+        assert_eq!(
+            std::fs::read_to_string(public_key_path).expect("public key file"),
+            format!("{}\n", public_key)
+        );
+    }
+
+    #[test]
+    fn formats_copy_paste_ssh_command() {
+        let command = format_ssh_command(
+            Path::new("/home/user/.config/stacker/ssh/server-42_ed25519"),
+            "root",
+            "203.0.113.10",
+            2222,
+        );
+
+        assert_eq!(
+            command,
+            "ssh -i /home/user/.config/stacker/ssh/server-42_ed25519 -p 2222 root@203.0.113.10"
+        );
+    }
 }

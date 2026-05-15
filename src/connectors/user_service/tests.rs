@@ -1,9 +1,10 @@
+use mockito::{Matcher, Server};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::mock;
 use super::utils::is_plan_higher_tier;
-use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceConnector};
+use super::{CategoryInfo, ProductInfo, UserProfile, UserServiceClient, UserServiceConnector};
 
 /// Test that get_user_profile returns user with products list
 #[tokio::test]
@@ -220,6 +221,132 @@ async fn test_mock_list_stacks() {
     let stacks = connector.list_stacks("user_123").await.unwrap();
     assert!(!stacks.is_empty());
     assert_eq!(stacks[0].user_id, "user_123");
+}
+
+#[tokio::test]
+async fn test_get_installation_by_hash_uses_lightweight_route() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/install/by-deployment-hash/dep-hash-123")
+        .match_header("authorization", "Bearer test_token")
+        .match_header("accept", Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_id": 13876,
+                "stack_code": "caddy",
+                "status": "completed",
+                "cloud": "htz",
+                "deployment_hash": "dep-hash-123",
+                "domain": "example.com",
+                "server_ip": "192.0.2.10",
+                "_created": "2026-04-25T08:53:54+00:00",
+                "_updated": "2026-04-25T08:54:04+00:00"
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let installation = client
+        .get_installation_by_hash("test_token", "dep-hash-123")
+        .await
+        .unwrap();
+
+    assert_eq!(installation.id, Some(13876));
+    assert_eq!(installation.stack_code.as_deref(), Some("caddy"));
+    assert_eq!(
+        installation.deployment_hash.as_deref(),
+        Some("dep-hash-123")
+    );
+}
+
+#[tokio::test]
+async fn test_get_installation_falls_back_to_legacy_install_route() {
+    let mut server = Server::new_async().await;
+    let _api_mock = server
+        .mock("GET", "/api/1.0/installations/66")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(404)
+        .with_header("content-type", "application/json")
+        .with_body(json!({ "_status": "ERR" }).to_string())
+        .create_async()
+        .await;
+    let _legacy_mock = server
+        .mock("GET", "/install/66")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_status": "OK",
+                "installation": {
+                    "id": 66,
+                    "status": "completed",
+                    "deployment_hash": "dep-hash-66",
+                    "request_dump": {
+                        "stack_code": "coolify",
+                        "provider": "htz",
+                        "commonDomain": "example.com",
+                        "server_ip": "192.0.2.66"
+                    }
+                },
+                "agent_config": {
+                    "token": "agent-token"
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let installation = client.get_installation("test_token", 66).await.unwrap();
+
+    assert_eq!(installation.id, Some(66));
+    assert_eq!(installation.stack_code.as_deref(), Some("coolify"));
+    assert_eq!(installation.cloud.as_deref(), Some("htz"));
+    assert_eq!(installation.domain.as_deref(), Some("example.com"));
+    assert_eq!(installation.server_ip.as_deref(), Some("192.0.2.66"));
+    assert!(installation.agent_config.is_some());
+}
+
+#[tokio::test]
+async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/oauth_server/api/me")
+        .match_header("authorization", "Bearer test_token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "item": {
+                    "_id": "user-1",
+                    "plan": {
+                        "name": "Free",
+                        "code": "plan-free-periodically",
+                        "includes": [
+                            { "code": "deploys-20", "name": "20 deploys per month" }
+                        ],
+                        "active": true,
+                        "price": "0.00"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let plan = client.get_subscription_plan("test_token").await.unwrap();
+
+    assert_eq!(plan.name.as_deref(), Some("Free"));
+    assert_eq!(plan.code.as_deref(), Some("plan-free-periodically"));
+    assert!(plan.includes.unwrap().is_array());
 }
 
 /// Test plan hierarchy comparison

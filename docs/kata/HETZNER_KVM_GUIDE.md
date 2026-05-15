@@ -1,47 +1,35 @@
-# Hetzner Cloud KVM Guide for Kata Containers
+# Hetzner Bare-Metal KVM Guide for Kata Containers
 
-## Why Dedicated-CPU Servers?
+## What Actually Works on Hetzner
 
-Kata Containers run each container workload inside a lightweight virtual machine
-using KVM (Kernel-based Virtual Machine). This requires direct access to the
-`/dev/kvm` device, which is only available on servers with dedicated CPU
-resources.
+Kata Containers require direct access to `/dev/kvm`. On Hetzner, that means
+**bare metal only**.
 
-On Hetzner Cloud, this means you **must** use CCX-series server types.
+| Platform | Example types | `/dev/kvm` available | Kata Ready |
+|---|---|---|---|
+| Hetzner Cloud | CCX, CX, CPX, CAX | ❌ | ❌ |
+| Hetzner Robot | Dedicated bare-metal servers | ✅ | ✅ |
 
-## CCX Server Types
+> **Important:** Dedicated CPU is **not** enough on Hetzner Cloud. Even the
+> CCX family runs inside a VM, and the guest OS does not get direct `/dev/kvm`
+> access. For Kata on Hetzner, use **Robot bare metal**.
 
-The CCX line provides dedicated vCPUs — your workload gets exclusive access to
-physical CPU cores, and the hypervisor exposes `/dev/kvm` to the guest OS.
+## Why Hetzner Cloud Does Not Work
 
-| Type | vCPU | RAM | Disk | Monthly Cost (approx.) | Kata Ready |
-|---|---|---|---|---|---|
-| CCX13 | 2 | 8 GB | 80 GB | ~€14 | ✅ |
-| CCX23 | 4 | 16 GB | 160 GB | ~€29 | ✅ |
-| CCX33 | 8 | 32 GB | 240 GB | ~€57 | ✅ |
-| CCX43 | 16 | 64 GB | 360 GB | ~€113 | ✅ |
-| CCX53 | 32 | 128 GB | 600 GB | ~€225 | ✅ |
-| CCX63 | 48 | 192 GB | 960 GB | ~€337 | ✅ |
-
-> Prices are approximate and vary by datacenter location. Check
-> [hetzner.com/cloud](https://www.hetzner.com/cloud#pricing) for current pricing.
-
-## Why Shared-CPU Types Don't Work
-
-Shared-CPU types (CX, CPX, CAX) run on a hypervisor that does **not** expose
-`/dev/kvm` to guests. Without KVM, the Kata hypervisor cannot create hardware-
-isolated VMs, and `kata-runtime` will fail with:
+All Hetzner Cloud instances run on a hypervisor that does **not** expose
+`/dev/kvm` to the guest. Without KVM, the Kata hypervisor cannot create
+hardware-isolated VMs, and `kata-runtime` will fail with:
 
 ```
 kata-runtime: arch requires KVM to run, but /dev/kvm is not accessible
 ```
 
-There is no workaround — nested virtualisation is not supported on Hetzner
-shared-CPU instances.
+There is no practical workaround on Hetzner Cloud — Kata needs real KVM access.
 
 ## Verifying KVM Access
 
-After provisioning a CCX server, verify KVM is available:
+After provisioning your **Hetzner Robot bare-metal** server, verify KVM is
+available:
 
 ```bash
 # Check /dev/kvm exists
@@ -52,51 +40,52 @@ ls -la /dev/kvm
 lsmod | grep kvm
 # Expected: kvm_intel (or kvm_amd) and kvm modules
 
-# Run Kata's own validation
+# After installing Kata, run Kata's own validation
 kata-runtime check
-# Expected: all checks pass
+# Expected: all checks pass once the runtime is installed
 ```
 
-## Provisioning a Kata-Ready CCX Server
+## Provisioning a Kata-Ready Bare-Metal Server
 
-### Option 1: TFA Terraform Module
+### Option 1: Hetzner Robot + Ansible (recommended)
 
 ```bash
-cd tfa/terraform/htz/kata
+# Order and install a dedicated server in Hetzner Robot first.
+# Then configure Kata on the running host:
+git clone https://github.com/trydirect/stacker.git
+cd stacker/docs/kata/ansible
 
-# Initialize
-tofu init
-
-# Review the plan
-tofu plan \
-  -var="hcloud_token=$HCLOUD_TOKEN" \
-  -var="hcloud_ssh_key=my-key" \
-  -var="server_type=ccx13" \
-  -var="datacenter_location=fsn1"
-
-# Apply
-tofu apply \
-  -var="hcloud_token=$HCLOUD_TOKEN" \
-  -var="hcloud_ssh_key=my-key"
+ansible-playbook -i <server-ip>, kata-setup.yml \
+  --private-key ~/.ssh/id_rsa \
+  --user root
 ```
 
-The module provisions a CCX13 by default with:
-- Ubuntu 22.04
-- Docker CE pre-installed
-- Kata Containers pre-installed
-- `daemon.json` configured with `kata` runtime
-- Firewall with SSH, HTTP, HTTPS
+Before you run the playbook:
 
-### Option 2: Manual Setup on Existing CCX Server
+1. Order an x86_64 dedicated server in the
+   [Hetzner Robot portal](https://robot.hetzner.com/).
+2. Install **Ubuntu 22.04 LTS**.
+3. Add your SSH key and boot the host.
+4. Verify `/dev/kvm` exists on the server.
+
+The `kata-setup.yml` playbook then:
+
+- Validates KVM access
+- Installs Kata Containers from the official APT repository
+- Configures Docker with the `kata` runtime
+- Restarts Docker and runs a smoke test
+
+### Option 2: Manual Setup on an Existing Robot Server
 
 ```bash
-# SSH into your CCX server
+# SSH into your bare-metal server
 ssh root@<server-ip>
 
-# Verify KVM (should exist on CCX)
+# Verify KVM
 ls -la /dev/kvm
 
 # Install Kata (Ubuntu 22.04+)
+install -d /etc/apt/keyrings
 curl -fsSL https://packages.kata-containers.io/kata-containers.key \
   | gpg --dearmor -o /etc/apt/keyrings/kata-containers.gpg
 echo "deb [signed-by=/etc/apt/keyrings/kata-containers.gpg] \
@@ -105,23 +94,32 @@ echo "deb [signed-by=/etc/apt/keyrings/kata-containers.gpg] \
 apt-get update && apt-get install -y kata-containers
 
 # Configure Docker
-cat /etc/docker/daemon.json | python3 -c "
-import sys, json
-d = json.load(sys.stdin) if sys.stdin.read() else {}
-d.setdefault('runtimes', {})['kata'] = {'path': '/usr/bin/kata-runtime'}
-json.dump(d, sys.stdout, indent=2)
-" | tee /tmp/daemon.json && mv /tmp/daemon.json /etc/docker/daemon.json
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path('/etc/docker/daemon.json')
+text = path.read_text() if path.exists() else ''
+data = json.loads(text) if text.strip() else {}
+data.setdefault('runtimes', {})['kata'] = {'path': '/usr/bin/kata-runtime'}
+path.write_text(json.dumps(data, indent=2) + '\n')
+PY
 systemctl restart docker
 
 # Test
+kata-runtime check
 docker run --rm --runtime kata hello-world
 ```
 
-### Option 3: Hetzner Robot (Bare-Metal)
+## Do Not Use the Hetzner Cloud Terraform Module for Kata
 
-For production workloads requiring maximum performance, Hetzner Robot dedicated
-servers provide direct hardware access. KVM is always available on bare-metal.
-Use the TFA Ansible `kata_containers` role to configure these servers.
+The `hcloud` provider provisions **Hetzner Cloud** VMs only. Those VMs do not
+expose `/dev/kvm`, so they are not valid Kata targets. On Hetzner, the correct
+flow is:
+
+1. Provision a **Robot bare-metal** server outside Terraform
+2. Verify `/dev/kvm`
+3. Run the Kata Ansible playbook or the manual install steps above
 
 ## Network Considerations
 
@@ -146,8 +144,10 @@ For latency-critical workloads, benchmark before committing to Kata.
 ## Troubleshooting
 
 ### `/dev/kvm` not found
-- Ensure you're using a CCX server type, not CX/CPX/CAX
-- Check the server hasn't been migrated to a shared host
+- Ensure you're on a **Hetzner Robot bare-metal** server, not any Hetzner Cloud VM
+- Verify virtualisation support is enabled for the host CPU
+- Reboot after OS installation if `/dev/kvm` is still missing
+- Check `dmesg | grep -i kvm` for kernel-level errors
 
 ### `kata-runtime check` fails
 - Run `kata-runtime check --verbose` for detailed diagnostics

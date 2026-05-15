@@ -1,0 +1,260 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "marketplace-vendor-analytics",
+  "description": "Canonical response contract for vendor Marketplace Analytics APIs. Stacker owns stack/template usage metrics only: views, deployments, cloud breakdown, conversion, and template performance.",
+  "_owner": "stacker",
+  "_consumers": [
+    "blog",
+    "stacker",
+    "try.direct.user.service"
+  ],
+  "_notes": [
+    "Stacker analytics must not include withdrawal, payout, banking, provider transfer, or balance fields.",
+    "Revenue and sales fields may be merged by Blog from User Service earnings/analytics, but Stacker remains the owner of template usage metrics.",
+    "All metrics must be scoped to the authenticated creator/vendor.",
+    "Period series must return zero-filled buckets for the requested range so charts do not infer missing dates."
+  ],
+  "endpoints": {
+    "vendor-template-analytics": {
+      "method": "GET",
+      "path": "/api/templates/mine/analytics",
+      "auth": "OAuth Bearer (profile scope)",
+      "ownerService": "stacker",
+      "query": {
+        "period": {
+          "type": "string",
+          "enum": ["7d", "30d", "90d", "all", "custom"],
+          "required": false,
+          "default": "30d"
+        },
+        "startDate": {
+          "type": "string",
+          "format": "date-time",
+          "required": false,
+          "description": "Required when period=custom."
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date-time",
+          "required": false,
+          "description": "Required when period=custom."
+        },
+        "templateId": {
+          "type": "string",
+          "format": "uuid",
+          "required": false,
+          "description": "Optional filter for one owned marketplace template."
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "creatorId",
+          "period",
+          "summary",
+          "viewsSeries",
+          "deploymentsSeries",
+          "cloudBreakdown",
+          "topTemplates",
+          "templates"
+        ],
+        "properties": {
+          "creatorId": {
+            "type": "string",
+            "description": "Authenticated Stacker creator user id."
+          },
+          "period": {
+            "type": "object",
+            "required": ["key", "startDate", "endDate", "bucket"],
+            "properties": {
+              "key": {
+                "type": "string",
+                "enum": ["7d", "30d", "90d", "all", "custom"]
+              },
+              "startDate": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "endDate": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "bucket": {
+                "type": "string",
+                "enum": ["day", "week", "month", "all"]
+              }
+            },
+            "additionalProperties": false
+          },
+          "summary": {
+            "type": "object",
+            "required": [
+              "totalViews",
+              "totalDeployments",
+              "conversionRate",
+              "publishedTemplates",
+              "topCloud",
+              "topTemplateId"
+            ],
+            "properties": {
+              "totalViews": { "type": "integer", "minimum": 0 },
+              "totalDeployments": { "type": "integer", "minimum": 0 },
+              "conversionRate": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Deployment conversion percentage from views to deployments."
+              },
+              "publishedTemplates": { "type": "integer", "minimum": 0 },
+              "topCloud": { "type": ["string", "null"] },
+              "topTemplateId": { "type": ["string", "null"], "format": "uuid" }
+            },
+            "additionalProperties": false
+          },
+          "viewsSeries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["bucketStart", "bucketEnd", "count"],
+              "properties": {
+                "bucketStart": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "bucketEnd": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "count": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "deploymentsSeries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["bucketStart", "bucketEnd", "count"],
+              "properties": {
+                "bucketStart": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "bucketEnd": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "count": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "cloudBreakdown": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["cloudProvider", "deployments", "percentage"],
+              "properties": {
+                "cloudProvider": {
+                  "type": "string",
+                  "description": "Normalized cloud provider code, e.g. hetzner, digitalocean, aws, linode."
+                },
+                "deployments": { "type": "integer", "minimum": 0 },
+                "percentage": { "type": "number", "minimum": 0, "maximum": 100 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "topTemplates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "templateId",
+                "slug",
+                "name",
+                "views",
+                "deployments",
+                "conversionRate"
+              ],
+              "properties": {
+                "templateId": { "type": "string", "format": "uuid" },
+                "productId": { "type": ["integer", "null"] },
+                "slug": { "type": "string" },
+                "name": { "type": "string" },
+                "views": { "type": "integer", "minimum": 0 },
+                "deployments": { "type": "integer", "minimum": 0 },
+                "conversionRate": { "type": "number", "minimum": 0 },
+                "price": { "type": ["number", "null"] },
+                "currency": { "type": ["string", "null"], "maxLength": 3 },
+                "billingCycle": {
+                  "type": ["string", "null"],
+                  "enum": ["one_time", "monthly", "yearly", null]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "templateId",
+                "creatorUserId",
+                "slug",
+                "name",
+                "status",
+                "views",
+                "deployments"
+              ],
+              "properties": {
+                "templateId": { "type": "string", "format": "uuid" },
+                "creatorUserId": { "type": "string" },
+                "productId": { "type": ["integer", "null"] },
+                "slug": { "type": "string" },
+                "name": { "type": "string" },
+                "status": { "type": "string" },
+                "categoryCode": { "type": ["string", "null"] },
+                "views": { "type": "integer", "minimum": 0 },
+                "deployments": { "type": "integer", "minimum": 0 },
+                "conversionRate": { "type": "number", "minimum": 0 },
+                "approvedAt": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "updatedAt": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "emptyResponse": {
+        "creatorId": "",
+        "period": {
+          "key": "30d",
+          "startDate": null,
+          "endDate": null,
+          "bucket": "day"
+        },
+        "summary": {
+          "totalViews": 0,
+          "totalDeployments": 0,
+          "conversionRate": 0,
+          "publishedTemplates": 0,
+          "topCloud": null,
+          "topTemplateId": null
+        },
+        "viewsSeries": [],
+        "deploymentsSeries": [],
+        "cloudBreakdown": [],
+        "topTemplates": [],
+        "templates": []
+      }
+    }
+  }
+}

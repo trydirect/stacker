@@ -56,7 +56,7 @@ Each deployment receives its own Vault token, scoped to only access that deploym
         │   └── _compose       # Global docker-compose.yml (legacy)
         ├── {app_code}/
         │   ├── _compose       # Per-app docker-compose.yml
-        │   ├── _env           # Per-app rendered .env file
+        │   ├── _env           # Runtime env payload for canonical .env
         │   ├── _configs       # Bundled config files (JSON array)
         │   └── _config        # Legacy single config file
         └── {app_code_2}/
@@ -70,7 +70,7 @@ Each deployment receives its own Vault token, scoped to only access that deploym
 | Key Format | Vault Path | Description | Example |
 |------------|------------|-------------|---------|
 | `{app_code}` | `apps/{app_code}/_compose` | docker-compose.yml | `telegraf` → compose |
-| `{app_code}_env` | `apps/{app_code}/_env` | Rendered .env file | `telegraf_env` → env vars |
+| `{app_code}_env` | `apps/{app_code}/_env` | Runtime env payload for canonical `.env` | `telegraf_env` → env vars |
 | `{app_code}_configs` | `apps/{app_code}/_configs` | Bundled config files (JSON) | `telegraf_configs` → multiple configs |
 | `{app_code}_config` | `apps/{app_code}/_config` | Single config (legacy) | `nginx_config` → nginx.conf |
 | `_compose` | `apps/_compose/_compose` | Global compose (legacy) | Full stack compose |
@@ -87,17 +87,32 @@ Each deployment receives its own Vault token, scoped to only access that deploym
    - When `project_app` is created/updated, `ConfigRenderer` generates files
    - `ProjectAppService.sync_to_vault()` pushes configs to Vault:
      - **Compose** stored at `{app_code}` key → `apps/{app_code}/_compose`
-     - **.env files** stored at `{app_code}_env` key → `apps/{app_code}/_env`
+     - **Runtime env payloads** stored at `{app_code}_env` key → `apps/{app_code}/_env`
      - **Config bundles** stored at `{app_code}_configs` key → `apps/{app_code}/_configs`
    - Config bundle is a JSON array containing all config files for the app
 
 3. **Command Enrichment** (Stacker → Status Panel):
    - When `deploy_app` command is issued, Stacker enriches the command payload
-   - Fetches from Vault: `{app_code}` (compose), `{app_code}_env` (.env), `{app_code}_configs` (bundle)
+   - Fetches from Vault: `{app_code}` (compose), `{app_code}_env` (runtime env), `{app_code}_configs` (bundle)
+   - For CLI-provided app-local config bundles, merges the app-local service
+     definition into the full project compose, then merges the freshly rendered
+     service-secret env into any `.env` file referenced by that app's compose
+     `env_file`
+   - If runtime env rendering fails, command creation fails rather than falling
+     back to raw bundled `.env` content that could omit remote secrets
    - Adds all configs to `config_files` array in command payload
    - Status Panel receives complete config set ready to write
 
 4. **Runtime** (Status Panel Agent):
+   - Writes the runtime env payload to `/home/trydirect/project/.env` with
+     `0600` permissions
+   - Uses compose-relative `env_file: .env` for generated compose files
+   - For app-local compose files such as `<app>/docker/<env>/compose.yml`, writes
+     bundled config files under `/opt/stacker/deployments/<env>/files/...`; if
+     that compose file references an app-local `.env`, the file contains the
+     local `.env` content plus the Vault-rendered service secrets for the same
+     app target
+   - Refuses to overwrite drifted env content unless the command is forced
    - Agent reads `VAULT_TOKEN` from environment on startup
    - Fetches configs via `VaultClient.fetch_app_config()`
    - Writes files to destination paths with specified permissions
@@ -220,10 +235,27 @@ vault.store_app_config(deployment_hash, &format!("{}_configs", app_code), &bundl
 ```rust
 // 1. Fetch compose from Vault: {app_code} key
 // 2. Fetch bundled configs: {app_code}_configs key (or fallback to _config)
-// 3. Fetch .env file: {app_code}_env key
-// 4. Merge all into config_files array
-// 5. Send enriched command to Status Panel
+// 3. Render runtime env from app env + remote service secrets
+// 4. Merge rendered env into app-local compose env_file entries when present
+// 5. Add canonical runtime env and bundled files to config_files array
+// 6. Send enriched command to Status Panel
 ```
+
+When a CLI request already includes `compose_content` and config files from an
+app-local compose bundle, Stacker uses the app-local service definition for the
+target app but merges it into the full project compose before sending
+`compose_content` to the Status agent. The agent still writes one
+`docker-compose.yml`, but it contains all project services plus the updated
+app-local service. The CLI treats the project-level compose as topology in this
+path and bundles only files referenced by the target app-local compose, so a
+missing `env_file` for an unrelated service does not block app-only updates.
+Stacker also keeps the bundled config files and appends the Vault-rendered
+service secrets to the `.env` file referenced by the matching compose service.
+This lets `device-api/docker/prod/compose.yml` with `env_file: .env` receive
+both local `.env` content and Vault-backed service secrets without truncating
+the remote project compose file. If the server cannot render the runtime env
+for a registered target, the enqueue request fails so Status does not deploy a
+partial app-local `.env`.
 
 ### 5. ProjectAppService
 

@@ -44,47 +44,42 @@ server doesn't support Kata, the command is rejected before reaching the agent.
 | Kernel | Linux 5.4+ with KVM module loaded |
 | Docker | 20.10+ |
 | Host OS | Ubuntu 22.04+ (playbook-tested) |
-| Hardware | Bare-metal or dedicated-CPU VM with KVM access |
+| Hardware | Bare-metal or another environment with documented `/dev/kvm` access |
 
 ## Hetzner Server Types & KVM Support
 
-Kata Containers require direct access to `/dev/kvm`. On Hetzner Cloud, only
-**dedicated-CPU** server types expose KVM to the guest:
+Kata Containers require direct access to `/dev/kvm`. On Hetzner, that means
+**Robot bare metal**, not Hetzner Cloud:
 
-| Server Type | CPU | KVM Support | Kata Compatible |
+| Platform | CPU model | KVM Support | Kata Compatible |
 |---|---|---|---|
-| **CCX13** | 2 dedicated vCPU, 8 GB RAM | ✅ | ✅ Recommended entry-level |
-| **CCX23** | 4 dedicated vCPU, 16 GB RAM | ✅ | ✅ |
-| **CCX33** | 8 dedicated vCPU, 32 GB RAM | ✅ | ✅ |
-| **CCX43** | 16 dedicated vCPU, 64 GB RAM | ✅ | ✅ |
-| **CCX53** | 32 dedicated vCPU, 128 GB RAM | ✅ | ✅ |
-| **CCX63** | 48 dedicated vCPU, 192 GB RAM | ✅ | ✅ |
-| CX22 / CX32 / CX42 / CX52 | Shared vCPU | ❌ | ❌ No KVM access |
-| CPX11 / CPX21 / CPX31 / CPX41 / CPX51 | Shared vCPU (AMD) | ❌ | ❌ No KVM access |
-| CAX11 / CAX21 / CAX31 / CAX41 | Shared Arm64 | ❌ | ❌ No KVM access |
+| Hetzner Cloud CCX | Dedicated vCPU VM | ❌ | ❌ No `/dev/kvm` access |
+| Hetzner Cloud CX / CPX / CAX | Shared vCPU VM | ❌ | ❌ No `/dev/kvm` access |
+| Hetzner Robot | Bare-metal server | ✅ | ✅ Recommended |
 
-> **Important:** Shared-CPU types (CX, CPX, CAX) do not expose `/dev/kvm` and
-> **cannot** run Kata Containers. Always use CCX (dedicated-CPU) types.
+> **Important:** Hetzner Cloud VM types — including **CCX** — do not expose
+> `/dev/kvm` and **cannot** run Kata Containers. Use **Hetzner Robot bare
+> metal** if you need Kata on Hetzner.
 
-For bare-metal providers (Hetzner Robot, OVH, Scaleway), KVM is always available
-since you have full hardware access.
+For bare-metal providers (Hetzner Robot, OVH, Scaleway), you control the host
+directly and can validate KVM before installing Kata.
 
 ## Provisioning with TFA
 
 The recommended way to provision Kata-ready servers is via the
 [TFA](https://github.com/trydirect/try.direct.stacks) project:
 
-### Terraform (Hetzner)
+### Hetzner Provisioning Note
 
-```bash
-cd tfa/terraform/htz/kata
-tofu init
-tofu plan -var="hcloud_token=YOUR_TOKEN" -var="hcloud_ssh_key=my-key"
-tofu apply
-```
+Do **not** use the Hetzner Cloud Terraform path for Kata. The `hcloud`
+provider creates Hetzner Cloud VMs, and those VMs do not expose `/dev/kvm`.
 
-This provisions a CCX13 (dedicated-CPU) server with Docker and Kata
-pre-installed via cloud-init.
+For Hetzner, the valid flow is:
+
+1. Order a **Hetzner Robot bare-metal** server
+2. Install Ubuntu 22.04
+3. Run the `kata_containers` Ansible role or `docs/kata/ansible/kata-setup.yml`
+4. Verify with `kata-runtime check`
 
 ### Ansible Role
 
@@ -109,7 +104,7 @@ Reference playbook and Terraform files are also available in this directory:
 | Path | Description |
 |---|---|
 | [ansible/kata-setup.yml](ansible/kata-setup.yml) | Standalone Ansible playbook |
-| [terraform/](terraform/) | Standalone Terraform module for Hetzner |
+| [terraform/](terraform/) | Historical Hetzner Cloud Terraform example — not valid for Hetzner + Kata because Cloud VMs lack `/dev/kvm` |
 
 ## Architecture Flow
 
@@ -141,7 +136,7 @@ Reference playbook and Terraform files are also available in this directory:
 
 | Document | Description |
 |---|---|
-| [HETZNER_KVM_GUIDE.md](HETZNER_KVM_GUIDE.md) | Detailed guide for KVM on Hetzner CCX servers |
+| [HETZNER_KVM_GUIDE.md](HETZNER_KVM_GUIDE.md) | Detailed guide for Kata on Hetzner Robot bare-metal servers |
 | [NETWORK_CONSTRAINTS.md](NETWORK_CONSTRAINTS.md) | Why `network_mode: host` doesn't work with Kata, and alternatives |
 | [MONITORING.md](MONITORING.md) | Prometheus metrics, PromQL queries, and dashboard specs for Kata tracking |
 
@@ -159,4 +154,4 @@ Kata provides defense-in-depth for multi-tenant and untrusted workloads:
 - [Kata Containers documentation](https://github.com/kata-containers/kata-containers/tree/main/docs)
 - [Kata with Docker](https://github.com/kata-containers/kata-containers/blob/main/docs/install/docker/ubuntu-docker-install.md)
 - [Supported hardware](https://github.com/kata-containers/kata-containers/blob/main/docs/Requirements.md)
-- [Hetzner Cloud server types](https://www.hetzner.com/cloud#pricing)
+- [Hetzner Robot](https://robot.hetzner.com/)

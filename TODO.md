@@ -46,6 +46,38 @@
 
 ## ✅ Recent Fixes
 
+### May 15, 2026 - Remote runtime `.env` merge strategy hardening
+- [x] Fixed `stacker agent deploy-app` to keep the shared project `.env` in the deploy-app config bundle when the target service topology uses root `env_file: .env`
+- [ ] Replace append-based runtime env merge with **key-aware env merge**
+  - Parse existing/base `.env` content into key/value pairs instead of concatenating text blocks
+  - Build one final deduplicated runtime `.env` file per actual runtime path
+  - Eliminate duplicate keys such as `PORT=...` appearing twice after merge
+- [ ] Define and document strict runtime env precedence
+  - base authoring env from `stacker.yml env_file`
+  - server-scope secrets
+  - service-scope secrets
+  - generated runtime keys such as `DEPLOYMENT_HASH`
+- [ ] Add deletion semantics for rendered env output
+  - when a rendered/secret-backed key is removed, the next render must remove it from the target runtime `.env`
+  - do not preserve stale keys just because they existed in the previous file
+- [ ] Split merge behavior by runtime topology, not by secret scope
+  - shared `/home/trydirect/project/.env` must be rendered as one canonical deduplicated file
+  - app-local env files should only be used when the compose topology truly points to app-local env files
+- [ ] Add regression tests for runtime env merge behavior
+  - shared root `.env` survives `stacker agent deploy-app`
+  - app-local `.env` merge still works
+  - override precedence is deterministic
+  - removed keys disappear on next render
+  - registry auth never leaks into runtime `.env`
+
+### May 2, 2026 - Vault-backed NPM credential contract
+- [x] Status Panel `configure_proxy` no longer relies on hard-coded `admin@example.com` / `changeme` defaults
+- [x] Installer contract now emits `STACKER_SERVER_ID` and a host-scoped Vault path for Nginx Proxy Manager credentials
+- [x] Deployment-scoped Vault tokens can be extended with an exact read grant for `secret/{env}/status_panel/hosts/{server_id}/npm_credentials`
+- [x] Status Panel linking now advertises `npm_credential_source=vault`; Stacker surfaces it in deployment capabilities and can gate `configure_proxy` with `STACKER_CONFIGURE_PROXY_CAPABILITY_MODE=warn|enforce`
+- [x] Rollout order: ship Status Panel reader → provision installer secret/policy → re-link agents so capabilities are refreshed → keep Stacker in `warn` mode → switch to `enforce` after all active agents report `npm_credential_source=vault`
+- [ ] Future Vault hardening: expose `vault.try.direct` for Status Panel agents behind identity-based access (prefer mTLS; a private mesh or tunnel is also acceptable) instead of relying on static source-IP allowlists. Keep Vault tokens short-lived and path-scoped to the exact Status Panel host/deployment secrets they need.
+
 ### February 16, 2026 - CORS Headers Fix
 - [x] Fixed CORS configuration to properly support Authorization header with credentials
 - [x] Changed from whitelist (`allowed_headers(vec![...])`) to `.allow_any_header()` + `.expose_any_header()`
@@ -218,6 +250,16 @@ Stacker responsibilities:
 - [x] Reduce polling frequency and batch command status queries; prefer streaming/long-poll responses.
 - [ ] Add server-side aggregation: return only latest command states instead of fetching full 150+ rows each time.
 - [x] Add gzip/br on internal HTTP responses and trim response payloads.
+
+### Local pipe discovery follow-up
+- [ ] Design a local-only persistence layer for AI/discovery pipe hints before adding runtime semantics or `stacker.yml` schema changes.
+  - Scope: cache advisory local scan results for commands such as a future `stacker pipe scan-local`
+  - Preferred first option: SQLite in the workspace or `.stacker/` state
+  - Minimal tables:
+    - `pipe_scans(id, project_root, project_name, scanned_at)`
+    - `pipe_hints(id, scan_id, pipe_key, category, title, confidence, source, evidence, target)`
+  - Keep this separate from remote/runtime-verified pipe records and from server-side Postgres models
+  - Add user-confirmed decisions later only if the local discovery workflow proves useful
 - [x] Co-locate Stacker and User Service (same network/region) or use private networking to cut latency.
 
 ### Backlog hygiene
@@ -712,7 +754,7 @@ Stacker responsibilities:
 ## Tasks
 
 ### Bugfix: Return clear duplicate slug error
-- [ ] When `stack_template.slug` violates uniqueness (code 23505), return 409/400 with a descriptive message (e.g., "slug already exists") instead of 500 so clients (blog/stack-builder) can surface a user-friendly error.
+- [x] When `stack_template.slug` violates uniqueness (code 23505), return 409/400 with a descriptive message (e.g., "slug already exists") instead of 500 so clients (blog/stack-builder) can surface a user-friendly error.
 
 ### 1. Create User Service Connector
 **File**: `app/<stacker-module>/connectors/user_service_connector.py` (in Stacker repo)
@@ -1144,3 +1186,74 @@ To verify `is_official` and `is_verified_publisher` status for each image:
    - Store results in `stack_template_review.security_checklist["cve_scan"]`
    - Auto-set `verifications.vulnerability_scanned = true` when scan passes (no HIGH/CRITICAL CVEs)
 
+## Missing Features Implementation Plan (2026-04)
+
+### Phase 1 - Marketplace Foundation and Revenue Loop
+- [x] **[stacker-vendor-payouts]** Implement vendor verification and payout foundations for marketplace sellers.
+  - [x] Add `marketplace_vendor_profile` storage plus admin template detail exposure with safe default fallback.
+  - [x] Add admin-only partial updates for vendor verification, onboarding, payout linkage, and metadata.
+  - [x] Add creator-visible vendor profile status so marketplace sellers can inspect onboarding and payout readiness.
+  - [x] Add a creator self-service vendor profile endpoint that is not tied to a specific template ID.
+  - [x] Add a creator onboarding-link bootstrap endpoint that idempotently creates or reuses payout linkage.
+  - [x] Persist auditable onboarding metadata and completion transitions for later real provider integration.
+- [x] **[stacker-template-requirements]** Add real infrastructure requirements to marketplace templates.
+  - [x] Store supported clouds, minimum RAM/disk/CPU, supported OS, and related compatibility metadata.
+  - [x] Use these fields in marketplace create/read/update flows and webhook payloads.
+  - [x] Use `supported_clouds` and `supported_os` in deployment validation so incompatible targets are blocked early.
+  - [x] Add a shared backend server-capacity resolver for normalized App Service `/servers` catalog data.
+  - [x] Enforce `min_ram_mb` during deploy validation using the shared capacity resolver on both deploy entry points.
+  - [x] Extend numeric deploy validation to `min_disk_gb` and `min_cpu_cores`.
+- [ ] **[stacker-review-notifications]** Close the creator feedback loop for template reviews.
+  - [x] Normalize `needs_changes` as a real admin review outcome with creator-visible review history and guarded admin routing.
+  - [ ] Send notifications for submit/approve/reject/update-required events.
+  - Include actionable review reasons and the next expected developer action.
+
+### Phase 2 - Reliability and User-Facing Correctness
+- [x] **[stacker-duplicate-slug-409]** Return a clear conflict response when a marketplace slug already exists.
+  - Convert duplicate-slug failures from generic 500 errors into explicit 409/validation feedback.
+  - Keep CLI and UI messaging aligned so the user gets a recoverable error.
+- [ ] **[stacker-agent-alerts]** Add server-side endpoint to receive outbound alerts from Status Panel agents.
+  - Status Panel now sends `POST` webhook with `X-Agent-Id` header when host metrics breach thresholds.
+  - Implement `POST /api/v1/agents/alerts` (or similar) to receive the payload:
+    ```json
+    {
+      "alerts": [{
+        "kind": "high_cpu" | "high_memory" | "high_disk",
+        "severity": "warning" | "critical",
+        "message": "CPU usage at 96.2% (threshold: 95%)",
+        "value": 96.2,
+        "threshold": 95.0,
+        "recovered": false,
+        "timestamp_ms": 1700000000000,
+        "agent_id": "agent-123"
+      }],
+      "agent_id": "agent-123",
+      "timestamp_ms": 1700000000000
+    }
+    ```
+  - Return `2xx` on success, `4xx` on bad request (agent won't retry), `5xx` triggers agent retry (3x, exponential backoff).
+  - Validate `X-Agent-Id` header and match to known agent registration.
+  - Store alerts in DB for history; optionally fan out to notification channels (email/Slack).
+  - Surface active/recent alerts in admin dashboard per-server view.
+- [ ] **[stacker-rollback]** Add version-aware deployment rollback.
+  - Allow operators to choose a prior template or deployment version and roll back safely.
+  - Persist rollback history and expose the effective version in deployment details.
+
+### Phase 3 - Team and Integration Expansion
+- [x] **[stacker-ci-exporters]** Extend CI/CD export support beyond GitHub and GitLab.
+  - [x] Add Bitbucket Pipelines export and validate support, including aliases and stale/missing file checks.
+  - [x] Add Jenkinsfile export and validate support using the same `STACKER_TOKEN` convention.
+  - Keep export templates aligned with current Stacker project and secret conventions.
+- [ ] **[stacker-team-projects]** Add shared project ownership and team collaboration primitives.
+  - Introduce org/team ownership, invitations, seat-aware permissions, and shared deployment visibility.
+  - Define how ownership flows through marketplace, deployments, and future billing.
+
+### Phase 4 - Control Plane Completion
+- [ ] **[stacker-pipe-execution]** Finish pipe execution end-to-end across Stacker and Status Panel.
+  - Ensure the server, queueing layer, and agent all support the same pipe command set.
+  - Coordinate command provenance, reporting, and error surfaces with Status Panel.
+
+### Delivery Order
+- [ ] Start with `stacker-vendor-payouts`, `stacker-template-requirements`, and `stacker-duplicate-slug-409`.
+- [ ] Follow with `stacker-agent-alerts`, `stacker-review-notifications`, and `stacker-rollback` once the marketplace data contract is stable.
+- [ ] Treat `stacker-team-projects` and `stacker-pipe-execution` as multi-sprint workstreams with cross-project coordination.

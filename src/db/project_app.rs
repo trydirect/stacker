@@ -228,6 +228,44 @@ pub async fn update(pool: &PgPool, app: &models::ProjectApp) -> Result<models::P
     })
 }
 
+/// Update metadata after a rendered app config is successfully stored in Vault.
+pub async fn update_sync_metadata(
+    pool: &PgPool,
+    app_id: i32,
+    config_hash: &str,
+) -> Result<(), String> {
+    let query_span = tracing::info_span!("Updating app config sync metadata");
+    let result = sqlx::query(
+        r#"
+        UPDATE project_app
+        SET
+            vault_synced_at = NOW(),
+            vault_sync_version = config_version,
+            config_hash = $2,
+            updated_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(app_id)
+    .bind(config_hash)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to update app config sync metadata: {:?}", e);
+        format!("Failed to update app config sync metadata: {}", e)
+    })?;
+
+    if result.rows_affected() == 0 {
+        return Err(format!(
+            "Failed to update app config sync metadata: app {} not found",
+            app_id
+        ));
+    }
+
+    Ok(())
+}
+
 /// Delete an app by ID
 pub async fn delete(pool: &PgPool, id: i32) -> Result<bool, String> {
     let query_span = tracing::info_span!("Deleting app");

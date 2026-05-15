@@ -6,13 +6,21 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{self, ProjectApp};
+use crate::project_app::{is_platform_managed_app_code, normalize_app_code};
 use actix_web::{get, post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-const BLOCKED_SYSTEM_CONTAINERS: [&str; 3] = ["status", "status_agent", "telegraf"];
+const BLOCKED_SYSTEM_CONTAINERS: [&str; 6] = [
+    "nginx_proxy_manager",
+    "status",
+    "status_agent",
+    "statuspanel",
+    "statuspanel_agent",
+    "telegraf",
+];
 
 /// Discovered container that's not registered in project_app
 #[derive(Debug, Serialize, Clone)]
@@ -100,20 +108,29 @@ pub async fn discover_containers(
         return Err(JsonResponse::not_found("Project not found"));
     }
 
-    // Get deployment_hash from query or find it from project
+    // Get deployment_hash from query, the active project agent, or the latest
+    // deployment record. Active agent state is preferred because command
+    // history is keyed by the hash currently heartbeating, while the latest
+    // deployment row may be newer and still lack command results.
     let deployment_hash = match &query.deployment_hash {
         Some(hash) => hash.clone(),
         None => {
-            // Try to find a deployment for this project
-            let deployment = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
+            if let Some(agent) = db::agent::fetch_active_by_project(pg_pool.get_ref(), project_id)
                 .await
-                .map_err(|e| JsonResponse::internal_server_error(e))?;
+                .map_err(|e| JsonResponse::internal_server_error(e))?
+            {
+                agent.deployment_hash
+            } else {
+                let deployment = db::deployment::fetch_by_project_id(pg_pool.get_ref(), project_id)
+                    .await
+                    .map_err(|e| JsonResponse::internal_server_error(e))?;
 
-            deployment.map(|d| d.deployment_hash).ok_or_else(|| {
-                JsonResponse::not_found(
-                    "No deployment found for project. Please provide deployment_hash",
-                )
-            })?
+                deployment.map(|d| d.deployment_hash).ok_or_else(|| {
+                    JsonResponse::not_found(
+                        "No deployment found for project. Please provide deployment_hash",
+                    )
+                })?
+            }
         }
     };
 
@@ -556,34 +573,52 @@ fn capitalize(s: &str) -> String {
 }
 
 fn is_blocked_system_container(container_name: &str, image: &str, app_code: Option<&str>) -> bool {
-    let mut candidates: Vec<String> = vec![normalize_container_token(container_name)];
+    let mut candidates: Vec<String> = vec![normalize_app_code(container_name)];
 
     if let Some(code) = app_code {
-        candidates.push(normalize_container_token(code));
+        candidates.push(normalize_app_code(code));
     }
 
     if let Some(compose_parts) = extract_compose_service(container_name) {
-        candidates.push(normalize_container_token(&compose_parts.service));
+        candidates.push(normalize_app_code(&compose_parts.service));
     }
 
     if let Some(img_name) = image.split('/').last() {
         if let Some(name_without_tag) = img_name.split(':').next() {
-            candidates.push(normalize_container_token(name_without_tag));
+            candidates.push(normalize_app_code(name_without_tag));
         }
     }
 
-    candidates
-        .iter()
-        .any(|candidate| BLOCKED_SYSTEM_CONTAINERS.contains(&candidate.as_str()))
+    candidates.iter().any(|candidate| {
+        BLOCKED_SYSTEM_CONTAINERS.contains(&candidate.as_str())
+            || is_platform_managed_app_code(candidate)
+    })
 }
 
-fn normalize_container_token(value: &str) -> String {
-    value
-        .trim_start_matches('/')
-        .trim()
-        .to_lowercase()
-        .split(['-', '_'])
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<&str>>()
-        .join("_")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_platform_managed_nginx_proxy_manager_container() {
+        assert!(is_blocked_system_container(
+            "nginx-proxy-manager",
+            "jc21/nginx-proxy-manager:latest",
+            None,
+        ));
+        assert!(is_blocked_system_container(
+            "project-nginx_proxy_manager-1",
+            "jc21/nginx-proxy-manager:latest",
+            Some("nginx_proxy_manager"),
+        ));
+    }
+
+    #[test]
+    fn does_not_block_regular_application_container() {
+        assert!(!is_blocked_system_container(
+            "project-coolify-1",
+            "coollabsio/coolify:latest",
+            Some("coolify"),
+        ));
+    }
 }

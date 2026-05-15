@@ -10,6 +10,10 @@ use std::sync::Arc;
 use tracing::Instrument;
 use uuid;
 
+const ALLOWED_VENDOR_VERIFICATION_STATUSES: &[&str] =
+    &["unverified", "pending", "verified", "rejected"];
+const ALLOWED_VENDOR_ONBOARDING_STATUSES: &[&str] = &["not_started", "in_progress", "completed"];
+
 #[tracing::instrument(name = "List submitted templates (admin)", skip_all)]
 #[get("")]
 pub async fn list_submitted_handler(
@@ -49,11 +53,31 @@ pub async fn detail_handler(
         .await
         .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
-    let detail = serde_json::json!({
-        "template": template,
-        "versions": versions,
-        "reviews": reviews,
+    let vendor_profile = db::marketplace::get_vendor_profile_by_creator(
+        pg_pool.get_ref(),
+        &template.creator_user_id,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+    .unwrap_or_else(|| {
+        models::MarketplaceVendorProfile::default_for_creator(&template.creator_user_id)
     });
+
+    let mut detail = serde_json::to_value(&template).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["template"] = serde_json::to_value(template).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["versions"] = serde_json::to_value(versions).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["reviews"] = serde_json::to_value(reviews).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
+    detail["vendor_profile"] = serde_json::to_value(vendor_profile).map_err(|err| {
+        JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+    })?;
 
     Ok(JsonResponse::<serde_json::Value>::build()
         .set_item(detail)
@@ -63,6 +87,12 @@ pub async fn detail_handler(
 #[derive(serde::Deserialize, Debug)]
 pub struct AdminDecisionRequest {
     pub decision: String, // approved|rejected|needs_changes
+    pub reason: Option<String>,
+    pub verifications: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct AdminReviewReasonRequest {
     pub reason: Option<String>,
 }
 
@@ -84,6 +114,7 @@ pub async fn approve_handler(
         &admin.id,
         "approved",
         req.reason.as_deref(),
+        req.verifications.as_ref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
@@ -114,7 +145,7 @@ pub async fn approve_handler(
                     tracing::info_span!("send_approval_webhook", template_id = %template_clone.id);
 
                 if let Err(e) = sender
-                    .send_template_approved(
+                    .send_template_published(
                         &template_clone,
                         &template_clone.creator_user_id,
                         template_clone.category_code.clone(),
@@ -154,6 +185,7 @@ pub async fn reject_handler(
         &admin.id,
         "rejected",
         req.reason.as_deref(),
+        req.verifications.as_ref(),
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
@@ -162,18 +194,35 @@ pub async fn reject_handler(
         return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
     }
 
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch template for rejection webhook: {:?}", err);
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+        })?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
     // Send webhook asynchronously (non-blocking)
     // Don't fail the rejection if webhook send fails - template is already rejected
-    let template_id = id.to_string();
+    let template_clone = template.clone();
+    let review_reason = req.reason.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
                 let sender = MarketplaceWebhookSender::new(config);
-                let span =
-                    tracing::info_span!("send_rejection_webhook", template_id = %template_id);
+                let span = tracing::info_span!(
+                    "send_rejection_webhook",
+                    template_id = %template_clone.id
+                );
 
                 if let Err(e) = sender
-                    .send_template_rejected(&template_id)
+                    .send_template_review_rejected(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        review_reason.as_deref(),
+                    )
                     .instrument(span)
                     .await
                 {
@@ -189,6 +238,78 @@ pub async fn reject_handler(
     });
 
     Ok(JsonResponse::<serde_json::Value>::build().ok("Rejected"))
+}
+
+#[tracing::instrument(name = "Mark template as needs changes (admin)", skip_all)]
+#[post("/{id}/needs-changes")]
+pub async fn needs_changes_handler(
+    admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminReviewReasonRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+    let req = body.into_inner();
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    if template.status != "submitted" && template.status != "under_review" {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("Template cannot be marked as needs_changes from its current status"));
+    }
+
+    let updated = db::marketplace::admin_decide(
+        pg_pool.get_ref(),
+        &id,
+        &admin.id,
+        "needs_changes",
+        req.reason.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    if !updated {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request("Not updated"));
+    }
+
+    let template_clone = template.clone();
+    let review_reason = req.reason.clone();
+    tokio::spawn(async move {
+        match WebhookSenderConfig::from_env() {
+            Ok(config) => {
+                let sender = MarketplaceWebhookSender::new(config);
+                let span = tracing::info_span!(
+                    "send_needs_changes_webhook",
+                    template_id = %template_clone.id
+                );
+
+                if let Err(e) = sender
+                    .send_template_needs_changes(
+                        &template_clone,
+                        &template_clone.creator_user_id,
+                        review_reason.as_deref(),
+                        "Update the template based on the review feedback and resubmit it for review.",
+                    )
+                    .instrument(span)
+                    .await
+                {
+                    tracing::warn!("Failed to send template needs-changes webhook: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Webhook sender config not available: {}", e);
+            }
+        }
+    });
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Needs changes requested"))
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -218,17 +339,29 @@ pub async fn unapprove_handler(
             .bad_request("Template is not approved or not found"));
     }
 
-    // Send webhook to remove from marketplace (same as rejection - deactivates product)
-    let template_id = id.to_string();
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Failed to fetch template for unpublish webhook: {:?}", err);
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err)
+        })?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    // Send webhook to unpublish from marketplace while preserving subscription state
+    let template_clone = template.clone();
     tokio::spawn(async move {
         match WebhookSenderConfig::from_env() {
             Ok(config) => {
                 let sender = MarketplaceWebhookSender::new(config);
-                let span =
-                    tracing::info_span!("send_unapproval_webhook", template_id = %template_id);
+                let span = tracing::info_span!(
+                    "send_unapproval_webhook",
+                    template_id = %template_clone.id
+                );
 
                 if let Err(e) = sender
-                    .send_template_rejected(&template_id)
+                    .send_template_unpublished(&template_clone, &template_clone.creator_user_id)
                     .instrument(span)
                     .await
                 {
@@ -391,6 +524,102 @@ pub async fn pricing_handler(
     } else {
         Err(JsonResponse::<serde_json::Value>::build().not_found("Template not found"))
     }
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct AdminVendorProfileRequest {
+    pub verification_status: Option<String>,
+    pub onboarding_status: Option<String>,
+    pub payouts_enabled: Option<bool>,
+    pub payout_provider: Option<String>,
+    pub payout_account_ref: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+fn validate_vendor_status(
+    field_name: &str,
+    value: Option<&str>,
+    allowed: &[&str],
+) -> Result<(), actix_web::Error> {
+    if let Some(value) = value {
+        if !allowed.contains(&value) {
+            return Err(
+                JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                    "Invalid {} '{}'. Allowed values: {}",
+                    field_name,
+                    value,
+                    allowed.join(", ")
+                )),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(name = "Admin update vendor profile", skip_all)]
+#[patch("/{id}/vendor-profile")]
+pub async fn update_vendor_profile_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminVendorProfileRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let id = uuid::Uuid::parse_str(&path.into_inner().0)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let req = body.into_inner();
+
+    if req.verification_status.is_none()
+        && req.onboarding_status.is_none()
+        && req.payouts_enabled.is_none()
+        && req.payout_provider.is_none()
+        && req.payout_account_ref.is_none()
+        && req.metadata.is_none()
+    {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("No vendor profile fields provided"));
+    }
+
+    validate_vendor_status(
+        "verification_status",
+        req.verification_status.as_deref(),
+        ALLOWED_VENDOR_VERIFICATION_STATUSES,
+    )?;
+    validate_vendor_status(
+        "onboarding_status",
+        req.onboarding_status.as_deref(),
+        ALLOWED_VENDOR_ONBOARDING_STATUSES,
+    )?;
+
+    if let Some(metadata) = req.metadata.as_ref() {
+        if !metadata.is_object() {
+            return Err(JsonResponse::<serde_json::Value>::build()
+                .bad_request("metadata must be a JSON object"));
+        }
+    }
+
+    let template = db::marketplace::get_by_id(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().not_found("Template not found")
+        })?;
+
+    db::marketplace::upsert_vendor_profile(
+        pg_pool.get_ref(),
+        &template.creator_user_id,
+        req.verification_status.as_deref(),
+        req.onboarding_status.as_deref(),
+        req.payouts_enabled,
+        req.payout_provider.as_deref(),
+        req.payout_account_ref.as_deref(),
+        req.metadata,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }
 
 /// Request body for PATCH /{id}/verifications.

@@ -57,7 +57,7 @@ pub async fn try_query(req: &mut ServiceRequest) -> Result<bool, String> {
         }
     };
 
-    user.access_token = Some(token);
+    user = user.with_token(token);
 
     tracing::debug!("ACL check for role (query auth): {}", user.role.clone());
     let acl_vals = actix_casbin_auth::CasbinVals {

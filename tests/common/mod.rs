@@ -1,12 +1,19 @@
 use actix_web::{get, web, App, HttpServer, Responder};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
+use stacker::connectors::config::UserServiceConfig;
 use stacker::forms;
 use stacker::helpers::AgentPgPool;
 use std::net::TcpListener;
+use std::path::Path;
+use std::sync::OnceLock;
 use wiremock::MockServer;
 
+static ACCESS_CONTROL_CONF_READY: OnceLock<()> = OnceLock::new();
+
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
+    ensure_test_access_control_conf();
+
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port");
 
     let port = listener.local_addr().unwrap().port();
@@ -38,6 +45,7 @@ pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option
 
 pub async fn spawn_app() -> Option<TestApp> {
     let mut configuration = get_configuration().expect("Failed to get configuration");
+    apply_test_database_env_overrides(&mut configuration);
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
@@ -67,6 +75,60 @@ pub async fn spawn_app() -> Option<TestApp> {
     spawn_app_with_configuration(configuration).await
 }
 
+pub async fn spawn_app_with_test_auth_configuration(
+    mut configuration: Settings,
+) -> Option<TestApp> {
+    apply_test_database_env_overrides(&mut configuration);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("Failed to bind port for testing auth server");
+
+    configuration.auth_url = format!(
+        "http://127.0.0.1:{}/me",
+        listener.local_addr().unwrap().port()
+    );
+
+    let _ = tokio::spawn(mock_auth_server(listener));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    spawn_app_with_configuration(configuration).await
+}
+
+fn apply_test_database_env_overrides(configuration: &mut Settings) {
+    if let Ok(host) = std::env::var("PGHOST") {
+        configuration.database.host = host;
+    }
+    if let Ok(port) = std::env::var("PGPORT") {
+        if let Ok(parsed) = port.parse::<u16>() {
+            configuration.database.port = parsed;
+        }
+    }
+    if let Ok(username) = std::env::var("PGUSER") {
+        configuration.database.username = username;
+    }
+    if let Ok(password) = std::env::var("PGPASSWORD") {
+        configuration.database.password = password;
+    }
+}
+
+fn ensure_test_access_control_conf() {
+    ACCESS_CONTROL_CONF_READY.get_or_init(|| {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        std::env::set_current_dir(manifest_dir).expect("Failed to switch tests to repo root");
+
+        let primary = manifest_dir.join("access_control.conf");
+        if primary.exists() {
+            return;
+        }
+
+        let dist = manifest_dir.join("access_control.conf.dist");
+        if dist.exists() {
+            std::fs::copy(dist, primary)
+                .expect("Failed to provision access_control.conf for tests");
+        }
+    });
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Multi-user test infrastructure for IDOR security tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -90,8 +152,27 @@ pub struct TwoUserTestApp {
 /// - Bearer token containing "user-b" → returns User B (other_user_id)
 /// - Any other Bearer token → returns User A (test_user_id)
 pub async fn spawn_app_two_users() -> Option<TwoUserTestApp> {
-    let mut configuration = get_configuration().expect("Failed to get configuration");
+    let configuration = get_configuration().expect("Failed to get configuration");
+    spawn_app_two_users_with_configuration(configuration).await
+}
 
+pub async fn spawn_app_two_users_with_user_service(
+    user_service_base_url: &str,
+) -> Option<TwoUserTestApp> {
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+    configuration.connectors.user_service = Some(UserServiceConfig {
+        enabled: true,
+        base_url: user_service_base_url.trim_end_matches('/').to_string(),
+        timeout_secs: 10,
+        retry_attempts: 1,
+        auth_token: None,
+    });
+    spawn_app_two_users_with_configuration(configuration).await
+}
+
+pub async fn spawn_app_two_users_with_configuration(
+    mut configuration: Settings,
+) -> Option<TwoUserTestApp> {
     let auth_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("Failed to bind port for testing auth server");
 
@@ -174,14 +255,40 @@ async fn mock_auth_server_two_users(listener: TcpListener) {
 
 /// Insert a minimal cloud credential into the DB and return its id.
 pub async fn create_test_cloud(pool: &PgPool, user_id: &str, name: &str, provider: &str) -> i32 {
+    let cloud_form = forms::CloudForm {
+        user_id: Some(user_id.to_string()),
+        project_id: None,
+        name: Some(name.to_string()),
+        provider: provider.to_string(),
+        cloud_token: Some("test-cloud-token".to_string()),
+        cloud_key: None,
+        cloud_secret: None,
+        save_token: Some(true),
+    };
+
+    let cloud: stacker::models::Cloud = (&cloud_form).into();
     sqlx::query(
-        r#"INSERT INTO cloud (user_id, name, provider, cloud_token, save_token, created_at, updated_at)
-        VALUES ($1, $2, $3, 'test-token-encrypted', true, NOW(), NOW())
+        r#"INSERT INTO cloud (
+            user_id,
+            name,
+            provider,
+            cloud_token,
+            cloud_key,
+            cloud_secret,
+            save_token,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         RETURNING id"#,
     )
-    .bind(user_id)
-    .bind(name)
-    .bind(provider)
+    .bind(cloud.user_id)
+    .bind(cloud.name)
+    .bind(cloud.provider)
+    .bind(cloud.cloud_token)
+    .bind(cloud.cloud_key)
+    .bind(cloud.cloud_secret)
+    .bind(cloud.save_token)
     .fetch_one(pool)
     .await
     .map(|row| {
@@ -199,8 +306,17 @@ pub async fn create_test_deployment(
     deployment_hash: &str,
 ) -> i32 {
     sqlx::query(
-        r#"INSERT INTO deployment (project_id, deployment_hash, user_id, status, runtime, created_at, updated_at)
-        VALUES ($1, $2, $3, 'running', 'runc', NOW(), NOW())
+        r#"INSERT INTO deployment (
+            project_id,
+            deployment_hash,
+            user_id,
+            metadata,
+            status,
+            runtime,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, '{}'::jsonb, 'running', 'runc', NOW(), NOW())
         RETURNING id"#,
     )
     .bind(project_id)
@@ -283,6 +399,8 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
     configuration.vault.token = "test-vault-token".to_string();
     configuration.vault.api_prefix = "v1".to_string();
     configuration.vault.ssh_key_path_prefix = Some("users".to_string());
+    configuration.connectors.install_service =
+        Some(stacker::connectors::InstallServiceConfig { enabled: false });
 
     configuration.database.database_name = uuid::Uuid::new_v4().to_string();
 
@@ -320,8 +438,8 @@ pub async fn spawn_app_with_vault() -> Option<TestAppWithVault> {
 /// Required because server.project_id has a FK constraint to project(id).
 pub async fn create_test_project(pool: &PgPool, user_id: &str) -> i32 {
     sqlx::query(
-        r#"INSERT INTO project (stack_id, user_id, name, body, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, 'Test Project', '{}', NOW(), NOW())
+        r#"INSERT INTO project (stack_id, user_id, name, metadata, request_json, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, 'Test Project', '{}'::jsonb, '{}'::jsonb, NOW(), NOW())
         RETURNING id"#,
     )
     .bind(user_id)

@@ -33,7 +33,7 @@
   - [SSH Key Management](#stacker-ssh-key--ssh-key-management)
   - [Service Template Catalog](#stacker-service--service-template-catalog)
   - [Agent Control](#stacker-agent--agent-control)
-  - [Firewall Management](#firewall-management--iptables)
+  - [Firewall Management](#firewall-management)
 - [Recipes](#recipes)
 - [FAQ](#faq)
 
@@ -501,6 +501,8 @@ deploy:
   target: local
 ```
 
+> **Pipe mode**: The `deploy.target` value also affects how `stacker pipe` commands behave. When target is `local`, pipes are created without a `deployment_hash` and execute against local Docker containers (`docker exec`). Use `stacker target` to switch modes at runtime without editing `stacker.yml`. See the [DAG Pipes CLI Guide — Local Mode](./DAG_PIPES_PART1_CLI_GUIDE.md#local-mode-experimental) for details.
+
 ### `deploy.compose_file`
 
 *Optional* · `string` (path) · Default: none
@@ -580,6 +582,14 @@ Docker registry credentials for pulling private images during cloud/server deplo
 
 Credentials can be specified in `stacker.yml` or via environment variables. Environment variables take precedence.
 
+For deployments managed by the Status agent, Stacker also persists this auth in
+its trusted secret storage and reuses it for later image refreshes such as
+`stacker agent deploy-app`. The agent performs the pull with a temporary Docker
+auth directory and immediate cleanup, so private-image redeploys do not depend
+on whatever `docker login` state happens to exist on the host. If no stored
+registry auth exists, Stacker keeps the current anonymous-pull behavior and may
+still redeploy successfully when the image is already cached locally.
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `username` | `string` | **yes** | — | Registry username |
@@ -604,7 +614,7 @@ deploy:
   registry:
     username: "${DOCKER_USERNAME}"
     password: "${DOCKER_PASSWORD}"
-    # server: "https://index.docker.io/v1/"  # Docker Hub (default)
+    # server: "docker.io"  # Docker Hub (default)
 ```
 
 > **Security tip:** Use environment variables or `${VAR}` syntax to keep credentials out of version control.
@@ -782,6 +792,43 @@ MINIO_PASSWORD=admin123
 OPENAI_API_KEY=sk-...
 ```
 
+For remote deployments, Stacker renders the effective runtime env to the
+canonical host path `/home/trydirect/project/.env`. Generated compose files
+reference it as `env_file: .env`, relative to `docker-compose.yml`.
+
+Top-level `env_file` is a Stacker config input: it is loaded before
+`stacker.yml` is parsed so `${VAR}` placeholders can be resolved. It does not
+automatically inject variables into a container. Container injection is still
+controlled by Docker Compose `env_file` entries under each compose service.
+
+For app-only remote updates, `stacker agent deploy-app <app>` resolves the
+environment/profile from `--env`, then `.stacker/active-env`, then
+`deploy.environment`. If `<app>/docker/<env>/compose.yml` exists, Stacker uses
+the app-local service definition for that app and resolves its `env_file`
+entries relative to that compose file, then merges the service definition back
+into the full project-level compose before sending it to the agent. This keeps
+other services in the remote `docker-compose.yml` intact without requiring
+env/config files referenced only by unrelated project-level services. A
+service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
+config bundle, and Vault-rendered service secrets for that app are appended to
+that same remote `.env` before the Status agent writes it. If Stacker cannot
+render the target runtime env, command creation fails instead of deploying a
+raw app-local `.env` without the remote secrets.
+
+The rendered runtime env is built from these layers, lowest to highest:
+
+1. Base app env and local authoring inputs.
+2. Server-scope secrets, only for services that opt in with
+   `inherit_server_secrets: true`.
+3. Service-scope secrets for the selected service/app target.
+4. Compose `environment:` keys, which Docker Compose applies above `env_file`.
+
+User-provided runtime env keys must match `^[A-Z_][A-Z0-9_]*$`. Keys beginning
+with `STACKER_`, `DOCKER_`, `VAULT_`, or `AGENT_` are reserved and rejected.
+Use `stacker config show --resolved` to inspect the local env source path,
+remote runtime path, config hash/version metadata, and contributing layers
+without printing secret values.
+
 ---
 
 ## Environment Variable Interpolation
@@ -815,7 +862,7 @@ ai:
 
 ## Auto-Detection
 
-When you run `stacker init` without specifying `--app-type`, Stacker scans your project directory and looks for these marker files:
+When you run `stacker init` without specifying `--app-type`, Stacker scans the workspace and looks for these marker files:
 
 | Files Found | Detected Type |
 |-------------|---------------|
@@ -826,7 +873,19 @@ When you run `stacker init` without specifying `--app-type`, Stacker scans your 
 | `composer.json` | `php` |
 | `index.html`, `*.html` | `static` |
 
-Detection priority is top-to-bottom. If none of these files are found, it defaults to `static`.
+Detection priority is top-to-bottom. If none of these files are found, it defaults to `custom`.
+
+For monorepo-style projects, `stacker init` now:
+
+- Recursively scans nested directories for app candidates with marker files and/or Dockerfiles
+- Detects aggregate Docker Compose stacks, including `include:` chains
+- Selects one primary app for the generated `app:` section
+- Reuses a detected aggregate compose file by setting `deploy.compose_file`
+- Imports image-backed compose sidecars into the generated `services:` list
+- Emits warning comments when scan data suggests a required local bootstrap asset or generator is missing
+
+Build-only compose services are still reported in the generated file comments, but they are not
+imported into `services:` because the current schema requires an explicit `image`.
 
 ---
 
@@ -937,29 +996,36 @@ Configuration issues:
 | Command | Description |
 |---------|-------------|
 | `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml) |
-| `stacker deploy` | Build and deploy the stack (reuses existing `.stacker/` artifacts if present) |
+| `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
+| `stacker secrets` | Manage local `.env` secrets or remote Vault-backed service/server secrets |
 | `stacker destroy` | Tear down the stack |
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
 | `stacker config fix` | Interactively fix missing required config fields |
+| `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
+| `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
+| `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
+| `stacker cloud firewall list` | List cloud-provider firewall rules for a server |
 | `stacker ssh-key generate` | Generate a Vault-backed SSH key pair for a server |
 | `stacker ssh-key show` | Display the public SSH key for a server |
 | `stacker ssh-key upload` | Upload an existing SSH key pair for a server |
+| `stacker ssh-key inject` | Repair Vault-key trust using an already-working private key |
 | `stacker service add` | Add a service from the template catalog to `stacker.yml` |
 | `stacker service list` | List available service templates (20+ built-in) |
 | `stacker agent health` | Check Status Panel agent connectivity and health |
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
-| `stacker agent deploy-app` | Deploy or update an app container on the target server |
+| `stacker agent deploy-app` | Deploy or update an app container on the target server; use `--env <name>` to select an environment/profile |
 | `stacker agent remove-app` | Remove an app container (optional volume/image cleanup) |
-| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts |
+| `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent |
 | `stacker agent history` | Show recent agent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
 | `stacker update` | Check for CLI updates |
@@ -1015,6 +1081,54 @@ stacker deploy --force-rebuild         # Force regenerate .stacker/ artifacts
 >
 > **Troubleshooting:** On deploy build/runtime failures, Stacker attempts AI-assisted diagnosis using your configured AI provider. If AI is unavailable, it prints fallback fix suggestions.
 > **Note:** `deploy` reuses existing `.stacker/Dockerfile` and `.stacker/docker-compose.yml` if present (e.g. from `stacker init`). Use `--force-rebuild` to regenerate them.
+> **SSH access:** After a successful cloud deploy, Stacker creates or reuses a
+> local backup key in the user-scoped Stacker config directory and authorizes its
+> public key on the server when possible. It prints a copy-paste-ready `ssh -i`
+> command; the Vault private key is not exported to the CLI.
+> **IP persistence:** If a cloud/server install pauses or fails after the
+> installer has reported an IP address, Stacker saves that discovered IP in the
+> local deployment context and persists it server-side when possible.
+
+### Remote secrets
+
+```bash
+# Discover deployable service/app targets for the current project
+stacker secrets apps
+
+# Store a Vault-backed secret for one service/app target
+stacker secrets set S3_BUCKET \
+  --scope service \
+  --service upload \
+  --body superbucket
+
+# Remote reads return metadata only, never plaintext values
+stacker secrets list --scope service --service upload --json
+stacker secrets get S3_BUCKET --scope service --service upload --json
+
+# Push stored remote secrets into the target's runtime env
+stacker secrets push --service upload
+stacker secrets push --service upload --env prod
+# Aliases: stacker secrets deploy --service upload
+#          stacker secrets apply --service upload
+```
+
+Service-scoped remote secrets target the codes listed by `stacker secrets apps`.
+Those codes include the main app, registered `stacker.yml` services, and
+supported image-backed services extracted from `deploy.compose_file` during
+cloud/server deploy preparation. A service secret is rendered only into the
+matching service/app target.
+
+Deleting a service-scoped secret removes it from the next rendered
+`/home/trydirect/project/.env`; stale values are not preserved. If the remote
+runtime env changed outside Stacker, Stacker refuses to overwrite it unless the
+operation is explicitly forced.
+
+`stacker secrets push --service <target>` is the explicit "apply stored secrets
+now" command. It renders the runtime env for that target and sends it to the
+Status agent; it does not create, update, or reveal secret values. Use
+`--env <name>` for one command, or `stacker env <name>` to persist the active
+environment/profile for later `stacker agent deploy-app` and
+`stacker secrets push` commands.
 
 ### Other commands
 
@@ -1059,7 +1173,10 @@ stacker config fix --file prod.yml     # Fix a specific config file
 
 ### `stacker ssh-key` — SSH Key Management
 
-Manage Vault-backed SSH keys for your deployed servers. Keys are stored securely in HashiCorp Vault.
+Manage Vault-backed SSH keys for your deployed servers. Server automation keys
+are stored securely in HashiCorp Vault. Cloud deploys also maintain a separate
+local backup key under the Stacker config directory so users can connect with a
+normal `ssh` command.
 
 ```bash
 # Generate a new SSH key pair for a server
@@ -1076,7 +1193,25 @@ stacker ssh-key show --server-id 42 --json         # JSON output
 stacker ssh-key upload --server-id 42 \
   --public-key ~/.ssh/id_rsa.pub \
   --private-key ~/.ssh/id_rsa
+
+# Repair a server that no longer trusts the Vault public key
+stacker ssh-key inject --server-id 42 --with-key ~/.ssh/existing-private-key
 ```
+
+`ssh-key generate` manages the server-side Vault key. `ssh-key inject` is a
+repair command: it uses `--with-key` as a bootstrap private key that already
+works on the server, then appends the Vault public key to `authorized_keys`. It
+does not install your local key on the server.
+
+Automatic cloud-deploy backup keys are stored outside the project directory:
+
+```text
+~/.config/stacker/ssh/server-42_ed25519
+~/.config/stacker/ssh/server-42_ed25519.pub
+```
+
+If `$XDG_CONFIG_HOME` is set, Stacker uses
+`$XDG_CONFIG_HOME/stacker/ssh/` instead.
 
 ### `stacker service` — Service Template Catalog
 
@@ -1134,7 +1269,9 @@ stacker agent remove-app --app my-app             # Remove container
 stacker agent remove-app --app my-app --remove-volumes --remove-images
 
 # Reverse proxy
+# The agent resolves Nginx Proxy Manager credentials from Vault using STACKER_SERVER_ID.
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
+stacker agent configure-proxy --app my-app --domain app.local --no-ssl
 
 # History & raw commands
 stacker agent history                             # Recent command history
@@ -1175,7 +1312,40 @@ stacker ai --write
 > add elasticsearch and kibana for logging
 ```
 
-### Firewall Management (iptables)
+### Firewall Management
+
+Stacker has two firewall surfaces:
+
+| Command | Scope | Requires SSH/agent |
+|---------|-------|--------------------|
+| `stacker cloud firewall` | Cloud-provider firewall such as Hetzner Cloud Firewall | No SSH required |
+| `stacker agent configure-firewall` | Guest OS firewall rules on the deployed server | Requires Status Panel agent |
+
+#### Cloud provider firewall
+
+Use `stacker cloud firewall` when a provider firewall blocks a public app port
+after deployment. For example, Coolify publishes port `8000`, so this opens the
+Hetzner Cloud Firewall without SSH-ing to the server:
+
+```bash
+stacker cloud firewall add --public-ports 8000/tcp
+stacker cloud firewall add --server-id 42 --public-ports 8000/tcp
+stacker cloud firewall remove --server-id 42 --public-ports 8000/tcp
+stacker cloud firewall list --server-id 42
+```
+
+The CLI sends a provider-neutral `stacker.cloud_firewall.v1` message to Stacker
+API. Stacker validates server/cloud ownership, hydrates cloud credentials
+server-side, then publishes `install.firewall.{provider}.v1` to Install Service.
+The CLI never receives cloud provider tokens.
+
+Existing protocol note: the Status Panel agent schema already defines a
+`FirewallPortRule` shape (`port`, `protocol`, `source`, `comment`) and cloud
+deploy already sends `client_public_ports`/`ports_list` for initial provisioning.
+Those are reused where appropriate, but `stacker.cloud_firewall.v1` is the
+canonical post-deploy provider firewall protocol.
+
+#### Guest OS firewall (iptables)
 
 Stacker provides MCP tools for configuring iptables firewall rules on target servers. Rules can be derived from Ansible role port definitions or specified manually.
 

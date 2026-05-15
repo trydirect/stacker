@@ -1,7 +1,6 @@
 use crate::cli::config_parser::{DeployTarget, StackerConfig};
-use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
-use crate::cli::stacker_client::{self, StackerClient};
+use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -46,8 +45,8 @@ impl CallableTrait for ResolveCommand {
             )));
         }
 
-        let config_str = std::fs::read_to_string(&config_path)?;
-        let config: StackerConfig = serde_yaml::from_str(&config_str)
+        let config = StackerConfig::from_file(&config_path)?
+            .with_resolved_deploy_target(None)
             .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
 
         let project_name = config
@@ -56,25 +55,18 @@ impl CallableTrait for ResolveCommand {
             .clone()
             .unwrap_or_else(|| config.name.clone());
 
-        let cred_manager = CredentialsManager::with_default_store();
-        let creds = cred_manager.require_valid_token("resolve")?;
+        let ctx = CliRuntime::new("resolve").map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Cloud,
+            reason: e.to_string(),
+        })?;
 
-        let base_url = stacker_client::DEFAULT_STACKER_URL.to_string();
+        let deployment = self.deployment.clone();
+        let force = self.force;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CliError::DeployFailed {
-                target: DeployTarget::Cloud,
-                reason: format!("Failed to initialize async runtime: {}", e),
-            })?;
-
-        rt.block_on(async move {
-            let client = StackerClient::new(&base_url, &creds.access_token);
-
+        ctx.block_on(async {
             // Resolve the target deployment — by hash or by latest in project
-            let info = if let Some(ref hash) = self.deployment {
-                client
+            let info = if let Some(ref hash) = deployment {
+                ctx.client
                     .get_deployment_by_hash(hash)
                     .await?
                     .ok_or_else(|| CliError::DeployFailed {
@@ -83,13 +75,13 @@ impl CallableTrait for ResolveCommand {
                     })?
             } else {
                 // Find project first, then get its latest deployment
-                let project = client.find_project_by_name(&project_name).await?;
+                let project = ctx.client.find_project_by_name(&project_name).await?;
                 let project = project.ok_or_else(|| CliError::DeployFailed {
                     target: DeployTarget::Cloud,
                     reason: format!("Project '{}' not found on server.", project_name),
                 })?;
 
-                client
+                ctx.client
                     .get_deployment_status_by_project(project.id)
                     .await?
                     .ok_or_else(|| CliError::DeployFailed {
@@ -99,7 +91,7 @@ impl CallableTrait for ResolveCommand {
             };
 
             let allowed = ["paused", "error"];
-            if !self.force && !allowed.contains(&info.status.as_str()) {
+            if !force && !allowed.contains(&info.status.as_str()) {
                 return Err(CliError::DeployFailed {
                     target: DeployTarget::Cloud,
                     reason: format!(
@@ -114,10 +106,13 @@ impl CallableTrait for ResolveCommand {
                 info.id,
                 info.deployment_hash,
                 info.status,
-                if self.force { " [forced]" } else { "" },
+                if force { " [forced]" } else { "" },
             );
 
-            let updated = client.force_complete_deployment(info.id, self.force).await?;
+            let updated = ctx
+                .client
+                .force_complete_deployment(info.id, force)
+                .await?;
 
             eprintln!(
                 "✓ Deployment #{} status changed to '{}'",

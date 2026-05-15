@@ -3,10 +3,9 @@ use std::path::Path;
 
 use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
+use crate::cli::local_compose::resolve_local_compose_path;
 use crate::console::commands::CallableTrait;
 
-/// Output directory for generated artifacts.
-const OUTPUT_DIR: &str = ".stacker";
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
 /// `stacker logs [--service <name>] [--follow] [--tail <n>] [--since <duration>]`
@@ -84,13 +83,7 @@ pub fn run_logs(
     since: Option<&str>,
     executor: &dyn CommandExecutor,
 ) -> Result<CommandOutput, CliError> {
-    let compose_path = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
-
-    if !compose_path.exists() {
-        return Err(CliError::ConfigValidation(
-            "No deployment found. Run 'stacker deploy' first.".to_string(),
-        ));
-    }
+    let compose_path = resolve_local_compose_path(project_dir)?;
 
     let compose_str = compose_path.to_string_lossy().to_string();
     let args = build_logs_args(&compose_str, service, follow, tail, since);
@@ -104,9 +97,8 @@ impl CallableTrait for LogsCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
 
-        // Try local first — if .stacker/docker-compose.yml exists, use docker compose logs
-        let compose_path = project_dir.join(OUTPUT_DIR).join("docker-compose.yml");
-        if compose_path.exists() {
+        // Try local first — use the same compose resolution logic as local deploy/status.
+        if resolve_local_compose_path(&project_dir).is_ok() {
             let executor = ShellExecutor;
             let output = run_logs(
                 &project_dir,
@@ -167,15 +159,15 @@ fn is_remote_deployment(project_dir: &Path) -> bool {
 
     // 2. stacker.yml declares cloud/server target
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_yaml::from_str::<StackerConfig>(&content) {
-            if config.deploy.target == DeployTarget::Cloud {
+    if let Ok(config) = StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+    {
+        if config.deploy.target == DeployTarget::Cloud {
+            return true;
+        }
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
                 return true;
-            }
-            if let Some(cloud_cfg) = &config.deploy.cloud {
-                if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
-                    return true;
-                }
             }
         }
     }
@@ -197,10 +189,19 @@ fn resolve_deployment_hash(ctx: &CliRuntime) -> Result<String, CliError> {
         }
     }
 
-    // 2. stacker.yml project → active agent (most recent heartbeat)
+    // 2. stacker.yml explicit deployment hash
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
     if config_path.exists() {
-        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path) {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(None))
+        {
+            if let Some(hash) = config.deploy.deployment_hash.as_ref() {
+                if !hash.trim().is_empty() {
+                    return Ok(hash.clone());
+                }
+            }
+
+            // 3. stacker.yml project → active agent (most recent heartbeat)
             if let Some(ref project_name) = config.project.identity {
                 let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
                 if let Some(proj) = project {
@@ -421,6 +422,8 @@ fn print_logs_result(app_code: &str, info: &AgentCommandInfo, multi: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::deployment_lock::DeploymentLock;
+    use chrono::Utc;
 
     #[test]
     fn test_logs_constructs_compose_command() {
@@ -477,6 +480,55 @@ mod tests {
     }
 
     #[test]
+    fn test_logs_uses_configured_compose_file_for_local_target() {
+        struct MockExec {
+            calls: std::sync::Mutex<Vec<Vec<String>>>,
+        }
+
+        impl CommandExecutor for MockExec {
+            fn execute(&self, _p: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|arg| arg.to_string()).collect());
+                Ok(CommandOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("docker/local")).unwrap();
+        std::fs::write(
+            dir.path().join("docker/local/compose.yml"),
+            "services: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            "name: demo\ndeploy:\n  target: local\n  compose_file: docker/local/compose.yml\n",
+        )
+        .unwrap();
+
+        let executor = MockExec {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+
+        run_logs(dir.path(), None, false, None, None, &executor).unwrap();
+
+        let calls = executor.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0][2],
+            dir.path()
+                .join("docker/local/compose.yml")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
     fn test_no_containers_messages_use_full_hash() {
         let hash = "deployment_5cc15f7d-8c87-464a-a7c5-ee6116201f22";
         let (summary, tip) = no_containers_messages(hash);
@@ -484,5 +536,50 @@ mod tests {
         assert!(summary.contains(hash));
         assert!(tip.contains(hash));
         assert!(!summary.contains("deployme."));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_hydrated_handoff_lock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        DeploymentLock {
+            target: "cloud".to_string(),
+            server_ip: Some("203.0.113.10".to_string()),
+            ssh_user: Some("root".to_string()),
+            ssh_port: Some(22),
+            server_name: Some("demo".to_string()),
+            deployment_id: Some(42),
+            project_id: Some(7),
+            cloud_id: Some(9),
+            project_name: Some("demo".to_string()),
+            stacker_email: Some("owner@example.com".to_string()),
+            deployed_at: Utc::now().to_rfc3339(),
+        }
+        .save(dir.path())
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
+    }
+
+    #[test]
+    fn test_is_remote_deployment_for_named_cloud_target_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILE),
+            r#"name: demo
+app:
+  type: static
+deploy:
+  default_target: prod
+  targets:
+    local:
+      compose_file: docker/local/compose.yml
+    prod:
+      cloud:
+        provider: aws
+"#,
+        )
+        .unwrap();
+
+        assert!(is_remote_deployment(dir.path()));
     }
 }

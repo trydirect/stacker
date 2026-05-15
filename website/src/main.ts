@@ -412,10 +412,10 @@ document.addEventListener('DOMContentLoaded', () => {
       [
         'stacker init --with-ai',
         'stacker service add wordpress',
-        'stacker deploy --cloud hetzner',
+        'stacker deploy --target server --runtime kata',
         'stacker status',
-        'stacker ai ask "add redis to my stack" --write',
-        'stacker ssh-key generate --server-id 42',
+        './stacker ai ask "how do I connect my metal bare server"',
+        'stacker agent configure-firewall --public-ports 80/tcp,443/tcp',
       ],
       [
         [
@@ -431,9 +431,9 @@ document.addEventListener('DOMContentLoaded', () => {
           '✓ stacker.yml updated (backup: stacker.yml.bak)',
         ],
         [
-          '▸ Provisioning infrastructure on Hetzner Cloud...',
-          '▸ Running Terraform plan (3 resources)...',
-          '▸ Configuring with Ansible...',
+          '▸ Connecting to bare-metal target...',
+          '▸ Validating Kata runtime support...',
+          '▸ Configuring server with Ansible...',
           '✓ Stack deployed! https://my-app.example.com',
         ],
         [
@@ -443,14 +443,14 @@ document.addEventListener('DOMContentLoaded', () => {
           '✓ All systems operational',
         ],
         [
-          '▸ AI using add_service tool...',
-          '✓ Added service \'redis\' (redis:7-alpine)',
-          '✓ stacker.yml updated. Run "stacker deploy" to apply.',
+          '▸ AI inspecting deploy.server config...',
+          '✓ Suggested host, user, port, and ssh_key fields',
+          '✓ Ready to run: stacker deploy --target server',
         ],
         [
-          '▸ Generating SSH key pair for server #42...',
-          '✓ Key pair generated and stored in Vault',
-          '✓ Public key: ssh-ed25519 AAAAC3Nz...xK2m stacker@server-42',
+          '▸ Checking deployment and agent capabilities...',
+          '✓ Opened 80/tcp and 443/tcp to the public internet',
+          '✓ Firewall rules persisted for future reboots',
         ],
       ],
       45

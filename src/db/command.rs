@@ -187,6 +187,48 @@ pub async fn update_result(
     })
 }
 
+/// Update command result and merge metadata patch
+#[tracing::instrument(name = "Update command result with metadata", skip(pool))]
+pub async fn update_result_with_metadata(
+    pool: &PgPool,
+    command_id: &str,
+    status: &CommandStatus,
+    result: Option<JsonValue>,
+    error: Option<JsonValue>,
+    metadata: Option<JsonValue>,
+) -> Result<Command, String> {
+    let query_span = tracing::info_span!("Updating command result with metadata");
+    sqlx::query_as::<_, Command>(
+        r#"
+        UPDATE commands
+        SET status = $2,
+            result = $3,
+            error = $4,
+            metadata = CASE
+                WHEN $5 IS NULL THEN metadata
+                ELSE COALESCE(metadata, '{}'::jsonb) || $5
+            END,
+            updated_at = NOW()
+        WHERE command_id = $1
+        RETURNING id, command_id, deployment_hash, type, status, priority,
+                  parameters, result, error, created_by, created_at, updated_at,
+                  timeout_seconds, metadata
+        "#,
+    )
+    .bind(command_id)
+    .bind(status.to_string())
+    .bind(result)
+    .bind(error)
+    .bind(metadata)
+    .fetch_one(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to update command result with metadata: {:?}", err);
+        format!("Failed to update command result with metadata: {}", err)
+    })
+}
+
 /// Fetch command by ID
 #[tracing::instrument(name = "Fetch command by ID", skip(pool))]
 pub async fn fetch_by_id(pool: &PgPool, id: &str) -> Result<Option<Command>, String> {

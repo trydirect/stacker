@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use crate::cli::cloud_env;
+use crate::cli::compose_targets;
 use crate::cli::config_parser::{CloudOrchestrator, DeployTarget, StackerConfig};
-use crate::cli::credentials::CredentialsManager;
+use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::{self, StackerClient};
 
@@ -98,6 +100,9 @@ pub struct DeployContext {
 
     /// Container runtime preference ("runc" or "kata").
     pub runtime: String,
+
+    /// Environment-specific config files collected from compose env_file and bind mounts.
+    pub config_bundle: Option<crate::cli::config_bundle::ConfigBundleArtifacts>,
 }
 
 impl DeployContext {
@@ -413,7 +418,8 @@ impl InstallContainerCommand {
 
             // Mount SSH key if specified
             if let Some(ref ssh_key) = cloud.ssh_key {
-                cmd = cmd.mount(ssh_key, CONTAINER_SSH_KEY_PATH);
+                let resolved_ssh_key = resolve_ssh_key_path(ssh_key);
+                cmd = cmd.mount(&resolved_ssh_key, CONTAINER_SSH_KEY_PATH);
             }
         }
 
@@ -424,7 +430,8 @@ impl InstallContainerCommand {
             cmd = cmd.env("SERVER_PORT", &server.port.to_string());
 
             if let Some(ref ssh_key) = server.ssh_key {
-                cmd = cmd.mount(ssh_key, CONTAINER_SSH_KEY_PATH);
+                let resolved_ssh_key = resolve_ssh_key_path(ssh_key);
+                cmd = cmd.mount(&resolved_ssh_key, CONTAINER_SSH_KEY_PATH);
             }
         }
 
@@ -490,7 +497,7 @@ impl DeployStrategy for CloudDeploy {
                     .clone()
                     .or_else(|| cloud_cfg.server.clone());
 
-                let base_url = normalize_stacker_server_url(stacker_client::DEFAULT_STACKER_URL);
+                let base_url = resolve_saved_stacker_base_url(&creds);
 
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -501,11 +508,26 @@ impl DeployStrategy for CloudDeploy {
                     })?;
 
                 let (response, effective_server_name) = rt.block_on(async {
-                    let client = StackerClient::new(&base_url, &creds.access_token);
+                    let client = StackerClient::new_for_target(
+                        &base_url,
+                        &creds.access_token,
+                        DeployTarget::Server,
+                    );
 
                     // Step 1: Resolve or auto-create project
                     eprintln!("  Resolving project '{}'...", project_name);
-                    let project_body = stacker_client::build_project_body(config);
+                    let project_config =
+                        compose_targets::config_with_compose_secret_target_services(
+                            config,
+                            &context.compose_path,
+                        )?;
+                    let mut project_body = stacker_client::build_project_body(&project_config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_project_body(
+                            &mut project_body,
+                            bundle,
+                        );
+                    }
                     let project = match client.find_project_by_name(&project_name).await? {
                         Some(p) => {
                             eprintln!("  Found project '{}' (id={}), syncing metadata...", p.name, p.id);
@@ -526,6 +548,10 @@ impl DeployStrategy for CloudDeploy {
                     };
 
                     // Step 2: Resolve cloud credentials
+                    let provider_str = cloud_cfg.provider.to_string();
+                    let provider_code = provider_code_for_remote(&provider_str);
+                    let env_creds = resolve_remote_cloud_credentials(provider_code);
+
                     let cloud_id = if let Some(cid) = context.key_id_override {
                         // --key-id flag: look up by ID (server checks ownership)
                         eprintln!("  Looking up cloud credentials by id={}...", cid);
@@ -568,12 +594,6 @@ impl DeployStrategy for CloudDeploy {
                                 }
                                 None => {
                                     // Try saving current env-var creds under this provider
-                                    let provider_str = cloud_cfg.provider.to_string();
-                                    let provider_code = provider_code_for_remote(
-                                        &provider_str,
-                                    );
-                                    let env_creds =
-                                        resolve_remote_cloud_credentials(provider_code);
                                     let cloud_token = env_creds
                                         .get("cloud_token")
                                         .and_then(|v| v.as_str());
@@ -609,8 +629,9 @@ impl DeployStrategy for CloudDeploy {
                                         return Err(CliError::DeployFailed {
                                             target: DeployTarget::Cloud,
                                             reason: format!(
-                                                "Cloud key '{}' not found on server and no cloud credentials in env vars (STACKER_CLOUD_TOKEN, HCLOUD_TOKEN, etc.)",
-                                                key_ref
+                                                "Cloud key '{}' not found on server and no cloud credentials were found in env vars ({}).",
+                                                key_ref,
+                                                cloud_env::provider_env_summary(provider_code)
                                             ),
                                         });
                                     }
@@ -620,9 +641,6 @@ impl DeployStrategy for CloudDeploy {
                     } else {
                         // No key specified: try to find existing cloud creds for this provider,
                         // or pass creds directly in deploy form from env vars
-                        let provider_str = cloud_cfg.provider.to_string();
-                        let provider_code =
-                            provider_code_for_remote(&provider_str);
                         match client.find_cloud_by_provider(provider_code).await? {
                             Some(c) => {
                                 eprintln!(
@@ -634,6 +652,12 @@ impl DeployStrategy for CloudDeploy {
                             None => None,
                         }
                     };
+
+                    ensure_remote_cloud_credentials_available(
+                        cloud_id,
+                        provider_code,
+                        &env_creds,
+                    )?;
 
                     // Step 3: Resolve server by name
                     let server_id = if let Some(srv_name) = &server_name {
@@ -663,6 +687,12 @@ impl DeployStrategy for CloudDeploy {
 
                     // Step 4: Build deploy form
                     let mut deploy_form = stacker_client::build_deploy_form(config);
+                    if let Some(bundle) = &context.config_bundle {
+                        stacker_client::attach_config_bundle_to_deploy_form(
+                            &mut deploy_form,
+                            bundle,
+                        );
+                    }
 
                     // Capture the server name from the form (auto-generated or overridden)
                     // so we can persist it in the deployment lock even if the API fetch
@@ -696,10 +726,6 @@ impl DeployStrategy for CloudDeploy {
 
                     // Include env-var cloud creds in form if no saved cloud
                     if cloud_id.is_none() {
-                        let provider_str = cloud_cfg.provider.to_string();
-                        let provider_code =
-                            provider_code_for_remote(&provider_str);
-                        let env_creds = resolve_remote_cloud_credentials(provider_code);
                         if let Some(cloud_obj) = deploy_form.get_mut("cloud") {
                             if let Some(obj) = cloud_obj.as_object_mut() {
                                 for (k, v) in &env_creds {
@@ -866,22 +892,46 @@ fn normalize_user_service_base_url(raw: &str) -> String {
 /// Normalize the Stacker server URL from stored credentials.
 /// Strips trailing slashes and known auth path suffixes to get the base API URL.
 pub fn normalize_stacker_server_url(raw: &str) -> String {
-    let mut url = raw.trim_end_matches('/').to_string();
-    // Strip known auth endpoints that might be stored as server_url
-    for suffix in [
-        "/oauth_server/token",
-        "/auth/login",
-        "/server/user/auth/login",
-        "/login",
-        "/api",
-    ] {
-        if url.ends_with(suffix) {
-            let len = url.len() - suffix.len();
-            url = url[..len].to_string();
-            break;
-        }
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return stacker_client::DEFAULT_STACKER_URL.to_string();
     }
-    url
+
+    if let Ok(mut url) = reqwest::Url::parse(trimmed) {
+        let path = url.path().trim_end_matches('/').to_string();
+        for suffix in [
+            "/api/v1",
+            "/oauth_server/token",
+            "/auth/login",
+            "/login",
+            "/api",
+        ] {
+            if path.ends_with(suffix) {
+                let normalized = path.trim_end_matches(suffix);
+                url.set_path(if normalized.is_empty() {
+                    "/"
+                } else {
+                    normalized
+                });
+                url.set_query(None);
+                url.set_fragment(None);
+                break;
+            }
+        }
+
+        return url.to_string().trim_end_matches('/').to_string();
+    }
+
+    trimmed.to_string()
+}
+
+fn resolve_saved_stacker_base_url(creds: &StoredCredentials) -> String {
+    normalize_stacker_server_url(
+        creds
+            .server_url
+            .as_deref()
+            .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
+    )
 }
 
 #[allow(dead_code)]
@@ -925,51 +975,30 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
 
     match provider {
         "htz" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_HETZNER_TOKEN",
-                "HETZNER_TOKEN",
-                "HCLOUD_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("htz")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "do" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_DIGITALOCEAN_TOKEN",
-                "DIGITALOCEAN_TOKEN",
-                "DO_API_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("do")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "lo" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_LINODE_TOKEN",
-                "LINODE_TOKEN",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("lo")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "vu" => {
-            if let Some(token) = first_non_empty_env(&[
-                "STACKER_CLOUD_TOKEN",
-                "STACKER_VULTR_TOKEN",
-                "VULTR_TOKEN",
-                "VULTR_API_KEY",
-            ]) {
+            if let Some(token) = first_non_empty_env(cloud_env::token_env_vars("vu")) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(token));
             }
         }
         "aws" => {
-            if let Some(key) = first_non_empty_env(&["STACKER_CLOUD_KEY", "AWS_ACCESS_KEY_ID"]) {
+            if let Some(key) = first_non_empty_env(cloud_env::key_env_vars("aws")) {
                 creds.insert("cloud_key".to_string(), serde_json::Value::String(key));
             }
-            if let Some(secret) =
-                first_non_empty_env(&["STACKER_CLOUD_SECRET", "AWS_SECRET_ACCESS_KEY"])
-            {
+            if let Some(secret) = first_non_empty_env(cloud_env::secret_env_vars("aws")) {
                 creds.insert(
                     "cloud_secret".to_string(),
                     serde_json::Value::String(secret),
@@ -978,20 +1007,16 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
         }
         "cnt" => {
             // Contabo uses four credentials: OAuth2 client_id/secret + API user/password.
-            if let Some(v) = first_non_empty_env(&["STACKER_CONTABO_CLIENT_ID", "CNT_CLIENT_ID"]) {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_CLIENT_ID_ENV_VARS) {
                 creds.insert("cloud_key".to_string(), serde_json::Value::String(v));
             }
-            if let Some(v) =
-                first_non_empty_env(&["STACKER_CONTABO_CLIENT_SECRET", "CNT_CLIENT_SECRET"])
-            {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_CLIENT_SECRET_ENV_VARS) {
                 creds.insert("cloud_token".to_string(), serde_json::Value::String(v));
             }
-            if let Some(v) = first_non_empty_env(&["STACKER_CONTABO_API_USER", "CNT_API_USER"]) {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_API_USER_ENV_VARS) {
                 creds.insert("cloud_user".to_string(), serde_json::Value::String(v));
             }
-            if let Some(v) =
-                first_non_empty_env(&["STACKER_CONTABO_API_PASSWORD", "CNT_API_PASSWORD"])
-            {
+            if let Some(v) = first_non_empty_env(cloud_env::CONTABO_API_PASSWORD_ENV_VARS) {
                 creds.insert("cloud_password".to_string(), serde_json::Value::String(v));
             }
         }
@@ -999,6 +1024,26 @@ fn resolve_remote_cloud_credentials(provider: &str) -> serde_json::Map<String, s
     }
 
     creds
+}
+
+fn ensure_remote_cloud_credentials_available(
+    cloud_id: Option<i32>,
+    provider: &str,
+    env_creds: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CliError> {
+    if cloud_id.is_some() || !env_creds.is_empty() {
+        return Ok(());
+    }
+
+    let hint = cloud_env::provider_missing_credentials_hint(provider);
+
+    Err(CliError::DeployFailed {
+        target: DeployTarget::Cloud,
+        reason: format!(
+            "No saved cloud credentials were found for provider '{}', and no provider credentials were found in the environment. {}",
+            provider, hint
+        ),
+    })
 }
 
 /// Resolve Docker registry credentials from the stacker.yml `deploy.registry` section
@@ -1021,7 +1066,15 @@ pub(crate) fn resolve_docker_registry_credentials(
 
     // Registry server: env var > config > default "docker.io"
     let server = first_non_empty_env(&["STACKER_DOCKER_REGISTRY", "DOCKER_REGISTRY"])
-        .or_else(|| registry.and_then(|r| r.server.clone()));
+        .or_else(|| registry.and_then(|r| r.server.clone()))
+        .or_else(|| {
+            if username.is_some() || password.is_some() {
+                Some("docker.io".to_string())
+            } else {
+                None
+            }
+        })
+        .map(canonicalize_registry_server);
 
     if let Some(u) = username {
         creds.insert("docker_username".to_string(), serde_json::Value::String(u));
@@ -1034,6 +1087,27 @@ pub(crate) fn resolve_docker_registry_credentials(
     }
 
     creds
+}
+
+fn canonicalize_registry_server(server: String) -> String {
+    let trimmed = server.trim().trim_end_matches('/').to_string();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower == "docker.io"
+        || lower == "hub.docker.com"
+        || lower == "index.docker.io"
+        || lower == "registry-1.docker.io"
+        || lower == "https://docker.io"
+        || lower == "https://hub.docker.com"
+        || lower == "https://index.docker.io"
+        || lower == "https://index.docker.io/v1"
+        || lower == "https://index.docker.io/v1/"
+        || lower == "https://registry-1.docker.io"
+    {
+        "docker.io".to_string()
+    } else {
+        trimmed
+    }
 }
 
 #[allow(dead_code)]
@@ -1262,39 +1336,190 @@ impl DeployStrategy for ServerDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<DeployResult, CliError> {
-        let action = if context.dry_run {
-            InstallAction::Plan
-        } else {
-            InstallAction::Apply
-        };
+        if context.dry_run {
+            let action = InstallAction::Plan;
+            let cmd = InstallContainerCommand::from_config(config, context, action);
+            let args = cmd.build_args();
+            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-        let cmd = InstallContainerCommand::from_config(config, context, action);
-        let args = cmd.build_args();
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let output = executor.execute("docker", &args_refs)?;
 
-        let output = executor.execute("docker", &args_refs)?;
+            if !output.success() {
+                return Err(CliError::DeployFailed {
+                    target: DeployTarget::Server,
+                    reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                });
+            }
 
-        if !output.success() {
-            return Err(CliError::DeployFailed {
+            let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
+
+            return Ok(DeployResult {
                 target: DeployTarget::Server,
-                reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                message: "Server deployment plan completed".to_string(),
+                server_ip: server_host,
+                deployment_id: None,
+                project_id: None,
+                server_name: None,
             });
         }
 
-        let server_host = config.deploy.server.as_ref().map(|s| s.host.clone());
+        let creds =
+            CredentialsManager::with_default_store().require_valid_token("server deploy")?;
+        let base_url = normalize_stacker_server_url(
+            creds
+                .server_url
+                .as_deref()
+                .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
+        );
+        let server_cfg = config
+            .deploy
+            .server
+            .as_ref()
+            .ok_or(CliError::ServerHostMissing)?;
+        let project_name = resolve_remote_project_name(config, context);
+        let project_config = compose_targets::config_with_compose_secret_target_services(
+            config,
+            &context.compose_path,
+        )?;
+        let mut project_body = stacker_client::build_project_body(&project_config);
+        if let Some(bundle) = &context.config_bundle {
+            stacker_client::attach_config_bundle_to_project_body(&mut project_body, bundle);
+        }
+        let bootstrap_status_panel = true;
 
-        let action_str = if context.dry_run {
-            "plan completed"
-        } else {
-            "deployed"
-        };
+        let (response, effective_server_name) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to initialize async runtime: {}", e),
+            })?
+            .block_on(async {
+                let client = StackerClient::new_for_target(
+                    &base_url,
+                    &creds.access_token,
+                    DeployTarget::Server,
+                );
+
+                let project = match client.find_project_by_name(&project_name).await? {
+                    Some(existing) => {
+                        let _ = client
+                            .update_project(existing.id, project_body.clone())
+                            .await;
+                        existing
+                    }
+                    None => {
+                        let created = client
+                            .create_project(&project_name, project_body.clone())
+                            .await?;
+                        eprintln!("  Created project '{}' (id={})", created.name, created.id);
+                        created
+                    }
+                };
+
+                let existing_server = client.list_servers().await?.into_iter().find(|server| {
+                    server.project_id == project.id
+                        && (server.srv_ip.as_deref() == Some(server_cfg.host.as_str())
+                            || context
+                                .server_name_override
+                                .as_deref()
+                                .is_some_and(|name| server.name.as_deref() == Some(name)))
+                });
+
+                let effective_server_name = context
+                    .server_name_override
+                    .clone()
+                    .or_else(|| {
+                        existing_server
+                            .as_ref()
+                            .and_then(|server| server.name.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{}-server",
+                            sanitize_stack_code(
+                                &config
+                                    .project
+                                    .identity
+                                    .clone()
+                                    .unwrap_or_else(|| config.name.clone())
+                            )
+                        )
+                    });
+
+                let mut deploy_form = stacker_client::build_server_deploy_form(
+                    config,
+                    server_cfg,
+                    &effective_server_name,
+                    bootstrap_status_panel,
+                );
+                if let Some(bundle) = &context.config_bundle {
+                    stacker_client::attach_config_bundle_to_deploy_form(&mut deploy_form, bundle);
+                }
+
+                if let Some(server_obj) = deploy_form
+                    .get_mut("server")
+                    .and_then(|v| v.as_object_mut())
+                {
+                    if let Some(existing) = existing_server.as_ref() {
+                        server_obj.insert("server_id".to_string(), serde_json::json!(existing.id));
+                    }
+
+                    if let Some((private_key, public_key)) =
+                        load_existing_server_ssh_key(server_cfg)?
+                    {
+                        server_obj.insert(
+                            "ssh_private_key".to_string(),
+                            serde_json::Value::String(private_key),
+                        );
+                        if let Some(public_key) = public_key {
+                            server_obj.insert(
+                                "public_key".to_string(),
+                                serde_json::Value::String(public_key),
+                            );
+                        }
+                    }
+                }
+
+                if let Some(form_obj) = deploy_form.as_object_mut() {
+                    form_obj.insert("runtime".to_string(), serde_json::json!(context.runtime));
+                }
+
+                eprintln!(
+                    "  Deploying project '{}' to {} via Stacker server...",
+                    project_name, server_cfg.host
+                );
+                let response = client.deploy(project.id, None, deploy_form).await?;
+                Ok::<_, CliError>((response, effective_server_name))
+            })?;
+
+        let deploy_id = response
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("deployment_id"))
+            .and_then(|v| v.as_i64());
+        let project_id = response.id;
+
+        let mut message = format!(
+            "Server deployment requested via Stacker server (project='{}'",
+            project_name
+        );
+        if let Some(pid) = project_id {
+            message.push_str(&format!(", project_id={}", pid));
+        }
+        if let Some(did) = deploy_id {
+            message.push_str(&format!(", deployment_id={}", did));
+        }
+        message.push(')');
+        message.push_str(&format!("; server='{}'", effective_server_name));
+
         Ok(DeployResult {
             target: DeployTarget::Server,
-            message: format!("Server deployment {}", action_str),
-            server_ip: server_host,
-            deployment_id: None,
-            project_id: None,
-            server_name: None,
+            message,
+            server_ip: Some(server_cfg.host.clone()),
+            deployment_id: deploy_id,
+            project_id: project_id.map(|id| id as i64),
+            server_name: Some(effective_server_name),
         })
     }
 
@@ -1304,7 +1529,12 @@ impl DeployStrategy for ServerDeploy {
         context: &DeployContext,
         executor: &dyn CommandExecutor,
     ) -> Result<(), CliError> {
-        let cmd = InstallContainerCommand::from_config(config, context, InstallAction::Destroy);
+        let action = if context.dry_run {
+            InstallAction::Plan
+        } else {
+            InstallAction::Destroy
+        };
+        let cmd = InstallContainerCommand::from_config(config, context, action);
         let args = cmd.build_args();
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
@@ -1319,6 +1549,71 @@ impl DeployStrategy for ServerDeploy {
 
         Ok(())
     }
+}
+
+fn resolve_remote_project_name(config: &StackerConfig, context: &DeployContext) -> String {
+    context.project_name_override.clone().unwrap_or_else(|| {
+        config
+            .project
+            .identity
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| config.name.clone())
+    })
+}
+
+pub(crate) fn load_existing_server_ssh_key(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+) -> Result<Option<(String, Option<String>)>, CliError> {
+    let Some(path) = server_cfg.ssh_key.as_ref() else {
+        return Ok(None);
+    };
+
+    let resolved_path = resolve_ssh_key_path(path);
+
+    let private_key =
+        std::fs::read_to_string(&resolved_path).map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "Failed to read SSH private key {}: {}",
+                resolved_path.display(),
+                e
+            ),
+        })?;
+
+    let public_key_path = PathBuf::from(format!("{}.pub", resolved_path.display()));
+    let public_key = match std::fs::read_to_string(&public_key_path) {
+        Ok(key) => Some(key),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!(
+                    "Failed to read SSH public key {}: {}",
+                    public_key_path.display(),
+                    e
+                ),
+            });
+        }
+    };
+
+    Ok(Some((private_key, public_key)))
+}
+
+fn resolve_ssh_key_path_with_home(path: &Path, home_dir: Option<&Path>) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if let Some(relative_path) = path_str.strip_prefix("~/") {
+        if let Some(home_dir) = home_dir {
+            return home_dir.join(relative_path);
+        }
+    }
+
+    path.to_path_buf()
+}
+
+fn resolve_ssh_key_path(path: &Path) -> PathBuf {
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+    resolve_ssh_key_path_with_home(path, home_dir.as_deref())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1350,7 +1645,7 @@ fn extract_server_ip(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cli::config_parser::{
-        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, ServerConfig,
+        CloudConfig, CloudOrchestrator, CloudProvider, ConfigBuilder, RegistryConfig, ServerConfig,
     };
     use std::sync::Mutex;
 
@@ -1517,6 +1812,22 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_remote_cloud_credentials_accepts_digitalocean_token() {
+        std::env::remove_var("STACKER_CLOUD_TOKEN");
+        std::env::remove_var("STACKER_DIGITALOCEAN_TOKEN");
+        std::env::set_var("DIGITALOCEAN_TOKEN", "do-token-value");
+
+        let creds = resolve_remote_cloud_credentials("do");
+
+        std::env::remove_var("DIGITALOCEAN_TOKEN");
+
+        assert_eq!(
+            creds.get("cloud_token").and_then(|v| v.as_str()),
+            Some("do-token-value")
+        );
+    }
+
+    #[test]
     fn test_validate_remote_deploy_payload_rejects_missing_common_domain() {
         let payload = serde_json::json!({
             "provider": "htz",
@@ -1603,6 +1914,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         }
     }
 
@@ -1642,6 +1954,29 @@ mod tests {
         let args = args_as_string(&cmd.build_args());
 
         assert!(args.contains("-v /home/user/.ssh/id_ed25519:/root/.ssh/id_rsa"));
+    }
+
+    #[test]
+    fn test_resolve_ssh_key_path_expands_tilde_with_explicit_home() {
+        let resolved = resolve_ssh_key_path_with_home(
+            Path::new("~/.ssh/website-deploy-key"),
+            Some(Path::new("/tmp/test-home")),
+        );
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/test-home/.ssh/website-deploy-key")
+        );
+    }
+
+    #[test]
+    fn test_resolve_ssh_key_path_keeps_absolute_path() {
+        let resolved = resolve_ssh_key_path_with_home(
+            Path::new("/var/keys/website-deploy-key"),
+            Some(Path::new("/tmp/test-home")),
+        );
+
+        assert_eq!(resolved, PathBuf::from("/var/keys/website-deploy-key"));
     }
 
     #[test]
@@ -1706,6 +2041,7 @@ mod tests {
             key_id_override: None,
             server_name_override: None,
             runtime: "runc".to_string(),
+            config_bundle: None,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }
@@ -1816,6 +2152,148 @@ mod tests {
         let config = sample_cloud_config();
         let strategy = CloudDeploy;
         assert!(strategy.validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_strips_api_v1_suffix() {
+        assert_eq!(
+            normalize_stacker_server_url("https://stacker.example.com/api/v1"),
+            "https://stacker.example.com"
+        );
+        assert_eq!(
+            normalize_stacker_server_url("https://stacker.example.com/api/v1/"),
+            "https://stacker.example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_strips_direct_login_suffix() {
+        assert_eq!(
+            normalize_stacker_server_url("https://dev.try.direct/server/user/auth/login"),
+            "https://dev.try.direct/server/user"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_preserves_legacy_stacker_route() {
+        assert_eq!(
+            normalize_stacker_server_url("https://dev.try.direct/stacker"),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    #[test]
+    fn test_normalize_stacker_server_url_preserves_api_gateway_host() {
+        assert_eq!(
+            normalize_stacker_server_url("https://api.try.direct"),
+            "https://api.try.direct"
+        );
+    }
+
+    #[test]
+    fn test_resolve_saved_stacker_base_url_prefers_saved_server_url() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            email: Some("user@example.com".to_string()),
+            server_url: Some("https://dev.try.direct/stacker".to_string()),
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_saved_stacker_base_url(&creds),
+            "https://dev.try.direct/stacker"
+        );
+    }
+
+    #[test]
+    fn test_resolve_saved_stacker_base_url_falls_back_to_default() {
+        let creds = StoredCredentials {
+            access_token: "token".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            email: Some("user@example.com".to_string()),
+            server_url: None,
+            org: None,
+            domain: None,
+        };
+
+        assert_eq!(
+            resolve_saved_stacker_base_url(&creds),
+            stacker_client::DEFAULT_STACKER_URL
+        );
+    }
+
+    #[test]
+    fn test_ensure_remote_cloud_credentials_available_accepts_saved_cloud_id() {
+        let env_creds = serde_json::Map::new();
+        assert!(ensure_remote_cloud_credentials_available(Some(12), "htz", &env_creds).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_remote_cloud_credentials_available_accepts_env_token() {
+        let mut env_creds = serde_json::Map::new();
+        env_creds.insert(
+            "cloud_token".to_string(),
+            serde_json::Value::String("token".to_string()),
+        );
+        assert!(ensure_remote_cloud_credentials_available(None, "htz", &env_creds).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_remote_cloud_credentials_available_fails_without_saved_or_env_creds() {
+        let env_creds = serde_json::Map::new();
+        let err = ensure_remote_cloud_credentials_available(None, "htz", &env_creds).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("No saved cloud credentials were found"));
+        assert!(msg.contains("HCLOUD_TOKEN"));
+    }
+
+    #[test]
+    fn test_canonicalize_registry_server_maps_docker_hub_urls_to_docker_io() {
+        assert_eq!(
+            canonicalize_registry_server("https://index.docker.io/v1/".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("https://registry-1.docker.io".to_string()),
+            "docker.io"
+        );
+        assert_eq!(
+            canonicalize_registry_server("hub.docker.com".to_string()),
+            "docker.io"
+        );
+    }
+
+    #[test]
+    fn test_resolve_docker_registry_credentials_defaults_to_docker_io_when_auth_present() {
+        let config = ConfigBuilder::new()
+            .name("private-app")
+            .registry(RegistryConfig {
+                username: Some("syncopia-user".to_string()),
+                password: Some("secret".to_string()),
+                server: None,
+            })
+            .build()
+            .unwrap();
+
+        let creds = resolve_docker_registry_credentials(&config);
+        assert_eq!(
+            creds.get("docker_username").and_then(|v| v.as_str()),
+            Some("syncopia-user")
+        );
+        assert_eq!(
+            creds.get("docker_password").and_then(|v| v.as_str()),
+            Some("secret")
+        );
+        assert_eq!(
+            creds.get("docker_registry").and_then(|v| v.as_str()),
+            Some("docker.io")
+        );
     }
 
     #[test]

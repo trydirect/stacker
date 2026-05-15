@@ -4,6 +4,188 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.8] — 2026-05-15
+
+### Added — App-only deploy environment selection
+
+- Added `stacker env [environment]` to show or persist the active deploy
+  environment/profile in `.stacker/active-env`.
+- `stacker agent deploy-app` and `stacker secrets push` now accept
+  `--env <environment>` / `--environment <environment>` for one-off environment
+  selection during app-only updates.
+
+### Added — Remote service/app target secrets
+
+- `stacker secrets set --scope service --service <target>` now supports real
+  deployable service/app targets, not only the main app code. Valid targets are
+  discovered with `stacker secrets apps`.
+- Stacker.yml `services:` entries are synced as service targets while the main
+  `app:` remains the web target, so remote secrets can be scoped to support
+  services such as `upload`, `worker`, or `postgres`.
+- Image-backed services from `deploy.compose_file` are registered as service
+  targets during cloud/server deploy preparation when they can be represented
+  safely; build-only and platform-managed services are skipped with warnings.
+- Service-scoped remote secrets remain isolated per target and are rendered only
+  into the matching service; metadata APIs and CLI output still never return
+  plaintext Vault values.
+- CLI help and errors now use "deployable service/app target" wording and list
+  available targets when an unknown service code is requested.
+
+### Added — MCP remote service secret tools
+
+- Added MCP tools for the remote service secret lifecycle:
+  `list_remote_secret_targets`, `list_remote_service_secrets`,
+  `get_remote_service_secret`, `set_remote_service_secret`, and
+  `delete_remote_service_secret`.
+- MCP remote secret reads are metadata-only, match the CLI/API target model, and
+  write secret values directly to Vault without returning plaintext values.
+- All MCP tool calls now require explicit per-tool Casbin `CALL` permission under
+  `/mcp/tools/<tool_name>` before the handler executes; marketplace admin tools
+  are granted only to `group_admin`.
+- Sensitive MCP write/destructive operations, including remote secret writes and
+  deletes, additionally require a token or auth profile with verified 2FA/MFA
+  before Vault or deployment state is touched.
+
+### Added — Cloud provider firewall operations
+
+- Added `stacker cloud firewall add|remove|list` for cloud-provider firewall
+  changes that do not require SSH access to the server.
+- Added universal Stacker-to-Install-Service protocol
+  `stacker.cloud_firewall.v1` with shared firewall rule parsing reused from the
+  existing agent firewall flow.
+- Added `POST /server/{id}/cloud-firewall` and Install Service MQ routing
+  `install.firewall.{provider}.v1`; Hetzner (`htz`) is the first supported
+  provider.
+- Casbin/sqlx migration `20260717120016_casbin_cloud_firewall` grants
+  `root`, `group_admin`, and `group_user` access to modify cloud firewalls.
+
+### Added — Cloud deploy local SSH backup access
+
+- `stacker deploy --target cloud` now creates or reuses a local Ed25519 backup
+  key under the Stacker config directory and authorizes it on the deployed
+  server when possible.
+- New server API endpoint `POST /server/{id}/ssh-key/authorize-public-key`
+  accepts caller-provided public key material, validates ownership and key
+  format, then uses the server-side Vault key to append it to
+  `authorized_keys` idempotently.
+- The Vault private key is never returned to the CLI or written to local files;
+  the CLI sends only the local public key and prints a copy-paste-ready `ssh`
+  command after successful authorization.
+- `stacker ssh-key inject` remains the repair path for using an
+  already-working private key to re-add the Vault public key to a server.
+- Casbin/sqlx migration `20260717120014_casbin_server_ssh_authorize_public_key`
+  grants `group_user` and `root` access to the new authorization endpoint.
+
+### Fixed — Managed Nginx Proxy Manager duplication
+
+- Cloud/server project bodies no longer add `nginx_proxy_manager` as a project
+  app when proxy support is already managed through `extended_features`.
+- User-declared `nginx_proxy_manager` / NPM services are skipped from project app
+  sync when `proxy.type` is `nginx` or `nginx-proxy-manager`, preventing the
+  duplicate `project-nginx_proxy_manager-*` container alongside the managed NPM
+  container.
+- Server-side project app sync, compose child-service discovery, agent snapshots,
+  and deploy-app upserts now treat NPM as platform-managed so older clients or
+  stale records cannot keep re-registering it as a user app.
+- Data migration `20260717120015_cleanup_nginx_proxy_manager_project_apps`
+  removes existing stale `nginx_proxy_manager` project app rows that caused NPM
+  to remain visible after upgrading.
+- `stacker agent status` hides stale project-scoped platform containers such as
+  `project-nginx_proxy_manager-*` while still showing the managed
+  `nginx-proxy-manager` container.
+
+### Fixed — Compose public ports in cloud firewall
+
+- Cloud/server deploy now reads published ports from the resolved Compose file
+  and passes them into project metadata before invoking the installer, so
+  provider firewalls receive app ports such as Coolify's `8000:8080` instead of
+  the generic custom-app fallback `8080`.
+
+### Fixed — Deployment IP persistence on paused/failed installs
+
+- Cloud/server deploy status handling now extracts a server IP from installer
+  progress messages such as `178.104.222.170: Copy files is done` when the
+  structured server record has not populated `srv_ip` yet.
+- The CLI saves that fallback IP into the local deployment context, and the MQ
+  listener persists the IP server-side so paused or failed deployments still
+  retain a usable host address for SSH repair and retry workflows.
+
+### Changed — Agent proxy SSL control
+
+- `stacker agent configure-proxy` now supports `--no-ssl` to create or update a
+  plain HTTP Nginx Proxy Manager host without requesting a Let's Encrypt
+  certificate.
+
+### Changed — Server bootstrap SSH key handling
+
+- `stacker deploy --target server` now treats a user-provided `deploy.server.ssh_key` as a
+  **transient bootstrap credential** for first SSH contact only.
+- Stacker now persists only a **Stacker-managed generated deploy key** in Vault for ongoing
+  server-side automation and later redeploys.
+- The user-provided bootstrap key is still sent for the live bootstrap run, but it is no longer
+  stored as the server's long-term key material on the Stacker side.
+
+### Added — Local Pipe Mode
+
+- **`stacker target [local|cloud|server]`** — switch deployment target mode; persists in `.stacker/active-target`
+- **Local pipe creation** — `stacker pipe create` works without a cloud deployment (`deployment_hash` is now optional, `is_local` flag on PipeInstance/PipeExecution)
+- **Local scanning** — `stacker pipe scan` now performs local endpoint/resource discovery on matched containers instead of only listing Docker inventory
+- **Explicit scan modes** — `stacker pipe scan --containers [FILTER]` for local container discovery + probing and `stacker pipe scan --app <APP> [--container <NAME>]` for remote endpoint probing
+- **Local triggering** — `stacker pipe trigger` executes via `docker exec` / HTTP against local containers
+- **`stacker pipe deploy <id> --deployment <hash>`** — promote a local pipe to a remote deployment (clones config to new remote instance)
+- **`GET /api/v1/pipes/instances/local`** — list local pipe instances for the authenticated user
+- **`POST /api/v1/pipes/instances/{id}/deploy`** — deploy (promote) local pipe to remote
+- **`stacker init --target local`** — initialize project in local mode directly
+- Database migration: `deployment_hash` nullable, `is_local BOOLEAN DEFAULT FALSE`, partial index on local instances
+
+### Added — Canonical runtime environment rendering
+
+- Remote runtime environment files now use the canonical host path
+  `/home/trydirect/project/.env`; generated compose files reference it as
+  `env_file: .env`.
+- `stacker config show --resolved` prints the local env source path, canonical
+  remote env path, compose env reference, config hash/version metadata, and
+  contributing layers without printing secret values.
+- Runtime env rendering now has deterministic precedence and hashing, rejects
+  reserved `STACKER_*`, `DOCKER_*`, `VAULT_*`, and `AGENT_*` keys, and provides
+  drift checks that require `--force` before overwriting changed remote env
+  content.
+
+### Fixed — App-local compose env files for deploy-app
+
+- `stacker agent deploy-app <app>` now reads
+  `<app>/docker/<env>/compose.yml` when that app-local compose file exists and
+  merges that app's service definition into the full project-level compose,
+  instead of replacing the remote stack compose with a single-service file.
+- App-local deploys now bundle only the target app-local config files while
+  using the project-level compose as topology, so missing env/config files for
+  unrelated services no longer block `deploy-app <app>`.
+- Deploy-app now preserves the shared project `.env` in the config bundle when
+  the selected runtime topology uses root `env_file: .env`.
+- App-local `env_file` references are uploaded in the deploy-app config bundle,
+  and Vault-rendered service secrets for the same target are merged into the
+  matching remote `.env` file before the Status agent writes it.
+- Deploy-app command creation now fails if Stacker cannot render the target's
+  runtime env, instead of silently falling back to a stale/raw `.env` that may
+  omit Vault-backed service secrets.
+- Missing config-bundle file errors now include the resolved path instead of a
+  bare `No such file or directory` message.
+- If an app-local `.env` exists but the selected compose service has no
+  `env_file` entry, the CLI prints a warning explaining that Docker Compose will
+  not inject local or remote-rendered env values into that container.
+
+### Fixed — Reuse private registry auth for agent-managed pulls
+
+- Deploy-time `deploy.registry` credentials are now stored in trusted Stacker
+  secret storage and reused for later Status-managed pulls such as
+  `stacker agent deploy-app`.
+- The Status agent now performs private-image pulls with a temporary
+  `DOCKER_CONFIG` auth context and cleans it up immediately after the pull,
+  instead of relying on host Docker login state.
+- When no stored registry auth exists, pull behavior remains backward
+  compatible: anonymous pull is attempted first and cached local images can
+  still allow the redeploy to complete with warnings.
+
 ## [0.2.7] — 2026-04-10
 
 ### Security — IDOR Hardening & Test Coverage
@@ -30,6 +212,8 @@ All notable changes to this project will be documented in this file.
 - Deployment lock files are now namespaced by target: `.stacker/<target>.lock` (e.g. `local.lock`, `cloud.lock`, `server.lock`)
 - Local deploys no longer overwrite cloud/server connection details
 - Existing `deployment.lock` files automatically migrated on read
+
+## [0.2.6] — 2026-04-08
 
 ### Added — Kata Containers Runtime Support
 
@@ -63,8 +247,6 @@ All notable changes to this project will be documented in this file.
 - REST API: `POST/GET/DELETE /api/v1/pipes/templates` and `/instances`
 - Data contracts with validation for probe_endpoints command parameters and results
 
-## [0.2.6] — 2026-03-17
-
 ### Added — Marketplace Developer & Buyer Flows
 
 - New `stacker submit` command — packages the current stack and submits to marketplace for review
@@ -77,6 +259,8 @@ All notable changes to this project will be documented in this file.
 - `GET /api/v1/marketplace/install/{purchase_token}` — generates install script
 - `GET /api/v1/marketplace/download/{purchase_token}` — serves stack archive
 - `POST /api/v1/marketplace/agents/register` — agent self-registration endpoint
+
+## [0.2.6] — 2026-03-11
 
 ### Added — Firewall (iptables) Management
 
@@ -385,6 +569,7 @@ stacker init --with-ai  # no Ollama running → template fallback
 #### REST API Routes (`/project/{id}/apps/*`)
 - `GET /project/{id}/apps` - List all apps for a project
 - `GET /project/{id}/apps/{code}` - Get single app details
+- `DELETE /project/{id}/apps/{code}` - Delete a saved app from a project
 - `GET /project/{id}/apps/{code}/config` - Get full app configuration
 - `GET /project/{id}/apps/{code}/env` - Get environment variables (sensitive values redacted)
 - `PUT /project/{id}/apps/{code}/env` - Update environment variables
@@ -471,4 +656,3 @@ stacker init --with-ai  # no Ollama running → template fallback
 
 ### Fixed
 - Status panel command updates query uses explicit bindings to avoid SQLx type inference errors.
-

@@ -21,7 +21,7 @@ pub async fn item(
         .map_err(|err| JsonResponse::<models::Cloud>::build().internal_server_error(err))
         .and_then(|cloud| match cloud {
             Some(cloud) if cloud.user_id != user.id => {
-                Err(JsonResponse::<models::Cloud>::build().bad_request("Delete is forbidden"))
+                Err(JsonResponse::<models::Cloud>::build().not_found("not found"))
             }
             Some(cloud) => Ok(cloud),
             None => Err(JsonResponse::<models::Cloud>::build().not_found("not found")),

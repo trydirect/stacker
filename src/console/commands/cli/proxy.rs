@@ -96,18 +96,18 @@ fn is_cloud_or_remote(project_dir: &std::path::Path) -> bool {
 
     // 2. Check stacker.yml
     let config_path = project_dir.join("stacker.yml");
-    if let Ok(config_str) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_yaml::from_str::<StackerConfig>(&config_str) {
-            if config.deploy.target == DeployTarget::Cloud {
+    if let Ok(config) = StackerConfig::from_file(&config_path)
+        .and_then(|config| config.with_resolved_deploy_target(None))
+    {
+        if config.deploy.target == DeployTarget::Cloud {
+            return true;
+        }
+        if config.deploy.target == DeployTarget::Server {
+            return true;
+        }
+        if let Some(cloud_cfg) = &config.deploy.cloud {
+            if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
                 return true;
-            }
-            if config.deploy.target == DeployTarget::Server {
-                return true;
-            }
-            if let Some(cloud_cfg) = &config.deploy.cloud {
-                if cloud_cfg.orchestrator == CloudOrchestrator::Remote {
-                    return true;
-                }
             }
         }
     }
@@ -139,7 +139,9 @@ fn resolve_deployment_hash_for_proxy(
 
     let config_path = project_dir.join("stacker.yml");
     if config_path.exists() {
-        if let Ok(config) = StackerConfig::from_file(&config_path) {
+        if let Ok(config) = StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(None))
+        {
             if let Some(ref project_name) = config.project.identity {
                 let project = ctx.block_on(ctx.client.find_project_by_name(project_name))?;
                 if let Some(proj) = project {

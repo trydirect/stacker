@@ -1,5 +1,9 @@
 use crate::configuration::Settings;
 use crate::models;
+use actix_casbin_auth::{
+    casbin::{CoreApi, Error as CasbinError},
+    CasbinService,
+};
 use actix_web::web;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -33,6 +37,7 @@ use crate::mcp::tools::{
     DeleteCloudTool,
     DeleteProjectTool,
     DeleteProxyTool,
+    DeleteRemoteServiceSecretTool,
     // Ansible Roles tools
     DeployAppTool,
     DeployRoleTool,
@@ -57,6 +62,7 @@ use crate::mcp::tools::{
     GetLiveChatInfoTool,
     GetNotificationsTool,
     GetProjectTool,
+    GetRemoteServiceSecretTool,
     GetRoleDetailsTool,
     GetRoleRequirementsTool,
     GetServerResourcesTool,
@@ -76,6 +82,8 @@ use crate::mcp::tools::{
     ListProjectAppsTool,
     ListProjectsTool,
     ListProxiesTool,
+    ListRemoteSecretTargetsTool,
+    ListRemoteServiceSecretsTool,
     ListTemplatesTool,
     ListVaultConfigsTool,
     MarkAllNotificationsReadTool,
@@ -89,6 +97,7 @@ use crate::mcp::tools::{
     SearchApplicationsTool,
     SearchMarketplaceTemplatesTool,
     SetAppEnvVarTool,
+    SetRemoteServiceSecretTool,
     SetVaultConfigTool,
     StartContainerTool,
     StartDeploymentTool,
@@ -110,6 +119,55 @@ pub struct ToolContext {
     pub pg_pool: PgPool,
     pub settings: web::Data<Settings>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolAccessPolicy {
+    pub object: String,
+    pub action: &'static str,
+    pub requires_mfa: bool,
+}
+
+const MCP_TOOL_ACTION: &str = "CALL";
+
+const MFA_REQUIRED_TOOLS: &[&str] = &[
+    "create_project",
+    "create_project_app",
+    "start_deployment",
+    "cancel_deployment",
+    "add_cloud",
+    "delete_cloud",
+    "delete_project",
+    "clone_project",
+    "mark_notification_read",
+    "mark_all_notifications_read",
+    "initiate_deployment",
+    "trigger_redeploy",
+    "add_app_to_deployment",
+    "restart_container",
+    "escalate_to_support",
+    "stop_container",
+    "start_container",
+    "set_app_env_var",
+    "delete_app_env_var",
+    "update_app_ports",
+    "update_app_domain",
+    "set_vault_config",
+    "apply_vault_config",
+    "configure_proxy",
+    "delete_proxy",
+    "set_remote_service_secret",
+    "delete_remote_service_secret",
+    "get_container_exec",
+    "admin_approve_template",
+    "admin_reject_template",
+    "admin_validate_template_security",
+    "deploy_role",
+    "deploy_app",
+    "remove_app",
+    "configure_proxy_agent",
+    "configure_firewall",
+    "configure_firewall_from_role",
+];
 
 /// Trait for tool handlers
 #[async_trait]
@@ -248,6 +306,28 @@ impl ToolRegistry {
             Box::new(GetDeploymentResourcesTool),
         );
 
+        // Vault-backed remote service secrets
+        registry.register(
+            "list_remote_secret_targets",
+            Box::new(ListRemoteSecretTargetsTool),
+        );
+        registry.register(
+            "list_remote_service_secrets",
+            Box::new(ListRemoteServiceSecretsTool),
+        );
+        registry.register(
+            "get_remote_service_secret",
+            Box::new(GetRemoteServiceSecretTool),
+        );
+        registry.register(
+            "set_remote_service_secret",
+            Box::new(SetRemoteServiceSecretTool),
+        );
+        registry.register(
+            "delete_remote_service_secret",
+            Box::new(DeleteRemoteServiceSecretTool),
+        );
+
         // Phase 7: Advanced Monitoring & Troubleshooting tools
         registry.register(
             "get_docker_compose_yaml",
@@ -316,8 +396,41 @@ impl ToolRegistry {
     }
 
     /// Get a tool handler by name
-    pub fn get(&self, name: &str) -> Option<&Box<dyn ToolHandler>> {
-        self.handlers.get(name)
+    pub fn get(&self, name: &str) -> Option<&dyn ToolHandler> {
+        self.handlers.get(name).map(Box::as_ref)
+    }
+
+    pub fn access_policy(&self, name: &str) -> Option<ToolAccessPolicy> {
+        self.has_tool(name).then(|| ToolAccessPolicy {
+            object: format!("/mcp/tools/{name}"),
+            action: MCP_TOOL_ACTION,
+            requires_mfa: MFA_REQUIRED_TOOLS.contains(&name),
+        })
+    }
+
+    pub async fn authorize_call(
+        &self,
+        name: &str,
+        user: &models::User,
+        casbin_service: CasbinService,
+    ) -> Result<(), String> {
+        let Some(policy) = self.access_policy(name) else {
+            return Err("Forbidden: MCP tool call has no registered ACL policy".to_string());
+        };
+
+        let allowed = enforce_tool_policy(casbin_service, &user.role, &policy)
+            .await
+            .map_err(|err| format!("ACL check failed for MCP tool: {err}"))?;
+
+        if !allowed {
+            return Err("Forbidden: MCP tool call is not allowed by ACL".to_string());
+        }
+
+        if policy.requires_mfa && !user.has_verified_mfa() {
+            return Err("Two-factor authentication is required for this MCP tool".to_string());
+        }
+
+        Ok(())
     }
 
     /// List all available tools
@@ -336,8 +449,102 @@ impl ToolRegistry {
     }
 }
 
+async fn enforce_tool_policy(
+    mut casbin_service: CasbinService,
+    role: &str,
+    policy: &ToolAccessPolicy,
+) -> Result<bool, CasbinError> {
+    let enforcer = casbin_service.get_enforcer();
+    let mut lock = enforcer.write().await;
+    lock.enforce_mut(vec![
+        role.to_string(),
+        policy.object.to_string(),
+        policy.action.to_string(),
+    ])
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolRegistry;
+
+    #[test]
+    fn all_registered_tools_have_acl_policy() {
+        let registry = ToolRegistry::new();
+
+        for tool in registry.list_tools() {
+            let policy = registry
+                .access_policy(&tool.name)
+                .unwrap_or_else(|| panic!("{} should require policy", tool.name));
+
+            assert_eq!(policy.object, format!("/mcp/tools/{}", tool.name));
+            assert_eq!(policy.action, "CALL");
+        }
+    }
+
+    #[test]
+    fn sensitive_write_tools_have_acl_and_mfa_policy() {
+        let registry = ToolRegistry::new();
+
+        let set_policy = registry
+            .access_policy("set_remote_service_secret")
+            .expect("set tool should require policy");
+        assert_eq!(set_policy.object, "/mcp/tools/set_remote_service_secret");
+        assert_eq!(set_policy.action, "CALL");
+        assert!(set_policy.requires_mfa);
+
+        let delete_policy = registry
+            .access_policy("delete_remote_service_secret")
+            .expect("delete tool should require policy");
+        assert_eq!(
+            delete_policy.object,
+            "/mcp/tools/delete_remote_service_secret"
+        );
+        assert_eq!(delete_policy.action, "CALL");
+        assert!(delete_policy.requires_mfa);
+
+        let vault_policy = registry
+            .access_policy("apply_vault_config")
+            .expect("vault config apply should require policy");
+        assert!(vault_policy.requires_mfa);
+
+        let deploy_policy = registry
+            .access_policy("deploy_app")
+            .expect("deploy app should require policy");
+        assert!(deploy_policy.requires_mfa);
+
+        let admin_validate_policy = registry
+            .access_policy("admin_validate_template_security")
+            .expect("admin security validation should require policy");
+        assert!(admin_validate_policy.requires_mfa);
+    }
+
+    #[test]
+    fn read_tools_have_acl_without_step_up_policy() {
+        let registry = ToolRegistry::new();
+
+        let list_policy = registry
+            .access_policy("list_remote_service_secrets")
+            .expect("list tool should require policy");
+        assert_eq!(list_policy.object, "/mcp/tools/list_remote_service_secrets");
+        assert!(!list_policy.requires_mfa);
+
+        let get_policy = registry
+            .access_policy("get_remote_service_secret")
+            .expect("get tool should require policy");
+        assert_eq!(get_policy.object, "/mcp/tools/get_remote_service_secret");
+        assert!(!get_policy.requires_mfa);
+    }
+
+    #[test]
+    fn unknown_tools_have_no_policy() {
+        let registry = ToolRegistry::new();
+
+        assert!(registry.access_policy("unknown_tool").is_none());
     }
 }

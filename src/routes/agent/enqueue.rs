@@ -1,10 +1,44 @@
+use crate::configuration::Settings;
 use crate::db;
 use crate::forms::status_panel;
-use crate::helpers::{AgentPgPool, JsonResponse};
+use crate::helpers::{
+    extract_capabilities, has_capability, has_capability_value, AgentPgPool, JsonResponse,
+    NPM_CREDENTIAL_SOURCE_KEY,
+};
 use crate::models::{Command, CommandPriority, User};
+use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
 use actix_web::{post, web, Responder, Result};
 use serde::Deserialize;
 use std::sync::Arc;
+
+const CONFIGURE_PROXY_CAPABILITY_MODE_ENV: &str = "STACKER_CONFIGURE_PROXY_CAPABILITY_MODE";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigureProxyCapabilityMode {
+    Warn,
+    Enforce,
+}
+
+impl ConfigureProxyCapabilityMode {
+    fn from_env() -> Self {
+        Self::from_value(
+            std::env::var(CONFIGURE_PROXY_CAPABILITY_MODE_ENV)
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    fn from_value(value: Option<&str>) -> Self {
+        match value.unwrap_or("warn").trim().to_ascii_lowercase().as_str() {
+            "enforce" | "true" | "1" => Self::Enforce,
+            _ => Self::Warn,
+        }
+    }
+}
+
+fn configure_proxy_requires_vault_capability(capabilities: &[String]) -> bool {
+    has_capability_value(capabilities, NPM_CREDENTIAL_SOURCE_KEY, "vault")
+}
 
 #[derive(Debug, Deserialize)]
 pub struct EnqueueRequest {
@@ -24,6 +58,7 @@ pub async fn enqueue_handler(
     user: web::ReqData<Arc<User>>,
     payload: web::Json<EnqueueRequest>,
     agent_pool: web::Data<AgentPgPool>,
+    settings: web::Data<Settings>,
 ) -> Result<impl Responder> {
     if payload.deployment_hash.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("deployment_hash is required"));
@@ -33,46 +68,73 @@ pub async fn enqueue_handler(
         return Err(JsonResponse::<()>::build().bad_request("command_type is required"));
     }
 
-    // Verify deployment belongs to the requesting user
-    let deployment =
-        db::deployment::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
-            .await
-            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err))?;
-
-    match &deployment {
-        Some(d) if d.user_id.as_deref() == Some(&user.id) => {}
-        _ => {
-            return Err(JsonResponse::<()>::build().not_found("Deployment not found"));
-        }
-    }
+    resolve_owned_deployment_by_hash(
+        agent_pool.as_ref(),
+        settings.get_ref(),
+        user.as_ref(),
+        &payload.deployment_hash,
+    )
+    .await?;
 
     // Validate parameters
     let validated_parameters =
         status_panel::validate_command_parameters(&payload.command_type, &payload.parameters)
             .map_err(|err| JsonResponse::<()>::build().bad_request(err))?;
 
+    let agent = if payload.command_type == "configure_proxy"
+        || validated_parameters
+            .as_ref()
+            .and_then(|params| params.get("runtime"))
+            .and_then(|value| value.as_str())
+            == Some("kata")
+    {
+        db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
+            .await
+            .map_err(|err| {
+                tracing::error!("Failed to fetch agent: {}", err);
+                JsonResponse::<()>::build().internal_server_error(err)
+            })?
+    } else {
+        None
+    };
+
     // If runtime=kata requested, verify agent supports it
     if let Some(ref params) = validated_parameters {
         if params.get("runtime").and_then(|v| v.as_str()) == Some("kata") {
-            let agent =
-                db::agent::fetch_by_deployment_hash(agent_pool.as_ref(), &payload.deployment_hash)
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to fetch agent: {}", err);
-                        JsonResponse::<()>::build().internal_server_error(err)
-                    })?;
-
             let has_kata = agent
                 .as_ref()
-                .and_then(|a| a.capabilities.as_ref())
-                .and_then(|c| serde_json::from_value::<Vec<String>>(c.clone()).ok())
-                .map(|caps| caps.iter().any(|c| c == "kata"))
+                .map(|agent| extract_capabilities(agent.capabilities.clone()))
+                .map(|capabilities| has_capability(&capabilities, "kata"))
                 .unwrap_or(false);
 
             if !has_kata {
                 return Err(JsonResponse::<()>::build().bad_request(
                     "Agent does not support Kata runtime. Check agent capabilities at GET /deployments/{hash}/capabilities"
                 ));
+            }
+        }
+    }
+
+    if payload.command_type == "configure_proxy" {
+        let capabilities = agent
+            .as_ref()
+            .map(|agent| extract_capabilities(agent.capabilities.clone()))
+            .unwrap_or_default();
+
+        if !configure_proxy_requires_vault_capability(&capabilities) {
+            let message = "Agent does not advertise npm_credential_source=vault. Re-link the Status Panel agent or update the installer before running configure_proxy.";
+            match ConfigureProxyCapabilityMode::from_env() {
+                ConfigureProxyCapabilityMode::Warn => {
+                    tracing::warn!(
+                        deployment_hash = %payload.deployment_hash,
+                        capabilities = ?capabilities,
+                        "configure_proxy queued without Vault capability: {}",
+                        message
+                    );
+                }
+                ConfigureProxyCapabilityMode::Enforce => {
+                    return Err(JsonResponse::<()>::build().bad_request(message));
+                }
             }
         }
     }
@@ -149,4 +211,35 @@ pub async fn enqueue_handler(
     Ok(JsonResponse::build()
         .set_item(Some(saved))
         .created("Command enqueued"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configure_proxy_capability_mode_defaults_to_warn() {
+        assert_eq!(
+            ConfigureProxyCapabilityMode::from_value(None),
+            ConfigureProxyCapabilityMode::Warn
+        );
+    }
+
+    #[test]
+    fn configure_proxy_capability_mode_accepts_enforce_flag() {
+        assert_eq!(
+            ConfigureProxyCapabilityMode::from_value(Some("enforce")),
+            ConfigureProxyCapabilityMode::Enforce
+        );
+    }
+
+    #[test]
+    fn configure_proxy_requires_vault_capability_marker() {
+        assert!(configure_proxy_requires_vault_capability(&[
+            "npm_credential_source=vault".to_string()
+        ]));
+        assert!(!configure_proxy_requires_vault_capability(&[
+            "status_panel".to_string()
+        ]));
+    }
 }

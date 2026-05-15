@@ -42,24 +42,26 @@ that's orders of magnitude harder to bypass than namespace-based containers.
 ## Path A: Deploy via TryDirect (Easiest)
 
 The fastest way to run OpenClaw with Kata — no Terraform, no Ansible, no
-infrastructure to manage. TryDirect handles server provisioning, Kata setup,
-and deployment for you.
+infrastructure to manage. TryDirect handles the deployment flow for you, but
+Kata still requires a host with real `/dev/kvm` access.
 
 ### 1. Create a TryDirect account
 
-Sign up at [try.direct](https://try.direct) and connect your Hetzner
-API token (or use TryDirect's built-in hosting).
+Sign up at [try.direct](https://try.direct). If you're bringing your own
+infrastructure, make sure the target host is **bare metal** or another
+environment that exposes `/dev/kvm`.
 
 ### 2. Create your stack
 
 From the dashboard, select **OpenClaw** from the app catalog. Choose
-**Kata Containers** as the runtime — TryDirect will automatically provision a
-Kata-capable server (Hetzner CCX with dedicated CPU and KVM access).
+**Kata Containers** as the runtime. If you self-host on Hetzner, use a
+**Robot bare-metal server** — Hetzner Cloud VM types (CCX, CX, CPX, CAX) do
+not expose `/dev/kvm`.
 
 ### 3. Deploy
 
 Click **Deploy**. TryDirect handles everything:
-- Provisions a CCX server with KVM support
+- Targets infrastructure with real KVM access
 - Installs Docker and Kata Containers
 - Generates the compose file with `runtime: kata`
 - Deploys OpenClaw with hardware isolation
@@ -85,51 +87,46 @@ stacker agent status               # verify runtime: kata
 ## Path B: Self-Hosted Setup (Full Control)
 
 If you'd rather manage your own servers, you can provision and configure
-everything yourself using the Terraform and Ansible files included in the
-[stacker repository](https://github.com/trydirect/stacker).
+everything yourself using the bare-metal guidance and Ansible files included in
+the [stacker repository](https://github.com/trydirect/stacker).
 
 ### What You Need
 
-- A Hetzner Cloud account (or any provider with KVM-capable servers)
-- [OpenTofu](https://opentofu.org/) (or Terraform) installed locally
+- A **bare-metal server** — Hetzner Robot or any provider that exposes
+  `/dev/kvm` directly to your host OS
 - [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) installed locally
 - The [Stacker CLI](https://github.com/trydirect/stacker) installed
 
-> **Hetzner users:** You need a **CCX-series** server (dedicated CPU).
-> Shared-CPU types (CX, CPX, CAX) don't expose `/dev/kvm` and cannot run Kata.
-> See the [Hetzner KVM Guide](../kata/HETZNER_KVM_GUIDE.md) for details.
+> **Hetzner users:** You need a **Hetzner Robot bare-metal server**, not a
+> Hetzner Cloud VM. All Hetzner Cloud VM families — CCX, CX, CPX, and CAX —
+> run on a hypervisor that does **not** expose `/dev/kvm` to the guest.
+> Kata Containers cannot run on any Hetzner Cloud instance type.
+> See the [Hetzner KVM Guide](../kata/HETZNER_KVM_GUIDE.md) for a valid
+> bare-metal setup flow.
 
-### Step 1: Provision a Kata-Ready Server
+### Step 1: Provision a Hetzner Robot Bare-Metal Server
 
-The stacker repo includes a ready-to-use Terraform module at
-[`docs/kata/terraform/`](../kata/terraform/):
+Order and install the server first:
+
+1. Order an x86_64 dedicated server in the
+   [Hetzner Robot portal](https://robot.hetzner.com/).
+2. Install **Ubuntu 22.04 LTS** (or another supported Linux distribution).
+3. Add your SSH key and boot the server.
+4. SSH into the host and verify that KVM is actually present:
 
 ```bash
-# Clone the stacker repo (if you haven't already)
-git clone https://github.com/trydirect/stacker.git
-cd stacker/docs/kata/terraform
-
-# Initialize and apply
-tofu init
-tofu plan \
-  -var="hcloud_token=$HCLOUD_TOKEN" \
-  -var="ssh_key_name=my-key" \
-  -var="server_type=ccx13" \
-  -var="location=fsn1"
-
-tofu apply \
-  -var="hcloud_token=$HCLOUD_TOKEN" \
-  -var="ssh_key_name=my-key"
+ssh root@<server-ip>
+ls -la /dev/kvm
+lsmod | grep kvm
+egrep -c '(vmx|svm)' /proc/cpuinfo
 ```
 
-This provisions a Hetzner CCX13 (dedicated-CPU) server with Docker and Kata
-pre-installed via cloud-init. The server is ready for deployments once
-cloud-init completes (~3–5 minutes).
+If `/dev/kvm` is missing, stop there — that host cannot run Kata Containers.
 
-### Step 2: Configure with Ansible (optional — for existing servers)
+### Step 2: Configure with Ansible
 
-If you already have a server or want idempotent configuration, use the Ansible
-playbook at [`docs/kata/ansible/kata-setup.yml`](../kata/ansible/kata-setup.yml):
+Once the bare-metal server is online, use the Ansible playbook at
+[`docs/kata/ansible/kata-setup.yml`](../kata/ansible/kata-setup.yml):
 
 ```bash
 cd stacker/docs/kata/ansible
@@ -305,8 +302,8 @@ security benefits.
 
 | Path | What you do | What's handled for you |
 |---|---|---|
-| **TryDirect** | Sign up, pick OpenClaw + Kata, click Deploy | Server, KVM, Docker, Kata, DNS |
-| **Self-hosted** | Run `tofu apply` + `stacker deploy --runtime kata` | Compose generation, runtime injection |
+| **TryDirect** | Sign up, pick OpenClaw + Kata, click Deploy | KVM-capable infrastructure, Docker, Kata, DNS |
+| **Self-hosted** | Provision Robot bare metal, run `kata-setup.yml`, then `stacker deploy --runtime kata` | Compose generation, runtime injection |
 
 Running OpenClaw inside Kata Containers gives you:
 - **Privacy**: Your AI data stays on your server, not in a cloud SaaS

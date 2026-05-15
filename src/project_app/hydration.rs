@@ -1,10 +1,13 @@
-pub use hydrate::{hydrate_project_app, hydrate_single_app, HydratedProjectApp};
+pub use hydrate::{
+    hydrate_project_app, hydrate_single_app, redact_app_environment, HydratedProjectApp,
+};
 
 mod hydrate {
     use actix_web::Error;
     use serde_json::{json, Value};
     use sqlx::PgPool;
 
+    use crate::db;
     use crate::helpers::JsonResponse;
     use crate::models::{Project, ProjectApp};
     use crate::services::{AppConfig, ProjectAppService, VaultError, VaultService};
@@ -101,7 +104,7 @@ mod hydrate {
     }
 
     pub async fn hydrate_single_app(
-        _pool: &PgPool,
+        pool: &PgPool,
         project: &Project,
         app: ProjectApp,
     ) -> Result<HydratedProjectApp, Error> {
@@ -209,7 +212,47 @@ mod hydrate {
             push_config_file_if_missing(&mut hydrated.config_files, &compose_name, &config);
         }
 
+        hydrated.environment = redact_app_environment(
+            pool,
+            &project.user_id,
+            project.id,
+            &app.code,
+            hydrated.environment,
+        )
+        .await
+        .map_err(JsonResponse::internal_server_error)?;
+
         Ok(hydrated)
+    }
+
+    pub async fn redact_app_environment(
+        pool: &PgPool,
+        user_id: &str,
+        project_id: i32,
+        app_code: &str,
+        env: Value,
+    ) -> Result<Value, String> {
+        let mut redacted = redact_sensitive_env_vars(env);
+        let service_secrets =
+            db::remote_secret::list_service_secrets(pool, user_id, project_id, app_code).await?;
+
+        if service_secrets.is_empty() {
+            return Ok(redacted);
+        }
+
+        if !redacted.is_object() {
+            redacted = normalize_environment(redacted);
+        }
+
+        let object = redacted
+            .as_object_mut()
+            .ok_or_else(|| "App environment must be a JSON object".to_string())?;
+
+        for secret in service_secrets {
+            object.insert(secret.name, Value::String("[REDACTED]".to_string()));
+        }
+
+        Ok(redacted)
     }
 
     async fn fetch_optional_config(
@@ -256,6 +299,64 @@ mod hydrate {
             group: config.group.clone(),
             is_ansible: None,
         });
+    }
+
+    fn normalize_environment(env: Value) -> Value {
+        match env {
+            Value::Object(_) => env,
+            Value::Array(items) => {
+                let mut normalized = serde_json::Map::new();
+                for item in items {
+                    if let Some(pair) = item.as_str() {
+                        if let Some((key, value)) = pair.split_once('=') {
+                            normalized.insert(key.to_string(), Value::String(value.to_string()));
+                        }
+                    }
+                }
+                Value::Object(normalized)
+            }
+            other => other,
+        }
+    }
+
+    fn redact_sensitive_env_vars(env: Value) -> Value {
+        const SENSITIVE_PATTERNS: &[&str] = &[
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "key",
+            "api_key",
+            "apikey",
+            "auth",
+            "credential",
+            "private",
+            "cert",
+            "ssl",
+            "tls",
+        ];
+
+        let normalized = normalize_environment(env);
+        let Some(obj) = normalized.as_object() else {
+            return normalized;
+        };
+
+        let redacted = obj
+            .iter()
+            .map(|(key, value)| {
+                let key_lower = key.to_lowercase();
+                let is_sensitive = SENSITIVE_PATTERNS
+                    .iter()
+                    .any(|pattern| key_lower.contains(pattern));
+                if is_sensitive {
+                    (key.clone(), Value::String("[REDACTED]".to_string()))
+                } else {
+                    (key.clone(), value.clone())
+                }
+            })
+            .collect();
+
+        Value::Object(redacted)
     }
 
     fn parse_env_to_json(content: &str) -> Value {

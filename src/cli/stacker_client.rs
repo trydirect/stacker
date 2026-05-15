@@ -8,7 +8,9 @@
 //!
 //! All endpoints require `Authorization: Bearer <token>` from `stacker login`.
 
+use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
+use crate::handoff::{DeploymentHandoffPayload, DeploymentHandoffResolveRequest};
 use serde::{Deserialize, Serialize};
 
 /// Default Stacker server base URL (distinct from the User Service auth URL).
@@ -46,6 +48,41 @@ pub struct ProjectInfo {
     pub metadata: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Project app as returned by `/project/{id}/apps` endpoints
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectAppInfo {
+    pub id: i32,
+    pub project_id: i32,
+    pub code: String,
+    pub name: String,
+    pub image: String,
+    pub enabled: bool,
+    pub deploy_order: Option<i32>,
+    pub parent_app_code: Option<String>,
+}
+
+/// Project app registration payload for `POST /project/{id}/apps`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectAppRegistrationRequest {
+    pub code: String,
+    pub name: Option<String>,
+    pub image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ports: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deploy_order: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_hash: Option<String>,
 }
 
 /// Cloud credentials as returned by `/cloud` endpoints
@@ -87,6 +124,19 @@ pub struct ServerInfo {
     pub key_status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteSecretMetadataInfo {
+    pub id: i32,
+    pub scope: String,
+    pub name: String,
+    pub project_id: Option<i32>,
+    pub app_code: Option<String>,
+    pub server_id: Option<i32>,
+    pub updated_at: String,
+    pub updated_by: String,
+    pub source: String,
+}
+
 fn default_connection_mode() -> String {
     "ssh".to_string()
 }
@@ -112,6 +162,17 @@ pub struct GenerateKeyResponse {
 pub struct PublicKeyResponse {
     pub public_key: String,
     pub fingerprint: Option<String>,
+}
+
+/// Response from `POST /server/{id}/ssh-key/authorize-public-key`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizePublicKeyResponse {
+    pub server_id: i32,
+    pub srv_ip: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub authorized: bool,
+    pub message: String,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -237,6 +298,42 @@ pub struct PipeInstanceInfo {
     pub updated_at: String,
 }
 
+/// Pipe execution info from `/api/v1/pipes/executions`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeExecutionInfo {
+    pub id: String,
+    pub pipe_instance_id: String,
+    pub deployment_hash: String,
+    pub trigger_type: String,
+    pub status: String,
+    #[serde(default)]
+    pub source_data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub mapped_data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub target_response: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub replay_of: Option<String>,
+    pub created_by: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// Replay response from `/api/v1/pipes/executions/{id}/replay`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipeReplayResponse {
+    pub execution_id: String,
+    pub replay_of: String,
+    #[serde(default)]
+    pub command_id: Option<String>,
+    pub status: String,
+}
+
 /// Request body for creating a pipe template
 #[derive(Debug, Clone, Serialize)]
 pub struct CreatePipeTemplateApiRequest {
@@ -259,7 +356,8 @@ pub struct CreatePipeTemplateApiRequest {
 /// Request body for creating a pipe instance
 #[derive(Debug, Clone, Serialize)]
 pub struct CreatePipeInstanceApiRequest {
-    pub deployment_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_hash: Option<String>,
     pub source_container: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_container: Option<String>,
@@ -273,6 +371,12 @@ pub struct CreatePipeInstanceApiRequest {
     pub config_override: Option<serde_json::Value>,
 }
 
+/// Request body for deploying (promoting) a local pipe to remote
+#[derive(Debug, Serialize)]
+pub struct DeployPipeApiRequest {
+    pub deployment_hash: String,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StackerClient — HTTP client for the Stacker server
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -280,11 +384,16 @@ pub struct CreatePipeInstanceApiRequest {
 pub struct StackerClient {
     base_url: String,
     token: String,
+    target: DeployTarget,
     http: reqwest::Client,
 }
 
 impl StackerClient {
     pub fn new(base_url: &str, token: &str) -> Self {
+        Self::new_for_target(base_url, token, DeployTarget::Cloud)
+    }
+
+    pub fn new_for_target(base_url: &str, token: &str, target: DeployTarget) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -292,19 +401,90 @@ impl StackerClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            target,
             http,
         }
     }
 
-    // ── Projects ─────────────────────────────────────
+    fn project_endpoint_candidates(&self, suffix: &str) -> [String; 2] {
+        [
+            format!("{}/api/v1/project{}", self.base_url, suffix),
+            format!("{}/project{}", self.base_url, suffix),
+        ]
+    }
 
-    /// List all projects for the authenticated user.
-    pub async fn list_projects(&self) -> Result<Vec<ProjectInfo>, CliError> {
-        let url = format!("{}/project", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(&self.token)
+    async fn send_project_request(
+        &self,
+        method: reqwest::Method,
+        suffix: &str,
+        body: Option<&serde_json::Value>,
+        action_label: &str,
+    ) -> Result<reqwest::Response, CliError> {
+        let mut last_response = None;
+
+        for url in self.project_endpoint_candidates(suffix) {
+            let mut request = self
+                .http
+                .request(method.clone(), &url)
+                .bearer_auth(&self.token);
+            if let Some(payload) = body {
+                request = request.json(payload);
+            }
+
+            let resp = request.send().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+            if resp.status().is_success() {
+                return Ok(resp);
+            }
+
+            last_response = Some(resp);
+        }
+
+        last_response.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: format!(
+                "Stacker server {} failed: project endpoints were not reachable",
+                action_label
+            ),
+        })
+    }
+
+    async fn send_server_request(
+        &self,
+        method: reqwest::Method,
+        suffix: &str,
+        body: Option<&serde_json::Value>,
+        action_label: &str,
+    ) -> Result<reqwest::Response, CliError> {
+        let url = format!("{}/server{}", self.base_url, suffix);
+        let mut request = self.http.request(method, &url).bearer_auth(&self.token);
+        if let Some(payload) = body {
+            request = request.json(payload);
+        }
+
+        request.send().await.map_err(|e| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: format!("Stacker server {} failed: {}", action_label, e),
+        })
+    }
+
+    pub async fn resolve_handoff(
+        base_url: &str,
+        token: &str,
+    ) -> Result<DeploymentHandoffPayload, CliError> {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+        let url = format!("{}/api/v1/handoff/resolve", base_url.trim_end_matches('/'));
+        let resp = http
+            .post(&url)
+            .json(&DeploymentHandoffResolveRequest {
+                token: token.to_string(),
+            })
             .send()
             .await
             .map_err(|e| CliError::DeployFailed {
@@ -317,13 +497,42 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Stacker handoff resolve failed ({}): {}", status, body),
+            });
+        }
+
+        let api: ApiResponse<DeploymentHandoffPayload> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: crate::cli::config_parser::DeployTarget::Cloud,
+            reason: "Stacker handoff response did not include payload".to_string(),
+        })
+    }
+
+    // ── Projects ─────────────────────────────────────
+
+    /// List all projects for the authenticated user.
+    pub async fn list_projects(&self) -> Result<Vec<ProjectInfo>, CliError> {
+        let resp = self
+            .send_project_request(reqwest::Method::GET, "", None, "GET /project")
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
                 reason: format!("Stacker server GET /project failed ({}): {}", status, body),
             });
         }
 
         let api: ApiResponse<ProjectInfo> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
@@ -337,6 +546,90 @@ impl StackerClient {
         Ok(projects
             .into_iter()
             .find(|p| p.name.to_lowercase() == lower))
+    }
+
+    pub async fn find_project(&self, reference: &str) -> Result<Option<ProjectInfo>, CliError> {
+        let projects = self.list_projects().await?;
+        let lower = reference.to_lowercase();
+        Ok(projects.into_iter().find(|project| {
+            project.id.to_string() == reference || project.name.to_lowercase() == lower
+        }))
+    }
+
+    /// List all apps for a project owned by the authenticated user.
+    pub async fn list_project_apps(
+        &self,
+        project_id: i32,
+    ) -> Result<Vec<ProjectAppInfo>, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps", project_id),
+                None,
+                "GET /project/{id}/apps",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /project/{}/apps failed ({}): {}",
+                    project_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<ProjectAppInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// Create or update one project app target.
+    pub async fn upsert_project_app(
+        &self,
+        project_id: i32,
+        request: &ProjectAppRegistrationRequest,
+    ) -> Result<ProjectAppInfo, CliError> {
+        let body =
+            serde_json::to_value(request).map_err(|e| CliError::ConfigValidation(e.to_string()))?;
+        let resp = self
+            .send_project_request(
+                reqwest::Method::POST,
+                &format!("/{}/apps", project_id),
+                Some(&body),
+                "POST /project/{id}/apps",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target,
+                reason: format!(
+                    "Stacker server POST /project/{}/apps failed ({}): {}",
+                    project_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<ProjectAppInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target,
+            reason: "Stacker server did not return a project app".to_string(),
+        })
     }
 
     // ── Deployments ───────────────────────────────────
@@ -389,8 +682,6 @@ impl StackerClient {
         name: &str,
         metadata: serde_json::Value,
     ) -> Result<ProjectInfo, CliError> {
-        let url = format!("{}/project", self.base_url);
-
         // If metadata already has "custom" key (e.g. from build_project_body),
         // use it directly. Otherwise, wrap in a default structure.
         let body = if metadata.get("custom").is_some() {
@@ -429,34 +720,26 @@ impl StackerClient {
         };
 
         let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Stacker server unreachable: {}", e),
-            })?;
+            .send_project_request(reqwest::Method::POST, "", Some(&body), "POST /project")
+            .await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Stacker server POST /project failed ({}): {}", status, body),
             });
         }
 
         let api: ApiResponse<ProjectInfo> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
-            target: crate::cli::config_parser::DeployTarget::Cloud,
+            target: self.target.clone(),
             reason: "Stacker server created project but returned no item".to_string(),
         })
     }
@@ -467,25 +750,20 @@ impl StackerClient {
         project_id: i32,
         body: serde_json::Value,
     ) -> Result<ProjectInfo, CliError> {
-        let url = format!("{}/project/{}", self.base_url, project_id);
-
         let resp = self
-            .http
-            .put(&url)
-            .bearer_auth(&self.token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Stacker server unreachable: {}", e),
-            })?;
+            .send_project_request(
+                reqwest::Method::PUT,
+                &format!("/{}", project_id),
+                Some(&body),
+                "PUT /project/{id}",
+            )
+            .await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!(
                     "Stacker server PUT /project/{} failed ({}): {}",
                     project_id, status, body
@@ -495,12 +773,12 @@ impl StackerClient {
 
         let api: ApiResponse<ProjectInfo> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
         api.item.ok_or_else(|| CliError::DeployFailed {
-            target: crate::cli::config_parser::DeployTarget::Cloud,
+            target: self.target.clone(),
             reason: "Stacker server updated project but returned no item".to_string(),
         })
     }
@@ -783,7 +1061,7 @@ impl StackerClient {
             .send()
             .await
             .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Stacker server unreachable: {}", e),
             })?;
 
@@ -791,14 +1069,14 @@ impl StackerClient {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Stacker server GET /server failed ({}): {}", status, body),
             });
         }
 
         let api: ApiResponse<ServerInfo> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
@@ -815,6 +1093,290 @@ impl StackerClient {
                 .map(|n| n.to_lowercase() == lower)
                 .unwrap_or(false)
         }))
+    }
+
+    pub async fn get_service_secret_metadata(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+    ) -> Result<Option<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/secrets/{}", project_id, app_code, name),
+                None,
+                "GET /project/{id}/apps/{code}/secrets/{name}",
+            )
+            .await?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /project/{}/apps/{}/secrets/{} failed ({}): {}",
+                    project_id, app_code, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    pub async fn list_service_secrets(
+        &self,
+        project_id: i32,
+        app_code: &str,
+    ) -> Result<Vec<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::GET,
+                &format!("/{}/apps/{}/secrets", project_id, app_code),
+                None,
+                "GET /project/{id}/apps/{code}/secrets",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /project/{}/apps/{}/secrets failed ({}): {}",
+                    project_id, app_code, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    pub async fn set_service_secret(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<RemoteSecretMetadataInfo, CliError> {
+        let body = serde_json::json!({ "value": value });
+        let resp = self
+            .send_project_request(
+                reqwest::Method::PUT,
+                &format!("/{}/apps/{}/secrets/{}", project_id, app_code, name),
+                Some(&body),
+                "PUT /project/{id}/apps/{code}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server PUT /project/{}/apps/{}/secrets/{} failed ({}): {}",
+                    project_id, app_code, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server saved secret but returned no item".to_string(),
+        })
+    }
+
+    pub async fn delete_service_secret(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        name: &str,
+    ) -> Result<(), CliError> {
+        let resp = self
+            .send_project_request(
+                reqwest::Method::DELETE,
+                &format!("/{}/apps/{}/secrets/{}", project_id, app_code, name),
+                None,
+                "DELETE /project/{id}/apps/{code}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server DELETE /project/{}/apps/{}/secrets/{} failed ({}): {}",
+                    project_id, app_code, name, status, body
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_server_secret_metadata(
+        &self,
+        server_id: i32,
+        name: &str,
+    ) -> Result<Option<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_server_request(
+                reqwest::Method::GET,
+                &format!("/{}/secrets/{}", server_id, name),
+                None,
+                "GET /server/{id}/secrets/{name}",
+            )
+            .await?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /server/{}/secrets/{} failed ({}): {}",
+                    server_id, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    pub async fn list_server_secrets(
+        &self,
+        server_id: i32,
+    ) -> Result<Vec<RemoteSecretMetadataInfo>, CliError> {
+        let resp = self
+            .send_server_request(
+                reqwest::Method::GET,
+                &format!("/{}/secrets", server_id),
+                None,
+                "GET /server/{id}/secrets",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /server/{}/secrets failed ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    pub async fn set_server_secret(
+        &self,
+        server_id: i32,
+        name: &str,
+        value: &str,
+    ) -> Result<RemoteSecretMetadataInfo, CliError> {
+        let body = serde_json::json!({ "value": value });
+        let resp = self
+            .send_server_request(
+                reqwest::Method::PUT,
+                &format!("/{}/secrets/{}", server_id, name),
+                Some(&body),
+                "PUT /server/{id}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server PUT /server/{}/secrets/{} failed ({}): {}",
+                    server_id, name, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<RemoteSecretMetadataInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target.clone(),
+            reason: "Stacker server saved secret but returned no item".to_string(),
+        })
+    }
+
+    pub async fn delete_server_secret(&self, server_id: i32, name: &str) -> Result<(), CliError> {
+        let resp = self
+            .send_server_request(
+                reqwest::Method::DELETE,
+                &format!("/{}/secrets/{}", server_id, name),
+                None,
+                "DELETE /server/{id}/secrets/{name}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server DELETE /server/{}/secrets/{} failed ({}): {}",
+                    server_id, name, status, body
+                ),
+            });
+        }
+
+        Ok(())
     }
 
     // ── SSH Keys ─────────────────────────────────────
@@ -867,7 +1429,7 @@ impl StackerClient {
             .send()
             .await
             .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Stacker server unreachable: {}", e),
             })?;
 
@@ -892,6 +1454,102 @@ impl StackerClient {
         api.item.ok_or_else(|| CliError::DeployFailed {
             target: crate::cli::config_parser::DeployTarget::Cloud,
             reason: "No SSH key found for this server".to_string(),
+        })
+    }
+
+    /// Authorize a local public SSH key on a server using the server-side Vault key.
+    pub async fn authorize_ssh_public_key(
+        &self,
+        server_id: i32,
+        public_key: &str,
+        user: Option<&str>,
+        port: Option<u16>,
+    ) -> Result<AuthorizePublicKeyResponse, CliError> {
+        let url = format!(
+            "{}/server/{}/ssh-key/authorize-public-key",
+            self.base_url, server_id
+        );
+        let body = serde_json::json!({
+            "public_key": public_key,
+            "user": user,
+            "port": port,
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target,
+                reason: format!(
+                    "Failed to authorize SSH public key for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<AuthorizePublicKeyResponse> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target,
+            reason: "Server authorized SSH public key but returned no item".to_string(),
+        })
+    }
+
+    pub async fn configure_cloud_firewall(
+        &self,
+        server_id: i32,
+        request: &crate::forms::ConfigureCloudFirewallRequest,
+    ) -> Result<crate::forms::ConfigureCloudFirewallResponse, CliError> {
+        let url = format!("{}/server/{}/cloud-firewall", self.base_url, server_id);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target,
+                reason: format!(
+                    "Failed to configure cloud firewall for server {} ({}): {}",
+                    server_id, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<crate::forms::ConfigureCloudFirewallResponse> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target,
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        api.item.ok_or_else(|| CliError::DeployFailed {
+            target: self.target,
+            reason: "Cloud firewall operation returned no item".to_string(),
         })
     }
 
@@ -1041,28 +1699,24 @@ impl StackerClient {
         cloud_id: Option<i32>,
         deploy_form: serde_json::Value,
     ) -> Result<DeployResponse, CliError> {
-        let url = match cloud_id {
-            Some(cid) => format!("{}/project/{}/deploy/{}", self.base_url, project_id, cid),
-            None => format!("{}/project/{}/deploy", self.base_url, project_id),
+        let suffix = match cloud_id {
+            Some(cid) => format!("/{}/deploy/{}", project_id, cid),
+            None => format!("/{}/deploy", project_id),
         };
-
         let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.token)
-            .json(&deploy_form)
-            .send()
-            .await
-            .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Stacker server unreachable: {}", e),
-            })?;
+            .send_project_request(
+                reqwest::Method::POST,
+                &suffix,
+                Some(&deploy_form),
+                "POST /project/{id}/deploy",
+            )
+            .await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Stacker server deploy failed ({}): {}", status, body),
             });
         }
@@ -1070,8 +1724,41 @@ impl StackerClient {
         resp.json::<DeployResponse>()
             .await
             .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid deploy response from Stacker server: {}", e),
+            })
+    }
+
+    /// Request rollback of a project to a known marketplace version.
+    pub async fn rollback_project(
+        &self,
+        project_id: i32,
+        version: &str,
+    ) -> Result<DeployResponse, CliError> {
+        let rollback_body = serde_json::json!({ "version": version });
+        let resp = self
+            .send_project_request(
+                reqwest::Method::POST,
+                &format!("/{}/rollback", project_id),
+                Some(&rollback_body),
+                "POST /project/{id}/rollback",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server rollback failed ({}): {}", status, body),
+            });
+        }
+
+        resp.json::<DeployResponse>()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid rollback response from Stacker server: {}", e),
             })
     }
 
@@ -1103,7 +1790,7 @@ impl StackerClient {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!(
                     "Stacker server GET /api/v1/deployments/{} failed ({}): {}",
                     deployment_id, status, body
@@ -1113,7 +1800,7 @@ impl StackerClient {
 
         let api: ApiResponse<DeploymentStatusInfo> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
@@ -1137,7 +1824,7 @@ impl StackerClient {
             .send()
             .await
             .map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Stacker server unreachable: {}", e),
             })?;
 
@@ -1149,7 +1836,7 @@ impl StackerClient {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!(
                     "Stacker server GET /api/v1/deployments/project/{} failed ({}): {}",
                     project_id, status, body
@@ -1159,7 +1846,7 @@ impl StackerClient {
 
         let api: ApiResponse<DeploymentStatusInfo> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
-                target: crate::cli::config_parser::DeployTarget::Cloud,
+                target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
@@ -1540,6 +2227,37 @@ impl StackerClient {
         Ok(api.list.unwrap_or_default())
     }
 
+    /// List local pipe instances for the current user.
+    ///
+    /// `GET /api/v1/pipes/instances/local`
+    pub async fn list_local_pipe_instances(&self) -> Result<Vec<PipeInstanceInfo>, CliError> {
+        let url = format!("{}/api/v1/pipes/instances/local", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to list local pipes: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "List local pipes failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> = resp.json().await.map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid local pipe list response: {}", e))
+        })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
     /// Get a pipe instance by ID.
     ///
     /// `GET /api/v1/pipes/instances/detail/{instance_id}`
@@ -1738,6 +2456,162 @@ impl StackerClient {
         })?;
 
         Ok(api.list.unwrap_or_default())
+    }
+
+    // ── Pipe Executions ──────────────────────────────
+
+    /// List executions for a pipe instance (paginated).
+    ///
+    /// `GET /api/v1/pipes/instances/{instance_id}/executions?limit=N&offset=M`
+    pub async fn list_pipe_executions(
+        &self,
+        instance_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PipeExecutionInfo>, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/{}/executions?limit={}&offset={}",
+            self.base_url, instance_id, limit, offset
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to list executions: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "List executions failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeExecutionInfo> = resp.json().await.map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid executions response: {}", e))
+        })?;
+
+        Ok(api.list.unwrap_or_default())
+    }
+
+    /// Get a single pipe execution by ID.
+    ///
+    /// `GET /api/v1/pipes/executions/{execution_id}`
+    pub async fn get_pipe_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<PipeExecutionInfo>, CliError> {
+        let url = format!("{}/api/v1/pipes/executions/{}", self.base_url, execution_id);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to get execution: {}", e)))?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Get execution failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeExecutionInfo> = resp.json().await.map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid execution response: {}", e))
+        })?;
+
+        Ok(api.item)
+    }
+
+    /// Replay a previous pipe execution.
+    ///
+    /// `POST /api/v1/pipes/executions/{execution_id}/replay`
+    pub async fn replay_pipe_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<PipeReplayResponse, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/executions/{}/replay",
+            self.base_url, execution_id
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to replay execution: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Replay failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeReplayResponse> = resp
+            .json()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid replay response: {}", e)))?;
+
+        api.item
+            .ok_or_else(|| CliError::ConfigValidation("No replay response returned".to_string()))
+    }
+
+    /// Deploy (promote) a local pipe instance to a remote deployment.
+    ///
+    /// `POST /api/v1/pipes/instances/{instance_id}/deploy`
+    pub async fn deploy_pipe(
+        &self,
+        instance_id: &str,
+        deployment_hash: &str,
+    ) -> Result<PipeInstanceInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/pipes/instances/{}/deploy",
+            self.base_url, instance_id
+        );
+        let body = DeployPipeApiRequest {
+            deployment_hash: deployment_hash.to_string(),
+        };
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to deploy pipe: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(format!(
+                "Deploy failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let api: ApiResponse<PipeInstanceInfo> = resp
+            .json()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid deploy response: {}", e)))?;
+
+        api.item
+            .ok_or_else(|| CliError::ConfigValidation("No deploy response returned".to_string()))
     }
 
     // ── Marketplace (creator) ────────────────────────
@@ -1995,45 +2869,13 @@ fn parse_docker_image(image: &str) -> (Option<String>, String, Option<String>) {
 
 /// Parse a port mapping string like "8080:80", "8080:80/tcp", or "3000"
 /// into (host_port, container_port) tuple.
-fn split_compose_port_parts(port_str: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut template_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut prev = None;
-
-    for ch in port_str.chars() {
-        if ch == '{' && prev == Some('$') {
-            template_depth += 1;
-        } else if ch == '}' && template_depth > 0 {
-            template_depth -= 1;
-        } else if ch == '[' {
-            bracket_depth += 1;
-        } else if ch == ']' && bracket_depth > 0 {
-            bracket_depth -= 1;
-        }
-
-        if ch == ':' && template_depth == 0 && bracket_depth == 0 {
-            parts.push(std::mem::take(&mut current));
-        } else {
-            current.push(ch);
-        }
-
-        prev = Some(ch);
-    }
-
-    parts.push(current);
-    parts
-}
-
 fn parse_port_mapping(port_str: &str) -> (String, String) {
     // Remove protocol suffix like "/tcp", "/udp"
     let port_no_proto = port_str.split('/').next().unwrap_or(port_str);
-    let parts = split_compose_port_parts(port_no_proto);
-    match parts.len() {
-        3 => (parts[1].clone(), parts[2].clone()),
-        2 => (parts[0].clone(), parts[1].clone()),
-        _ => (port_no_proto.to_string(), port_no_proto.to_string()),
+    if let Some((host, container)) = port_no_proto.split_once(':') {
+        (host.to_string(), container.to_string())
+    } else {
+        (port_no_proto.to_string(), port_no_proto.to_string())
     }
 }
 
@@ -2041,123 +2883,15 @@ fn parse_port_mapping(port_str: &str) -> (String, String) {
 /// into (host_path, container_path, read_only) tuple.
 /// Handles optional `:ro` / `:rw` suffix (e.g. "/var/run/docker.sock:/var/run/docker.sock:ro").
 fn parse_volume_mapping(vol_str: &str) -> (String, String, bool) {
-    let parts = split_compose_port_parts(vol_str);
-    let mode = parts.last().map(String::as_str);
-
-    if parts.len() >= 3 && matches!(mode, Some("ro" | "rw")) {
-        let target_index = parts.len() - 2;
-        return (
-            parts[..target_index].join(":"),
-            parts[target_index].clone(),
-            mode == Some("ro"),
-        );
-    }
-
-    if parts.len() >= 2 {
-        return (
-            parts[..parts.len() - 1].join(":"),
-            parts.last().cloned().unwrap_or_default(),
-            false,
-        );
-    }
-
-    (vol_str.to_string(), vol_str.to_string(), false)
-}
-
-#[derive(Debug, Clone)]
-struct NginxProxyManagerOverrides {
-    shared_ports: Vec<serde_json::Value>,
-    volumes: Vec<serde_json::Value>,
-    environment: Vec<serde_json::Value>,
-}
-
-fn parse_compose_port_mapping(port_str: &str) -> Option<(String, String)> {
-    // Remove protocol suffix like "/tcp", "/udp"
-    let port_no_proto = port_str.split('/').next().unwrap_or(port_str);
-    let parts = split_compose_port_parts(port_no_proto);
+    let parts: Vec<&str> = vol_str.split(':').collect();
     match parts.len() {
-        // "ip:host:container"
-        3 => Some((parts[1].clone(), parts[2].clone())),
-        // "host:container"
-        2 => Some((parts[0].clone(), parts[1].clone())),
-        // "container"
-        1 => Some((parts[0].clone(), parts[0].clone())),
-        _ => None,
+        // "source:target:mode" (e.g. "/host:/container:ro")
+        3 => (parts[0].to_string(), parts[1].to_string(), parts[2] == "ro"),
+        // "source:target"
+        2 => (parts[0].to_string(), parts[1].to_string(), false),
+        // bare path
+        _ => (vol_str.to_string(), vol_str.to_string(), false),
     }
-}
-
-fn resolve_compose_path(config: &StackerConfig) -> Option<std::path::PathBuf> {
-    let path = config.deploy.compose_file.as_ref()?;
-    if path.is_absolute() {
-        Some(path.clone())
-    } else {
-        std::env::current_dir().ok().map(|cwd| cwd.join(path))
-    }
-}
-
-fn nginx_proxy_manager_overrides_from_compose(
-    config: &StackerConfig,
-) -> Option<NginxProxyManagerOverrides> {
-    let compose_path = resolve_compose_path(config)?;
-    let compose_content = std::fs::read_to_string(&compose_path).ok()?;
-    let services =
-        crate::helpers::project::builder::parse_compose_services(&compose_content).ok()?;
-
-    let npm = services.into_iter().find(|svc| {
-        let name = svc.name.to_lowercase();
-        let name_match = matches!(
-            name.as_str(),
-            "nginx_proxy_manager" | "nginx-proxy-manager" | "npm"
-        );
-        let image_match = svc
-            .image
-            .as_ref()
-            .map(|i| i.to_lowercase().contains("nginx-proxy-manager"))
-            .unwrap_or(false);
-        name_match || image_match
-    })?;
-
-    let shared_ports: Vec<serde_json::Value> = npm
-        .ports
-        .iter()
-        .filter_map(|p| parse_compose_port_mapping(p))
-        .map(|(host, container)| {
-            serde_json::json!({
-                "host_port": host,
-                "container_port": container,
-            })
-        })
-        .collect();
-
-    let volumes: Vec<serde_json::Value> = npm
-        .volumes
-        .iter()
-        .map(|v| {
-            let (host, container, read_only) = parse_volume_mapping(v);
-            let container_path = if read_only {
-                format!("{}:ro", container)
-            } else {
-                container
-            };
-            serde_json::json!({
-                "host_path": host,
-                "container_path": container_path,
-            })
-        })
-        .collect();
-
-    let environment: Vec<serde_json::Value> = npm
-        .environment
-        .iter()
-        .filter_map(|kv| kv.split_once('='))
-        .map(|(k, v)| serde_json::json!({ "key": k, "value": v }))
-        .collect();
-
-    Some(NginxProxyManagerOverrides {
-        shared_ports,
-        volumes,
-        environment,
-    })
 }
 
 /// Convert a `ServiceDefinition` from stacker.yml into the Stacker server's
@@ -2225,6 +2959,15 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     }
 
     app
+}
+
+fn is_nginx_proxy_manager_service(svc: &ServiceDefinition) -> bool {
+    let service_name = svc.name.to_ascii_lowercase().replace('-', "_");
+    let image = svc.image.to_ascii_lowercase();
+
+    service_name == "nginx_proxy_manager"
+        || service_name == "npm"
+        || image.contains("nginx-proxy-manager")
 }
 
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
@@ -2353,113 +3096,27 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
     // app format.  The main `app` section is the primary web application;
     // additional `services` are supporting containers.
     let mut web_apps: Vec<serde_json::Value> = Vec::new();
+    let mut service_apps: Vec<serde_json::Value> = Vec::new();
 
     // Include the main app (if it has an image)
     if let Some(main_app) = app_source_to_app_json(config, &network_ids) {
         web_apps.push(main_app);
     }
 
-    fn is_nginx_proxy_manager_service(svc: &crate::cli::config_parser::ServiceDefinition) -> bool {
-        let name = svc.name.to_lowercase();
-        let image = svc.image.to_lowercase();
+    let proxy_is_managed = matches!(
+        config.proxy.proxy_type,
+        crate::cli::config_parser::ProxyType::Nginx
+            | crate::cli::config_parser::ProxyType::NginxProxyManager
+    );
 
-        name == "nginx_proxy_manager"
-            || name == "npm"
-            || name == "proxy-manager"
-            || name == "nginx-proxy-manager"
-            || image.contains("nginx-proxy-manager")
-            || image.contains("jc21/nginx-proxy-manager")
-    }
-
-    // Include additional services
+    // Include additional services as service targets. Managed proxy services
+    // are installed via extended_features, not as project apps, to avoid
+    // duplicate NPM containers.
     for svc in &config.services {
-        // `proxy.type: nginx|nginx-proxy-manager` is deployed via the dedicated
-        // `nginx_proxy_manager` feature/role. If a configure step accidentally
-        // injects an NPM service into `services:`, deploying it here would start
-        // a second NPM container and collide on ports 80/81/443.
-        if matches!(
-            config.proxy.proxy_type,
-            crate::cli::config_parser::ProxyType::Nginx
-                | crate::cli::config_parser::ProxyType::NginxProxyManager
-        ) && is_nginx_proxy_manager_service(svc)
-        {
+        if proxy_is_managed && is_nginx_proxy_manager_service(svc) {
             continue;
         }
-        web_apps.push(service_to_app_json(svc, &network_ids));
-    }
-
-    // Build the feature list based on proxy config.
-    // When proxy type is Nginx or NginxProxyManager, include it as a feature
-    // so the install service's collect_props() picks it up into extended_features
-    // and the Ansible playbook runs the nginx_proxy_manager role.
-    let mut features: Vec<serde_json::Value> = Vec::new();
-    match config.proxy.proxy_type {
-        crate::cli::config_parser::ProxyType::Nginx
-        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-            let overrides = nginx_proxy_manager_overrides_from_compose(config);
-
-            let mut npm = serde_json::json!({
-                "_id": generate_app_id(),
-                "name": "Nginx Proxy Manager",
-                "code": "nginx_proxy_manager",
-                "type": "feature",
-                "restart": "always",
-                "custom": true,
-                "shared_ports": [
-                    {"host_port": "80", "container_port": "80"},
-                    {"host_port": "443", "container_port": "443"},
-                    {"host_port": "81", "container_port": "81"},
-                ],
-                "network": [],
-                "dockerhub_user": "jc21",
-                "dockerhub_name": "nginx-proxy-manager",
-                "dockerhub_tag": "latest",
-            });
-
-            if let Some(overrides) = overrides {
-                if let Some(obj) = npm.as_object_mut() {
-                    if !overrides.shared_ports.is_empty() {
-                        obj.insert(
-                            "shared_ports".to_string(),
-                            serde_json::json!(overrides.shared_ports),
-                        );
-                    }
-                    if !overrides.volumes.is_empty() {
-                        obj.insert("volumes".to_string(), serde_json::json!(overrides.volumes));
-                    }
-                    if !overrides.environment.is_empty() {
-                        obj.insert(
-                            "environment".to_string(),
-                            serde_json::json!(overrides.environment),
-                        );
-                    }
-                }
-            }
-
-            features.push(npm);
-        }
-        _ => {}
-    }
-
-    // When monitoring.status_panel is enabled, include the statuspanel feature
-    // with its public port so the install service's collect_props() picks it up
-    // and opens port 5000 in the cloud firewall.
-    if config.monitoring.status_panel {
-        features.push(serde_json::json!({
-            "_id": generate_app_id(),
-            "name": "Status Panel",
-            "code": "statuspanel",
-            "type": "feature",
-            "restart": "always",
-            "custom": true,
-            "shared_ports": [
-                {"host_port": "5000", "container_port": "5000"},
-            ],
-            "network": [],
-            "dockerhub_user": "trydirect",
-            "dockerhub_name": "status",
-            "dockerhub_tag": "latest",
-        }));
+        service_apps.push(service_to_app_json(svc, &network_ids));
     }
 
     serde_json::json!({
@@ -2467,8 +3124,8 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
             "custom_stack_code": stack_code,
             "project_name": config.name.clone(),
             "web": web_apps,
-            "feature": features,
-            "service": [],
+            "feature": [],
+            "service": service_apps,
             "networks": [{
                 "id": network_id,
                 "name": "default_network",
@@ -2476,6 +3133,45 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
             }],
         }
     })
+}
+
+pub fn attach_config_bundle_to_project_body(
+    project_body: &mut serde_json::Value,
+    artifacts: &crate::cli::config_bundle::ConfigBundleArtifacts,
+) {
+    if let Some(custom) = project_body
+        .get_mut("custom")
+        .and_then(|custom| custom.as_object_mut())
+    {
+        custom.insert(
+            "deployment_artifacts".to_string(),
+            serde_json::json!({
+                "config_bundle": artifacts.artifact_metadata(),
+            }),
+        );
+    }
+}
+
+pub fn attach_config_bundle_to_deploy_form(
+    deploy_form: &mut serde_json::Value,
+    artifacts: &crate::cli::config_bundle::ConfigBundleArtifacts,
+) {
+    if let Some(obj) = deploy_form.as_object_mut() {
+        obj.insert(
+            "environment".to_string(),
+            serde_json::Value::String(artifacts.environment.clone()),
+        );
+        obj.insert(
+            "config_files".to_string(),
+            serde_json::Value::Array(artifacts.config_files.clone()),
+        );
+        obj.insert(
+            "config_bundle".to_string(),
+            serde_json::json!({
+                "manifest": artifacts.artifact_metadata(),
+            }),
+        );
+    }
 }
 
 /// Build the deploy form payload that matches the Stacker server's
@@ -2490,7 +3186,7 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
 ///   - must start with a letter
 ///   - must not end with `-`
 ///   - max 63 characters total
-fn generate_server_name(project_name: &str) -> String {
+pub fn generate_server_name(project_name: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Sanitise project name: lowercase, replace non-alnum with hyphen, collapse runs
@@ -2621,10 +3317,9 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     }
 
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
-    // integrated_features and set connection_mode so the install service's Ansible
-    // playbook picks it up (get_features_roles checks connection_mode == "status_panel").
-    // Also pass vault_url in stack.vars so the Ansible role configures the remote
-    // status panel agent with the public Vault address (not the local Docker IP).
+    // integrated_features, set connection_mode so the installer recognizes the
+    // status panel flow, and pass vault_url in stack.vars so the Ansible role
+    // configures the remote status panel agent with the public Vault address.
     if config.monitoring.status_panel {
         // Resolve public Vault URL: env override → default constant.
         let vault_url =
@@ -2668,12 +3363,111 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     form
 }
 
+pub fn build_server_deploy_form(
+    config: &StackerConfig,
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    server_name: &str,
+    force_status_panel: bool,
+) -> serde_json::Value {
+    let project_name = config
+        .project
+        .identity
+        .clone()
+        .unwrap_or_else(|| config.name.clone());
+
+    let mut form = serde_json::json!({
+        "cloud": {
+            "provider": "own",
+            "save_token": false,
+        },
+        "server": {
+            "name": server_name,
+            "srv_ip": server_cfg.host,
+            "ssh_user": server_cfg.user,
+            "ssh_port": server_cfg.port,
+        },
+        "stack": {
+            "stack_code": project_name,
+            "vars": [],
+            "integrated_features": [],
+            "extended_features": [],
+            "subscriptions": [],
+        }
+    });
+
+    let registry_creds = super::install_runner::resolve_docker_registry_credentials(config);
+    if !registry_creds.is_empty() {
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert(
+                "registry".to_string(),
+                serde_json::Value::Object(registry_creds),
+            );
+        }
+    }
+
+    match config.proxy.proxy_type {
+        crate::cli::config_parser::ProxyType::Nginx
+        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                    if !arr.contains(&npm) {
+                        arr.push(npm);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if config.monitoring.status_panel || force_status_panel {
+        let vault_url =
+            std::env::var("STACKER_VAULT_URL").unwrap_or_else(|_| DEFAULT_VAULT_URL.to_string());
+
+        if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+            let features = stack_obj
+                .entry("integrated_features")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = features.as_array_mut() {
+                let sp = serde_json::Value::String("statuspanel".to_string());
+                if !arr.contains(&sp) {
+                    arr.push(sp);
+                }
+            }
+
+            let vars = stack_obj
+                .entry("vars")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = vars.as_array_mut() {
+                arr.push(serde_json::json!({
+                    "key": "vault_url",
+                    "value": vault_url
+                }));
+                arr.push(serde_json::json!({
+                    "key": "status_panel_port",
+                    "value": "5000"
+                }));
+            }
+        }
+        if let Some(server_obj) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+            server_obj.insert(
+                "connection_mode".to_string(),
+                serde_json::Value::String("status_panel".to_string()),
+            );
+        }
+    }
+
+    form
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::fs;
-    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_build_deploy_form_defaults() {
@@ -2711,6 +3505,133 @@ mod tests {
             "myproject-".len() + 4,
             "suffix should be 4 hex chars"
         );
+    }
+
+    #[test]
+    fn test_attach_config_bundle_adds_deploy_files_and_stack_builder_metadata() {
+        let artifacts = crate::cli::config_bundle::ConfigBundleArtifacts {
+            environment: "production".to_string(),
+            manifest_path: std::path::PathBuf::from(
+                ".stacker/deploy/production/config-bundle.manifest.json",
+            ),
+            archive_path: std::path::PathBuf::from(
+                ".stacker/deploy/production/config-bundle.tar.zst",
+            ),
+            remote_compose_path: std::path::PathBuf::from(
+                ".stacker/deploy/production/docker-compose.remote.yml",
+            ),
+            manifest: crate::cli::config_bundle::ConfigBundleManifest {
+                version: 1,
+                environment: "production".to_string(),
+                files: vec![crate::cli::config_bundle::ConfigBundleFile {
+                    source_path: "docker/production/.env".to_string(),
+                    destination_path:
+                        "/opt/stacker/deployments/production/files/docker/production/.env"
+                            .to_string(),
+                    mode: "0644".to_string(),
+                    size: 17,
+                    sha256: "abc123".to_string(),
+                }],
+            },
+            config_files: vec![serde_json::json!({
+                "name": ".env",
+                "content": "RUST_LOG=warning\n",
+                "destination_path": "/opt/stacker/deployments/production/files/docker/production/.env",
+            })],
+        };
+
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("device-api")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+        let mut project_body = build_project_body(&config);
+        let mut deploy_form = build_deploy_form(&config);
+
+        attach_config_bundle_to_project_body(&mut project_body, &artifacts);
+        attach_config_bundle_to_deploy_form(&mut deploy_form, &artifacts);
+
+        assert_eq!(deploy_form["environment"], "production");
+        assert_eq!(deploy_form["config_files"][0]["name"], ".env");
+        assert_eq!(
+            project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
+                ["source_path"],
+            "docker/production/.env"
+        );
+        assert_eq!(
+            project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
+                ["content_hidden"],
+            true
+        );
+        assert!(
+            project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
+                .get("content")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_build_server_deploy_form_uses_existing_server_settings() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "deploy".to_string(),
+                ssh_key: Some(std::path::PathBuf::from("/tmp/id_ed25519")),
+                port: 2222,
+            })
+            .build()
+            .unwrap();
+        let server_cfg = config.deploy.server.as_ref().unwrap();
+
+        let form = build_server_deploy_form(&config, server_cfg, "edge-box", true);
+
+        assert_eq!(form["cloud"]["provider"], "own");
+        assert_eq!(form["cloud"]["save_token"], false);
+        assert_eq!(form["server"]["name"], "edge-box");
+        assert_eq!(form["server"]["srv_ip"], "203.0.113.10");
+        assert_eq!(form["server"]["ssh_user"], "deploy");
+        assert_eq!(form["server"]["ssh_port"], 2222);
+        assert_eq!(form["server"]["connection_mode"], "status_panel");
+        assert_eq!(form["stack"]["stack_code"], "myproject");
+        assert!(form["stack"]["integrated_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "statuspanel"));
+    }
+
+    #[test]
+    fn test_build_server_deploy_form_with_status_panel_monitoring_uses_connection_mode() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "deploy".to_string(),
+                ssh_key: Some(std::path::PathBuf::from("/tmp/id_ed25519")),
+                port: 2222,
+            })
+            .monitoring(crate::cli::config_parser::MonitoringConfig {
+                status_panel: true,
+                healthcheck: None,
+                metrics: None,
+            })
+            .build()
+            .unwrap();
+        let server_cfg = config.deploy.server.as_ref().unwrap();
+
+        let form = build_server_deploy_form(&config, server_cfg, "edge-box", false);
+        let vars = form["stack"]["vars"].as_array().unwrap();
+
+        assert_eq!(form["server"]["connection_mode"], "status_panel");
+        assert!(form["stack"]["integrated_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "statuspanel"));
+        assert!(vars.iter().any(|value| value["key"] == "vault_url"));
     }
 
     #[test]
@@ -2769,7 +3690,6 @@ mod tests {
             "integrated_features should contain 'statuspanel': {:?}",
             features
         );
-        // connection_mode should be set to "status_panel"
         assert_eq!(form["server"]["connection_mode"], "status_panel");
 
         // vault_url should be passed in stack.vars for the Ansible statuspanel role
@@ -2836,7 +3756,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_project_body_with_nginx_proxy() {
+    fn test_build_project_body_with_nginx_proxy_does_not_add_npm_project_feature() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
             .proxy(crate::cli::config_parser::ProxyConfig {
@@ -2850,27 +3770,16 @@ mod tests {
 
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
-        assert_eq!(features.len(), 1, "feature array should have 1 entry");
-        assert_eq!(features[0]["code"], "nginx_proxy_manager");
-        assert_eq!(features[0]["type"], "feature");
-        assert_eq!(features[0]["name"], "Nginx Proxy Manager");
-        assert_eq!(features[0]["restart"], "always");
-        assert!(features[0]["_id"].is_string(), "_id must be present");
-        assert_eq!(features[0]["custom"], true);
-        // Image fields must be present so the install service can build a Docker image reference
-        assert_eq!(features[0]["dockerhub_user"], "jc21");
-        assert_eq!(features[0]["dockerhub_name"], "nginx-proxy-manager");
-        assert_eq!(features[0]["dockerhub_tag"], "latest");
-        // Ports should include the NPM management port (81)
-        let ports = features[0]["shared_ports"].as_array().unwrap();
-        assert_eq!(ports.len(), 3);
+        assert!(
+            features.iter().all(|f| f["code"] != "nginx_proxy_manager"),
+            "feature array should not contain nginx_proxy_manager project app: {:?}",
+            features
+        );
     }
 
     #[test]
-    fn bdd_reconfigure_existing_nginx_proxy_manager_proxy_does_not_duplicate_features() {
-        use crate::cli::config_parser::{DeployTarget, ProxyConfig, ProxyType, ServiceDefinition};
-
-        let given_existing_npm_service = ServiceDefinition {
+    fn test_build_project_body_skips_declared_npm_service_when_proxy_is_managed() {
+        let npm_service = ServiceDefinition {
             name: "nginx_proxy_manager".to_string(),
             image: "jc21/nginx-proxy-manager:latest".to_string(),
             ports: vec![
@@ -2878,88 +3787,22 @@ mod tests {
                 "443:443".to_string(),
                 "81:81".to_string(),
             ],
-            environment: HashMap::new(),
+            environment: std::collections::HashMap::new(),
+            volumes: vec!["npm_data:/data".to_string()],
+            depends_on: vec![],
+        };
+        let redis_service = ServiceDefinition {
+            name: "redis".to_string(),
+            image: "redis:7-alpine".to_string(),
+            ports: vec![],
+            environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
         };
-
-        let given_config = crate::cli::config_parser::ConfigBuilder::new()
+        let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
-            .deploy_target(DeployTarget::Cloud)
-            .proxy(ProxyConfig {
-                proxy_type: ProxyType::NginxProxyManager,
-                auto_detect: true,
-                domains: vec![],
-                config: None,
-            })
-            .add_service(given_existing_npm_service)
-            .build()
-            .unwrap();
-
-        let when_project_body = build_project_body(&given_config);
-        let when_deploy_form = build_deploy_form(&given_config);
-
-        let then_project_web = when_project_body["custom"]["web"]
-            .as_array()
-            .expect("custom.web must be an array");
-        assert!(
-            then_project_web
-                .iter()
-                .all(|app| app["code"] != "nginx_proxy_manager"),
-            "should not deploy nginx_proxy_manager as a web service when proxy.type already provisions it as a feature: {:?}",
-            then_project_web
-        );
-
-        let then_project_features = when_project_body["custom"]["feature"]
-            .as_array()
-            .expect("custom.feature must be an array");
-        assert_eq!(
-            then_project_features
-                .iter()
-                .filter(|f| f["code"] == "nginx_proxy_manager")
-                .count(),
-            1,
-            "should include exactly one nginx_proxy_manager feature: {:?}",
-            then_project_features
-        );
-
-        let then_extended_features = when_deploy_form["stack"]["extended_features"]
-            .as_array()
-            .expect("stack.extended_features must be an array");
-        assert!(
-            then_extended_features.contains(&serde_json::json!("nginx_proxy_manager")),
-            "should inject nginx_proxy_manager into stack.extended_features when proxy.type requires it: {:?}",
-            then_extended_features
-        );
-    }
-
-    #[test]
-    fn test_build_project_body_nginx_proxy_manager_preserves_volumes_from_compose_file() {
-        let dir = TempDir::new().unwrap();
-        let compose_path = dir.path().join("docker-compose.prod.yml");
-        fs::write(
-            &compose_path,
-            r#"
-version: "3.8"
-services:
-  nginx_proxy_manager:
-    image: jc21/nginx-proxy-manager:latest
-    ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
-    volumes:
-      - npm-data:/data
-      - npm-letsencrypt:/etc/letsencrypt
-volumes:
-  npm-data:
-  npm-letsencrypt:
-"#,
-        )
-        .unwrap();
-
-        let mut config = crate::cli::config_parser::ConfigBuilder::new()
-            .name("myproject")
+            .add_service(npm_service)
+            .add_service(redis_service)
             .proxy(crate::cli::config_parser::ProxyConfig {
                 proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
                 auto_detect: true,
@@ -2968,87 +3811,54 @@ volumes:
             })
             .build()
             .unwrap();
-        config.deploy.compose_file = Some(compose_path);
 
         let body = build_project_body(&config);
-        let features = body["custom"]["feature"].as_array().unwrap();
-        let npm = features
+        let service = body["custom"]["service"].as_array().unwrap();
+        let codes = service
             .iter()
-            .find(|f| f["code"] == "nginx_proxy_manager")
-            .unwrap();
-
-        let volumes = npm["volumes"].as_array().unwrap();
-        assert_eq!(volumes.len(), 2);
-        assert_eq!(volumes[0]["host_path"], "npm-data");
-        assert_eq!(volumes[0]["container_path"], "/data");
-        assert_eq!(volumes[1]["host_path"], "npm-letsencrypt");
-        assert_eq!(volumes[1]["container_path"], "/etc/letsencrypt");
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec!["redis"]);
     }
 
     #[test]
-    fn test_build_project_body_nginx_proxy_manager_preserves_compose_env_and_port_expressions() {
-        let dir = TempDir::new().unwrap();
-        let compose_path = dir.path().join("docker-compose.prod.yml");
-        fs::write(
-            &compose_path,
-            r#"
-version: "3.8"
-services:
-  nginx_proxy_manager:
-    image: jc21/nginx-proxy-manager:latest
-    ports:
-      - "${APP_PORT:-8000}:8080"
-    environment:
-      DISABLE_IPV6: ${NPM_DISABLE_IPV6:-true}
-    volumes:
-      - type: bind
-        source: ${COOLIFY_SOURCE_ENV_FILE:-./coolify.env}
-        target: /var/www/html/.env
-        read_only: true
-"#,
-        )
-        .unwrap();
-
-        let mut config = crate::cli::config_parser::ConfigBuilder::new()
-            .name("myproject")
-            .proxy(crate::cli::config_parser::ProxyConfig {
-                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
-                auto_detect: true,
-                domains: vec![],
-                config: None,
-            })
+    fn test_scn_001_stacker_yml_service_serializes_as_service_target() {
+        let upload_service = ServiceDefinition {
+            name: "upload".to_string(),
+            image: "ghcr.io/example/upload:1.0".to_string(),
+            ports: vec!["8081:8080".to_string()],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("Device API")
+            .project_identity("device-api")
+            .app_image("ghcr.io/example/device-api:1.0")
+            .add_service(upload_service)
             .build()
             .unwrap();
-        config.deploy.compose_file = Some(compose_path);
 
         let body = build_project_body(&config);
-        let features = body["custom"]["feature"].as_array().unwrap();
-        let npm = features
+        let web_codes = body["custom"]["web"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find(|f| f["code"] == "nginx_proxy_manager")
-            .unwrap();
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+        let service_codes = body["custom"]["service"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
 
-        let ports = npm["shared_ports"].as_array().unwrap();
-        assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0]["host_port"], "${APP_PORT:-8000}");
-        assert_eq!(ports[0]["container_port"], "8080");
-
-        let environment = npm["environment"].as_array().unwrap();
-        assert_eq!(environment.len(), 1);
-        assert_eq!(environment[0]["key"], "DISABLE_IPV6");
-        assert_eq!(environment[0]["value"], "${NPM_DISABLE_IPV6:-true}");
-
-        let volumes = npm["volumes"].as_array().unwrap();
-        assert_eq!(volumes.len(), 1);
-        assert_eq!(
-            volumes[0]["host_path"],
-            "${COOLIFY_SOURCE_ENV_FILE:-./coolify.env}"
-        );
-        assert_eq!(volumes[0]["container_path"], "/var/www/html/.env:ro");
+        assert_eq!(web_codes, vec!["device-api"]);
+        assert_eq!(service_codes, vec!["upload"]);
     }
 
     #[test]
-    fn test_build_project_body_with_status_panel() {
+    fn test_build_project_body_with_status_panel_does_not_add_status_panel_feature() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
             .monitoring(crate::cli::config_parser::MonitoringConfig {
@@ -3061,26 +3871,11 @@ services:
 
         let body = build_project_body(&config);
         let features = body["custom"]["feature"].as_array().unwrap();
-        let sp = features.iter().find(|f| f["code"] == "statuspanel");
         assert!(
-            sp.is_some(),
-            "feature array should contain statuspanel entry: {:?}",
+            features.iter().all(|f| f["code"] != "statuspanel"),
+            "feature array should not contain statuspanel entry: {:?}",
             features
         );
-        let sp = sp.unwrap();
-        assert_eq!(sp["type"], "feature");
-        assert_eq!(sp["name"], "Status Panel");
-        assert!(sp["_id"].is_string(), "_id must be present");
-        assert_eq!(sp["custom"], true);
-        // Port 5000 must be declared so the install service opens it in the cloud firewall
-        let ports = sp["shared_ports"].as_array().unwrap();
-        assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0]["host_port"], "5000");
-        assert_eq!(ports[0]["container_port"], "5000");
-        // Image fields must be present so the install service can build a Docker image reference
-        assert_eq!(sp["dockerhub_user"], "trydirect");
-        assert_eq!(sp["dockerhub_name"], "status");
-        assert_eq!(sp["dockerhub_tag"], "latest");
     }
 
     #[test]
@@ -3166,5 +3961,129 @@ services:
             "must not end with hyphen, got: {}",
             name
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_projects_falls_back_to_legacy_project_path() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/project"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(
+                r#"{"_status":"ERR","_error":{"code":404,"message":"not found"}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/project"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "list": [
+                    {
+                        "id": 7,
+                        "name": "demo-project",
+                        "user_id": "user-1",
+                        "metadata": {},
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new_for_target(&server.uri(), "token", DeployTarget::Server);
+        let projects = client
+            .list_projects()
+            .await
+            .expect("fallback should succeed");
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, 7);
+        assert_eq!(projects[0].name, "demo-project");
+    }
+
+    #[tokio::test]
+    async fn test_deploy_falls_back_to_legacy_project_path() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/project/12/deploy"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(
+                r#"{"_status":"ERR","_error":{"code":404,"message":"not found"}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/project/12/deploy"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 99,
+                "_status": "OK",
+                "meta": {
+                    "deployment_hash": "hash-123"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new_for_target(&server.uri(), "token", DeployTarget::Server);
+        let response = client
+            .deploy(
+                12,
+                None,
+                serde_json::json!({ "stack": { "stack_code": "demo" } }),
+            )
+            .await
+            .expect("deploy fallback should succeed");
+
+        assert_eq!(response.id, Some(99));
+        assert_eq!(response.status.as_deref(), Some("OK"));
+        assert_eq!(
+            response
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("deployment_hash")),
+            Some(&serde_json::json!("hash-123"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_projects_retries_api_v1_after_forbidden_legacy_proxy_response() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/project"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "_status": "OK",
+                "list": [
+                    {
+                        "id": 7,
+                        "name": "demo-project",
+                        "user_id": "user-1",
+                        "metadata": {},
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/project"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let client = StackerClient::new_for_target(&server.uri(), "token", DeployTarget::Server);
+        let projects = client
+            .list_projects()
+            .await
+            .expect("api v1 endpoint should be preferred before legacy 403");
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "demo-project");
     }
 }

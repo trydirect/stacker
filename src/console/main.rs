@@ -93,10 +93,15 @@ enum StackerCommands {
         org: Option<String>,
         #[arg(long)]
         domain: Option<String>,
-        /// API base URL (default: https://api.try.direct)
-        #[arg(long = "auth-url", visible_alias = "api-url")]
+        /// User Service auth URL (or set STACKER_AUTH_URL)
+        #[arg(long = "auth-url")]
         auth_url: Option<String>,
+        /// Stacker API base URL (or set STACKER_URL)
+        #[arg(long = "server-url", visible_alias = "api-url")]
+        server_url: Option<String>,
     },
+    /// Show the saved login and current project's recorded deploy identity
+    Whoami {},
     /// Initialize a new stacker project (stacker.yml + Dockerfile)
     Init {
         #[arg(long, value_name = "TYPE")]
@@ -140,6 +145,12 @@ enum StackerCommands {
         #[arg(long, value_name = "SERVER_NAME")]
         server: Option<String>,
     },
+    /// Attach this directory to an existing deployment from the dashboard
+    Connect {
+        /// Handoff token or full handoff URL copied from the dashboard
+        #[arg(long, value_name = "TOKEN_OR_URL")]
+        handoff: String,
+    },
     /// Show container logs
     Logs {
         #[arg(long)]
@@ -162,6 +173,13 @@ enum StackerCommands {
     Destroy {
         #[arg(long)]
         volumes: bool,
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
+    /// Roll back a marketplace deployment to a prior template version
+    Rollback {
+        #[arg(long, value_name = "VERSION")]
+        version: String,
         #[arg(long, short = 'y')]
         confirm: bool,
     },
@@ -202,6 +220,9 @@ enum StackerConfigCommands {
     Show {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Show paths, hash/version metadata, and contributing layers without values
+        #[arg(long)]
+        resolved: bool,
     },
     /// Print a full commented `stacker.yml` reference example
     Example,
@@ -343,8 +364,17 @@ fn get_command(
                 org,
                 domain,
                 auth_url,
+                server_url,
             } => Ok(Box::new(
-                stacker::console::commands::cli::login::LoginCommand::new(org, domain, auth_url),
+                stacker::console::commands::cli::login::LoginCommand::new(
+                    org,
+                    domain,
+                    auth_url,
+                    server_url,
+                ),
+            )),
+            StackerCommands::Whoami {} => Ok(Box::new(
+                stacker::console::commands::cli::whoami::WhoamiCommand::new(),
             )),
             StackerCommands::Init {
                 app_type,
@@ -379,6 +409,9 @@ fn get_command(
                 .with_remote_overrides(project, key, server)
                 .with_key_id(key_id),
             )),
+            StackerCommands::Connect { handoff } => Ok(Box::new(
+                stacker::console::commands::cli::connect::ConnectCommand::new(handoff),
+            )),
             StackerCommands::Logs {
                 service,
                 follow,
@@ -395,12 +428,15 @@ fn get_command(
             StackerCommands::Destroy { volumes, confirm } => Ok(Box::new(
                 stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
             )),
+            StackerCommands::Rollback { version, confirm } => Ok(Box::new(
+                stacker::console::commands::cli::rollback::RollbackCommand::new(version, confirm),
+            )),
             StackerCommands::Config { command: cfg_cmd } => match cfg_cmd {
                 StackerConfigCommands::Validate { file } => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigValidateCommand::new(file),
                 )),
-                StackerConfigCommands::Show { file } => Ok(Box::new(
-                    stacker::console::commands::cli::config::ConfigShowCommand::new(file),
+                StackerConfigCommands::Show { file, resolved } => Ok(Box::new(
+                    stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
                 )),
                 StackerConfigCommands::Example => Ok(Box::new(
                     stacker::console::commands::cli::config::ConfigExampleCommand::new(),

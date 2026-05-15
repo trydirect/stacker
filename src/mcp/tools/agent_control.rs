@@ -132,10 +132,14 @@ impl ToolHandler for DeployAppTool {
             image: Option<String>,
             #[serde(default)]
             force_recreate: Option<bool>,
+            #[serde(default)]
+            force_config_overwrite: Option<bool>,
         }
 
         let params: Args =
             serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+        let force_recreate = params.force_recreate.unwrap_or(false);
+        let force_config_overwrite = params.force_config_overwrite.unwrap_or(force_recreate);
 
         let identifier =
             DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
@@ -150,7 +154,8 @@ impl ToolHandler for DeployAppTool {
                 "app_code": params.app_code,
                 "image": params.image,
                 "pull": true,
-                "force_recreate": params.force_recreate.unwrap_or(false),
+                "force_recreate": force_recreate,
+                "force_config_overwrite": force_config_overwrite,
             }),
             COMMAND_RESULT_TIMEOUT_SECS,
         )
@@ -194,6 +199,10 @@ impl ToolHandler for DeployAppTool {
                     "force_recreate": {
                         "type": "boolean",
                         "description": "Force recreate the container even if config hasn't changed"
+                    },
+                    "force_config_overwrite": {
+                        "type": "boolean",
+                        "description": "Force overwriting drifted runtime config files such as .env"
                     }
                 },
                 "required": ["app_code"]
@@ -397,7 +406,7 @@ impl ToolHandler for ConfigureProxyAgentTool {
                     },
                     "ssl_enabled": {
                         "type": "boolean",
-                        "description": "Enable SSL with Let's Encrypt (default: true)"
+                        "description": "Enable SSL with Let's Encrypt; set false for plain HTTP hosts (default: true)"
                     },
                     "action": {
                         "type": "string",

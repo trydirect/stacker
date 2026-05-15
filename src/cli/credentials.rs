@@ -248,9 +248,6 @@ impl CredentialsManager<FileCredentialStore> {
 // OAuthClient trait — abstraction over HTTP login calls
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Default TryDirect platform API base URL.
-pub const DEFAULT_API_URL: &str = "https://api.try.direct";
-
 /// OAuth token endpoint path (relative to auth_url).
 const TOKEN_ENDPOINT: &str = "/auth/login";
 
@@ -261,12 +258,39 @@ fn is_direct_login_endpoint(auth_url: &str) -> bool {
         || url.ends_with("/login")
 }
 
+fn resolve_auth_url(request: &LoginRequest) -> Result<String, CliError> {
+    request
+        .auth_url
+        .clone()
+        .or_else(|| std::env::var("STACKER_AUTH_URL").ok())
+        .or_else(|| std::env::var("STACKER_API_URL").ok())
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Missing auth URL. Pass `stacker login --auth-url <user-service-url> --server-url <stacker-api-url>` or set STACKER_AUTH_URL (or STACKER_API_URL) and STACKER_URL.".to_string(),
+            )
+        })
+}
+
+fn resolve_server_url(request: &LoginRequest) -> Result<String, CliError> {
+    request
+        .server_url
+        .clone()
+        .or_else(|| std::env::var("STACKER_URL").ok())
+        .map(|value| crate::cli::install_runner::normalize_stacker_server_url(&value))
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Missing Stacker API URL. Pass `stacker login --server-url <stacker-api-url>` (alias: `--api-url`) or set STACKER_URL.".to_string(),
+            )
+        })
+}
+
 /// Parameters for a login request.
 #[derive(Debug, Clone)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
     pub auth_url: Option<String>,
+    pub server_url: Option<String>,
     pub org: Option<String>,
     pub domain: Option<String>,
 }
@@ -359,19 +383,12 @@ pub fn login<S: CredentialStore, O: OAuthClient>(
     oauth: &O,
     request: &LoginRequest,
 ) -> Result<StoredCredentials, CliError> {
-    let env_auth_url = std::env::var("STACKER_AUTH_URL")
-        .ok()
-        .or_else(|| std::env::var("STACKER_API_URL").ok());
-    let auth_url = request
-        .auth_url
-        .as_deref()
-        .or(env_auth_url.as_deref())
-        .unwrap_or(DEFAULT_API_URL);
-
-    let token_resp = oauth.request_token(auth_url, &request.email, &request.password)?;
+    let auth_url = resolve_auth_url(request)?;
+    let server_url = resolve_server_url(request)?;
+    let token_resp = oauth.request_token(&auth_url, &request.email, &request.password)?;
     let mut creds = StoredCredentials::from(token_resp);
     creds.email = Some(request.email.clone());
-    creds.server_url = Some(auth_url.to_string());
+    creds.server_url = Some(server_url);
     creds.org = request.org.clone();
     creds.domain = request.domain.clone();
 
@@ -762,7 +779,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: None,
         };
@@ -770,7 +788,10 @@ mod tests {
         let creds = login(&manager, &oauth, &request).unwrap();
         assert_eq!(creds.access_token, "mock-access-token");
         assert_eq!(creds.email.as_deref(), Some("user@example.com"));
-        assert_eq!(creds.server_url.as_deref(), Some(DEFAULT_API_URL));
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://stacker.example.com")
+        );
 
         // Verify persisted
         let loaded = manager.load().unwrap().unwrap();
@@ -784,7 +805,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: Some("acme".into()),
             domain: None,
         };
@@ -800,7 +822,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: Some("acme.com".into()),
         };
@@ -817,7 +840,8 @@ mod tests {
         let request = LoginRequest {
             email: "bad@example.com".into(),
             password: "wrong".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: None,
         };
@@ -834,13 +858,85 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: Some("https://custom.api".into()),
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://custom.api".into()),
             org: None,
             domain: None,
         };
 
         let creds = login(&manager, &oauth, &request).unwrap();
         assert_eq!(creds.server_url.as_deref(), Some("https://custom.api"));
+    }
+
+    #[test]
+    fn test_login_preserves_explicit_legacy_stacker_route() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: Some("https://dev.try.direct/stacker".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(
+            creds.server_url.as_deref(),
+            Some("https://dev.try.direct/stacker")
+        );
+    }
+
+    #[test]
+    fn test_login_preserves_explicit_api_gateway_url() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: Some("https://api.try.direct".into()),
+            org: None,
+            domain: None,
+        };
+
+        let creds = login(&manager, &oauth, &request).unwrap();
+        assert_eq!(creds.server_url.as_deref(), Some("https://api.try.direct"));
+    }
+
+    #[test]
+    fn test_login_requires_auth_url_when_not_provided_by_flag_or_env() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: None,
+            server_url: Some("https://dev.stacker.try.direct".into()),
+            org: None,
+            domain: None,
+        };
+
+        let err = login(&manager, &oauth, &request).unwrap_err();
+        assert!(format!("{err}").contains("Missing auth URL"));
+    }
+
+    #[test]
+    fn test_login_requires_server_url_when_not_provided_by_flag_or_env() {
+        let (manager, _) = make_manager();
+        let oauth = MockOAuthClient::success();
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: "secret".into(),
+            auth_url: Some("https://dev.try.direct/server/user/auth/login".into()),
+            server_url: None,
+            org: None,
+            domain: None,
+        };
+
+        let err = login(&manager, &oauth, &request).unwrap_err();
+        assert!(format!("{err}").contains("Missing Stacker API URL"));
     }
 
     #[test]
@@ -853,7 +949,8 @@ mod tests {
         let request = LoginRequest {
             email: "user@example.com".into(),
             password: "secret".into(),
-            auth_url: None,
+            auth_url: Some("https://auth.example.com".into()),
+            server_url: Some("https://stacker.example.com".into()),
             org: None,
             domain: None,
         };

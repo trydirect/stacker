@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cli::ai_client::{
@@ -10,6 +10,9 @@ use crate::cli::service_catalog::{catalog_summary_for_ai, ServiceCatalog};
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
+const CHAT_MULTILINE_MAX_LINES: usize = 512;
+const CHAT_MULTILINE_SEND_MARKER: &str = "::send";
+const CHAT_MULTILINE_CANCEL_MARKER: &str = "::cancel";
 
 /// Condensed stacker.yml schema reference injected as the AI system prompt
 /// so the model can answer "how do I …" questions with precise YAML examples.
@@ -173,6 +176,86 @@ fn prompt_with_default(prompt: &str, default: &str) -> Result<String, CliError> 
         Ok(default.to_string())
     } else {
         Ok(line)
+    }
+}
+
+fn read_input_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, CliError> {
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line)?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(line.trim_end_matches(['\n', '\r']).to_string()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ChatReplCommand {
+    Exit,
+    Help,
+    Clear,
+    Paste,
+    Message(String),
+    Empty,
+}
+
+fn parse_chat_repl_command(line: String) -> ChatReplCommand {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return ChatReplCommand::Empty;
+    }
+
+    match trimmed.to_ascii_lowercase().as_str() {
+        "exit" | "quit" | ":q" => ChatReplCommand::Exit,
+        "help" | ":help" | "?" => ChatReplCommand::Help,
+        "clear" | ":clear" => ChatReplCommand::Clear,
+        "paste" | ":paste" | "/paste" => ChatReplCommand::Paste,
+        _ => ChatReplCommand::Message(line),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MultilineInputResult {
+    Submit(String),
+    Cancelled,
+    Eof,
+    LimitExceeded { max_lines: usize },
+}
+
+fn collect_multiline_input<R: BufRead, W: Write>(
+    reader: &mut R,
+    prompt_writer: &mut W,
+) -> Result<MultilineInputResult, CliError> {
+    let mut lines = Vec::new();
+
+    loop {
+        write!(prompt_writer, "\x1b[1;36m…\x1b[0m ")?;
+        prompt_writer.flush()?;
+
+        let Some(line) = read_input_line(reader)? else {
+            return Ok(MultilineInputResult::Eof);
+        };
+
+        let trimmed = line.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            CHAT_MULTILINE_SEND_MARKER => {
+                if lines.is_empty() {
+                    return Ok(MultilineInputResult::Cancelled);
+                }
+
+                return Ok(MultilineInputResult::Submit(lines.join("\n")));
+            }
+            CHAT_MULTILINE_CANCEL_MARKER => return Ok(MultilineInputResult::Cancelled),
+            _ => {}
+        }
+
+        if lines.len() == CHAT_MULTILINE_MAX_LINES {
+            return Ok(MultilineInputResult::LimitExceeded {
+                max_lines: CHAT_MULTILINE_MAX_LINES,
+            });
+        }
+
+        lines.push(line);
     }
 }
 
@@ -1095,12 +1178,16 @@ const CHAT_HELP: &str = "\
 Commands available in the AI chat session:
   help          Show this message
   clear         Reset conversation history (keeps system context)
+  paste         Enter multiline paste mode
   exit / quit   End the session
   Ctrl-D        End the session
 
 Tips:
   - Ask anything about your stacker.yml, Dockerfile, or deployment.
   - With --write the AI can create/edit files in .stacker/ and stacker.yml.
+  - Run `paste`, then finish with `::send` to submit a multiline prompt.
+  - Use `::cancel` to discard multiline input.
+  - Multiline input is limited to 512 lines per message.
   - Conversation history is kept across turns — the AI remembers context.";
 
 /// `stacker ai [--write]`
@@ -1125,6 +1212,9 @@ impl CallableTrait for AiChatCommand {
         let provider = create_provider(&ai_config)?;
         let model_name = ai_config.model.as_deref().unwrap_or("default");
         let provider_name = provider.name();
+        let stdin = io::stdin();
+        let mut reader = stdin.lock();
+        let mut stdout = io::stdout();
 
         let write_active = self.write && provider.supports_tools();
 
@@ -1139,7 +1229,8 @@ impl CallableTrait for AiChatCommand {
                 ""
             }
         );
-        eprintln!("Type your question and press Enter.  `help` for tips, `exit` to quit.");
+        eprintln!("Type your question and press Enter. Use `paste` for multiline input.");
+        eprintln!("`help` for tips, `exit` to quit.");
         eprintln!();
 
         // Seed project context into the initial system message
@@ -1158,40 +1249,61 @@ impl CallableTrait for AiChatCommand {
 
         loop {
             // Prompt
-            print!("\x1b[1;36m>\x1b[0m ");
-            io::stdout().flush()?;
+            write!(stdout, "\x1b[1;36m>\x1b[0m ")?;
+            stdout.flush()?;
 
             // Read a line (Ctrl-D → EOF → break)
-            let mut line = String::new();
-            let bytes = io::stdin().read_line(&mut line)?;
-            if bytes == 0 {
+            let Some(line) = read_input_line(&mut reader)? else {
                 eprintln!("\nBye!");
                 break;
-            }
+            };
 
-            let input = line.trim();
-            if input.is_empty() {
-                continue;
-            }
-
-            match input.to_lowercase().as_str() {
-                "exit" | "quit" | ":q" => {
+            let user_input = match parse_chat_repl_command(line) {
+                ChatReplCommand::Exit => {
                     eprintln!("Bye!");
                     break;
                 }
-                "help" | ":help" | "?" => {
+                ChatReplCommand::Help => {
                     eprintln!("{}", CHAT_HELP);
                     continue;
                 }
-                "clear" | ":clear" => {
+                ChatReplCommand::Clear => {
                     messages.truncate(1); // keep system message
                     eprintln!("  ↺ conversation cleared");
                     continue;
                 }
-                _ => {}
-            }
+                ChatReplCommand::Paste => {
+                    eprintln!(
+                        "Paste mode — finish with `{}`, cancel with `{}`, max {} lines.",
+                        CHAT_MULTILINE_SEND_MARKER,
+                        CHAT_MULTILINE_CANCEL_MARKER,
+                        CHAT_MULTILINE_MAX_LINES
+                    );
 
-            match run_chat_turn(&mut messages, input, provider.as_ref(), write_active) {
+                    match collect_multiline_input(&mut reader, &mut stdout)? {
+                        MultilineInputResult::Submit(message) => message,
+                        MultilineInputResult::Cancelled => {
+                            eprintln!("  ↺ paste cancelled");
+                            continue;
+                        }
+                        MultilineInputResult::Eof => {
+                            eprintln!("\nBye!");
+                            break;
+                        }
+                        MultilineInputResult::LimitExceeded { max_lines } => {
+                            eprintln!(
+                                "  ✗ paste too large: maximum {} lines per message",
+                                max_lines
+                            );
+                            continue;
+                        }
+                    }
+                }
+                ChatReplCommand::Message(input) => input,
+                ChatReplCommand::Empty => continue,
+            };
+
+            match run_chat_turn(&mut messages, &user_input, provider.as_ref(), write_active) {
                 Ok(reply) => {
                     println!("\n{}\n", reply);
                 }
@@ -1280,5 +1392,55 @@ mod tests {
         let provider = MockProvider::new("unreachable");
         let result = run_ai_ask("question", Some("/does/not/exist.txt"), &provider);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_chat_repl_command_detects_paste_mode() {
+        assert_eq!(
+            parse_chat_repl_command("  :paste  ".to_string()),
+            ChatReplCommand::Paste
+        );
+    }
+
+    #[test]
+    fn test_collect_multiline_input_submits_joined_message() {
+        let mut reader = std::io::Cursor::new(b"first line\nsecond line\n::send\n");
+        let mut prompt = Vec::new();
+
+        let result = collect_multiline_input(&mut reader, &mut prompt).unwrap();
+        assert_eq!(
+            result,
+            MultilineInputResult::Submit("first line\nsecond line".to_string())
+        );
+        assert!(!prompt.is_empty());
+    }
+
+    #[test]
+    fn test_collect_multiline_input_can_cancel() {
+        let mut reader = std::io::Cursor::new(b"first line\n::cancel\n");
+        let mut prompt = Vec::new();
+
+        let result = collect_multiline_input(&mut reader, &mut prompt).unwrap();
+        assert_eq!(result, MultilineInputResult::Cancelled);
+    }
+
+    #[test]
+    fn test_collect_multiline_input_rejects_more_than_512_lines() {
+        let mut input = String::new();
+        for idx in 0..=CHAT_MULTILINE_MAX_LINES {
+            input.push_str(&format!("line-{idx}\n"));
+        }
+        input.push_str("::send\n");
+
+        let mut reader = std::io::Cursor::new(input.into_bytes());
+        let mut prompt = Vec::new();
+
+        let result = collect_multiline_input(&mut reader, &mut prompt).unwrap();
+        assert_eq!(
+            result,
+            MultilineInputResult::LimitExceeded {
+                max_lines: CHAT_MULTILINE_MAX_LINES,
+            }
+        );
     }
 }

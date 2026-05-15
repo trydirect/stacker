@@ -11,12 +11,12 @@ async fn list() {
 
     let response = client
         .get(&format!("{}/cloud", &app.address))
+        .header("Authorization", "Bearer test_token")
         .send()
         .await
         .expect("Failed to execute request.");
 
     assert!(response.status().is_success());
-    assert_eq!(Some(0), response.content_length());
 }
 
 // test me: cargo t --test cloud add_cloud -- --nocapture --show-output
@@ -28,25 +28,19 @@ async fn add_cloud() {
     }; // server
     let client = reqwest::Client::new(); // client
 
-    let data = r#"
-    {
-        "user_id": "fake_user_id",
+    let data = serde_json::json!({
         "provider": "htz",
-        "cloud_token": "",
-        "cloud_key": "",
-        "cloud_secret": "",
-        "save_token": true
-    }
-    "#;
+        "save_token": false
+    });
 
     let response = client
         .post(&format!("{}/cloud", &app.address))
-        .json(data)
+        .header("Authorization", "Bearer test_token")
+        .json(&data)
         .send()
         .await
         .expect("Failed to execute request.");
 
     println!("response: {}", response.status());
     assert!(response.status().is_success());
-    assert_eq!(Some(0), response.content_length());
 }

@@ -1,5 +1,6 @@
 use crate::cli::error::CliError;
 use crate::console::commands::CallableTrait;
+use crate::helpers::fs::write_atomic;
 use flate2::read::GzDecoder;
 use std::env;
 use std::fs;
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 const DEFAULT_CHANNEL: &str = "stable";
 const VALID_CHANNELS: &[&str] = &["stable", "beta"];
 const GITHUB_API_RELEASES: &str = "https://api.github.com/repos/trydirect/stacker/releases";
+const RELEASES_URL_ENV: &str = "STACKER_UPDATE_RELEASES_URL";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Parse and validate a release channel string.
@@ -57,6 +59,12 @@ struct GithubAsset {
 /// Fetch the latest release from GitHub that matches the channel.
 /// - "stable" → non-prerelease releases
 /// - "beta"   → prerelease releases
+///
+/// Returns `Ok(None)` when the GitHub API is unreachable or rate-limited so
+/// that the update command exits 0 instead of failing the CLI.
+fn releases_api_url() -> String {
+    env::var(RELEASES_URL_ENV).unwrap_or_else(|_| GITHUB_API_RELEASES.to_string())
+}
 fn fetch_latest_release(
     channel: &str,
 ) -> Result<Option<GithubRelease>, Box<dyn std::error::Error>> {
@@ -64,11 +72,18 @@ fn fetch_latest_release(
         .user_agent(format!("stacker-cli/{}", CURRENT_VERSION))
         .build()?;
 
-    let releases: Vec<GithubRelease> = client
-        .get(GITHUB_API_RELEASES)
-        .send()?
-        .error_for_status()?
-        .json()?;
+    let response = client.get(releases_api_url()).send()?;
+
+    if !response.status().is_success() {
+        eprintln!(
+            "Warning: could not check for updates (GitHub API returned {}). \
+             Try again later or set a GITHUB_TOKEN environment variable.",
+            response.status()
+        );
+        return Ok(None);
+    }
+
+    let releases: Vec<GithubRelease> = response.json()?;
 
     let want_prerelease = channel == "beta";
     let release = releases
@@ -132,27 +147,7 @@ fn extract_binary_from_targz(
 /// Replace the running executable with `new_bytes`.
 fn replace_current_exe(new_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     let current_exe: PathBuf = env::current_exe()?;
-
-    // Write new binary to a sibling temp file, then atomically rename.
-    let parent = current_exe
-        .parent()
-        .ok_or("Cannot determine binary parent directory")?;
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".stacker-update-")
-        .tempfile_in(parent)?;
-    io::Write::write_all(&mut tmp, &new_bytes)?;
-
-    // Make executable (Unix)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = tmp.as_file().metadata()?.permissions();
-        perms.set_mode(0o755);
-        tmp.as_file().set_permissions(perms)?;
-    }
-
-    let (_, tmp_path) = tmp.keep()?;
-    fs::rename(&tmp_path, &current_exe)?;
+    write_atomic(&current_exe, &new_bytes, 0o755)?;
     Ok(())
 }
 
@@ -262,5 +257,12 @@ mod tests {
     fn test_is_newer_handles_v_prefix() {
         assert!(is_newer("0.2.4", "v0.2.5"));
         assert!(!is_newer("v0.2.5", "v0.2.5"));
+    }
+
+    #[test]
+    fn test_releases_api_url_uses_env_override() {
+        std::env::set_var(RELEASES_URL_ENV, "http://localhost/releases");
+        assert_eq!(releases_api_url(), "http://localhost/releases");
+        std::env::remove_var(RELEASES_URL_ENV);
     }
 }

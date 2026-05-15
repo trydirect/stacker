@@ -22,7 +22,7 @@ pub async fn item(
         .map_err(|err| JsonResponse::<models::Cloud>::build().internal_server_error(err))
         .and_then(|cloud| match cloud {
             Some(cloud) if cloud.user_id != user.id => {
-                Err(JsonResponse::<models::Project>::build().bad_request("Cloud not found"))
+                Err(JsonResponse::<models::Project>::build().not_found("Cloud not found"))
             }
             Some(cloud) => Ok(cloud),
             None => Err(JsonResponse::<models::Cloud>::build().not_found("Cloud not found")),

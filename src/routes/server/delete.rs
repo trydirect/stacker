@@ -22,7 +22,7 @@ pub async fn delete_preview(
         .map_err(|err| JsonResponse::<Server>::build().internal_server_error(err))
         .and_then(|server| match server {
             Some(server) if server.user_id != user.id => {
-                Err(JsonResponse::<Server>::build().bad_request("Access forbidden"))
+                Err(JsonResponse::<Server>::build().not_found(""))
             }
             Some(server) => Ok(server),
             None => Err(JsonResponse::<Server>::build().not_found("")),
@@ -86,7 +86,7 @@ pub async fn item(
         .map_err(|err| JsonResponse::<Server>::build().internal_server_error(err))
         .and_then(|server| match server {
             Some(server) if server.user_id != user.id => {
-                Err(JsonResponse::<Server>::build().bad_request("Delete is forbidden"))
+                Err(JsonResponse::<Server>::build().not_found(""))
             }
             Some(server) => Ok(server),
             None => Err(JsonResponse::<Server>::build().not_found("")),
