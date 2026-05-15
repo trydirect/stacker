@@ -802,18 +802,18 @@ fn local_config_files_for_agent_deploy(
         result.compose_content = Some(bundle_compose_content(&bundle)?);
     }
 
-    let absolute_config_files: Vec<_> = bundle
+    let deploy_config_files: Vec<_> = bundle
         .config_files
         .into_iter()
         .filter(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path.starts_with("/opt/stacker/deployments/"))
+                .map(|path| path == ".env" || path.starts_with("/opt/stacker/deployments/"))
                 .unwrap_or(false)
         })
         .collect();
-    if !absolute_config_files.is_empty() {
-        result.config_files = Some(absolute_config_files);
+    if !deploy_config_files.is_empty() {
+        result.config_files = Some(deploy_config_files);
     }
     Ok(result)
 }
@@ -1968,7 +1968,7 @@ mod tests {
             r#"
 services:
   device-api:
-    image: syncopia/device-api:latest
+    image: optimum/syncopia-device-api:latest
     env_file:
       - ../../device-api/docker/prod/.env
   upload:
@@ -2073,6 +2073,62 @@ environments:
         let compose = config.compose_content.expect("compose content");
         assert!(compose.contains("syncopia/device-api:prod"));
         assert!(!compose.contains("syncopia/device-api:local"));
+    }
+
+    #[test]
+    fn local_config_files_keeps_shared_project_env_file_for_root_env_topology() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            "services:\n  upload:\n    image: syncopia/upload:prod\n    env_file: .env\n",
+        )
+        .expect("project compose");
+        std::fs::write(
+            root.join("docker/prod/.env"),
+            "DEVICE_API_IMAGE=syncopia/device-api:prod\nUPLOAD_IMAGE=syncopia/upload:prod\n",
+        )
+        .expect("project env");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: syncopia
+project:
+  identity: syncopia
+app:
+  image: syncopia/upload:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+    env_file: docker/prod/.env
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "upload", None).unwrap();
+
+        let config_files = config.config_files.expect("config files");
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path == ".env")
+                .unwrap_or(false)
+        }));
+        assert!(config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|path| path.as_str())
+                .map(|path| path == ".env")
+                .unwrap_or(false)
+                && file
+                    .get("content")
+                    .and_then(|content| content.as_str())
+                    .map(|content| content.contains("UPLOAD_IMAGE=syncopia/upload:prod"))
+                    .unwrap_or(false)
+        }));
     }
 
     #[test]

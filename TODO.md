@@ -46,6 +46,30 @@
 
 ## ✅ Recent Fixes
 
+### May 15, 2026 - Remote runtime `.env` merge strategy hardening
+- [x] Fixed `stacker agent deploy-app` to keep the shared project `.env` in the deploy-app config bundle when the target service topology uses root `env_file: .env`
+- [ ] Replace append-based runtime env merge with **key-aware env merge**
+  - Parse existing/base `.env` content into key/value pairs instead of concatenating text blocks
+  - Build one final deduplicated runtime `.env` file per actual runtime path
+  - Eliminate duplicate keys such as `PORT=...` appearing twice after merge
+- [ ] Define and document strict runtime env precedence
+  - base authoring env from `stacker.yml env_file`
+  - server-scope secrets
+  - service-scope secrets
+  - generated runtime keys such as `DEPLOYMENT_HASH`
+- [ ] Add deletion semantics for rendered env output
+  - when a rendered/secret-backed key is removed, the next render must remove it from the target runtime `.env`
+  - do not preserve stale keys just because they existed in the previous file
+- [ ] Split merge behavior by runtime topology, not by secret scope
+  - shared `/home/trydirect/project/.env` must be rendered as one canonical deduplicated file
+  - app-local env files should only be used when the compose topology truly points to app-local env files
+- [ ] Add regression tests for runtime env merge behavior
+  - shared root `.env` survives `stacker agent deploy-app`
+  - app-local `.env` merge still works
+  - override precedence is deterministic
+  - removed keys disappear on next render
+  - registry auth never leaks into runtime `.env`
+
 ### May 2, 2026 - Vault-backed NPM credential contract
 - [x] Status Panel `configure_proxy` no longer relies on hard-coded `admin@example.com` / `changeme` defaults
 - [x] Installer contract now emits `STACKER_SERVER_ID` and a host-scoped Vault path for Nginx Proxy Manager credentials
