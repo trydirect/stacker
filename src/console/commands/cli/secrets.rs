@@ -1495,6 +1495,7 @@ mod tests {
             hooks: Default::default(),
             env_file: None,
             env: Default::default(),
+            config_contract: Default::default(),
         };
 
         assert_eq!(

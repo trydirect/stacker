@@ -684,6 +684,24 @@ pub struct ProjectConfig {
     pub identity: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfigContract {
+    #[serde(default)]
+    pub services: BTreeMap<String, TargetConfigContract>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TargetConfigContract {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret: Vec<String>,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // StackerConfig — the root configuration type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -732,6 +750,9 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub env: HashMap<String, String>,
+
+    #[serde(default)]
+    pub config_contract: ConfigContract,
 }
 
 impl StackerConfig {
@@ -1365,6 +1386,7 @@ impl ConfigBuilder {
             hooks: self.hooks.unwrap_or_default(),
             env_file: self.env_file,
             env: self.env,
+            config_contract: ConfigContract::default(),
         })
     }
 }

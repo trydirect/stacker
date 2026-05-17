@@ -2,11 +2,18 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cli::cloud_env;
+use crate::cli::config_check::{check_inventory, load_check, ConfigCheckItem, ConfigCheckResult};
+use crate::cli::config_contract::{suggest_contract_yaml, ContractSuggestOptions};
+use crate::cli::config_diff::{diff_inventories, load_diff, ConfigDiff, DiffItem};
+use crate::cli::config_inventory::{
+    load_inventory, merge_remote_secret_names, ConfigInventory, InventoryOptions,
+};
 use crate::cli::config_parser::{
     CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
 };
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
+use crate::cli::runtime::CliRuntime;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
@@ -863,6 +870,55 @@ pub struct ConfigShowCommand {
     pub resolved: bool,
 }
 
+/// `stacker config inventory --env <name> [--service <target>] [--json]`
+///
+/// Displays a redacted, comparable configuration key inventory.
+pub struct ConfigInventoryCommand {
+    pub file: Option<String>,
+    pub environment: String,
+    pub service: Option<String>,
+    pub json: bool,
+    pub show_values: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config diff --from <env> --to <env> [--service <target>] [--json]`
+///
+/// Compares redacted local configuration inventories across environments.
+pub struct ConfigDiffCommand {
+    pub file: Option<String>,
+    pub from: String,
+    pub to: String,
+    pub service: Option<String>,
+    pub json: bool,
+    pub strict: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config check --env <name> [--service <target>] [--json] [--strict]`
+///
+/// Checks an environment against optional `config_contract` requirements.
+pub struct ConfigCheckCommand {
+    pub file: Option<String>,
+    pub environment: String,
+    pub service: Option<String>,
+    pub json: bool,
+    pub strict: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config contract suggest --env <name> [--service <target>]`
+///
+/// Generates a reviewable `config_contract` YAML snippet from inventory.
+pub struct ConfigContractSuggestCommand {
+    pub file: Option<String>,
+    pub environment: String,
+    pub service: Option<String>,
+}
+
 /// `stacker config fix [--file stacker.yml] [--interactive]`
 ///
 /// Interactively repairs common missing required fields in stacker.yml.
@@ -975,6 +1031,359 @@ impl CallableTrait for ConfigShowCommand {
         };
         println!("{}", output);
         Ok(())
+    }
+}
+
+impl ConfigInventoryCommand {
+    pub fn new(
+        file: Option<String>,
+        environment: String,
+        service: Option<String>,
+        json: bool,
+        show_values: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            environment,
+            service,
+            json,
+            show_values,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigInventoryCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let mut inventory = load_inventory(
+            Path::new(&path),
+            &InventoryOptions {
+                environment: self.environment.clone(),
+                service: self.service.clone(),
+                show_values: self.show_values,
+            },
+        )?;
+        if self.remote {
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut inventory,
+            )?;
+        }
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&inventory)?);
+            return Ok(());
+        }
+
+        for warning in &inventory.warnings {
+            eprintln!("⚠ {warning}");
+        }
+        println!("Target\tKey\tSource\tPresent\tSecret\tValue");
+        for target in inventory.targets {
+            for key in target.keys {
+                let value = if key.secret {
+                    "[REDACTED]".to_string()
+                } else if key.present {
+                    key.value_preview.unwrap_or_else(|| "[HIDDEN]".to_string())
+                } else {
+                    "[MISSING]".to_string()
+                };
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    target.target_code, key.key, key.source, key.present, key.secret, value
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl ConfigDiffCommand {
+    pub fn new(
+        file: Option<String>,
+        from: String,
+        to: String,
+        service: Option<String>,
+        json: bool,
+        strict: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            from,
+            to,
+            service,
+            json,
+            strict,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigDiffCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let diff = if self.remote {
+            let from_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.from.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            let mut to_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.to.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut to_inventory,
+            )?;
+            diff_inventories(from_inventory, to_inventory, self.service.clone())
+        } else {
+            load_diff(Path::new(&path), &self.from, &self.to, self.service.clone())?
+        };
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&diff)?);
+        } else {
+            print_config_diff(&diff);
+        }
+
+        if self.strict && diff.has_differences() {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "configuration differs between {} and {}",
+                self.from, self.to
+            ))));
+        }
+
+        Ok(())
+    }
+}
+
+impl ConfigCheckCommand {
+    pub fn new(
+        file: Option<String>,
+        environment: String,
+        service: Option<String>,
+        json: bool,
+        strict: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            environment,
+            service,
+            json,
+            strict,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigCheckCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let result = if self.remote {
+            let config = StackerConfig::from_file(Path::new(&path))?;
+            let mut inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.environment.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut inventory,
+            )?;
+            check_inventory(config, inventory, self.service.clone())
+        } else {
+            load_check(Path::new(&path), &self.environment, self.service.clone())?
+        };
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            print_config_check(&result);
+        }
+
+        if self.strict && result.has_required_failures() {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "required configuration missing for {}",
+                self.environment
+            ))));
+        }
+
+        Ok(())
+    }
+}
+
+fn enrich_remote_service_secret_metadata(
+    config_path: &Path,
+    explicit_project: Option<&str>,
+    inventory: &mut ConfigInventory,
+) -> Result<(), CliError> {
+    let project_ref = resolve_remote_project_reference(config_path, explicit_project)?;
+    let ctx = CliRuntime::new("config remote metadata")?;
+    let project = ctx
+        .block_on(ctx.client.find_project(&project_ref))?
+        .ok_or_else(|| {
+            CliError::ConfigValidation(format!("Project '{}' was not found", project_ref))
+        })?;
+    let target_codes = inventory
+        .targets
+        .iter()
+        .map(|target| target.target_code.clone())
+        .collect::<Vec<_>>();
+
+    for target_code in target_codes {
+        match ctx.block_on(ctx.client.list_service_secrets(project.id, &target_code)) {
+            Ok(secrets) => {
+                merge_remote_secret_names(
+                    inventory,
+                    &target_code,
+                    secrets.into_iter().map(|secret| secret.name),
+                );
+            }
+            Err(error) => inventory.warnings.push(format!(
+                "Remote secret metadata unavailable for {}: {}",
+                target_code, error
+            )),
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_remote_project_reference(
+    config_path: &Path,
+    explicit_project: Option<&str>,
+) -> Result<String, CliError> {
+    if let Some(project) = explicit_project
+        .map(str::trim)
+        .filter(|project| !project.is_empty())
+    {
+        return Ok(project.to_string());
+    }
+
+    let config = StackerConfig::from_file_raw(config_path)?;
+    config
+        .project
+        .identity
+        .map(|project| project.trim().to_string())
+        .filter(|project| !project.is_empty())
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Remote config metadata requires --project, or set project.identity in stacker.yml."
+                    .to_string(),
+            )
+        })
+}
+
+impl ConfigContractSuggestCommand {
+    pub fn new(file: Option<String>, environment: String, service: Option<String>) -> Self {
+        Self {
+            file,
+            environment,
+            service,
+        }
+    }
+}
+
+impl CallableTrait for ConfigContractSuggestCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let output = suggest_contract_yaml(
+            Path::new(&path),
+            &ContractSuggestOptions {
+                environment: self.environment.clone(),
+                service: self.service.clone(),
+            },
+        )?;
+        println!("{}", output.trim_end());
+        Ok(())
+    }
+}
+
+fn print_config_check(result: &ConfigCheckResult) {
+    for warning in &result.warnings {
+        eprintln!("⚠ {warning}");
+    }
+
+    print_check_items("Missing required:", &result.missing_required);
+    print_check_items("Missing optional:", &result.missing_optional);
+
+    if !result.has_required_failures() && result.missing_optional.is_empty() {
+        println!(
+            "Configuration contract satisfied for {}.",
+            result.environment
+        );
+    }
+}
+
+fn print_check_items(title: &str, items: &[ConfigCheckItem]) {
+    if items.is_empty() {
+        return;
+    }
+
+    println!("{title}");
+    for item in items {
+        let secret_marker = if item.secret { " [secret]" } else { "" };
+        println!("  {}:{}{}", item.target, item.key, secret_marker);
+    }
+}
+
+fn print_config_diff(diff: &ConfigDiff) {
+    for warning in &diff.warnings {
+        eprintln!("⚠ {warning}");
+    }
+
+    print_diff_items(
+        &format!("Missing in {}:", diff.to_environment),
+        &diff.missing_in_to,
+    );
+    print_diff_items(
+        &format!("Only in {}:", diff.to_environment),
+        &diff.only_in_to,
+    );
+    print_diff_items("Different values:", &diff.different);
+
+    if !diff.has_differences() {
+        println!(
+            "No configuration differences found between {} and {}.",
+            diff.from_environment, diff.to_environment
+        );
+    }
+}
+
+fn print_diff_items(title: &str, items: &[DiffItem]) {
+    if items.is_empty() {
+        return;
+    }
+
+    println!("{title}");
+    for item in items {
+        let secret_marker = if item.secret { " [secret]" } else { "" };
+        println!("  {}:{}{}", item.target, item.key, secret_marker);
     }
 }
 
