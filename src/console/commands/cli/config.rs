@@ -1100,25 +1100,71 @@ impl CallableTrait for ConfigInventoryCommand {
         for warning in &inventory.warnings {
             eprintln!("⚠ {warning}");
         }
-        println!("Target\tKey\tSource\tPresent\tSecret\tValue");
-        for target in inventory.targets {
-            for key in target.keys {
-                let value = if key.secret {
-                    "[REDACTED]".to_string()
-                } else if key.present {
-                    key.value_preview.unwrap_or_else(|| "[HIDDEN]".to_string())
-                } else {
-                    "[MISSING]".to_string()
-                };
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
-                    target.target_code, key.key, key.source, key.present, key.secret, value
-                );
-            }
-        }
+        print!("{}", format_inventory_table(&inventory));
 
         Ok(())
     }
+}
+
+fn format_inventory_table(inventory: &ConfigInventory) -> String {
+    let mut rows = vec![[
+        "Target".to_string(),
+        "Key".to_string(),
+        "Source".to_string(),
+        "Present".to_string(),
+        "Secret".to_string(),
+        "Value".to_string(),
+    ]];
+
+    for target in &inventory.targets {
+        for key in &target.keys {
+            let value = if key.secret {
+                "[REDACTED]".to_string()
+            } else if key.present {
+                key.value_preview
+                    .clone()
+                    .unwrap_or_else(|| "[HIDDEN]".to_string())
+            } else {
+                "[MISSING]".to_string()
+            };
+
+            rows.push([
+                target.target_code.clone(),
+                key.key.clone(),
+                key.source.clone(),
+                key.present.to_string(),
+                key.secret.to_string(),
+                value,
+            ]);
+        }
+    }
+
+    let mut widths = [0usize; 5];
+    for row in &rows {
+        for index in 0..widths.len() {
+            widths[index] = widths[index].max(row[index].len());
+        }
+    }
+
+    let mut output = String::new();
+    for row in rows {
+        output.push_str(&format!(
+            "{:<target_width$}  {:<key_width$}  {:<source_width$}  {:<present_width$}  {:<secret_width$}  {}\n",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            target_width = widths[0],
+            key_width = widths[1],
+            source_width = widths[2],
+            present_width = widths[3],
+            secret_width = widths[4],
+        ));
+    }
+
+    output
 }
 
 impl ConfigDiffCommand {
@@ -1727,6 +1773,51 @@ app:
     fn test_resolve_config_path_override() {
         let resolved = resolve_config_path(&Some("custom.yml".to_string()));
         assert_eq!(resolved, "custom.yml");
+    }
+
+    #[test]
+    fn test_inventory_table_aligns_columns() {
+        let inventory = ConfigInventory {
+            environment: "local".to_string(),
+            warnings: Vec::new(),
+            targets: vec![crate::cli::config_inventory::TargetConfigInventory {
+                target_code: "coolify".to_string(),
+                keys: vec![
+                    crate::cli::config_inventory::ConfigKeyInventory {
+                        key: "APP_ENV".to_string(),
+                        source: "compose environment".to_string(),
+                        present: true,
+                        secret: false,
+                        value_hash: None,
+                        value_preview: Some("${APP_ENV:-production}".to_string()),
+                    },
+                    crate::cli::config_inventory::ConfigKeyInventory {
+                        key: "PHP_FPM_PM_MAX_SPARE_SERVERS".to_string(),
+                        source: "compose environment".to_string(),
+                        present: true,
+                        secret: false,
+                        value_hash: None,
+                        value_preview: Some("${PHP_FPM_PM_MAX_SPARE_SERVERS:-10}".to_string()),
+                    },
+                    crate::cli::config_inventory::ConfigKeyInventory {
+                        key: "DB_PASSWORD".to_string(),
+                        source: "compose env_file".to_string(),
+                        present: true,
+                        secret: true,
+                        value_hash: None,
+                        value_preview: None,
+                    },
+                ],
+            }],
+        };
+
+        let table = format_inventory_table(&inventory);
+
+        assert!(table.starts_with("Target   Key                           Source"));
+        assert!(table.contains("coolify  APP_ENV                       compose environment"));
+        assert!(table.contains("coolify  DB_PASSWORD                   compose env_file"));
+        assert!(table.contains("[REDACTED]"));
+        assert!(!table.contains('\t'));
     }
 
     #[test]
