@@ -11,6 +11,9 @@ use crate::cli::config_inventory::{
 use crate::cli::config_parser::{
     CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
 };
+use crate::cli::config_promote::{
+    load_promotion_plan, promotion_plan_from_diff, ConfigPromotionPlan,
+};
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
@@ -910,6 +913,20 @@ pub struct ConfigCheckCommand {
     pub project: Option<String>,
 }
 
+/// `stacker config promote --from <env> --to <env> [--service <target>]`
+///
+/// Generates safe target placeholders for keys missing from the target environment.
+pub struct ConfigPromoteCommand {
+    pub file: Option<String>,
+    pub from: String,
+    pub to: String,
+    pub service: Option<String>,
+    pub keys: Vec<String>,
+    pub json: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
 /// `stacker config contract suggest --env <name> [--service <target>]`
 ///
 /// Generates a reviewable `config_contract` YAML snippet from inventory.
@@ -1235,6 +1252,108 @@ impl CallableTrait for ConfigCheckCommand {
 
         Ok(())
     }
+}
+
+impl ConfigPromoteCommand {
+    pub fn new(
+        file: Option<String>,
+        from: String,
+        to: String,
+        service: Option<String>,
+        keys: Vec<String>,
+        json: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            from,
+            to,
+            service,
+            keys,
+            json,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigPromoteCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let plan = if self.remote {
+            let from_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.from.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            let mut to_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.to.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut to_inventory,
+            )?;
+            let diff = diff_inventories(from_inventory, to_inventory, self.service.clone());
+            promotion_plan_from_diff(diff, self.keys.clone())
+        } else {
+            load_promotion_plan(
+                Path::new(&path),
+                &self.from,
+                &self.to,
+                self.service.clone(),
+                self.keys.clone(),
+            )?
+        };
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            print_promotion_plan(&plan);
+        }
+
+        Ok(())
+    }
+}
+
+fn print_promotion_plan(plan: &ConfigPromotionPlan) {
+    for warning in &plan.warnings {
+        eprintln!("⚠ {warning}");
+    }
+
+    if plan.is_empty() {
+        println!(
+            "No missing keys to promote from {} to {}.",
+            plan.from_environment, plan.to_environment
+        );
+        return;
+    }
+
+    println!(
+        "Promotion placeholders from {} to {}:",
+        plan.from_environment, plan.to_environment
+    );
+    let mut current_target = "";
+    for item in &plan.items {
+        if current_target != item.target {
+            current_target = &item.target;
+            println!();
+            println!("# {}", item.target);
+        }
+        let secret_marker = if item.secret { " # secret" } else { "" };
+        println!("{}{}", item.placeholder, secret_marker);
+    }
+    println!();
+    println!("Review these placeholders and fill target values manually; plaintext is not copied.");
 }
 
 fn enrich_remote_service_secret_metadata(

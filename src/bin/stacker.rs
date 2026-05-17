@@ -639,6 +639,32 @@ enum ConfigCommands {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Generate safe placeholders for keys missing in a target environment
+    Promote {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Source environment/profile
+        #[arg(long, value_name = "NAME")]
+        from: String,
+        /// Target environment/profile
+        #[arg(long, value_name = "NAME")]
+        to: String,
+        /// Limit promotion plan to one service/app target
+        #[arg(long)]
+        service: Option<String>,
+        /// Limit promotion plan to specific keys (comma-separated or repeated)
+        #[arg(long, value_delimiter = ',')]
+        keys: Vec<String>,
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+        /// Enrich target environment with remote service secret metadata
+        #[arg(long)]
+        remote: bool,
+        /// Project name/id for remote metadata (defaults to project.identity)
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Generate config_contract snippets from current inventory
     Contract {
         #[command(subcommand)]
@@ -1763,6 +1789,20 @@ fn get_command(
                     strict,
                     remote,
                     project,
+                ),
+            ),
+            ConfigCommands::Promote {
+                file,
+                from,
+                to,
+                service,
+                keys,
+                json,
+                remote,
+                project,
+            } => Box::new(
+                stacker::console::commands::cli::config::ConfigPromoteCommand::new(
+                    file, from, to, service, keys, json, remote, project,
                 ),
             ),
             ConfigCommands::Contract { command } => match command {

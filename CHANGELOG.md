@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Configuration inventory, diff, check, and promotion planning
+
+- Added `stacker config inventory --env <name>` to list effective configuration
+  keys by app/service target and source without printing secret values.
+- Added `stacker config diff --from <env> --to <env>` to compare local
+  environment/profile inventories and report missing, target-only, and changed
+  keys.
+- Added optional `config_contract` support in `stacker.yml` and
+  `stacker config check --env <name> --strict` to fail when required keys are
+  missing from an environment.
+- Added `stacker config contract suggest --env <name>` to generate a
+  reviewable `config_contract` snippet from the current inventory.
+- Added `--remote` support for `config inventory`, `config diff`, and
+  `config check`, enriching target inventories with remote service secret
+  metadata without fetching plaintext Vault values.
+- Added `stacker config promote --from <env> --to <env>` to generate safe
+  target placeholders for missing keys; secret values are not copied.
+
 ### Added — App-only deploy environment selection
 
 - Added `stacker env [environment]` to show or persist the active deploy
