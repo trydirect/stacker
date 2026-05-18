@@ -115,6 +115,12 @@ deploy:
         .stdout(predicate::str::contains(
             "config_hash: unavailable_until_deploy",
         ))
+        .stdout(predicate::str::contains("runtime_env_contract_version: v1"))
+        .stdout(predicate::str::contains(
+            "runtime_env_contract_order: lowest_to_highest",
+        ))
+        .stdout(predicate::str::contains("name: base"))
+        .stdout(predicate::str::contains("name: compose"))
         .stdout(predicate::str::contains("superbucket").not());
 }
 

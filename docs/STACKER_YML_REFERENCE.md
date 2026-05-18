@@ -826,7 +826,8 @@ that same remote `.env` before the Status agent writes it. If Stacker cannot
 render the target runtime env, command creation fails instead of deploying a
 raw app-local `.env` without the remote secrets.
 
-The rendered runtime env is built from these layers, lowest to highest:
+The rendered runtime env follows contract version `v1` and is built from these
+layers, lowest to highest:
 
 1. Base app env and local authoring inputs.
 2. Server-scope secrets, only for services that opt in with
@@ -837,8 +838,10 @@ The rendered runtime env is built from these layers, lowest to highest:
 User-provided runtime env keys must match `^[A-Z_][A-Z0-9_]*$`. Keys beginning
 with `STACKER_`, `DOCKER_`, `VAULT_`, or `AGENT_` are reserved and rejected.
 Use `stacker config show --resolved` to inspect the local env source path,
-remote runtime path, config hash/version metadata, and contributing layers
-without printing secret values.
+remote runtime path, config hash/version metadata, contract version/order, and
+contributing layers without printing secret values. REST and MCP app-env reads
+also expose this same `runtime_env_contract` metadata so clients can reason
+about precedence without inferring it from docs alone.
 
 ---
 
@@ -1073,7 +1076,7 @@ Configuration issues:
 | `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
-| `stacker proxy add` | Add a reverse-proxy domain entry |
+| `stacker proxy add` | Add a reverse-proxy domain entry; remote deployments delegate to `stacker agent configure-proxy` |
 | `stacker proxy detect` | Detect running reverse proxies |
 | `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
 | `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
@@ -1231,7 +1234,8 @@ stacker ai ask "How can I optimise this Dockerfile?"
 stacker ai ask "Why is my container crashing?" --context ./logs.txt
 
 # Proxy
-stacker proxy add example.com --upstream http://app:3000 --ssl auto
+stacker proxy add example.com --upstream http://app:3000 --ssl
+stacker proxy add example.com --upstream http://app:3000 --ssl=off
 stacker proxy detect
 
 # Update
@@ -1344,6 +1348,8 @@ stacker agent remove-app --app my-app --remove-volumes --remove-images
 # The agent resolves Nginx Proxy Manager credentials from Vault using STACKER_SERVER_ID.
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
 stacker agent configure-proxy --app my-app --domain app.local --no-ssl
+# If Vault reports vault_auth_revoked, refresh the agent's Vault authorization:
+stacker agent install
 
 # History & raw commands
 stacker agent history                             # Recent command history

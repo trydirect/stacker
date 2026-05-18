@@ -156,7 +156,7 @@ The end-user tool. No server required for local deploys.
 | `stacker config example` | Print a full commented reference |
 | `stacker config setup cloud` | Guided cloud deployment setup |
 | `stacker ai ask "question"` | Ask the AI about your stack |
-| `stacker proxy add` | Add a reverse-proxy domain entry |
+| `stacker proxy add` | Add a reverse-proxy domain entry; remote deployments delegate to `stacker agent configure-proxy` |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
 | `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH, for example `--public-ports 8000/tcp` on Hetzner |
 | `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
@@ -266,7 +266,7 @@ stacker secrets set NPM_TOKEN \
   --server-id 42 \
   --body-file .npm-token
 
-# Remote reads are metadata-only in v1
+# Remote reads are metadata-only in v1 (`source: "vault"`, `secure: true`)
 stacker secrets list --scope service --service uploader --json
 stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 

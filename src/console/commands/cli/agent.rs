@@ -187,7 +187,9 @@ fn json_error_message(value: &serde_json::Value) -> Option<String> {
 
 fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
     if let Some(error) = info.error.as_ref() {
-        return json_error_message(error).or_else(|| Some(fmt::pretty_json(error)));
+        return json_error_message(error)
+            .or_else(|| Some(fmt::pretty_json(error)))
+            .map(|message| agent_error_with_recovery_hint(&message));
     }
 
     let result = info.result.as_ref()?;
@@ -205,7 +207,27 @@ fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
     if let Some(code) = result.get("error_code").and_then(|value| value.as_str()) {
         message = format!("{} ({})", message, code);
     }
-    Some(message)
+    Some(agent_error_with_recovery_hint(&message))
+}
+
+fn agent_error_with_recovery_hint(message: &str) -> String {
+    if message.contains("vault_auth_revoked") {
+        return format!(
+            "{}\n\nRecovery: the Status Panel agent needs fresh Vault authorization for Nginx Proxy Manager credentials. Run `stacker agent install`, wait for the Status Panel deploy to finish, then retry the proxy command.",
+            message
+        );
+    }
+
+    if message.contains("vault_not_configured")
+        || message.contains("Vault-backed proxy credential resolution is not configured")
+    {
+        return format!(
+            "{}\n\nRecovery: reinstall or re-link the Status Panel agent so it advertises `npm_credential_source=vault`. Run `stacker agent install`, wait for it to finish, then retry the proxy command.",
+            message
+        );
+    }
+
+    message.to_string()
 }
 
 async fn execute_agent_command(
@@ -1797,6 +1819,7 @@ fn build_agent_install_deploy_request(
         )
     })?;
 
+    let extended_features = agent_install_extended_features(config);
     let deploy_form = serde_json::json!({
         "cloud": {
             "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
@@ -1821,12 +1844,26 @@ fn build_agent_install_deploy_request(
                 { "key": "status_panel_port", "value": "5000" },
             ],
             "integrated_features": ["statuspanel"],
-            "extended_features": [],
+            "extended_features": extended_features,
             "subscriptions": [],
         },
     });
 
     Ok((Some(cloud_id), deploy_form))
+}
+
+fn agent_install_extended_features(
+    config: &crate::cli::config_parser::StackerConfig,
+) -> Vec<&'static str> {
+    if matches!(
+        config.proxy.proxy_type,
+        crate::cli::config_parser::ProxyType::Nginx
+            | crate::cli::config_parser::ProxyType::NginxProxyManager
+    ) {
+        vec!["nginx_proxy_manager"]
+    } else {
+        Vec::new()
+    }
 }
 
 impl CallableTrait for AgentInstallCommand {
@@ -2367,6 +2404,41 @@ environments:
     }
 
     #[test]
+    fn agent_install_cloud_request_refreshes_managed_proxy_feature() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("coolify")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .expect("config");
+        let mut server = sample_server_info();
+        server.cloud_id = Some(9);
+        server.cloud = Some("htz".to_string());
+
+        let (_, deploy_form) = build_agent_install_deploy_request(
+            &config,
+            &server,
+            "coolify",
+            "https://vault.try.direct",
+        )
+        .expect("cloud install request");
+
+        assert!(deploy_form["stack"]["integrated_features"]
+            .as_array()
+            .expect("integrated_features array")
+            .contains(&serde_json::json!("statuspanel")));
+        assert!(deploy_form["stack"]["extended_features"]
+            .as_array()
+            .expect("extended_features array")
+            .contains(&serde_json::json!("nginx_proxy_manager")));
+    }
+
+    #[test]
     fn agent_install_request_includes_bootstrap_ssh_key_from_config() {
         let temp_dir = TempDir::new().expect("temp dir");
         let private_key_path = temp_dir.path().join("id_ed25519");
@@ -2426,7 +2498,7 @@ environments:
         assert_eq!(
             agent_command_error_message(&info),
             Some(
-                "Vault-backed proxy credential resolution is not configured on this agent"
+                "Vault-backed proxy credential resolution is not configured on this agent\n\nRecovery: reinstall or re-link the Status Panel agent so it advertises `npm_credential_source=vault`. Run `stacker agent install`, wait for it to finish, then retry the proxy command."
                     .to_string()
             )
         );
@@ -2454,10 +2526,34 @@ environments:
         assert_eq!(
             agent_command_error_message(&info),
             Some(
-                "Vault-backed proxy credential resolution is not configured on this agent (vault_not_configured)"
+                "Vault-backed proxy credential resolution is not configured on this agent (vault_not_configured)\n\nRecovery: reinstall or re-link the Status Panel agent so it advertises `npm_credential_source=vault`. Run `stacker agent install`, wait for it to finish, then retry the proxy command."
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn agent_command_error_message_adds_vault_auth_revoked_recovery_hint() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_4".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "error_code": "vault_auth_revoked",
+                "message": "Vault token is no longer authorized to read NPM credentials"
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+        assert!(message.contains("vault_auth_revoked"));
+        assert!(message.contains("stacker agent install"));
     }
 
     #[test]

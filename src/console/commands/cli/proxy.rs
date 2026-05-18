@@ -8,13 +8,15 @@ use crate::cli::proxy_manager::{
     DockerCliRuntime, ProxyDetection,
 };
 use crate::cli::runtime::CliRuntime;
+use crate::console::commands::cli::agent::AgentConfigureProxyCommand;
 use crate::console::commands::CallableTrait;
 
 /// Parse SSL mode string to `SslMode` enum.
 pub fn parse_ssl_mode(s: Option<&str>) -> SslMode {
     match s.map(|v| v.to_lowercase()).as_deref() {
-        Some("auto") => SslMode::Auto,
+        Some("auto") | Some("true") | Some("yes") | Some("on") | Some("1") => SslMode::Auto,
         Some("manual") => SslMode::Manual,
+        Some("off") | Some("false") | Some("no") | Some("0") => SslMode::Off,
         _ => SslMode::Off,
     }
 }
@@ -32,37 +34,126 @@ pub fn build_domain_config(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyUpstreamTarget {
+    pub app_code: String,
+    pub port: u16,
+}
+
+pub fn parse_proxy_upstream(upstream: &str) -> Result<ProxyUpstreamTarget, CliError> {
+    let upstream = upstream
+        .strip_prefix("http://")
+        .or_else(|| upstream.strip_prefix("https://"))
+        .unwrap_or(upstream);
+
+    if upstream.contains('/') {
+        return Err(CliError::ConfigValidation(format!(
+            "Invalid upstream '{}': paths are not supported; use host:port",
+            upstream
+        )));
+    }
+
+    let (host, port) = upstream.rsplit_once(':').ok_or_else(|| {
+        CliError::ConfigValidation(format!(
+            "Invalid upstream '{}': must match [http://]host:port format",
+            upstream
+        ))
+    })?;
+
+    if host.trim().is_empty() {
+        return Err(CliError::ConfigValidation(format!(
+            "Invalid upstream '{}': host is required",
+            upstream
+        )));
+    }
+
+    let port = port.parse::<u16>().map_err(|_| {
+        CliError::ConfigValidation(format!(
+            "Invalid upstream '{}': port must be between 1 and 65535",
+            upstream
+        ))
+    })?;
+
+    if port == 0 {
+        return Err(CliError::ConfigValidation(format!(
+            "Invalid upstream '{}': port must be between 1 and 65535",
+            upstream
+        )));
+    }
+
+    Ok(ProxyUpstreamTarget {
+        app_code: host.to_string(),
+        port,
+    })
+}
+
 /// Run proxy detection using a `ContainerRuntime` (DIP).
 pub fn run_detect(runtime: &dyn ContainerRuntime) -> Result<ProxyDetection, CliError> {
     detect_proxy(runtime)
 }
 
-/// `stacker proxy add <domain> [--upstream <host:port>] [--ssl auto|manual|off]`
+/// `stacker proxy add <domain> [--upstream <host:port>] [--ssl[=auto|manual|off]]`
 ///
 /// Adds a reverse-proxy entry for the given domain.
 pub struct ProxyAddCommand {
     pub domain: String,
     pub upstream: Option<String>,
     pub ssl: Option<String>,
+    pub force: bool,
+    pub json: bool,
+    pub deployment: Option<String>,
 }
 
 impl ProxyAddCommand {
-    pub fn new(domain: String, upstream: Option<String>, ssl: Option<String>) -> Self {
+    pub fn new(
+        domain: String,
+        upstream: Option<String>,
+        ssl: Option<String>,
+        force: bool,
+        json: bool,
+        deployment: Option<String>,
+    ) -> Self {
         Self {
             domain,
             upstream,
             ssl,
+            force,
+            json,
+            deployment,
         }
     }
 }
 
 impl CallableTrait for ProxyAddCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir()?;
+        let use_agent = self.deployment.is_some() || is_cloud_or_remote(&project_dir);
+        if use_agent {
+            let upstream = self.upstream.as_deref().unwrap_or("app:8080");
+            let target = parse_proxy_upstream(upstream)?;
+            let ssl_enabled = parse_ssl_mode(self.ssl.as_deref()) != SslMode::Off;
+            let command = AgentConfigureProxyCommand::new(
+                target.app_code,
+                self.domain.clone(),
+                target.port,
+                ssl_enabled,
+                !ssl_enabled,
+                "create".to_string(),
+                self.force,
+                self.json,
+                self.deployment.clone(),
+            );
+            return command.call();
+        }
+
         let config =
             build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
         let block = generate_nginx_server_block(&config)?;
         println!("{}", block);
-        eprintln!("✓ Proxy entry generated for {}", self.domain);
+        eprintln!(
+            "✓ Proxy config generated for {}; apply this nginx snippet to configure a local proxy",
+            self.domain
+        );
         Ok(())
     }
 }
@@ -232,12 +323,14 @@ mod tests {
     fn test_parse_ssl_mode_auto() {
         assert_eq!(parse_ssl_mode(Some("auto")), SslMode::Auto);
         assert_eq!(parse_ssl_mode(Some("AUTO")), SslMode::Auto);
+        assert_eq!(parse_ssl_mode(Some("true")), SslMode::Auto);
     }
 
     #[test]
     fn test_parse_ssl_mode_defaults_to_off() {
         assert_eq!(parse_ssl_mode(None), SslMode::Off);
         assert_eq!(parse_ssl_mode(Some("unknown")), SslMode::Off);
+        assert_eq!(parse_ssl_mode(Some("false")), SslMode::Off);
     }
 
     #[test]
@@ -253,6 +346,19 @@ mod tests {
         let cfg = build_domain_config("app.io", Some("http://web:3000"), Some("auto"));
         assert_eq!(cfg.upstream, "http://web:3000");
         assert_eq!(cfg.ssl, SslMode::Auto);
+    }
+
+    #[test]
+    fn test_parse_proxy_upstream_strips_scheme() {
+        let target = parse_proxy_upstream("http://coolify:80").unwrap();
+        assert_eq!(target.app_code, "coolify");
+        assert_eq!(target.port, 80);
+    }
+
+    #[test]
+    fn test_parse_proxy_upstream_rejects_paths() {
+        let err = parse_proxy_upstream("http://coolify:80/admin").unwrap_err();
+        assert!(err.to_string().contains("paths are not supported"));
     }
 
     #[test]

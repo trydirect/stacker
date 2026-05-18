@@ -15,6 +15,7 @@ use crate::cli::config_parser::{
 use crate::cli::config_promote::{
     load_promotion_plan, promotion_plan_from_diff, ConfigPromotionPlan,
 };
+use crate::cli::debug::cli_debug_enabled;
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
@@ -22,6 +23,7 @@ use crate::cli::stacker_client::ProjectAppInfo;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::services::runtime_env_contract_response;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -819,12 +821,27 @@ pub fn run_show_resolved(config_path: &str) -> Result<String, CliError> {
         .or_else(|| config.env_file.clone())
         .map(|env_file| resolve_display_path(config_dir, &env_file))
         .unwrap_or_else(|| "<none>".to_string());
+    let runtime_env_contract = runtime_env_contract_response();
+    let layers = runtime_env_contract
+        .layers
+        .iter()
+        .map(|layer| {
+            format!(
+                "    - name: {}\n      precedence: {}\n      applies_when: {}\n      description: {}",
+                layer.name, layer.precedence, layer.applies_when, layer.description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     Ok(format!(
-        "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  layers:\n    - base\n    - server (requires inherit_server_secrets: true)\n    - service\n    - compose_environment\n",
+        "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  runtime_env_contract_version: {}\n  runtime_env_contract_order: {}\n  layers:\n{}\n",
         local_env_file,
         remote_runtime_env_path(),
-        compose_env_file_reference()
+        compose_env_file_reference(),
+        runtime_env_contract.version,
+        runtime_env_contract.order,
+        layers
     ))
 }
 
@@ -1447,19 +1464,6 @@ fn remote_metadata_warning(target_code: &str, error: &CliError, debug: bool) -> 
     format!(
         "Remote secret metadata unavailable for {target_code}; rerun with DEBUG=true for details."
     )
-}
-
-fn cli_debug_enabled() -> bool {
-    ["DEBUG", "STACKER_DEBUG"].iter().any(|key| {
-        std::env::var(key)
-            .map(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false)
-    })
 }
 
 fn registered_remote_target_codes(

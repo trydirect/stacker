@@ -103,7 +103,7 @@ Use it to answer user questions with concrete YAML examples.
   stacker destroy --confirm [--volumes]\n\
   stacker config validate | show | fix | example\n\
   stacker ai ask \"question\" [--context file]\n\
-  stacker proxy add DOMAIN --upstream URL --ssl auto|off\n\
+  stacker proxy add DOMAIN --upstream URL --ssl[=auto|off]\n\
   stacker proxy detect\n\
   stacker ssh-key generate --server-id N [--save-to PATH]\n\
   stacker ssh-key show --server-id N [--json]\n\

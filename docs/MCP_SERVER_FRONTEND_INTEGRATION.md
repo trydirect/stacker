@@ -52,7 +52,18 @@ secret tools mirror the CLI/API target model:
 - `delete_remote_service_secret` — delete one service secret.
 
 Remote secret reads are metadata-only; plaintext values are written to Vault but
-never returned to MCP clients.
+never returned to MCP clients. The metadata contract is explicit about that: the
+returned item keeps `source: "vault"` and sets `secure: true`.
+
+The app configuration tools also honor that contract:
+
+- `get_app_env_vars` and `get_app_config` redact both locally-authored sensitive
+  keys and any Vault-backed remote service secret names for the target app.
+- `set_app_env_var` rejects names already managed as remote service secrets and
+  should guide the client toward `set_remote_service_secret` instead.
+- `get_app_env_vars` and `get_app_config` include `runtime_env_contract`, which
+  declares the current precedence version and layer order used for rendered
+  runtime env files.
 
 Every MCP tool call is checked against Casbin before its handler executes. Clients
 must have a `CALL` policy for `/mcp/tools/<tool_name>`. Marketplace admin tools

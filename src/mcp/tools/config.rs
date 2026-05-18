@@ -10,10 +10,13 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
+use crate::project_app::hydration::redact_app_environment;
+use crate::services::runtime_env_contract_response;
 use serde::Deserialize;
 
 /// Get environment variables for an app in a project
@@ -51,15 +54,21 @@ impl ToolHandler for GetAppEnvVarsTool {
         .map_err(|e| format!("Failed to fetch app: {}", e))?
         .ok_or_else(|| format!("App '{}' not found in project", params.app_code))?;
 
-        // Parse environment variables from app config
-        // Redact sensitive values for AI safety
-        let env_vars = app.environment.clone().unwrap_or_default();
-        let redacted_env = redact_sensitive_env_vars(&env_vars);
+        let redacted_env = redact_app_environment(
+            &context.pg_pool,
+            &context.user.id,
+            params.project_id,
+            &params.app_code,
+            app.environment.clone().unwrap_or_default(),
+        )
+        .await
+        .map_err(|e| format!("Failed to redact app environment: {}", e))?;
 
         let result = json!({
             "project_id": params.project_id,
             "app_code": params.app_code,
             "environment_variables": redacted_env,
+            "runtime_env_contract": runtime_env_contract_response(),
             "count": redacted_env.as_object().map(|o| o.len()).unwrap_or(0),
             "note": "Sensitive values (passwords, tokens, keys) are redacted for security."
         });
@@ -129,6 +138,14 @@ impl ToolHandler for SetAppEnvVarTool {
         if project.user_id != context.user.id {
             return Err("Project not found".to_string());
         }
+
+        ensure_no_service_secret_key_conflicts(
+            context,
+            params.project_id,
+            &params.app_code,
+            &[params.name.clone()],
+        )
+        .await?;
 
         // Fetch and update app configuration
         let mut app = db::project_app::fetch_by_project_and_code(
@@ -344,9 +361,15 @@ impl ToolHandler for GetAppConfigTool {
         .map_err(|e| format!("Failed to fetch app: {}", e))?
         .ok_or_else(|| format!("App '{}' not found in project", params.app_code))?;
 
-        // Build config response with redacted sensitive data
-        let env_vars = app.environment.clone().unwrap_or_default();
-        let redacted_env = redact_sensitive_env_vars(&env_vars);
+        let redacted_env = redact_app_environment(
+            &context.pg_pool,
+            &context.user.id,
+            params.project_id,
+            &params.app_code,
+            app.environment.clone().unwrap_or_default(),
+        )
+        .await
+        .map_err(|e| format!("Failed to redact app environment: {}", e))?;
 
         let result = json!({
             "project_id": params.project_id,
@@ -356,6 +379,7 @@ impl ToolHandler for GetAppConfigTool {
             "ports": app.ports,
             "volumes": app.volumes,
             "environment_variables": redacted_env,
+            "runtime_env_contract": runtime_env_contract_response(),
             "domain": app.domain,
             "ssl_enabled": app.ssl_enabled.unwrap_or(false),
             "restart_policy": app.restart_policy.clone().unwrap_or_else(|| "unless-stopped".to_string()),
@@ -660,6 +684,7 @@ impl ToolHandler for UpdateAppDomainTool {
 
 // Helper functions
 
+#[cfg(test)]
 /// Redact sensitive environment variable values
 fn redact_sensitive_env_vars(env: &Value) -> Value {
     const SENSITIVE_PATTERNS: &[&str] = &[
@@ -700,6 +725,43 @@ fn redact_sensitive_env_vars(env: &Value) -> Value {
     } else {
         env.clone()
     }
+}
+
+async fn ensure_no_service_secret_key_conflicts(
+    context: &ToolContext,
+    project_id: i32,
+    app_code: &str,
+    candidate_keys: &[String],
+) -> Result<(), String> {
+    if candidate_keys.is_empty() {
+        return Ok(());
+    }
+
+    let service_secrets = db::remote_secret::list_service_secrets(
+        &context.pg_pool,
+        &context.user.id,
+        project_id,
+        app_code,
+    )
+    .await
+    .map_err(|e| format!("Failed to inspect remote service secrets: {}", e))?;
+
+    let secret_names: HashSet<String> = service_secrets
+        .into_iter()
+        .map(|secret| secret.name)
+        .collect();
+
+    if let Some(conflict) = candidate_keys
+        .iter()
+        .find(|key| secret_names.contains(key.as_str()))
+    {
+        return Err(format!(
+            "Environment variable '{}' is managed as a remote service secret. Use 'stacker secrets set {} --scope service --project {} --service {}' instead.",
+            conflict, conflict, project_id, app_code
+        ));
+    }
+
+    Ok(())
 }
 
 /// Validate environment variable name

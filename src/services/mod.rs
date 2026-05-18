@@ -3,6 +3,7 @@ pub mod config_renderer;
 pub mod dag_executor;
 pub mod deployment_identifier;
 pub mod deployment_state;
+pub mod env_contract;
 pub mod grpc_pipe;
 pub mod handoff;
 pub mod log_cache;
@@ -24,6 +25,11 @@ pub use deployment_state::{
     DeploymentAgentFeatures, DeploymentAgentState, DeploymentAppState, DeploymentDriftState,
     DeploymentRuntimeState, DeploymentState, DeploymentStateDeployment,
     DEPLOYMENT_STATE_SCHEMA_VERSION,
+};
+pub use env_contract::{
+    runtime_env_contract_response, runtime_env_layer_names, RuntimeEnvContractResponse,
+    RUNTIME_ENV_CONTRACT_VERSION, RUNTIME_ENV_LAYER_BASE, RUNTIME_ENV_LAYER_COMPOSE,
+    RUNTIME_ENV_LAYER_SERVER, RUNTIME_ENV_LAYER_SERVICE, RUNTIME_ENV_PRECEDENCE_ORDER,
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;

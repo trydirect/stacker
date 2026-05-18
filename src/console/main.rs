@@ -290,8 +290,14 @@ enum StackerProxyCommands {
         domain: String,
         #[arg(long)]
         upstream: Option<String>,
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         ssl: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -481,9 +487,12 @@ fn get_command(
                     domain,
                     upstream,
                     ssl,
+                    force,
+                    json,
+                    deployment,
                 } => Ok(Box::new(
                     stacker::console::commands::cli::proxy::ProxyAddCommand::new(
-                        domain, upstream, ssl,
+                        domain, upstream, ssl, force, json, deployment,
                     ),
                 )),
                 StackerProxyCommands::Detect { json, deployment } => Ok(Box::new(

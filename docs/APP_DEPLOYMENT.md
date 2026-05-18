@@ -96,10 +96,12 @@ Each deployment receives its own Vault token, scoped to only access that deploym
      enqueue API used by `stacker agent deploy-app` and `stacker secrets push`,
      Stacker enriches the command payload
    - Fetches from Vault: `{app_code}` (compose), `{app_code}_env` (runtime env), `{app_code}_configs` (bundle)
-   - For CLI-provided app-local config bundles, merges the app-local service
-     definition into the full project compose, then merges the freshly rendered
-     service-secret env into any `.env` file referenced by that app's compose
-     `env_file`
+    - For CLI-provided app-local config bundles, merges the app-local service
+      definition into the full project compose, then merges the freshly rendered
+      service-secret env into any `.env` file referenced by that app's compose
+      `env_file`
+    - The rendered runtime env follows the shared precedence contract `v1`
+      (`base -> server opt-in -> service secret -> compose environment`)
    - If runtime env rendering fails, command creation fails rather than falling
      back to raw bundled `.env` content that could omit remote secrets
    - Adds all configs to `config_files` array in command payload

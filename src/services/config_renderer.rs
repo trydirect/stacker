@@ -12,6 +12,10 @@ use crate::configuration::DeploymentSettings;
 use crate::db;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
 use crate::models::{Project, ProjectApp};
+use crate::services::env_contract::{
+    RUNTIME_ENV_LAYER_BASE, RUNTIME_ENV_LAYER_COMPOSE, RUNTIME_ENV_LAYER_SERVER,
+    RUNTIME_ENV_LAYER_SERVICE,
+};
 use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -221,24 +225,24 @@ fn merge_env_layers(input: &EnvRenderInput) -> (BTreeMap<String, String>, Vec<&'
 
     merge_layer(&mut environment, &input.base);
     if !input.base.is_empty() {
-        inputs.push("base");
+        inputs.push(RUNTIME_ENV_LAYER_BASE);
     }
 
     if input.inherit_server_secrets {
         merge_layer(&mut environment, &input.server);
         if !input.server.is_empty() {
-            inputs.push("server");
+            inputs.push(RUNTIME_ENV_LAYER_SERVER);
         }
     }
 
     merge_layer(&mut environment, &input.service);
     if !input.service.is_empty() {
-        inputs.push("service");
+        inputs.push(RUNTIME_ENV_LAYER_SERVICE);
     }
 
     merge_layer(&mut environment, &input.compose_environment);
     if !input.compose_environment.is_empty() {
-        inputs.push("compose");
+        inputs.push(RUNTIME_ENV_LAYER_COMPOSE);
     }
 
     (environment, inputs)
@@ -1191,10 +1195,7 @@ mod tests {
 
         assert!(rendered.content.contains("BASE_ONLY=yes\n"));
         assert!(rendered.content.contains("SHARED=compose\n"));
-        assert_eq!(
-            rendered.inputs,
-            vec!["base", "server", "service", "compose"]
-        );
+        assert_eq!(rendered.inputs, crate::services::runtime_env_layer_names());
     }
 
     #[test]

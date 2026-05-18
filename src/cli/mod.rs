@@ -13,6 +13,7 @@ pub mod config_inventory;
 pub mod config_parser;
 pub mod config_promote;
 pub mod credentials;
+pub mod debug;
 pub mod deployment_lock;
 pub mod detector;
 pub mod error;

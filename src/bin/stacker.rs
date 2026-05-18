@@ -1409,9 +1409,18 @@ enum ProxyCommands {
         /// Upstream service address (e.g. http://app:8080)
         #[arg(long)]
         upstream: Option<String>,
-        /// SSL mode: auto, manual, off
-        #[arg(long)]
+        /// Enable SSL or set SSL mode: --ssl, --ssl=auto, --ssl=manual, --ssl=off
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         ssl: Option<String>,
+        /// Skip the active-connections pre-flight check for remote proxy changes
+        #[arg(long)]
+        force: bool,
+        /// Output remote agent command result as JSON
+        #[arg(long)]
+        json: bool,
+        /// Target a specific deployment by hash
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -1861,8 +1870,13 @@ fn get_command(
                 domain,
                 upstream,
                 ssl,
+                force,
+                json,
+                deployment,
             } => Box::new(
-                stacker::console::commands::cli::proxy::ProxyAddCommand::new(domain, upstream, ssl),
+                stacker::console::commands::cli::proxy::ProxyAddCommand::new(
+                    domain, upstream, ssl, force, json, deployment,
+                ),
             ),
             ProxyCommands::Detect { json, deployment } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
