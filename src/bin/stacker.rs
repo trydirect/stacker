@@ -567,6 +567,109 @@ enum ConfigCommands {
         #[arg(long)]
         resolved: bool,
     },
+    /// Show a redacted inventory of config keys by target
+    Inventory {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Environment/profile to inspect
+        #[arg(long = "env", value_name = "NAME")]
+        environment: String,
+        /// Limit inventory to one service/app target
+        #[arg(long)]
+        service: Option<String>,
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+        /// Show non-secret plaintext values in text/JSON output
+        #[arg(long)]
+        show: bool,
+        /// Include remote service secret metadata from Stacker server
+        #[arg(long)]
+        remote: bool,
+        /// Project name/id for remote metadata (defaults to project.identity)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Compare redacted config inventories across two environments
+    Diff {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Source environment/profile
+        #[arg(long, value_name = "NAME")]
+        from: String,
+        /// Target environment/profile
+        #[arg(long, value_name = "NAME")]
+        to: String,
+        /// Limit comparison to one service/app target
+        #[arg(long)]
+        service: Option<String>,
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+        /// Exit non-zero when any difference is found
+        #[arg(long)]
+        strict: bool,
+        /// Enrich target environment with remote service secret metadata
+        #[arg(long)]
+        remote: bool,
+        /// Project name/id for remote metadata (defaults to project.identity)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Check an environment against config_contract requirements
+    Check {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Environment/profile to check
+        #[arg(long = "env", value_name = "NAME")]
+        environment: String,
+        /// Limit check to one service/app target
+        #[arg(long)]
+        service: Option<String>,
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+        /// Exit non-zero when required keys are missing
+        #[arg(long)]
+        strict: bool,
+        /// Include remote service secret metadata from Stacker server
+        #[arg(long)]
+        remote: bool,
+        /// Project name/id for remote metadata (defaults to project.identity)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Generate safe placeholders for keys missing in a target environment
+    Promote {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Source environment/profile
+        #[arg(long, value_name = "NAME")]
+        from: String,
+        /// Target environment/profile
+        #[arg(long, value_name = "NAME")]
+        to: String,
+        /// Limit promotion plan to one service/app target
+        #[arg(long)]
+        service: Option<String>,
+        /// Limit promotion plan to specific keys (comma-separated or repeated)
+        #[arg(long, value_delimiter = ',')]
+        keys: Vec<String>,
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+        /// Enrich target environment with remote service secret metadata
+        #[arg(long)]
+        remote: bool,
+        /// Project name/id for remote metadata (defaults to project.identity)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Generate config_contract snippets from current inventory
+    Contract {
+        #[command(subcommand)]
+        command: ConfigContractCommands,
+    },
     /// Print a full commented `stacker.yml` reference example
     Example,
     /// Interactively fix missing required config fields
@@ -607,6 +710,21 @@ enum ConfigSetupCommands {
         file: Option<String>,
         #[arg(long, value_name = "OUT")]
         out: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigContractCommands {
+    /// Suggest a config_contract section from an environment inventory
+    Suggest {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Environment/profile to inspect
+        #[arg(long = "env", value_name = "NAME")]
+        environment: String,
+        /// Limit suggestion to one service/app target
+        #[arg(long)]
+        service: Option<String>,
     },
 }
 
@@ -1621,6 +1739,85 @@ fn get_command(
             ConfigCommands::Show { file, resolved } => Box::new(
                 stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
             ),
+            ConfigCommands::Inventory {
+                file,
+                environment,
+                service,
+                json,
+                show,
+                remote,
+                project,
+            } => Box::new(
+                stacker::console::commands::cli::config::ConfigInventoryCommand::new(
+                    file,
+                    environment,
+                    service,
+                    json,
+                    show,
+                    remote,
+                    project,
+                ),
+            ),
+            ConfigCommands::Diff {
+                file,
+                from,
+                to,
+                service,
+                json,
+                strict,
+                remote,
+                project,
+            } => Box::new(
+                stacker::console::commands::cli::config::ConfigDiffCommand::new(
+                    file, from, to, service, json, strict, remote, project,
+                ),
+            ),
+            ConfigCommands::Check {
+                file,
+                environment,
+                service,
+                json,
+                strict,
+                remote,
+                project,
+            } => Box::new(
+                stacker::console::commands::cli::config::ConfigCheckCommand::new(
+                    file,
+                    environment,
+                    service,
+                    json,
+                    strict,
+                    remote,
+                    project,
+                ),
+            ),
+            ConfigCommands::Promote {
+                file,
+                from,
+                to,
+                service,
+                keys,
+                json,
+                remote,
+                project,
+            } => Box::new(
+                stacker::console::commands::cli::config::ConfigPromoteCommand::new(
+                    file, from, to, service, keys, json, remote, project,
+                ),
+            ),
+            ConfigCommands::Contract { command } => match command {
+                ConfigContractCommands::Suggest {
+                    file,
+                    environment,
+                    service,
+                } => Box::new(
+                    stacker::console::commands::cli::config::ConfigContractSuggestCommand::new(
+                        file,
+                        environment,
+                        service,
+                    ),
+                ),
+            },
             ConfigCommands::Example => {
                 Box::new(stacker::console::commands::cli::config::ConfigExampleCommand::new())
             }

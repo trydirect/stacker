@@ -19,6 +19,18 @@ pub(crate) fn is_platform_managed_app_code(value: &str) -> bool {
     PLATFORM_MANAGED_APP_CODES.contains(&normalized.as_str())
 }
 
+pub(crate) fn is_platform_managed_app_identity(service_name: &str, image: Option<&str>) -> bool {
+    app_identity_candidates(service_name, image)
+        .iter()
+        .any(|candidate| is_platform_managed_app_code(candidate))
+}
+
+pub(crate) fn is_nginx_proxy_manager_identity(service_name: &str, image: Option<&str>) -> bool {
+    app_identity_candidates(service_name, image)
+        .iter()
+        .any(|candidate| candidate == "nginx_proxy_manager")
+}
+
 pub(crate) fn normalize_app_code(value: &str) -> String {
     value
         .trim()
@@ -28,6 +40,28 @@ pub(crate) fn normalize_app_code(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<&str>>()
         .join("_")
+}
+
+fn app_identity_candidates(service_name: &str, image: Option<&str>) -> Vec<String> {
+    let normalized_service_name = normalize_app_code(service_name);
+    let mut candidates = vec![normalized_service_name.clone()];
+    if normalized_service_name == "npm" {
+        candidates.push("nginx_proxy_manager".to_string());
+    }
+
+    if let Some(image) = image {
+        if let Some(image_name) = image.split('/').last() {
+            if let Some(name_without_tag) = image_name.split(':').next() {
+                let normalized_image_name = normalize_app_code(name_without_tag);
+                if normalized_image_name == "npm" {
+                    candidates.push("nginx_proxy_manager".to_string());
+                }
+                candidates.push(normalized_image_name);
+            }
+        }
+    }
+
+    candidates
 }
 
 pub(crate) fn is_compose_filename(file_name: &str) -> bool {

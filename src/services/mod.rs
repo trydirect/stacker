@@ -2,6 +2,7 @@ pub mod agent_dispatcher;
 pub mod config_renderer;
 pub mod dag_executor;
 pub mod deployment_identifier;
+pub mod deployment_state;
 pub mod grpc_pipe;
 pub mod handoff;
 pub mod log_cache;
@@ -18,6 +19,11 @@ pub use config_renderer::{AppRenderContext, ConfigBundle, ConfigRenderer, SyncRe
 pub use deployment_identifier::{
     DeploymentIdentifier, DeploymentIdentifierArgs, DeploymentResolveError, DeploymentResolver,
     StackerDeploymentResolver,
+};
+pub use deployment_state::{
+    DeploymentAgentFeatures, DeploymentAgentState, DeploymentAppState, DeploymentDriftState,
+    DeploymentRuntimeState, DeploymentState, DeploymentStateDeployment,
+    DEPLOYMENT_STATE_SCHEMA_VERSION,
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;

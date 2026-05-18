@@ -2962,12 +2962,7 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
 }
 
 fn is_nginx_proxy_manager_service(svc: &ServiceDefinition) -> bool {
-    let service_name = svc.name.to_ascii_lowercase().replace('-', "_");
-    let image = svc.image.to_ascii_lowercase();
-
-    service_name == "nginx_proxy_manager"
-        || service_name == "npm"
-        || image.contains("nginx-proxy-manager")
+    crate::project_app::is_nginx_proxy_manager_identity(&svc.name, Some(&svc.image))
 }
 
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
@@ -3233,7 +3228,27 @@ pub fn generate_server_name(project_name: &str) -> String {
     format!("{}-{}", truncated, suffix)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DeployFormOptions {
+    pub include_managed_proxy: bool,
+}
+
+impl Default for DeployFormOptions {
+    fn default() -> Self {
+        Self {
+            include_managed_proxy: true,
+        }
+    }
+}
+
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
+    build_deploy_form_with_options(config, DeployFormOptions::default())
+}
+
+pub fn build_deploy_form_with_options(
+    config: &StackerConfig,
+    options: DeployFormOptions,
+) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
         .map(|c| {
@@ -3298,22 +3313,24 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // When proxy type is Nginx or NginxProxyManager, inject "nginx_proxy_manager"
     // into extended_features so the install service's Ansible playbook runs the
     // nginx_proxy_manager role (collect_roles checks selected_features).
-    match config.proxy.proxy_type {
-        crate::cli::config_parser::ProxyType::Nginx
-        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
-                let features = stack_obj
-                    .entry("extended_features")
-                    .or_insert_with(|| serde_json::json!([]));
-                if let Some(arr) = features.as_array_mut() {
-                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
-                    if !arr.contains(&npm) {
-                        arr.push(npm);
+    if options.include_managed_proxy {
+        match config.proxy.proxy_type {
+            crate::cli::config_parser::ProxyType::Nginx
+            | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+                if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                    let features = stack_obj
+                        .entry("extended_features")
+                        .or_insert_with(|| serde_json::json!([]));
+                    if let Some(arr) = features.as_array_mut() {
+                        let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                        if !arr.contains(&npm) {
+                            arr.push(npm);
+                        }
                     }
                 }
             }
+            _ => {}
         }
-        _ => {}
     }
 
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
@@ -3369,6 +3386,22 @@ pub fn build_server_deploy_form(
     server_name: &str,
     force_status_panel: bool,
 ) -> serde_json::Value {
+    build_server_deploy_form_with_options(
+        config,
+        server_cfg,
+        server_name,
+        force_status_panel,
+        DeployFormOptions::default(),
+    )
+}
+
+pub fn build_server_deploy_form_with_options(
+    config: &StackerConfig,
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    server_name: &str,
+    force_status_panel: bool,
+    options: DeployFormOptions,
+) -> serde_json::Value {
     let project_name = config
         .project
         .identity
@@ -3405,22 +3438,24 @@ pub fn build_server_deploy_form(
         }
     }
 
-    match config.proxy.proxy_type {
-        crate::cli::config_parser::ProxyType::Nginx
-        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
-                let features = stack_obj
-                    .entry("extended_features")
-                    .or_insert_with(|| serde_json::json!([]));
-                if let Some(arr) = features.as_array_mut() {
-                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
-                    if !arr.contains(&npm) {
-                        arr.push(npm);
+    if options.include_managed_proxy {
+        match config.proxy.proxy_type {
+            crate::cli::config_parser::ProxyType::Nginx
+            | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+                if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                    let features = stack_obj
+                        .entry("extended_features")
+                        .or_insert_with(|| serde_json::json!([]));
+                    if let Some(arr) = features.as_array_mut() {
+                        let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                        if !arr.contains(&npm) {
+                            arr.push(npm);
+                        }
                     }
                 }
             }
+            _ => {}
         }
-        _ => {}
     }
 
     if config.monitoring.status_panel || force_status_panel {
@@ -3753,6 +3788,49 @@ mod tests {
             "extended_features should contain 'nginx_proxy_manager': {:?}",
             ext_features
         );
+    }
+
+    #[test]
+    fn test_build_deploy_form_can_suppress_managed_nginx_proxy() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .cloud(crate::cli::config_parser::CloudConfig {
+                provider: crate::cli::config_parser::CloudProvider::Hetzner,
+                orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
+                region: Some("nbg1".to_string()),
+                size: Some("cx22".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+            })
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
+                auto_detect: true,
+                domains: vec![],
+                config: None,
+            })
+            .monitoring(crate::cli::config_parser::MonitoringConfig {
+                status_panel: true,
+                healthcheck: None,
+                metrics: None,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form_with_options(
+            &config,
+            DeployFormOptions {
+                include_managed_proxy: false,
+            },
+        );
+
+        let ext_features = form["stack"]["extended_features"].as_array().unwrap();
+        let integrated_features = form["stack"]["integrated_features"].as_array().unwrap();
+        assert!(!ext_features.contains(&serde_json::json!("nginx_proxy_manager")));
+        assert!(integrated_features.contains(&serde_json::json!("statuspanel")));
     }
 
     #[test]

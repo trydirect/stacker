@@ -148,6 +148,11 @@ The end-user tool. No server required for local deploys.
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
 | `stacker config show` | Show resolved configuration |
+| `stacker config inventory` | List effective config keys by environment and service without printing secrets |
+| `stacker config diff` | Compare config keys between environments such as local and prod |
+| `stacker config check` | Check an environment against `config_contract` requirements |
+| `stacker config contract suggest` | Generate a reviewable `config_contract` snippet from inventory |
+| `stacker config promote` | Generate safe target placeholders for missing environment keys |
 | `stacker config example` | Print a full commented reference |
 | `stacker config setup cloud` | Guided cloud deployment setup |
 | `stacker ai ask "question"` | Ask the AI about your stack |
@@ -211,6 +216,34 @@ registry auth securely and reuses it for later Status-managed image refreshes
 such as `stacker agent deploy-app`. This keeps private-image redeploys working
 without depending on host-level `docker login` state or mounting `/root/.docker`
 into the agent container.
+
+### Configuration inventory and drift checks
+
+Use the config inventory workflow to compare local, development, staging, and
+production configuration keys before deploying:
+
+```bash
+stacker config inventory --env local --service upload
+stacker config diff --from local --to prod --service upload
+stacker config diff --from local --to prod --service upload --remote
+```
+
+`--remote` enriches the target environment with remote service secret metadata
+from the Stacker server. It never fetches plaintext Vault values.
+
+You can generate a contract from an existing environment, review it, then check
+production against it:
+
+```bash
+stacker config contract suggest --env local --service upload
+stacker config check --env prod --service upload --strict --remote
+```
+
+For missing target keys, generate placeholders instead of copying secret values:
+
+```bash
+stacker config promote --from local --to prod --service upload
+```
 
 ### Secrets workflow
 

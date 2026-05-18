@@ -25,6 +25,7 @@
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
 - [hooks — Lifecycle Scripts](#hooks)
 - [env / env_file — Environment Variables](#env--env_file)
+- [config_contract — Required Configuration Keys](#config_contract)
 - [Environment Variable Interpolation](#environment-variable-interpolation)
 - [Auto-Detection](#auto-detection)
 - [Generated Dockerfiles](#generated-dockerfiles)
@@ -176,6 +177,16 @@ env:
   APP_PORT: "3000"
   LOG_LEVEL: info
   NODE_ENV: production
+
+config_contract:
+  services:
+    worker:
+      required:
+        - REDIS_URL
+      optional:
+        - SENTRY_DSN
+      secret:
+        - REDIS_URL
 ```
 
 ---
@@ -831,6 +842,56 @@ without printing secret values.
 
 ---
 
+## `config_contract`
+
+*Optional* · `object` · Default: none
+
+`config_contract` declares the configuration keys expected by each app or
+service target. It is used by `stacker config check` and helps catch missing
+production settings before deploys.
+
+```yaml
+config_contract:
+  services:
+    upload:
+      required:
+        - AUTH_API_URL
+        - REDIS_URL
+        - S3_BUCKET
+        - S3_ACCESS_KEY
+        - S3_SECRET_KEY
+      optional:
+        - SENTRY_DSN
+        - RUST_LOG
+      secret:
+        - REDIS_URL
+        - S3_SECRET_KEY
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `services.<target>.required` | `list<string>` | Keys that must exist for the target environment |
+| `services.<target>.optional` | `list<string>` | Keys that are useful to track but do not fail strict checks |
+| `services.<target>.secret` | `list<string>` | Keys that should be treated as secrets even if their names are not auto-detected |
+
+Generate an initial contract from the current inventory:
+
+```bash
+stacker config contract suggest --env local --service upload
+```
+
+Check an environment against the contract:
+
+```bash
+stacker config check --env prod --service upload --strict
+stacker config check --env prod --service upload --strict --remote
+```
+
+The `secret` list controls classification and redaction only. It does not store
+or provide values.
+
+---
+
 ## Environment Variable Interpolation
 
 Any value in `stacker.yml` can reference environment variables using `${VAR_NAME}` syntax. Variables are resolved from the process environment at parse time.
@@ -1003,6 +1064,11 @@ Configuration issues:
 | `stacker destroy` | Tear down the stack |
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
+| `stacker config inventory` | List effective config keys by environment and service |
+| `stacker config diff` | Compare config keys across environments |
+| `stacker config check` | Check an environment against `config_contract` |
+| `stacker config contract suggest` | Generate a reviewable `config_contract` snippet |
+| `stacker config promote` | Generate safe placeholders for missing target keys |
 | `stacker config fix` | Interactively fix missing required config fields |
 | `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
@@ -1153,6 +1219,12 @@ stacker destroy --confirm --volumes    # Also remove volumes
 stacker config validate                # Check stacker.yml
 stacker config validate --file prod.yml
 stacker config show                    # Display resolved config
+stacker config inventory --env local --service upload
+stacker config diff --from local --to prod --service upload
+stacker config diff --from local --to prod --service upload --remote
+stacker config contract suggest --env local --service upload
+stacker config check --env prod --service upload --strict --remote
+stacker config promote --from local --to prod --service upload
 
 # AI
 stacker ai ask "How can I optimise this Dockerfile?"
