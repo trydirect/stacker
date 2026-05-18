@@ -103,6 +103,9 @@ pub struct DeployContext {
 
     /// Environment-specific config files collected from compose env_file and bind mounts.
     pub config_bundle: Option<crate::cli::config_bundle::ConfigBundleArtifacts>,
+
+    /// Whether the Stacker-managed proxy role should be requested from Install Service.
+    pub managed_proxy_feature_enabled: bool,
 }
 
 impl DeployContext {
@@ -686,7 +689,12 @@ impl DeployStrategy for CloudDeploy {
                     };
 
                     // Step 4: Build deploy form
-                    let mut deploy_form = stacker_client::build_deploy_form(config);
+                    let mut deploy_form = stacker_client::build_deploy_form_with_options(
+                        config,
+                        stacker_client::DeployFormOptions {
+                            include_managed_proxy: context.managed_proxy_feature_enabled,
+                        },
+                    );
                     if let Some(bundle) = &context.config_bundle {
                         stacker_client::attach_config_bundle_to_deploy_form(
                             &mut deploy_form,
@@ -1447,11 +1455,14 @@ impl DeployStrategy for ServerDeploy {
                         )
                     });
 
-                let mut deploy_form = stacker_client::build_server_deploy_form(
+                let mut deploy_form = stacker_client::build_server_deploy_form_with_options(
                     config,
                     server_cfg,
                     &effective_server_name,
                     bootstrap_status_panel,
+                    stacker_client::DeployFormOptions {
+                        include_managed_proxy: context.managed_proxy_feature_enabled,
+                    },
                 );
                 if let Some(bundle) = &context.config_bundle {
                     stacker_client::attach_config_bundle_to_deploy_form(&mut deploy_form, bundle);
@@ -1915,6 +1926,7 @@ mod tests {
             server_name_override: None,
             runtime: "runc".to_string(),
             config_bundle: None,
+            managed_proxy_feature_enabled: true,
         }
     }
 
@@ -2042,6 +2054,7 @@ mod tests {
             server_name_override: None,
             runtime: "runc".to_string(),
             config_bundle: None,
+            managed_proxy_feature_enabled: true,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
     }

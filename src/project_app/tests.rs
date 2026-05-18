@@ -1,7 +1,10 @@
 use crate::helpers::project::builder::generate_single_app_compose;
 
 use super::mapping::{ProjectAppContext, ProjectAppPostArgs};
-use super::{is_platform_managed_app_code, project_app_from_post};
+use super::{
+    is_nginx_proxy_manager_identity, is_platform_managed_app_code,
+    is_platform_managed_app_identity, project_app_from_post,
+};
 use serde_json::json;
 
 /// Example payload from the user's request
@@ -43,6 +46,27 @@ fn platform_managed_app_code_normalizes_common_variants() {
     assert!(is_platform_managed_app_code("nginx-proxy-manager"));
     assert!(is_platform_managed_app_code("/statuspanel"));
     assert!(!is_platform_managed_app_code("coolify"));
+}
+
+#[test]
+fn platform_managed_app_identity_matches_name_or_image() {
+    assert!(is_platform_managed_app_identity(
+        "nginx_proxy_manager",
+        None
+    ));
+    assert!(is_platform_managed_app_identity(
+        "proxy",
+        Some("jc21/nginx-proxy-manager:latest")
+    ));
+    assert!(is_nginx_proxy_manager_identity(
+        "proxy",
+        Some("jc21/nginx-proxy-manager:latest")
+    ));
+    assert!(is_nginx_proxy_manager_identity("npm", None));
+    assert!(!is_platform_managed_app_identity(
+        "postgres",
+        Some("postgres:16-alpine")
+    ));
 }
 
 #[test]

@@ -2234,6 +2234,20 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None
     };
 
+    let managed_proxy_requested = matches!(
+        config.proxy.proxy_type,
+        crate::cli::config_parser::ProxyType::Nginx
+            | crate::cli::config_parser::ProxyType::NginxProxyManager
+    );
+    let compose_defines_managed_proxy =
+        crate::cli::compose_targets::compose_defines_nginx_proxy_manager_service(&compose_path)?;
+    let managed_proxy_feature_enabled = !(managed_proxy_requested && compose_defines_managed_proxy);
+    if managed_proxy_requested && compose_defines_managed_proxy {
+        eprintln!(
+            "  Compose declares nginx-proxy-manager; skipping Stacker-managed proxy feature to avoid duplicate port 80/81/443 bindings."
+        );
+    }
+
     // 5c. Report hooks (dry-run)
     if dry_run {
         if let Some(ref pre_build) = config.hooks.pre_build {
@@ -2258,6 +2272,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         server_name_override: remote_overrides.server_name.clone().or(lock_server_name),
         runtime: runtime.to_string(),
         config_bundle,
+        managed_proxy_feature_enabled,
     };
 
     let result = strategy.deploy(&config, &context, executor)?;

@@ -36,6 +36,64 @@ pub fn extract_compose_secret_target_services(
     Ok(services)
 }
 
+pub fn compose_defines_nginx_proxy_manager_service(compose_path: &Path) -> Result<bool, CliError> {
+    let mut visited = HashSet::new();
+    compose_file_defines_nginx_proxy_manager_service(compose_path, &mut visited)
+}
+
+fn compose_file_defines_nginx_proxy_manager_service(
+    compose_path: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<bool, CliError> {
+    let canonical = compose_path
+        .canonicalize()
+        .unwrap_or_else(|_| compose_path.to_path_buf());
+    if !visited.insert(canonical) {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(compose_path).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to read compose file for proxy discovery '{}': {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+    let document: Value = serde_yaml::from_str(&content).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to parse compose file for proxy discovery '{}': {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    if let Some(service_map) = document
+        .get(Value::String("services".to_string()))
+        .and_then(Value::as_mapping)
+    {
+        for (name, definition) in service_map {
+            let Some(service_name) = name.as_str() else {
+                continue;
+            };
+            let Some(definition) = definition.as_mapping() else {
+                continue;
+            };
+            if is_nginx_proxy_manager_compose_service(service_name, definition) {
+                return Ok(true);
+            }
+        }
+    }
+
+    let base_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
+    for include_path in compose_include_paths(&document, base_dir) {
+        if compose_file_defines_nginx_proxy_manager_service(&include_path, visited)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 fn collect_compose_services(
     compose_path: &Path,
     config: &StackerConfig,
@@ -295,15 +353,77 @@ fn collect_include_value(value: &Value, base_dir: &Path, paths: &mut Vec<PathBuf
 }
 
 fn is_platform_managed_compose_service(service_name: &str, definition: &Mapping) -> bool {
-    let service_name = service_name.to_ascii_lowercase().replace('-', "_");
-    let image = mapping_string(definition, "image")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let image = mapping_string(definition, "image");
+    crate::project_app::is_platform_managed_app_identity(service_name, image.as_deref())
+}
 
-    service_name == "nginx_proxy_manager"
-        || service_name == "npm"
-        || service_name == "statuspanel"
-        || service_name == "status_panel"
-        || image.contains("nginx-proxy-manager")
-        || image.contains("statuspanel")
+fn is_nginx_proxy_manager_compose_service(service_name: &str, definition: &Mapping) -> bool {
+    let image = mapping_string(definition, "image");
+    crate::project_app::is_nginx_proxy_manager_identity(service_name, image.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn detects_nginx_proxy_manager_service_in_compose_file() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  proxy:
+    image: jc21/nginx-proxy-manager:latest
+"#,
+        )
+        .unwrap();
+
+        assert!(compose_defines_nginx_proxy_manager_service(&compose_path).unwrap());
+    }
+
+    #[test]
+    fn detects_nginx_proxy_manager_service_from_included_compose_file() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("compose.yml");
+        let included_path = dir.path().join("proxy.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+include:
+  - proxy.yml
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &included_path,
+            r#"
+services:
+  npm:
+    image: example/custom-proxy:latest
+"#,
+        )
+        .unwrap();
+
+        assert!(compose_defines_nginx_proxy_manager_service(&compose_path).unwrap());
+    }
+
+    #[test]
+    fn ignores_compose_files_without_nginx_proxy_manager() {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("compose.yml");
+        std::fs::write(
+            &compose_path,
+            r#"
+services:
+  web:
+    image: nginx:latest
+"#,
+        )
+        .unwrap();
+
+        assert!(!compose_defines_nginx_proxy_manager_service(&compose_path).unwrap());
+    }
 }

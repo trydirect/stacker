@@ -5,9 +5,8 @@ use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
 use crate::project_app::{
-    is_platform_managed_app_code, normalize_app_code, parse_registry_auth_config,
-    store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
-    upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
+    parse_registry_auth_config, store_configs_to_vault_from_params,
+    store_registry_auth_command_to_vault, upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
 use crate::services::{AppConfig, ConfigRenderer, ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
@@ -1226,19 +1225,7 @@ pub async fn discover_and_register_child_services(
 }
 
 fn is_platform_managed_compose_service(service_name: &str, image: Option<&str>) -> bool {
-    let mut candidates = vec![normalize_app_code(service_name)];
-
-    if let Some(image) = image {
-        if let Some(image_name) = image.split('/').last() {
-            if let Some(name_without_tag) = image_name.split(':').next() {
-                candidates.push(normalize_app_code(name_without_tag));
-            }
-        }
-    }
-
-    candidates
-        .iter()
-        .any(|candidate| is_platform_managed_app_code(candidate))
+    crate::project_app::is_platform_managed_app_identity(service_name, image)
 }
 
 #[cfg(test)]
