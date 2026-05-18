@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,7 @@ use crate::cli::config_promote::{
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
+use crate::cli::stacker_client::ProjectAppInfo;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
@@ -1414,11 +1416,8 @@ fn enrich_remote_service_secret_metadata(
         .ok_or_else(|| {
             CliError::ConfigValidation(format!("Project '{}' was not found", project_ref))
         })?;
-    let target_codes = inventory
-        .targets
-        .iter()
-        .map(|target| target.target_code.clone())
-        .collect::<Vec<_>>();
+    let registered_apps = ctx.block_on(ctx.client.list_project_apps(project.id))?;
+    let target_codes = registered_remote_target_codes(inventory, &registered_apps);
 
     for target_code in target_codes {
         match ctx.block_on(ctx.client.list_service_secrets(project.id, &target_code)) {
@@ -1429,14 +1428,58 @@ fn enrich_remote_service_secret_metadata(
                     secrets.into_iter().map(|secret| secret.name),
                 );
             }
-            Err(error) => inventory.warnings.push(format!(
-                "Remote secret metadata unavailable for {}: {}",
-                target_code, error
+            Err(error) => inventory.warnings.push(remote_metadata_warning(
+                &target_code,
+                &error,
+                cli_debug_enabled(),
             )),
         }
     }
 
     Ok(())
+}
+
+fn remote_metadata_warning(target_code: &str, error: &CliError, debug: bool) -> String {
+    if debug {
+        return format!("Remote secret metadata unavailable for {target_code}: {error}");
+    }
+
+    format!(
+        "Remote secret metadata unavailable for {target_code}; rerun with DEBUG=true for details."
+    )
+}
+
+fn cli_debug_enabled() -> bool {
+    ["DEBUG", "STACKER_DEBUG"].iter().any(|key| {
+        std::env::var(key)
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn registered_remote_target_codes(
+    inventory: &ConfigInventory,
+    registered_apps: &[ProjectAppInfo],
+) -> Vec<String> {
+    let registered_codes = registered_apps
+        .iter()
+        .map(|app| app.code.as_str())
+        .collect::<BTreeSet<_>>();
+
+    inventory
+        .targets
+        .iter()
+        .filter_map(|target| {
+            registered_codes
+                .contains(target.target_code.as_str())
+                .then(|| target.target_code.clone())
+        })
+        .collect()
 }
 
 fn resolve_remote_project_reference(
@@ -1818,6 +1861,70 @@ app:
         assert!(table.contains("coolify  DB_PASSWORD                   compose env_file"));
         assert!(table.contains("[REDACTED]"));
         assert!(!table.contains('\t'));
+    }
+
+    #[test]
+    fn test_registered_remote_target_codes_skip_local_only_services() {
+        let inventory = ConfigInventory {
+            environment: "production".to_string(),
+            warnings: Vec::new(),
+            targets: vec![
+                crate::cli::config_inventory::TargetConfigInventory {
+                    target_code: "coolify".to_string(),
+                    keys: Vec::new(),
+                },
+                crate::cli::config_inventory::TargetConfigInventory {
+                    target_code: "postgres".to_string(),
+                    keys: Vec::new(),
+                },
+                crate::cli::config_inventory::TargetConfigInventory {
+                    target_code: "redis".to_string(),
+                    keys: Vec::new(),
+                },
+            ],
+        };
+        let registered_apps = vec![ProjectAppInfo {
+            id: 1,
+            project_id: 229,
+            code: "coolify".to_string(),
+            name: "Coolify".to_string(),
+            image: "coollabsio/coolify:latest".to_string(),
+            enabled: true,
+            deploy_order: None,
+            parent_app_code: None,
+        }];
+
+        let codes = registered_remote_target_codes(&inventory, &registered_apps);
+
+        assert_eq!(codes, vec!["coolify"]);
+    }
+
+    #[test]
+    fn test_remote_metadata_warning_hides_api_details_without_debug() {
+        let error = CliError::DeployFailed {
+            target: DeployTarget::Cloud,
+            reason: "Stacker server GET /project/229/apps/postgres/secrets failed (404): {\"message\":\"App not found\"}".to_string(),
+        };
+
+        let warning = remote_metadata_warning("postgres", &error, false);
+
+        assert!(warning.contains("postgres"));
+        assert!(warning.contains("DEBUG=true"));
+        assert!(!warning.contains("GET /project"));
+        assert!(!warning.contains("App not found"));
+    }
+
+    #[test]
+    fn test_remote_metadata_warning_shows_api_details_with_debug() {
+        let error = CliError::DeployFailed {
+            target: DeployTarget::Cloud,
+            reason: "Stacker server GET /project/229/apps/postgres/secrets failed (404): {\"message\":\"App not found\"}".to_string(),
+        };
+
+        let warning = remote_metadata_warning("postgres", &error, true);
+
+        assert!(warning.contains("GET /project/229/apps/postgres/secrets"));
+        assert!(warning.contains("App not found"));
     }
 
     #[test]
