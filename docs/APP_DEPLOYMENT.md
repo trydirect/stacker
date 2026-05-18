@@ -92,7 +92,9 @@ Each deployment receives its own Vault token, scoped to only access that deploym
    - Config bundle is a JSON array containing all config files for the app
 
 3. **Command Enrichment** (Stacker → Status Panel):
-   - When `deploy_app` command is issued, Stacker enriches the command payload
+   - When `deploy_app` command is issued through command creation or the agent
+     enqueue API used by `stacker agent deploy-app` and `stacker secrets push`,
+     Stacker enriches the command payload
    - Fetches from Vault: `{app_code}` (compose), `{app_code}_env` (runtime env), `{app_code}_configs` (bundle)
    - For CLI-provided app-local config bundles, merges the app-local service
      definition into the full project compose, then merges the freshly rendered
@@ -230,6 +232,8 @@ vault.store_app_config(deployment_hash, &format!("{}_configs", app_code), &bundl
 **Location**: `src/routes/command/create.rs`
 
 **Purpose**: Enriches deploy_app command with configs from Vault before sending to Status Panel.
+This helper is shared by command creation and the agent enqueue API, which is
+the path used by `stacker agent deploy-app` and `stacker secrets push`.
 
 **Flow**:
 ```rust
