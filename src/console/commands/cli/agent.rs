@@ -863,7 +863,7 @@ fn local_config_files_for_agent_deploy(
         .filter(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path == ".env" || path.starts_with("/opt/stacker/deployments/"))
+                .map(|path| path != "docker-compose.yml")
                 .unwrap_or(false)
         })
         .collect();
@@ -2314,13 +2314,13 @@ environments:
         assert!(compose.contains("syncopia/device-api:prod"));
         assert!(compose.contains("postgres:17-alpine"));
         assert!(!compose.contains("syncopia/device-api:latest"));
-        assert!(compose.contains("/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"));
+        assert!(compose.contains("device-api/docker/prod/.env"));
         assert!(config.notices.is_empty());
         let config_files = config.config_files.expect("config files");
         assert!(config_files.iter().any(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .map(|path| path == "device-api/docker/prod/.env")
                 .unwrap_or(false)
         }));
     }
@@ -2371,7 +2371,7 @@ environments:
         assert!(config_files.iter().any(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .map(|path| path == "device-api/docker/prod/.env")
                 .unwrap_or(false)
         }));
         assert!(!config_files.iter().any(|file| {
