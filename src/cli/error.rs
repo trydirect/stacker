@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::cli::config_parser::DeployTarget;
+use crate::services::TypedErrorEnvelope;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CliError — unified error hierarchy for all CLI operations
@@ -104,6 +105,7 @@ pub enum CliError {
 
     // IO errors
     Io(std::io::Error),
+    Typed(TypedErrorEnvelope),
 }
 
 impl fmt::Display for CliError {
@@ -250,6 +252,9 @@ impl fmt::Display for CliError {
             Self::Io(err) => {
                 write!(f, "I/O error: {err}")
             }
+            Self::Typed(envelope) => {
+                write!(f, "{}", envelope.to_json())
+            }
         }
     }
 }
@@ -265,6 +270,12 @@ impl From<std::io::Error> for CliError {
 impl From<serde_yaml::Error> for CliError {
     fn from(err: serde_yaml::Error) -> Self {
         Self::ConfigParseFailed { source: err }
+    }
+}
+
+impl From<TypedErrorEnvelope> for CliError {
+    fn from(envelope: TypedErrorEnvelope) -> Self {
+        Self::Typed(envelope)
     }
 }
 

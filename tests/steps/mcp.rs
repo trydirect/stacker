@@ -268,6 +268,41 @@ async fn assert_tool_not_error(world: &mut StepWorld) {
     );
 }
 
+#[then("the MCP tool response should be an error")]
+async fn assert_tool_is_error(world: &mut StepWorld) {
+    let resp = world.mcp_response.as_ref().expect("No MCP response");
+    let result = resp.get("result").expect("No result in MCP response");
+    let is_error = result.get("isError").and_then(|v| v.as_bool());
+    assert_eq!(
+        is_error,
+        Some(true),
+        "Expected tool call to fail, got: {}",
+        result
+    );
+}
+
+#[then(regex = r#"^the MCP tool text response should contain "([^"]+)"$"#)]
+async fn assert_tool_text_contains(world: &mut StepWorld, expected: String) {
+    let resp = world.mcp_response.as_ref().expect("No MCP response");
+    let result = resp.get("result").expect("No result in MCP response");
+    let content = result
+        .get("content")
+        .and_then(|v| v.as_array())
+        .expect("No content array in MCP tool response");
+    let text = content
+        .first()
+        .and_then(|item| item.get("text"))
+        .and_then(|value| value.as_str())
+        .expect("No text content in MCP tool response");
+
+    assert!(
+        text.contains(&expected),
+        "Expected MCP tool text to contain '{}', got: {}",
+        expected,
+        text
+    );
+}
+
 #[then(regex = r#"^no MCP response should be received within (\d+)ms$"#)]
 async fn assert_no_response(world: &mut StepWorld, _millis: u64) {
     assert!(

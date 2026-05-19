@@ -92,16 +92,12 @@ Each deployment receives its own Vault token, scoped to only access that deploym
    - Config bundle is a JSON array containing all config files for the app
 
 3. **Command Enrichment** (Stacker → Status Panel):
-   - When `deploy_app` command is issued through command creation or the agent
-     enqueue API used by `stacker agent deploy-app` and `stacker secrets push`,
-     Stacker enriches the command payload
+   - When `deploy_app` command is issued, Stacker enriches the command payload
    - Fetches from Vault: `{app_code}` (compose), `{app_code}_env` (runtime env), `{app_code}_configs` (bundle)
-    - For CLI-provided app-local config bundles, merges the app-local service
-      definition into the full project compose, then merges the freshly rendered
-      service-secret env into any `.env` file referenced by that app's compose
-      `env_file`
-    - The rendered runtime env follows the shared precedence contract `v1`
-      (`base -> server opt-in -> service secret -> compose environment`)
+   - For CLI-provided app-local config bundles, merges the app-local service
+     definition into the full project compose, then merges the freshly rendered
+     service-secret env into any `.env` file referenced by that app's compose
+     `env_file`
    - If runtime env rendering fails, command creation fails rather than falling
      back to raw bundled `.env` content that could omit remote secrets
    - Adds all configs to `config_files` array in command payload
@@ -234,8 +230,6 @@ vault.store_app_config(deployment_hash, &format!("{}_configs", app_code), &bundl
 **Location**: `src/routes/command/create.rs`
 
 **Purpose**: Enriches deploy_app command with configs from Vault before sending to Status Panel.
-This helper is shared by command creation and the agent enqueue API, which is
-the path used by `stacker agent deploy-app` and `stacker secrets push`.
 
 **Flow**:
 ```rust
@@ -259,9 +253,11 @@ Stacker also keeps the bundled config files and appends the Vault-rendered
 service secrets to the `.env` file referenced by the matching compose service.
 This lets `device-api/docker/prod/compose.yml` with `env_file: .env` receive
 both local `.env` content and Vault-backed service secrets without truncating
-the remote project compose file. If the server cannot render the runtime env
-for a registered target, the enqueue request fails so Status does not deploy a
-partial app-local `.env`.
+the remote project compose file. On later resyncs, the previously appended
+`# stacker-render ...` block is replaced with the freshly rendered one so
+remote app-local `.env` files do not accumulate duplicate secret sections. If
+the server cannot render the runtime env for a registered target, the enqueue
+request fails so Status does not deploy a partial app-local `.env`.
 
 ### 5. ProjectAppService
 

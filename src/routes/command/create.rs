@@ -5,9 +5,11 @@ use crate::helpers::project::builder::parse_compose_services;
 use crate::helpers::JsonResponse;
 use crate::models::{Command, CommandPriority, User};
 use crate::project_app::{
-    parse_registry_auth_config, store_configs_to_vault_from_params,
-    store_registry_auth_command_to_vault, upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
+    is_platform_managed_app_code, normalize_app_code, parse_registry_auth_config,
+    store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
+    upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
+use crate::services::env_model::reconcile_env_file_content;
 use crate::services::{AppConfig, ConfigRenderer, ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
@@ -599,14 +601,6 @@ pub(crate) async fn enrich_deploy_app_with_compose(
         "Looking up .env file in Vault"
     );
 
-    let has_app_local_env_file = has_app_env_config_file(
-        &config_files,
-        params
-            .get("compose_content")
-            .and_then(|value| value.as_str()),
-        &app_code,
-    );
-
     if let Some((env_config, _config_hash)) = render_project_env_for_deploy_app(
         pg_pool,
         project_id,
@@ -630,11 +624,6 @@ pub(crate) async fn enrich_deploy_app_with_compose(
             &app_code,
             &env_config.content,
         );
-        if has_app_local_env_file && merged_into_bundle == 0 {
-            return Err(format!(
-                "deploy_app target '{app_code}' has an app-local .env config file, but Stacker could not merge the rendered runtime env into it"
-            ));
-        }
         if merged_into_bundle > 0 {
             tracing::info!(
                 deployment_hash = %deployment_hash,
@@ -659,11 +648,6 @@ pub(crate) async fn enrich_deploy_app_with_compose(
         });
         config_files.push(env_file);
     } else {
-        if has_app_local_env_file {
-            return Err(format!(
-                "deploy_app target '{app_code}' has an app-local .env config file, but Stacker could not render the runtime env; refusing to deploy a partial .env without Vault-backed service secrets"
-            ));
-        }
         match vault.fetch_app_config(deployment_hash, &env_key).await {
             Ok(env_config) => {
                 tracing::info!(
@@ -715,26 +699,6 @@ pub(crate) async fn enrich_deploy_app_with_compose(
     Ok(Some(params))
 }
 
-fn has_app_env_config_file(
-    config_files: &[serde_json::Value],
-    compose_content: Option<&str>,
-    app_code: &str,
-) -> bool {
-    let compose_env_paths = compose_content
-        .map(|content| compose_env_file_destinations_for_app(content, app_code))
-        .unwrap_or_default();
-
-    config_files.iter().any(|config_file| {
-        config_file
-            .get("destination_path")
-            .and_then(|value| value.as_str())
-            .map(|destination_path| {
-                is_app_env_config_file(destination_path, app_code, &compose_env_paths)
-            })
-            .unwrap_or(false)
-    })
-}
-
 fn merge_rendered_env_into_app_env_files(
     config_files: &mut [serde_json::Value],
     compose_content: Option<&str>,
@@ -763,7 +727,7 @@ fn merge_rendered_env_into_app_env_files(
             .get("content")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let merged_content = append_rendered_env(existing_content, rendered_env_content);
+        let merged_content = reconcile_env_file_content(existing_content, rendered_env_content);
 
         if let Some(obj) = config_file.as_object_mut() {
             obj.insert("content".to_string(), json!(merged_content));
@@ -792,15 +756,6 @@ fn is_app_env_config_file(
     }
 
     destination_path.contains(&format!("/{app_code}/docker/"))
-}
-
-fn append_rendered_env(existing_content: &str, rendered_env_content: &str) -> String {
-    let existing_content = existing_content.trim_end();
-    if existing_content.is_empty() {
-        return rendered_env_content.to_string();
-    }
-
-    format!("{existing_content}\n\n{rendered_env_content}")
 }
 
 fn compose_env_file_destinations_for_app(compose_content: &str, app_code: &str) -> HashSet<String> {
@@ -1225,7 +1180,19 @@ pub async fn discover_and_register_child_services(
 }
 
 fn is_platform_managed_compose_service(service_name: &str, image: Option<&str>) -> bool {
-    crate::project_app::is_platform_managed_app_identity(service_name, image)
+    let mut candidates = vec![normalize_app_code(service_name)];
+
+    if let Some(image) = image {
+        if let Some(image_name) = image.split('/').last() {
+            if let Some(name_without_tag) = image_name.split(':').next() {
+                candidates.push(normalize_app_code(name_without_tag));
+            }
+        }
+    }
+
+    candidates
+        .iter()
+        .any(|candidate| is_platform_managed_app_code(candidate))
 }
 
 #[cfg(test)]
@@ -1356,6 +1323,64 @@ services:
     }
 
     #[test]
+    fn merge_rendered_env_replaces_previous_rendered_block() {
+        let mut config_files = vec![json!({
+            "content": "RUST_LOG=debug\n\n# stacker-render version=1 hash=old generated_at=now inputs=service\nOLD_SECRET=outdated\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+        })];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(
+                r#"
+services:
+  device-api:
+    env_file: /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+"#,
+            ),
+            "device-api",
+            "# stacker-render version=2 hash=new generated_at=now inputs=service\nNEW_SECRET=fresh\n",
+        );
+
+        assert_eq!(merged, 1);
+        let env_content = config_files[0]["content"].as_str().expect("content");
+        assert_eq!(
+            env_content,
+            "RUST_LOG=debug\n\n# stacker-render version=2 hash=new generated_at=now inputs=service\nNEW_SECRET=fresh\n"
+        );
+        assert!(!env_content.contains("OLD_SECRET=outdated"));
+    }
+
+    #[test]
+    fn merge_rendered_env_removes_authored_key_overridden_by_rendered_block() {
+        let mut config_files = vec![json!({
+            "content": "RUST_LOG=debug\nS3_BUCKET=local\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+        })];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(
+                r#"
+services:
+  device-api:
+    env_file: /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+"#,
+            ),
+            "device-api",
+            "# stacker-render version=2 hash=new generated_at=now inputs=service\nS3_BUCKET=remote\n",
+        );
+
+        assert_eq!(merged, 1);
+        let env_content = config_files[0]["content"].as_str().expect("content");
+        assert_eq!(
+            env_content,
+            "RUST_LOG=debug\n\n# stacker-render version=2 hash=new generated_at=now inputs=service\nS3_BUCKET=remote\n"
+        );
+        assert!(!env_content.contains("S3_BUCKET=local"));
+    }
+
+    #[test]
     fn merge_rendered_env_matches_app_local_env_by_destination_when_compose_uses_relative_env_file()
     {
         let mut config_files = vec![
@@ -1409,34 +1434,6 @@ services:
 
         assert_eq!(merged, 0);
         assert_eq!(config_files[0]["content"], "port = 5050\n");
-    }
-
-    #[test]
-    fn has_app_env_config_file_detects_app_local_env_for_relative_compose_env_file() {
-        let config_files = vec![json!({
-            "content": "RUST_LOG=debug\n",
-            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
-        })];
-
-        assert!(has_app_env_config_file(
-            &config_files,
-            Some("services:\n  device-api:\n    env_file: .env\n"),
-            "device-api"
-        ));
-    }
-
-    #[test]
-    fn has_app_env_config_file_ignores_other_app_env_files() {
-        let config_files = vec![json!({
-            "content": "UPLOAD_ONLY=true\n",
-            "destination_path": "/opt/stacker/deployments/prod/files/upload/docker/prod/.env"
-        })];
-
-        assert!(!has_app_env_config_file(
-            &config_files,
-            Some("services:\n  device-api:\n    env_file: .env\n"),
-            "device-api"
-        ));
     }
 
     #[tokio::test]

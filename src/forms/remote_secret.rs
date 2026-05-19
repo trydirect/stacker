@@ -54,23 +54,23 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn remote_secret_metadata_is_explicitly_secure() {
-        let metadata = RemoteSecretMetadataResponse::from(RemoteSecret {
-            id: 1,
+    fn remote_secret_metadata_is_marked_secure() {
+        let response = RemoteSecretMetadataResponse::from(RemoteSecret {
+            id: 7,
             user_id: "user-1".to_string(),
             project_id: Some(42),
-            app_code: Some("web".to_string()),
+            app_code: Some("api".to_string()),
             server_id: None,
             scope: "service".to_string(),
-            name: "S3_SECRET".to_string(),
-            vault_path: "agent/users/user-1/projects/42/apps/web/secrets/S3_SECRET".to_string(),
+            name: "MYSECURE_PASSPHRASE".to_string(),
+            vault_path: "secret/path".to_string(),
             updated_by: "user-1".to_string(),
             last_sync_status: "synced".to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         });
 
-        assert!(metadata.secure);
-        assert_eq!(metadata.source, "vault");
+        assert!(response.secure);
+        assert_eq!(response.source, "vault");
     }
 }

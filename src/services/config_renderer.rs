@@ -12,9 +12,8 @@ use crate::configuration::DeploymentSettings;
 use crate::db;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
 use crate::models::{Project, ProjectApp};
-use crate::services::env_contract::{
-    RUNTIME_ENV_LAYER_BASE, RUNTIME_ENV_LAYER_COMPOSE, RUNTIME_ENV_LAYER_SERVER,
-    RUNTIME_ENV_LAYER_SERVICE,
+use crate::services::env_model::{
+    normalize_optional_json_env, reconcile_env_layers, EnvLayer, ReconciledEnv,
 };
 use crate::services::vault_service::{AppConfig, VaultError, VaultService};
 use anyhow::{Context, Result};
@@ -54,6 +53,7 @@ pub struct EnvRenderInput {
     pub version: u64,
     pub generated_at: chrono::DateTime<chrono::Utc>,
     pub base: HashMap<String, String>,
+    pub generated: HashMap<String, String>,
     pub server: HashMap<String, String>,
     pub inherit_server_secrets: bool,
     pub service: HashMap<String, String>,
@@ -66,6 +66,7 @@ impl Default for EnvRenderInput {
             version: 1,
             generated_at: chrono::Utc::now(),
             base: HashMap::new(),
+            generated: HashMap::new(),
             server: HashMap::new(),
             inherit_server_secrets: false,
             service: HashMap::new(),
@@ -111,7 +112,8 @@ pub struct EnvRenderAuditEvent {
 }
 
 pub fn render_env(input: EnvRenderInput) -> std::result::Result<RenderedEnv, EnvRenderError> {
-    let (environment, inputs) = merge_env_layers(&input);
+    let ReconciledEnv { entries, inputs } = reconcile_render_input(&input);
+    let environment = entries;
     validate_env(&environment)?;
 
     let body = format_env_body(&environment);
@@ -219,38 +221,65 @@ pub fn emit_env_render_audit(event: &EnvRenderAuditEvent) {
     );
 }
 
-fn merge_env_layers(input: &EnvRenderInput) -> (BTreeMap<String, String>, Vec<&'static str>) {
-    let mut environment = BTreeMap::new();
-    let mut inputs = Vec::new();
-
-    merge_layer(&mut environment, &input.base);
-    if !input.base.is_empty() {
-        inputs.push(RUNTIME_ENV_LAYER_BASE);
-    }
+fn reconcile_render_input(input: &EnvRenderInput) -> ReconciledEnv {
+    let mut layers = vec![
+        EnvLayer {
+            name: "base",
+            entries: &input.base,
+            include_in_inputs: true,
+        },
+        EnvLayer {
+            name: "generated",
+            entries: &input.generated,
+            include_in_inputs: false,
+        },
+    ];
 
     if input.inherit_server_secrets {
-        merge_layer(&mut environment, &input.server);
-        if !input.server.is_empty() {
-            inputs.push(RUNTIME_ENV_LAYER_SERVER);
-        }
+        layers.push(EnvLayer {
+            name: "server",
+            entries: &input.server,
+            include_in_inputs: true,
+        });
     }
 
-    merge_layer(&mut environment, &input.service);
-    if !input.service.is_empty() {
-        inputs.push(RUNTIME_ENV_LAYER_SERVICE);
-    }
+    layers.push(EnvLayer {
+        name: "service",
+        entries: &input.service,
+        include_in_inputs: true,
+    });
+    layers.push(EnvLayer {
+        name: "compose",
+        entries: &input.compose_environment,
+        include_in_inputs: true,
+    });
 
-    merge_layer(&mut environment, &input.compose_environment);
-    if !input.compose_environment.is_empty() {
-        inputs.push(RUNTIME_ENV_LAYER_COMPOSE);
-    }
-
-    (environment, inputs)
+    reconcile_env_layers(&layers)
 }
 
-fn merge_layer(target: &mut BTreeMap<String, String>, layer: &HashMap<String, String>) {
-    for (key, value) in layer {
-        target.insert(key.clone(), value.clone());
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ResolvedAppEnvironment {
+    authored: HashMap<String, String>,
+    service: HashMap<String, String>,
+}
+
+impl ResolvedAppEnvironment {
+    fn effective(&self) -> HashMap<String, String> {
+        reconcile_env_layers(&[
+            EnvLayer {
+                name: "base",
+                entries: &self.authored,
+                include_in_inputs: false,
+            },
+            EnvLayer {
+                name: "service",
+                entries: &self.service,
+                include_in_inputs: false,
+            },
+        ])
+        .entries
+        .into_iter()
+        .collect()
     }
 }
 
@@ -449,7 +478,7 @@ impl ConfigRenderer {
 
         for app in apps.iter().filter(|a| a.is_enabled()) {
             let environment = self.resolve_app_environment(pool, project, app).await?;
-            app_contexts.push(self.project_app_to_context(app, environment.clone())?);
+            app_contexts.push(self.project_app_to_context(app, environment.effective())?);
 
             let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
             let config = AppConfig {
@@ -539,20 +568,19 @@ impl ConfigRenderer {
         pool: &PgPool,
         project: &Project,
         app: &ProjectApp,
-    ) -> Result<HashMap<String, String>> {
-        let mut environment = self.parse_environment(&app.environment)?;
-        self.merge_service_secrets(pool, project, app, &mut environment)
-            .await?;
-        Ok(environment)
+    ) -> Result<ResolvedAppEnvironment> {
+        Ok(ResolvedAppEnvironment {
+            authored: self.parse_environment(&app.environment)?,
+            service: self.load_service_secrets(pool, project, app).await?,
+        })
     }
 
-    async fn merge_service_secrets(
+    async fn load_service_secrets(
         &self,
         pool: &PgPool,
         project: &Project,
         app: &ProjectApp,
-        environment: &mut HashMap<String, String>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         let secrets =
             db::remote_secret::list_service_secrets(pool, &project.user_id, project.id, &app.code)
                 .await
@@ -561,7 +589,7 @@ impl ConfigRenderer {
                 })?;
 
         if secrets.is_empty() {
-            return Ok(());
+            return Ok(HashMap::new());
         }
 
         let vault = self.vault_service.as_ref().ok_or_else(|| {
@@ -571,6 +599,7 @@ impl ConfigRenderer {
             )
         })?;
 
+        let mut service_secrets = HashMap::new();
         for secret in secrets {
             let value = vault
                 .fetch_secret_value(&secret.vault_path)
@@ -583,43 +612,17 @@ impl ConfigRenderer {
                         error
                     )
                 })?;
-            environment.insert(secret.name, value);
+            service_secrets.insert(secret.name, value);
         }
 
-        Ok(())
+        Ok(service_secrets)
     }
 
     /// Parse environment JSON to HashMap
     fn parse_environment(&self, env: &Option<Value>) -> Result<HashMap<String, String>> {
-        match env {
-            Some(Value::Object(map)) => {
-                let mut result = HashMap::new();
-                for (k, v) in map {
-                    let value = match v {
-                        Value::String(s) => s.clone(),
-                        Value::Number(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        _ => v.to_string(),
-                    };
-                    result.insert(k.clone(), value);
-                }
-                Ok(result)
-            }
-            Some(Value::Array(arr)) => {
-                // Handle array format: ["VAR=value", "VAR2=value2"]
-                let mut result = HashMap::new();
-                for item in arr {
-                    if let Value::String(s) = item {
-                        if let Some((k, v)) = s.split_once('=') {
-                            result.insert(k.to_string(), v.to_string());
-                        }
-                    }
-                }
-                Ok(result)
-            }
-            None => Ok(HashMap::new()),
-            _ => Ok(HashMap::new()),
-        }
+        Ok(normalize_optional_json_env(env.as_ref())
+            .into_iter()
+            .collect())
     }
 
     /// Parse ports JSON to Vec<PortMapping>
@@ -855,20 +858,22 @@ impl ConfigRenderer {
         &self,
         app: &ProjectApp,
         deployment_hash: &str,
-        environment: &HashMap<String, String>,
+        environment: &ResolvedAppEnvironment,
     ) -> Result<RenderedEnv> {
-        let mut base = environment.clone();
-        base.insert("DEPLOYMENT_HASH".to_string(), deployment_hash.to_string());
+        let mut generated =
+            HashMap::from([("DEPLOYMENT_HASH".to_string(), deployment_hash.to_string())]);
 
         if let Some(domain) = &app.domain {
-            base.insert("APP_DOMAIN".to_string(), domain.clone());
+            generated.insert("APP_DOMAIN".to_string(), domain.clone());
         }
         if app.ssl_enabled.unwrap_or(false) {
-            base.insert("SSL_ENABLED".to_string(), "true".to_string());
+            generated.insert("SSL_ENABLED".to_string(), "true".to_string());
         }
 
         render_env(EnvRenderInput {
-            base,
+            base: environment.authored.clone(),
+            generated,
+            service: environment.service.clone(),
             generated_at: chrono::Utc::now(),
             ..EnvRenderInput::default()
         })
@@ -1186,6 +1191,7 @@ mod tests {
                 ("SHARED".to_string(), "base".to_string()),
                 ("BASE_ONLY".to_string(), "yes".to_string()),
             ]),
+            generated: HashMap::new(),
             server: HashMap::from([("SHARED".to_string(), "server".to_string())]),
             inherit_server_secrets: true,
             service: HashMap::from([("SHARED".to_string(), "service".to_string())]),
@@ -1195,7 +1201,10 @@ mod tests {
 
         assert!(rendered.content.contains("BASE_ONLY=yes\n"));
         assert!(rendered.content.contains("SHARED=compose\n"));
-        assert_eq!(rendered.inputs, crate::services::runtime_env_layer_names());
+        assert_eq!(
+            rendered.inputs,
+            vec!["base", "server", "service", "compose"]
+        );
     }
 
     #[test]
@@ -1223,6 +1232,19 @@ mod tests {
 
         assert!(rendered.content.contains("KEEP=yes\n"));
         assert!(!rendered.content.contains("S3_BUCKET="));
+    }
+
+    #[test]
+    fn render_env_generated_layer_overrides_authored_value() {
+        let rendered = render_env(EnvRenderInput {
+            base: HashMap::from([("DEPLOYMENT_HASH".to_string(), "stale".to_string())]),
+            generated: HashMap::from([("DEPLOYMENT_HASH".to_string(), "fresh".to_string())]),
+            ..EnvRenderInput::default()
+        })
+        .unwrap();
+
+        assert!(rendered.content.contains("DEPLOYMENT_HASH=fresh\n"));
+        assert!(!rendered.inputs.contains(&"generated"));
     }
 
     #[test]

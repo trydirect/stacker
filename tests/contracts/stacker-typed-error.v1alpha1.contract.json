@@ -1,0 +1,27 @@
+{
+  "title": "stacker-typed-error-v1alpha1",
+  "_owner": "stacker",
+  "version": "v1alpha1",
+  "surfaces": ["cli", "api", "mcp"],
+  "response": {
+    "type": "object",
+    "required": [
+      "schemaVersion",
+      "code",
+      "message",
+      "retryable",
+      "remediationClass"
+    ],
+    "properties": {
+      "schemaVersion": { "type": "string", "const": "v1alpha1" },
+      "code": { "type": "string" },
+      "message": { "type": "string" },
+      "retryable": { "type": "boolean" },
+      "remediationClass": { "type": "string" },
+      "context": {
+        "type": "object",
+        "additionalProperties": { "type": "string" }
+      }
+    }
+  }
+}

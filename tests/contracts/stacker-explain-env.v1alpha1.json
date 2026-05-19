@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "v1alpha1",
+  "deploymentHash": "deployment_state_online",
+  "appCode": "device-api",
+  "localAuthoringEnvPath": "docker/prod/.env",
+  "runtimeEnvPath": "/home/trydirect/project/.env",
+  "runtimeComposePath": "/home/trydirect/project/docker-compose.yml",
+  "layers": [
+    {
+      "name": "base",
+      "keyNames": ["HOST", "PORT"],
+      "keyCount": 2,
+      "hash": "f89ee522d1c00c23ec3fc267fef028f44c92ec4fb2c2fdb3dbffdd1248a0ba32"
+    },
+    {
+      "name": "server",
+      "keyNames": ["DATABASE_URL"],
+      "keyCount": 1,
+      "hash": "18895d1f5c7f8f22974911d8626ee4dc9e7e00edcca8bbd8050550c1cbb34f84"
+    },
+    {
+      "name": "service",
+      "keyNames": ["DATABASE_URL"],
+      "keyCount": 1,
+      "hash": "9862a0f6f605f149bdbaf0ea47b4601bdc7884b42d0bf50a4a87f6d096bcda7e"
+    }
+  ],
+  "destination": {
+    "path": "/home/trydirect/project/.env",
+    "writePolicy": "drift-protected",
+    "driftProtection": true
+  },
+  "renderedEnv": {
+    "hash": "6333a2f8f2782f6ddbce4f8f16118bd38edb542cdbf2136097b89fdad2cbe64d",
+    "inputs": ["base", "server", "service"],
+    "serverSecretsInherited": true,
+    "serviceSecretsOverrideServerSecrets": true
+  },
+  "reasoning": [
+    "runtime env path is resolved from the canonical remote env path helper",
+    "env layers are merged in precedence order: base -> server -> service -> compose"
+  ]
+}

@@ -22,6 +22,7 @@ use crate::mcp::tools::{
     AdminListTemplateVersionsTool,
     AdminRejectTemplateTool,
     AdminValidateTemplateSecurityTool,
+    ApplyDeploymentPlanTool,
     ApplyVaultConfigTool,
     CancelDeploymentTool,
     CloneProjectTool,
@@ -44,6 +45,8 @@ use crate::mcp::tools::{
     DiagnoseDeploymentTool,
     DiscoverStackServicesTool,
     EscalateToSupportTool,
+    ExplainEnvTool,
+    ExplainTopologyTool,
     // Agent Control tools
     GetAgentStatusTool,
     GetAnsibleRoleDefaultsTool,
@@ -54,7 +57,10 @@ use crate::mcp::tools::{
     GetContainerExecTool,
     GetContainerHealthTool,
     GetContainerLogsTool,
+    GetDeploymentEventsTool,
+    GetDeploymentPlanTool,
     GetDeploymentResourcesTool,
+    GetDeploymentStateTool,
     GetDeploymentStatusTool,
     GetDockerComposeYamlTool,
     GetErrorSummaryTool,
@@ -134,6 +140,7 @@ const MFA_REQUIRED_TOOLS: &[&str] = &[
     "create_project_app",
     "start_deployment",
     "cancel_deployment",
+    "apply_deployment_plan",
     "add_cloud",
     "delete_cloud",
     "delete_project",
@@ -204,6 +211,12 @@ impl ToolRegistry {
 
         // Phase 3: Deployment tools
         registry.register("get_deployment_status", Box::new(GetDeploymentStatusTool));
+        registry.register("get_deployment_state", Box::new(GetDeploymentStateTool));
+        registry.register("get_deployment_plan", Box::new(GetDeploymentPlanTool));
+        registry.register("get_deployment_events", Box::new(GetDeploymentEventsTool));
+        registry.register("apply_deployment_plan", Box::new(ApplyDeploymentPlanTool));
+        registry.register("explain_env", Box::new(ExplainEnvTool));
+        registry.register("explain_topology", Box::new(ExplainTopologyTool));
         registry.register("start_deployment", Box::new(StartDeploymentTool));
         registry.register("cancel_deployment", Box::new(CancelDeploymentTool));
 
@@ -517,6 +530,11 @@ mod tests {
             .access_policy("deploy_app")
             .expect("deploy app should require policy");
         assert!(deploy_policy.requires_mfa);
+
+        let apply_plan_policy = registry
+            .access_policy("apply_deployment_plan")
+            .expect("deployment plan apply should require policy");
+        assert!(apply_plan_policy.requires_mfa);
 
         let admin_validate_policy = registry
             .access_policy("admin_validate_template_security")

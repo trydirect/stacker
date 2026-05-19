@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "v1alpha1",
+  "deploymentHash": "deployment_state_online",
+  "target": "cloud",
+  "localComposePath": "docker/prod/compose.yml",
+  "runtimeComposePath": "/home/trydirect/project/docker-compose.yml",
+  "localAuthoringEnvPath": "docker/prod/.env",
+  "runtimeEnvPath": "/home/trydirect/project/.env",
+  "services": [
+    {
+      "code": "device-api",
+      "name": "Device API",
+      "enabled": true
+    },
+    {
+      "code": "upload",
+      "name": "Upload",
+      "enabled": true
+    }
+  ],
+  "reasoning": [
+    "runtime compose path is fixed to the canonical remote deployment location",
+    "runtime env path is shared across deployed services for the target deployment"
+  ]
+}

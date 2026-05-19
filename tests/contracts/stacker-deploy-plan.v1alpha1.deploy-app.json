@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "v1alpha1",
+  "deploymentHash": "deployment_state_online",
+  "operation": "deploy_app",
+  "target": "cloud",
+  "fingerprint": "plan-deploy-app",
+  "scope": {
+    "mode": "app",
+    "appCode": "upload",
+    "selectedApps": ["upload"]
+  },
+  "hasChanges": true,
+  "actions": [
+    {
+      "kind": "redeploy_app",
+      "target": "app",
+      "appCode": "upload",
+      "reason": "explicit deploy-app plan targets a single app"
+    }
+  ],
+  "reasoning": [
+    "deploy-app scope is restricted to the requested app"
+  ]
+}

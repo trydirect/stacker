@@ -5,6 +5,7 @@ mod tests {
         JsonRpcRequest, JsonRpcResponse, ServerCapabilities, ServerInfo, Tool, ToolContent,
         ToolsCapability,
     };
+    use crate::services::TypedErrorEnvelope;
 
     #[test]
     fn test_json_rpc_request_deserialize() {
@@ -106,6 +107,24 @@ mod tests {
 
         assert_eq!(response.content.len(), 1);
         assert_eq!(response.is_error, Some(true));
+    }
+
+    #[test]
+    fn test_call_tool_response_typed_error() {
+        let response = CallToolResponse::typed_error(TypedErrorEnvelope::deployment_not_found(
+            "Deployment not found",
+        ));
+
+        assert_eq!(response.content.len(), 1);
+        assert_eq!(response.is_error, Some(true));
+
+        match &response.content[0] {
+            ToolContent::Text { text } => {
+                assert!(text.contains("deployment_not_found"));
+                assert!(text.contains("schemaVersion"));
+            }
+            _ => panic!("Expected text content"),
+        }
     }
 
     #[test]

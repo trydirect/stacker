@@ -6,6 +6,7 @@ pub mod common;
 pub mod dag;
 pub mod dag_execution;
 pub mod deployment;
+pub mod deployment_state;
 pub mod health;
 pub mod marketplace;
 pub mod mcp;

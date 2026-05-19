@@ -25,7 +25,6 @@
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
 - [hooks — Lifecycle Scripts](#hooks)
 - [env / env_file — Environment Variables](#env--env_file)
-- [config_contract — Required Configuration Keys](#config_contract)
 - [Environment Variable Interpolation](#environment-variable-interpolation)
 - [Auto-Detection](#auto-detection)
 - [Generated Dockerfiles](#generated-dockerfiles)
@@ -177,16 +176,6 @@ env:
   APP_PORT: "3000"
   LOG_LEVEL: info
   NODE_ENV: production
-
-config_contract:
-  services:
-    worker:
-      required:
-        - REDIS_URL
-      optional:
-        - SENTRY_DSN
-      secret:
-        - REDIS_URL
 ```
 
 ---
@@ -822,12 +811,13 @@ other services in the remote `docker-compose.yml` intact without requiring
 env/config files referenced only by unrelated project-level services. A
 service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
 config bundle, and Vault-rendered service secrets for that app are appended to
-that same remote `.env` before the Status agent writes it. If Stacker cannot
-render the target runtime env, command creation fails instead of deploying a
-raw app-local `.env` without the remote secrets.
+that same remote `.env` before the Status agent writes it. When the same target
+is updated again, Stacker refreshes the existing `# stacker-render ...` block
+instead of duplicating prior rendered secret sections. If Stacker cannot render
+the target runtime env, command creation fails instead of deploying a raw
+app-local `.env` without the remote secrets.
 
-The rendered runtime env follows contract version `v1` and is built from these
-layers, lowest to highest:
+The rendered runtime env is built from these layers, lowest to highest:
 
 1. Base app env and local authoring inputs.
 2. Server-scope secrets, only for services that opt in with
@@ -838,60 +828,8 @@ layers, lowest to highest:
 User-provided runtime env keys must match `^[A-Z_][A-Z0-9_]*$`. Keys beginning
 with `STACKER_`, `DOCKER_`, `VAULT_`, or `AGENT_` are reserved and rejected.
 Use `stacker config show --resolved` to inspect the local env source path,
-remote runtime path, config hash/version metadata, contract version/order, and
-contributing layers without printing secret values. REST and MCP app-env reads
-also expose this same `runtime_env_contract` metadata so clients can reason
-about precedence without inferring it from docs alone.
-
----
-
-## `config_contract`
-
-*Optional* · `object` · Default: none
-
-`config_contract` declares the configuration keys expected by each app or
-service target. It is used by `stacker config check` and helps catch missing
-production settings before deploys.
-
-```yaml
-config_contract:
-  services:
-    upload:
-      required:
-        - AUTH_API_URL
-        - REDIS_URL
-        - S3_BUCKET
-        - S3_ACCESS_KEY
-        - S3_SECRET_KEY
-      optional:
-        - SENTRY_DSN
-        - RUST_LOG
-      secret:
-        - REDIS_URL
-        - S3_SECRET_KEY
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `services.<target>.required` | `list<string>` | Keys that must exist for the target environment |
-| `services.<target>.optional` | `list<string>` | Keys that are useful to track but do not fail strict checks |
-| `services.<target>.secret` | `list<string>` | Keys that should be treated as secrets even if their names are not auto-detected |
-
-Generate an initial contract from the current inventory:
-
-```bash
-stacker config contract suggest --env local --service upload
-```
-
-Check an environment against the contract:
-
-```bash
-stacker config check --env prod --service upload --strict
-stacker config check --env prod --service upload --strict --remote
-```
-
-The `secret` list controls classification and redaction only. It does not store
-or provide values.
+remote runtime path, config hash/version metadata, and contributing layers
+without printing secret values.
 
 ---
 
@@ -1067,16 +1005,11 @@ Configuration issues:
 | `stacker destroy` | Tear down the stack |
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
-| `stacker config inventory` | List effective config keys by environment and service |
-| `stacker config diff` | Compare config keys across environments |
-| `stacker config check` | Check an environment against `config_contract` |
-| `stacker config contract suggest` | Generate a reviewable `config_contract` snippet |
-| `stacker config promote` | Generate safe placeholders for missing target keys |
 | `stacker config fix` | Interactively fix missing required config fields |
 | `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
-| `stacker proxy add` | Add a reverse-proxy domain entry; remote deployments delegate to `stacker agent configure-proxy` |
+| `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Detect running reverse proxies |
 | `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH |
 | `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
@@ -1199,6 +1132,12 @@ Status agent; it does not create, update, or reveal secret values. Use
 environment/profile for later `stacker agent deploy-app` and
 `stacker secrets push` commands.
 
+MCP config inspection uses the same classification model. `get_app_env_vars`
+retains the legacy redacted object response but also emits
+`environment_entries[]`, where Vault-backed keys are marked with
+`secure=true` and `source="vault"` even if the variable name itself would not
+match older secret-name heuristics.
+
 ### Other commands
 
 ```bash
@@ -1222,20 +1161,13 @@ stacker destroy --confirm --volumes    # Also remove volumes
 stacker config validate                # Check stacker.yml
 stacker config validate --file prod.yml
 stacker config show                    # Display resolved config
-stacker config inventory --env local --service upload
-stacker config diff --from local --to prod --service upload
-stacker config diff --from local --to prod --service upload --remote
-stacker config contract suggest --env local --service upload
-stacker config check --env prod --service upload --strict --remote
-stacker config promote --from local --to prod --service upload
 
 # AI
 stacker ai ask "How can I optimise this Dockerfile?"
 stacker ai ask "Why is my container crashing?" --context ./logs.txt
 
 # Proxy
-stacker proxy add example.com --upstream http://app:3000 --ssl
-stacker proxy add example.com --upstream http://app:3000 --ssl=off
+stacker proxy add example.com --upstream http://app:3000 --ssl auto
 stacker proxy detect
 
 # Update
@@ -1348,8 +1280,6 @@ stacker agent remove-app --app my-app --remove-volumes --remove-images
 # The agent resolves Nginx Proxy Manager credentials from Vault using STACKER_SERVER_ID.
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
 stacker agent configure-proxy --app my-app --domain app.local --no-ssl
-# If Vault reports vault_auth_revoked, refresh the agent's Vault authorization:
-stacker agent install
 
 # History & raw commands
 stacker agent history                             # Recent command history

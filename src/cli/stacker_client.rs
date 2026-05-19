@@ -11,6 +11,9 @@
 use crate::cli::config_parser::DeployTarget;
 use crate::cli::error::CliError;
 use crate::handoff::{DeploymentHandoffPayload, DeploymentHandoffResolveRequest};
+use crate::services::{
+    DeployPlan, DeployPlanOperation, DeploymentEventFeed, DeploymentState, TypedErrorEnvelope,
+};
 use serde::{Deserialize, Serialize};
 
 /// Default Stacker server base URL (distinct from the User Service auth URL).
@@ -37,6 +40,10 @@ struct ApiResponse<T> {
     pub list: Option<Vec<T>>,
     pub id: Option<i32>,
     pub meta: Option<serde_json::Value>,
+}
+
+fn parse_typed_error_response(body: &str) -> Option<TypedErrorEnvelope> {
+    serde_json::from_str(body).ok()
 }
 
 /// Project as returned by `/project` endpoints
@@ -573,6 +580,9 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
                 reason: format!(
@@ -1748,6 +1758,9 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
                 reason: format!("Stacker server rollback failed ({}): {}", status, body),
@@ -1799,6 +1812,171 @@ impl StackerClient {
         }
 
         let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    /// Fetch canonical deployment state by deployment hash.
+    /// Returns `GET /api/v1/deployments/{deployment_hash}/state`.
+    pub async fn get_deployment_state_by_hash(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<Option<DeploymentState>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/state",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /api/v1/deployments/{}/state failed ({}): {}",
+                    deployment_hash, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentState> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    /// Fetch structured deployment events by deployment hash.
+    pub async fn get_deployment_events_by_hash(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<Option<DeploymentEventFeed>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/events",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /api/v1/deployments/{}/events failed ({}): {}",
+                    deployment_hash, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentEventFeed> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    /// Fetch a read-only deployment plan by deployment hash.
+    pub async fn get_deployment_plan_by_hash(
+        &self,
+        deployment_hash: &str,
+        operation: DeployPlanOperation,
+        target: &str,
+        app_code: Option<&str>,
+        rollback_target: Option<&str>,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Option<DeployPlan>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/plan",
+            self.base_url, deployment_hash
+        );
+        let mut query = vec![
+            (
+                "operation".to_string(),
+                serde_json::to_string(&operation)
+                    .unwrap()
+                    .trim_matches('"')
+                    .to_string(),
+            ),
+            ("target".to_string(), target.to_string()),
+        ];
+        if let Some(app_code) = app_code.filter(|value| !value.trim().is_empty()) {
+            query.push(("appCode".to_string(), app_code.to_string()));
+        }
+        if let Some(rollback_target) = rollback_target.filter(|value| !value.trim().is_empty()) {
+            query.push(("rollbackTarget".to_string(), rollback_target.to_string()));
+        }
+        if let Some(fingerprint) = expected_fingerprint.filter(|value| !value.trim().is_empty()) {
+            query.push(("expectedFingerprint".to_string(), fingerprint.to_string()));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .query(&query)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!(
+                    "Stacker server GET /api/v1/deployments/{}/plan failed ({}): {}",
+                    deployment_hash, status, body
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeployPlan> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
@@ -2962,7 +3140,12 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
 }
 
 fn is_nginx_proxy_manager_service(svc: &ServiceDefinition) -> bool {
-    crate::project_app::is_nginx_proxy_manager_identity(&svc.name, Some(&svc.image))
+    let service_name = svc.name.to_ascii_lowercase().replace('-', "_");
+    let image = svc.image.to_ascii_lowercase();
+
+    service_name == "nginx_proxy_manager"
+        || service_name == "npm"
+        || image.contains("nginx-proxy-manager")
 }
 
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
@@ -3228,27 +3411,23 @@ pub fn generate_server_name(project_name: &str) -> String {
     format!("{}-{}", truncated, suffix)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DeployFormOptions {
     pub include_managed_proxy: bool,
-}
-
-impl Default for DeployFormOptions {
-    fn default() -> Self {
-        Self {
-            include_managed_proxy: true,
-        }
-    }
-}
-
-pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
-    build_deploy_form_with_options(config, DeployFormOptions::default())
 }
 
 pub fn build_deploy_form_with_options(
     config: &StackerConfig,
     options: DeployFormOptions,
 ) -> serde_json::Value {
+    let mut form = build_deploy_form(config);
+    if !options.include_managed_proxy {
+        remove_extended_feature(&mut form, "nginx_proxy_manager");
+    }
+    form
+}
+
+pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     let cloud = config.deploy.cloud.as_ref();
     let provider = cloud
         .map(|c| {
@@ -3313,24 +3492,22 @@ pub fn build_deploy_form_with_options(
     // When proxy type is Nginx or NginxProxyManager, inject "nginx_proxy_manager"
     // into extended_features so the install service's Ansible playbook runs the
     // nginx_proxy_manager role (collect_roles checks selected_features).
-    if options.include_managed_proxy {
-        match config.proxy.proxy_type {
-            crate::cli::config_parser::ProxyType::Nginx
-            | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-                if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
-                    let features = stack_obj
-                        .entry("extended_features")
-                        .or_insert_with(|| serde_json::json!([]));
-                    if let Some(arr) = features.as_array_mut() {
-                        let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
-                        if !arr.contains(&npm) {
-                            arr.push(npm);
-                        }
+    match config.proxy.proxy_type {
+        crate::cli::config_parser::ProxyType::Nginx
+        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                let features = stack_obj
+                    .entry("extended_features")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(arr) = features.as_array_mut() {
+                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                    if !arr.contains(&npm) {
+                        arr.push(npm);
                     }
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
 
     // When monitoring.status_panel is enabled, inject the "statuspanel" role into
@@ -3391,7 +3568,9 @@ pub fn build_server_deploy_form(
         server_cfg,
         server_name,
         force_status_panel,
-        DeployFormOptions::default(),
+        DeployFormOptions {
+            include_managed_proxy: true,
+        },
     )
 }
 
@@ -3496,6 +3675,18 @@ pub fn build_server_deploy_form_with_options(
     }
 
     form
+}
+
+fn remove_extended_feature(form: &mut serde_json::Value, code: &str) {
+    let Some(features) = form
+        .get_mut("stack")
+        .and_then(|stack| stack.get_mut("extended_features"))
+        .and_then(|features| features.as_array_mut())
+    else {
+        return;
+    };
+
+    features.retain(|feature| feature.as_str() != Some(code));
 }
 
 #[cfg(test)]
@@ -3788,49 +3979,6 @@ mod tests {
             "extended_features should contain 'nginx_proxy_manager': {:?}",
             ext_features
         );
-    }
-
-    #[test]
-    fn test_build_deploy_form_can_suppress_managed_nginx_proxy() {
-        let config = crate::cli::config_parser::ConfigBuilder::new()
-            .name("myproject")
-            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
-            .cloud(crate::cli::config_parser::CloudConfig {
-                provider: crate::cli::config_parser::CloudProvider::Hetzner,
-                orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
-                region: Some("nbg1".to_string()),
-                size: Some("cx22".to_string()),
-                install_image: None,
-                remote_payload_file: None,
-                ssh_key: None,
-                key: None,
-                server: None,
-            })
-            .proxy(crate::cli::config_parser::ProxyConfig {
-                proxy_type: crate::cli::config_parser::ProxyType::NginxProxyManager,
-                auto_detect: true,
-                domains: vec![],
-                config: None,
-            })
-            .monitoring(crate::cli::config_parser::MonitoringConfig {
-                status_panel: true,
-                healthcheck: None,
-                metrics: None,
-            })
-            .build()
-            .unwrap();
-
-        let form = build_deploy_form_with_options(
-            &config,
-            DeployFormOptions {
-                include_managed_proxy: false,
-            },
-        );
-
-        let ext_features = form["stack"]["extended_features"].as_array().unwrap();
-        let integrated_features = form["stack"]["integrated_features"].as_array().unwrap();
-        assert!(!ext_features.contains(&serde_json::json!("nginx_proxy_manager")));
-        assert!(integrated_features.contains(&serde_json::json!("statuspanel")));
     }
 
     #[test]

@@ -1,0 +1,64 @@
+{
+  "title": "stacker-ai-workflows-v1alpha1",
+  "_owner": "stacker",
+  "version": "v1alpha1",
+  "description": "Canonical agent evaluation scenarios for AI-facing deployment workflows.",
+  "workflows": [
+    {
+      "name": "inspect-explain-plan-apply",
+      "goal": "Safely inspect a deployment, explain topology, preview a change, and apply it with confirmation.",
+      "steps": [
+        {
+          "tool": "get_deployment_state",
+          "purpose": "Inspect health, drift, app inventory, and the latest command state."
+        },
+        {
+          "tool": "explain_topology",
+          "purpose": "Explain runtime compose and env paths without exposing secret values."
+        },
+        {
+          "tool": "get_deployment_plan",
+          "purpose": "Preview the mutation and capture a stale-plan fingerprint."
+        },
+        {
+          "tool": "apply_deployment_plan",
+          "purpose": "Apply the previewed plan after explicit confirmation.",
+          "confirmRequired": true,
+          "requiresFingerprint": true,
+          "requiresMfa": true
+        }
+      ]
+    },
+    {
+      "name": "recover-with-rollback",
+      "goal": "Read failure signals, preview a rollback, apply it, and confirm recovery.",
+      "steps": [
+        {
+          "tool": "get_deployment_state",
+          "purpose": "Confirm failing state or unexpected drift before rollback."
+        },
+        {
+          "tool": "get_deployment_events",
+          "purpose": "Read remediation hints and recent command failures."
+        },
+        {
+          "tool": "get_deployment_plan",
+          "purpose": "Preview rollback_deploy with previous or explicit target version.",
+          "operation": "rollback_deploy"
+        },
+        {
+          "tool": "apply_deployment_plan",
+          "purpose": "Apply the rollback after explicit confirmation.",
+          "operation": "rollback_deploy",
+          "confirmRequired": true,
+          "requiresFingerprint": true,
+          "requiresMfa": true
+        },
+        {
+          "tool": "get_deployment_events",
+          "purpose": "Observe recovery progress after rollback."
+        }
+      ]
+    }
+  ]
+}

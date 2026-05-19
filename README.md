@@ -55,6 +55,12 @@ stacker init --with-ai --ai-provider anthropic
 
 If the AI provider is unreachable, Stacker falls back to template-based generation automatically.
 
+### AI deployment workflows
+
+For the canonical AI/MCP deployment flow — inspect state, explain topology or
+env provenance, preview a plan, apply it safely, and recover with events or
+rollback — see [AI deployment workflows](docs/AI_DEPLOYMENT_WORKFLOWS.md).
+
 ---
 
 ## `stacker.yml` example
@@ -148,15 +154,10 @@ The end-user tool. No server required for local deploys.
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
 | `stacker config show` | Show resolved configuration |
-| `stacker config inventory` | List effective config keys by environment and service without printing secrets |
-| `stacker config diff` | Compare config keys between environments such as local and prod |
-| `stacker config check` | Check an environment against `config_contract` requirements |
-| `stacker config contract suggest` | Generate a reviewable `config_contract` snippet from inventory |
-| `stacker config promote` | Generate safe target placeholders for missing environment keys |
 | `stacker config example` | Print a full commented reference |
 | `stacker config setup cloud` | Guided cloud deployment setup |
 | `stacker ai ask "question"` | Ask the AI about your stack |
-| `stacker proxy add` | Add a reverse-proxy domain entry; remote deployments delegate to `stacker agent configure-proxy` |
+| `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
 | `stacker cloud firewall add` | Open cloud-provider firewall ports without SSH, for example `--public-ports 8000/tcp` on Hetzner |
 | `stacker cloud firewall remove` | Remove Stacker-managed cloud-provider firewall rules |
@@ -217,34 +218,6 @@ such as `stacker agent deploy-app`. This keeps private-image redeploys working
 without depending on host-level `docker login` state or mounting `/root/.docker`
 into the agent container.
 
-### Configuration inventory and drift checks
-
-Use the config inventory workflow to compare local, development, staging, and
-production configuration keys before deploying:
-
-```bash
-stacker config inventory --env local --service upload
-stacker config diff --from local --to prod --service upload
-stacker config diff --from local --to prod --service upload --remote
-```
-
-`--remote` enriches the target environment with remote service secret metadata
-from the Stacker server. It never fetches plaintext Vault values.
-
-You can generate a contract from an existing environment, review it, then check
-production against it:
-
-```bash
-stacker config contract suggest --env local --service upload
-stacker config check --env prod --service upload --strict --remote
-```
-
-For missing target keys, generate placeholders instead of copying secret values:
-
-```bash
-stacker config promote --from local --to prod --service upload
-```
-
 ### Secrets workflow
 
 ```bash
@@ -266,7 +239,7 @@ stacker secrets set NPM_TOKEN \
   --server-id 42 \
   --body-file .npm-token
 
-# Remote reads are metadata-only in v1 (`source: "vault"`, `secure: true`)
+# Remote reads are metadata-only in v1
 stacker secrets list --scope service --service uploader --json
 stacker secrets get S3_SECRET_KEY --scope service --service uploader --json
 
@@ -285,6 +258,10 @@ stacker secrets push --service uploader --env prod
 - Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
 - `stacker secrets push --service <target>` applies stored service secrets to the remote runtime env without changing secret values. Use `--env <name>` for a one-off environment selection, or `stacker env <name>` to persist the active environment/profile for future app-only updates. Use `--force` only when the remote env drift check reports an out-of-band change.
 - Remote `get` and `list` do **not** return plaintext values in v1.
+- MCP env inspection now exposes explicit secure metadata for Vault-backed
+  variables: `get_app_env_vars` keeps the redacted
+  `environment_variables` object for compatibility and also returns
+  `environment_entries[]` with `secure`, `redacted`, and `source` fields.
 
 Remote deploys render runtime env into one canonical host file:
 `/home/trydirect/project/.env`. Generated compose uses `env_file: .env`, so the
@@ -303,7 +280,9 @@ file before sending it to the agent. This prevents app-only updates from
 replacing the remote stack compose with a single-service compose file. Any
 app-local `.env` referenced by that compose file is uploaded in the config
 bundle, and Stacker appends the Vault-rendered service secrets for the same
-target to that file before the agent writes it on the server.
+target to that file before the agent writes it on the server. Repeated app-only
+updates replace the prior `# stacker-render ...` block in that file instead of
+stacking duplicate rendered secret sections.
 
 ### Marketplace workflow (for stack developers)
 

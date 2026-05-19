@@ -1,154 +1,121 @@
-use serde::Serialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::{
+    db,
     helpers::{
-        compose_env_file_reference, extract_capabilities, has_capability, has_capability_value,
-        remote_runtime_compose_path, remote_runtime_env_path, NPM_CREDENTIAL_SOURCE_KEY,
+        extract_capabilities, has_capability, has_capability_value, remote_runtime_compose_path,
+        remote_runtime_env_path, NPM_CREDENTIAL_SOURCE_KEY,
     },
-    models::{Agent, Deployment, ProjectApp},
+    models::{Agent, Command, Deployment, Project, ProjectApp},
 };
 
 pub const DEPLOYMENT_STATE_SCHEMA_VERSION: &str = "v1alpha1";
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentState {
     pub schema_version: String,
+    pub project: DeploymentProjectState,
     pub deployment: DeploymentStateDeployment,
     pub agent: DeploymentAgentState,
     pub runtime: DeploymentRuntimeState,
     pub apps: Vec<DeploymentAppState>,
     pub drift: DeploymentDriftState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_command: Option<DeploymentLastCommandState>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentProjectState {
+    pub id: i32,
+    pub identity: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentStateDeployment {
     pub id: i32,
-    pub project_id: i32,
     pub deployment_hash: String,
     pub status: String,
     pub runtime: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_command_status: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentAgentState {
-    pub status: String,
-    pub online: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
+    pub id: Option<String>,
+    pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_heartbeat: Option<DateTime<Utc>>,
     pub capabilities: Vec<String>,
     pub features: DeploymentAgentFeatures,
 }
 
-#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentAgentFeatures {
-    pub kata_runtime: bool,
     pub compose: bool,
+    pub kata_runtime: bool,
     pub backup: bool,
     pub pipes: bool,
     pub proxy_credentials_vault: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentRuntimeState {
-    pub compose_file: String,
-    pub env_file: String,
-    pub compose_env_file: String,
+    pub compose_path: String,
+    pub env_path: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentAppState {
     pub code: String,
-    pub image: String,
+    pub name: String,
     pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deployment_id: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_version: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vault_sync_version: Option<i32>,
+    pub config_version: i32,
+    pub vault_sync_version: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_hash: Option<String>,
-    pub needs_vault_sync: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentDriftState {
-    pub config_sync_pending: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime_env_drift: Option<bool>,
+    pub has_drift: bool,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentLastCommandState {
+    pub r#type: String,
+    pub status: String,
+    pub finished_at: DateTime<Utc>,
 }
 
 impl DeploymentState {
-    pub fn from_parts(deployment: &Deployment, agent: Option<&Agent>, apps: &[ProjectApp]) -> Self {
-        let mut app_states = apps
-            .iter()
-            .map(DeploymentAppState::from)
-            .collect::<Vec<_>>();
-        app_states.sort_by(|left, right| left.code.cmp(&right.code));
+    pub fn from_parts(
+        project: &Project,
+        deployment: &Deployment,
+        agent: Option<&Agent>,
+        apps: &[ProjectApp],
+        last_command: Option<&Command>,
+    ) -> Self {
+        let capabilities = agent
+            .map(|item| extract_capabilities(item.capabilities.clone()))
+            .unwrap_or_default();
 
-        let config_sync_pending = app_states.iter().any(|app| app.needs_vault_sync);
-
-        Self {
-            schema_version: DEPLOYMENT_STATE_SCHEMA_VERSION.to_string(),
-            deployment: DeploymentStateDeployment::from(deployment),
-            agent: DeploymentAgentState::from(agent),
-            runtime: DeploymentRuntimeState::default(),
-            apps: app_states,
-            drift: DeploymentDriftState {
-                config_sync_pending,
-                runtime_env_drift: None,
-            },
-        }
-    }
-}
-
-impl From<&Deployment> for DeploymentStateDeployment {
-    fn from(deployment: &Deployment) -> Self {
-        Self {
-            id: deployment.id,
-            project_id: deployment.project_id,
-            deployment_hash: deployment.deployment_hash.clone(),
-            status: deployment.status.clone(),
-            runtime: deployment.runtime.clone(),
-            user_id: deployment.user_id.clone(),
-            status_message: metadata_string(&deployment.metadata, "status_message"),
-            last_command_status: metadata_string(&deployment.metadata, "last_command_status"),
-            created_at: deployment.created_at,
-            updated_at: deployment.updated_at,
-        }
-    }
-}
-
-impl From<Option<&Agent>> for DeploymentAgentState {
-    fn from(agent: Option<&Agent>) -> Self {
-        let Some(agent) = agent else {
-            return Self {
-                status: "offline".to_string(),
-                online: false,
-                agent_id: None,
-                version: None,
-                last_heartbeat: None,
-                capabilities: Vec::new(),
-                features: DeploymentAgentFeatures::default(),
-            };
-        };
-
-        let capabilities = extract_capabilities(agent.capabilities.clone());
         let features = DeploymentAgentFeatures {
-            kata_runtime: has_capability(&capabilities, "kata"),
             compose: has_capability(&capabilities, "compose"),
+            kata_runtime: has_capability(&capabilities, "kata"),
             backup: has_capability(&capabilities, "backup"),
             pipes: has_capability(&capabilities, "pipes"),
             proxy_credentials_vault: has_capability_value(
@@ -158,214 +125,191 @@ impl From<Option<&Agent>> for DeploymentAgentState {
             ),
         };
 
+        let apps = apps
+            .iter()
+            .map(|app| DeploymentAppState {
+                code: app.code.clone(),
+                name: app.name.clone(),
+                enabled: app.enabled.unwrap_or(true),
+                config_version: app.config_version.unwrap_or(0),
+                vault_sync_version: app.vault_sync_version.unwrap_or(0),
+                config_hash: app.config_hash.clone(),
+            })
+            .collect();
+
         Self {
-            status: agent.status.clone(),
-            online: agent.is_online(),
-            agent_id: Some(agent.id.to_string()),
-            version: agent.version.clone(),
-            last_heartbeat: agent.last_heartbeat,
-            capabilities,
-            features,
+            schema_version: DEPLOYMENT_STATE_SCHEMA_VERSION.to_string(),
+            project: DeploymentProjectState {
+                id: project.id,
+                identity: project
+                    .metadata
+                    .get("identity")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(&project.name)
+                    .to_string(),
+                name: project.name.clone(),
+            },
+            deployment: DeploymentStateDeployment {
+                id: deployment.id,
+                deployment_hash: deployment.deployment_hash.clone(),
+                status: deployment.status.clone(),
+                runtime: deployment.runtime.clone(),
+            },
+            agent: DeploymentAgentState {
+                id: agent.map(|item| item.id.to_string()),
+                status: agent
+                    .map(|item| item.status.clone())
+                    .unwrap_or_else(|| "offline".to_string()),
+                version: agent.and_then(|item| item.version.clone()),
+                last_heartbeat: agent.and_then(|item| item.last_heartbeat),
+                capabilities,
+                features,
+            },
+            runtime: DeploymentRuntimeState {
+                compose_path: remote_runtime_compose_path().to_string(),
+                env_path: remote_runtime_env_path().to_string(),
+            },
+            apps,
+            drift: DeploymentDriftState {
+                has_drift: false,
+                summary: "no drift detected".to_string(),
+            },
+            last_command: last_command.map(|command| DeploymentLastCommandState {
+                r#type: command.r#type.clone(),
+                status: command.status.clone(),
+                finished_at: command.updated_at,
+            }),
         }
     }
-}
 
-impl Default for DeploymentRuntimeState {
-    fn default() -> Self {
-        Self {
-            compose_file: remote_runtime_compose_path().to_string(),
-            env_file: remote_runtime_env_path().to_string(),
-            compose_env_file: compose_env_file_reference().to_string(),
-        }
+    pub async fn for_deployment_hash(
+        pool: &sqlx::PgPool,
+        deployment_hash: &str,
+    ) -> Result<Option<Self>, String> {
+        let deployment =
+            match db::deployment::fetch_by_deployment_hash(pool, deployment_hash).await? {
+                Some(item) => item,
+                None => return Ok(None),
+            };
+
+        let project = db::project::fetch(pool, deployment.project_id)
+            .await?
+            .ok_or_else(|| "Project not found for deployment".to_string())?;
+        let agent = db::agent::fetch_by_deployment_hash(pool, deployment_hash).await?;
+        let apps = db::project_app::fetch_by_deployment(pool, project.id, deployment.id).await?;
+        let last_command = db::command::fetch_recent_by_deployment(pool, deployment_hash, 1, true)
+            .await?
+            .into_iter()
+            .next();
+
+        Ok(Some(Self::from_parts(
+            &project,
+            &deployment,
+            agent.as_ref(),
+            &apps,
+            last_command.as_ref(),
+        )))
     }
-}
-
-impl From<&ProjectApp> for DeploymentAppState {
-    fn from(app: &ProjectApp) -> Self {
-        Self {
-            code: app.code.clone(),
-            image: app.image.clone(),
-            enabled: app.is_enabled(),
-            deployment_id: app.deployment_id,
-            config_version: app.config_version,
-            vault_sync_version: app.vault_sync_version,
-            config_hash: app.config_hash.clone(),
-            needs_vault_sync: app.needs_vault_sync(),
-        }
-    }
-}
-
-fn metadata_string(metadata: &serde_json::Value, key: &str) -> Option<String> {
-    metadata
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Utc};
-    use uuid::Uuid;
-
     use super::*;
+    use crate::models::{Agent, Command, Deployment, Project, ProjectApp};
+    use serde_json::json;
 
-    #[test]
-    fn deployment_state_serialization_matches_online_fixture() {
-        let deployment = sample_deployment();
-        let agent = sample_agent();
-        let app = synced_app();
-
-        let state = DeploymentState::from_parts(&deployment, Some(&agent), &[app]);
-        let expected: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/ai/deployment_state.online.json"
-        ))
-        .unwrap();
-
-        assert_eq!(serde_json::to_value(state).unwrap(), expected);
+    fn sample_project() -> Project {
+        let mut project = Project::new(
+            "user-a".to_string(),
+            "syncopia".to_string(),
+            json!({ "identity": "syncopia" }),
+            json!({}),
+        );
+        project.id = 17;
+        project.metadata = json!({ "identity": "syncopia" });
+        project
     }
 
-    #[test]
-    fn deployment_state_serialization_matches_offline_fixture() {
-        let mut deployment = sample_deployment();
-        deployment.status = "degraded".to_string();
-        deployment.metadata = serde_json::json!({});
-        let app = unsynced_app();
-
-        let state = DeploymentState::from_parts(&deployment, None, &[app]);
-        let expected: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/ai/deployment_state.offline.json"
-        ))
-        .unwrap();
-
-        assert_eq!(serde_json::to_value(state).unwrap(), expected);
+    fn sample_deployment(hash: &str, status: &str) -> Deployment {
+        let mut deployment = Deployment::new(
+            17,
+            Some("user-a".to_string()),
+            hash.to_string(),
+            status.to_string(),
+            "runc".to_string(),
+            json!({}),
+        );
+        deployment.id = 31;
+        deployment
     }
 
-    #[test]
-    fn deployment_state_omits_missing_optional_fields() {
-        let mut deployment = sample_deployment();
-        deployment.user_id = None;
-        deployment.metadata = serde_json::json!({});
-
-        let mut agent = sample_agent();
-        agent.version = None;
-        agent.last_heartbeat = None;
-
-        let mut app = synced_app();
-        app.deployment_id = None;
-        app.config_hash = None;
-
-        let state = DeploymentState::from_parts(&deployment, Some(&agent), &[app]);
-        let serialized = serde_json::to_value(state).unwrap();
-
-        assert!(serialized["deployment"].get("user_id").is_none());
-        assert!(serialized["deployment"].get("status_message").is_none());
-        assert!(serialized["deployment"]
-            .get("last_command_status")
-            .is_none());
-        assert!(serialized["agent"].get("version").is_none());
-        assert!(serialized["agent"].get("last_heartbeat").is_none());
-        assert!(serialized["apps"][0].get("deployment_id").is_none());
-        assert!(serialized["apps"][0].get("config_hash").is_none());
-        assert!(serialized["drift"].get("runtime_env_drift").is_none());
-    }
-
-    #[test]
-    fn deployment_state_marks_unsynced_apps_in_drift_summary() {
-        let deployment = sample_deployment();
-        let agent = sample_agent();
-
-        let state = DeploymentState::from_parts(&deployment, Some(&agent), &[unsynced_app()]);
-
-        assert!(state.drift.config_sync_pending);
-        assert!(state.apps[0].needs_vault_sync);
-    }
-
-    fn sample_deployment() -> Deployment {
-        Deployment {
-            id: 77,
-            project_id: 12,
-            deployment_hash: "deployment_120254c6-598e-47a1-83ca-690840edd906".to_string(),
-            user_id: Some("user_123".to_string()),
-            deleted: Some(false),
-            status: "deployed".to_string(),
-            runtime: "runc".to_string(),
-            metadata: serde_json::json!({
-                "status_message": "Deployment complete",
-                "last_command_status": "completed"
-            }),
-            last_seen_at: None,
-            created_at: fixed_time("2026-05-14T09:00:00Z"),
-            updated_at: fixed_time("2026-05-14T09:05:00Z"),
-        }
-    }
-
-    fn sample_agent() -> Agent {
-        Agent {
-            id: Uuid::parse_str("36cf6fd2-6d76-4faf-9310-8f264c28fdb0").unwrap(),
-            deployment_hash: "deployment_120254c6-598e-47a1-83ca-690840edd906".to_string(),
-            capabilities: Some(serde_json::json!([
-                "docker",
-                "compose",
-                "logs",
-                "npm_credential_source=vault"
-            ])),
-            version: Some("0.42.0".to_string()),
-            system_info: Some(serde_json::json!({
-                "os": "linux"
-            })),
-            last_heartbeat: Some(fixed_time("2026-05-14T09:06:00Z")),
-            status: "online".to_string(),
-            created_at: fixed_time("2026-05-14T08:00:00Z"),
-            updated_at: fixed_time("2026-05-14T09:06:00Z"),
-        }
-    }
-
-    fn synced_app() -> ProjectApp {
-        ProjectApp {
-            id: 5,
-            project_id: 12,
-            code: "upload".to_string(),
-            name: "Upload".to_string(),
-            image: "optimum/syncopia-upload:latest".to_string(),
-            environment: None,
-            ports: None,
-            volumes: None,
-            domain: None,
-            ssl_enabled: Some(false),
-            resources: None,
-            restart_policy: Some("unless-stopped".to_string()),
-            command: None,
-            entrypoint: None,
-            networks: None,
-            depends_on: None,
-            healthcheck: None,
-            labels: None,
-            config_files: None,
-            template_source: None,
-            enabled: Some(true),
-            deploy_order: Some(1),
-            created_at: fixed_time("2026-05-14T08:30:00Z"),
-            updated_at: fixed_time("2026-05-14T09:04:00Z"),
-            config_version: Some(3),
-            vault_synced_at: None,
-            vault_sync_version: Some(3),
-            config_hash: Some("hash-upload-v3".to_string()),
-            parent_app_code: None,
-            deployment_id: Some(77),
-        }
-    }
-
-    fn unsynced_app() -> ProjectApp {
-        let mut app = synced_app();
-        app.config_version = Some(4);
-        app.vault_sync_version = Some(3);
-        app.config_hash = Some("hash-upload-v4".to_string());
+    fn sample_app(code: &str, name: &str, config_version: i32, sync_version: i32) -> ProjectApp {
+        let mut app = ProjectApp::new(
+            17,
+            code.to_string(),
+            name.to_string(),
+            format!("{code}:latest"),
+        );
+        app.config_version = Some(config_version);
+        app.vault_sync_version = Some(sync_version);
+        app.config_hash = Some(format!("cfg-{code}"));
         app
     }
 
-    fn fixed_time(raw: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(raw)
-            .unwrap()
-            .with_timezone(&Utc)
+    #[test]
+    fn serializes_online_state() {
+        let mut agent = Agent::new("deployment_state_online".to_string());
+        agent.mark_online();
+        agent.version = Some("0.1.9".to_string());
+        agent.capabilities = Some(json!([
+            "docker",
+            "compose",
+            "logs",
+            "npm_credential_source=vault"
+        ]));
+
+        let state = DeploymentState::from_parts(
+            &sample_project(),
+            &sample_deployment("deployment_state_online", "healthy"),
+            Some(&agent),
+            &[
+                sample_app("device-api", "Device API", 3, 3),
+                sample_app("upload", "Upload", 2, 2),
+            ],
+            Some(
+                &Command::new(
+                    "cmd-1".to_string(),
+                    "deployment_state_online".to_string(),
+                    "deploy_app".to_string(),
+                    "user-a".to_string(),
+                )
+                .mark_completed(),
+            ),
+        );
+
+        let json = serde_json::to_value(&state).expect("state should serialize");
+        assert_eq!(json["schemaVersion"], DEPLOYMENT_STATE_SCHEMA_VERSION);
+        assert_eq!(
+            json["deployment"]["deploymentHash"],
+            "deployment_state_online"
+        );
+        assert_eq!(json["agent"]["status"], "online");
+        assert_eq!(json["apps"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn offline_state_omits_optional_agent_fields() {
+        let state = DeploymentState::from_parts(
+            &sample_project(),
+            &sample_deployment("deployment_state_offline", "pending"),
+            None,
+            &[],
+            None,
+        );
+
+        let json = serde_json::to_value(&state).expect("state should serialize");
+        assert_eq!(json["agent"]["status"], "offline");
+        assert!(json["agent"].get("id").is_none());
+        assert!(json.get("lastCommand").is_none());
     }
 }

@@ -24,8 +24,9 @@ pub(crate) mod pipe;
 
 pub use agreement::*;
 pub use deployment::{
-    capabilities_handler, force_complete_handler, list_handler, status_by_project_handler,
-    status_handler, DeploymentListQuery, DeploymentStatusResponse,
+    capabilities_handler, events_handler, force_complete_handler, list_handler, plan_handler,
+    state_handler, status_by_project_handler, status_handler, DeploymentListQuery,
+    DeploymentStatusResponse,
 };
 pub use marketplace::{
     analytics_handler, approve_handler, create_handler, list_plans_handler, list_submitted_handler,

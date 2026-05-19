@@ -1,0 +1,19 @@
+{
+  "title": "stacker-explain-env-v1alpha1",
+  "_owner": "stacker",
+  "schemaVersion": "v1alpha1",
+  "response": {
+    "required": [
+      "schemaVersion",
+      "deploymentHash",
+      "appCode",
+      "localAuthoringEnvPath",
+      "runtimeEnvPath",
+      "runtimeComposePath",
+      "layers",
+      "destination",
+      "renderedEnv",
+      "reasoning"
+    ]
+  }
+}

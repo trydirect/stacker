@@ -1658,6 +1658,10 @@ pub struct DeployCommand {
     pub force_new: bool,
     /// Container runtime: "runc" (default) or "kata" (--runtime).
     pub runtime: String,
+    /// Generate a read-only deployment plan instead of applying changes.
+    pub plan: bool,
+    /// Revalidate and apply a previously generated plan fingerprint.
+    pub apply_plan: Option<String>,
 }
 
 impl DeployCommand {
@@ -1681,6 +1685,8 @@ impl DeployCommand {
             lock: false,
             force_new: false,
             runtime: "runc".to_string(),
+            plan: false,
+            apply_plan: None,
         }
     }
 
@@ -1745,6 +1751,16 @@ impl DeployCommand {
         } else {
             self.runtime = rt;
         }
+        self
+    }
+
+    pub fn with_plan(mut self, plan: bool) -> Self {
+        self.plan = plan;
+        self
+    }
+
+    pub fn with_apply_plan(mut self, apply_plan: Option<String>) -> Self {
+        self.apply_plan = apply_plan;
         self
     }
 }
@@ -2234,20 +2250,6 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         None
     };
 
-    let managed_proxy_requested = matches!(
-        config.proxy.proxy_type,
-        crate::cli::config_parser::ProxyType::Nginx
-            | crate::cli::config_parser::ProxyType::NginxProxyManager
-    );
-    let compose_defines_managed_proxy =
-        crate::cli::compose_targets::compose_defines_nginx_proxy_manager_service(&compose_path)?;
-    let managed_proxy_feature_enabled = !(managed_proxy_requested && compose_defines_managed_proxy);
-    if managed_proxy_requested && compose_defines_managed_proxy {
-        eprintln!(
-            "  Compose declares nginx-proxy-manager; skipping Stacker-managed proxy feature to avoid duplicate port 80/81/443 bindings."
-        );
-    }
-
     // 5c. Report hooks (dry-run)
     if dry_run {
         if let Some(ref pre_build) = config.hooks.pre_build {
@@ -2272,7 +2274,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         server_name_override: remote_overrides.server_name.clone().or(lock_server_name),
         runtime: runtime.to_string(),
         config_bundle,
-        managed_proxy_feature_enabled,
+        managed_proxy_feature_enabled: true,
     };
 
     let result = strategy.deploy(&config, &context, executor)?;
@@ -2282,6 +2284,47 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
 impl CallableTrait for DeployCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.plan {
+            return crate::console::commands::cli::deployment::run_remote_deployment_plan(
+                None,
+                crate::services::DeployPlanOperation::Deploy,
+                None,
+                None,
+                None,
+            );
+        }
+
+        if let Some(fingerprint) = self.apply_plan.as_deref() {
+            let project_dir = std::env::current_dir()?;
+            let config_path = project_dir.join("stacker.yml");
+            let config = StackerConfig::from_file(&config_path)?
+                .with_resolved_deploy_target(None)
+                .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
+            let ctx = crate::cli::runtime::CliRuntime::new("deploy apply-plan")?;
+            let validated_plan = ctx.block_on(async {
+                let base_url =
+                    crate::console::commands::cli::status::resolve_stacker_base_url(&ctx.creds);
+                crate::console::commands::cli::deployment::fetch_remote_deployment_plan(
+                    &config,
+                    &base_url,
+                    &ctx.client,
+                    None,
+                    crate::services::DeployPlanOperation::Deploy,
+                    None,
+                    None,
+                    Some(fingerprint),
+                )
+                .await
+            })?;
+            if !validated_plan.has_changes {
+                println!(
+                    "Plan already satisfied for {}. Nothing to apply.",
+                    validated_plan.deployment_hash
+                );
+                return Ok(());
+            }
+        }
+
         let project_dir = std::env::current_dir()?;
         let executor = ShellExecutor;
 

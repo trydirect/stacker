@@ -141,6 +141,12 @@ enum StackerCommands {
         /// Container runtime: "runc" (default) or "kata" for hardware-isolated containers
         #[arg(long, value_name = "RUNTIME", default_value = "runc")]
         runtime: String,
+        /// Print a read-only deployment plan instead of applying changes
+        #[arg(long)]
+        plan: bool,
+        /// Revalidate and apply a previously generated deployment plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
     },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
@@ -192,6 +198,16 @@ enum StackerCommands {
         /// Watch for changes (refresh periodically)
         #[arg(long)]
         watch: bool,
+    },
+    /// Deployment inspection commands
+    Deployment {
+        #[command(subcommand)]
+        command: DeploymentCommands,
+    },
+    /// Explain path and topology decisions
+    Explain {
+        #[command(subcommand)]
+        command: ExplainCommands,
     },
     /// Tear down the deployed stack
     Destroy {
@@ -553,6 +569,64 @@ enum ServiceCommands {
 }
 
 #[derive(Debug, Subcommand)]
+enum DeploymentCommands {
+    /// Show canonical deployment state
+    State {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Override deployment hash instead of using stacker.yml
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Show structured deployment events
+    Events {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Override deployment hash instead of using stacker.yml
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Preview or apply a deployment rollback
+    Rollback {
+        /// Roll back to `previous` or a specific marketplace template version
+        #[arg(long, value_name = "TARGET")]
+        to: String,
+        /// Print a read-only rollback plan instead of applying it
+        #[arg(long, conflicts_with = "apply_plan")]
+        plan: bool,
+        /// Revalidate and apply a previously generated rollback plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
+        /// Override deployment hash instead of using stacker.yml
+        #[arg(long)]
+        deployment: Option<String>,
+        /// Confirm rollback apply
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ExplainCommands {
+    /// Explain env provenance for an app or service
+    Env {
+        /// App code or service name
+        app: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain compose/env topology for the current target
+    Topology {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ConfigCommands {
     /// Validate stacker.yml syntax and semantics
     Validate {
@@ -566,109 +640,6 @@ enum ConfigCommands {
         /// Show paths, hash/version metadata, and contributing layers without values
         #[arg(long)]
         resolved: bool,
-    },
-    /// Show a redacted inventory of config keys by target
-    Inventory {
-        #[arg(long, value_name = "FILE")]
-        file: Option<String>,
-        /// Environment/profile to inspect
-        #[arg(long = "env", value_name = "NAME")]
-        environment: String,
-        /// Limit inventory to one service/app target
-        #[arg(long)]
-        service: Option<String>,
-        /// Emit stable JSON
-        #[arg(long)]
-        json: bool,
-        /// Show non-secret plaintext values in text/JSON output
-        #[arg(long)]
-        show: bool,
-        /// Include remote service secret metadata from Stacker server
-        #[arg(long)]
-        remote: bool,
-        /// Project name/id for remote metadata (defaults to project.identity)
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Compare redacted config inventories across two environments
-    Diff {
-        #[arg(long, value_name = "FILE")]
-        file: Option<String>,
-        /// Source environment/profile
-        #[arg(long, value_name = "NAME")]
-        from: String,
-        /// Target environment/profile
-        #[arg(long, value_name = "NAME")]
-        to: String,
-        /// Limit comparison to one service/app target
-        #[arg(long)]
-        service: Option<String>,
-        /// Emit stable JSON
-        #[arg(long)]
-        json: bool,
-        /// Exit non-zero when any difference is found
-        #[arg(long)]
-        strict: bool,
-        /// Enrich target environment with remote service secret metadata
-        #[arg(long)]
-        remote: bool,
-        /// Project name/id for remote metadata (defaults to project.identity)
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Check an environment against config_contract requirements
-    Check {
-        #[arg(long, value_name = "FILE")]
-        file: Option<String>,
-        /// Environment/profile to check
-        #[arg(long = "env", value_name = "NAME")]
-        environment: String,
-        /// Limit check to one service/app target
-        #[arg(long)]
-        service: Option<String>,
-        /// Emit stable JSON
-        #[arg(long)]
-        json: bool,
-        /// Exit non-zero when required keys are missing
-        #[arg(long)]
-        strict: bool,
-        /// Include remote service secret metadata from Stacker server
-        #[arg(long)]
-        remote: bool,
-        /// Project name/id for remote metadata (defaults to project.identity)
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Generate safe placeholders for keys missing in a target environment
-    Promote {
-        #[arg(long, value_name = "FILE")]
-        file: Option<String>,
-        /// Source environment/profile
-        #[arg(long, value_name = "NAME")]
-        from: String,
-        /// Target environment/profile
-        #[arg(long, value_name = "NAME")]
-        to: String,
-        /// Limit promotion plan to one service/app target
-        #[arg(long)]
-        service: Option<String>,
-        /// Limit promotion plan to specific keys (comma-separated or repeated)
-        #[arg(long, value_delimiter = ',')]
-        keys: Vec<String>,
-        /// Emit stable JSON
-        #[arg(long)]
-        json: bool,
-        /// Enrich target environment with remote service secret metadata
-        #[arg(long)]
-        remote: bool,
-        /// Project name/id for remote metadata (defaults to project.identity)
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Generate config_contract snippets from current inventory
-    Contract {
-        #[command(subcommand)]
-        command: ConfigContractCommands,
     },
     /// Print a full commented `stacker.yml` reference example
     Example,
@@ -710,21 +681,6 @@ enum ConfigSetupCommands {
         file: Option<String>,
         #[arg(long, value_name = "OUT")]
         out: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ConfigContractCommands {
-    /// Suggest a config_contract section from an environment inventory
-    Suggest {
-        #[arg(long, value_name = "FILE")]
-        file: Option<String>,
-        /// Environment/profile to inspect
-        #[arg(long = "env", value_name = "NAME")]
-        environment: String,
-        /// Limit suggestion to one service/app target
-        #[arg(long)]
-        service: Option<String>,
     },
 }
 
@@ -1211,6 +1167,12 @@ enum AgentCommands {
         /// Deploy environment/profile, e.g. local, dev, prod
         #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
         environment: Option<String>,
+        /// Print a read-only deploy-app plan instead of applying changes
+        #[arg(long)]
+        plan: bool,
+        /// Revalidate and apply a previously generated deploy-app plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
     },
     /// Remove an app container from the remote deployment
     #[command(name = "remove-app")]
@@ -1409,18 +1371,9 @@ enum ProxyCommands {
         /// Upstream service address (e.g. http://app:8080)
         #[arg(long)]
         upstream: Option<String>,
-        /// Enable SSL or set SSL mode: --ssl, --ssl=auto, --ssl=manual, --ssl=off
-        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+        /// SSL mode: auto, manual, off
+        #[arg(long)]
         ssl: Option<String>,
-        /// Skip the active-connections pre-flight check for remote proxy changes
-        #[arg(long)]
-        force: bool,
-        /// Output remote agent command result as JSON
-        #[arg(long)]
-        json: bool,
-        /// Target a specific deployment by hash
-        #[arg(long)]
-        deployment: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -1706,6 +1659,8 @@ fn get_command(
             lock,
             force_new,
             runtime,
+            plan,
+            apply_plan,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -1719,7 +1674,9 @@ fn get_command(
             .with_watch(watch, no_watch)
             .with_lock(lock)
             .with_force_new(force_new)
-            .with_runtime(runtime),
+            .with_runtime(runtime)
+            .with_plan(plan)
+            .with_apply_plan(apply_plan),
         ),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
@@ -1735,6 +1692,37 @@ fn get_command(
         StackerCommands::Status { json, watch } => Box::new(
             stacker::console::commands::cli::status::StatusCommand::new(json, watch),
         ),
+        StackerCommands::Deployment { command } => match command {
+            DeploymentCommands::State { json, deployment } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentStateCommand::new(
+                    json, deployment,
+                ),
+            ),
+            DeploymentCommands::Events { json, deployment } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentEventsCommand::new(
+                    json, deployment,
+                ),
+            ),
+            DeploymentCommands::Rollback {
+                to,
+                plan,
+                apply_plan,
+                deployment,
+                confirm,
+            } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentRollbackCommand::new(
+                    to, plan, apply_plan, confirm, deployment,
+                ),
+            ),
+        },
+        StackerCommands::Explain { command } => match command {
+            ExplainCommands::Env { app, json } => Box::new(
+                stacker::console::commands::cli::explain::ExplainEnvCommand::new(app, json),
+            ),
+            ExplainCommands::Topology { json } => Box::new(
+                stacker::console::commands::cli::explain::ExplainTopologyCommand::new(json),
+            ),
+        },
         StackerCommands::Destroy { volumes, confirm } => Box::new(
             stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
         ),
@@ -1748,85 +1736,6 @@ fn get_command(
             ConfigCommands::Show { file, resolved } => Box::new(
                 stacker::console::commands::cli::config::ConfigShowCommand::new(file, resolved),
             ),
-            ConfigCommands::Inventory {
-                file,
-                environment,
-                service,
-                json,
-                show,
-                remote,
-                project,
-            } => Box::new(
-                stacker::console::commands::cli::config::ConfigInventoryCommand::new(
-                    file,
-                    environment,
-                    service,
-                    json,
-                    show,
-                    remote,
-                    project,
-                ),
-            ),
-            ConfigCommands::Diff {
-                file,
-                from,
-                to,
-                service,
-                json,
-                strict,
-                remote,
-                project,
-            } => Box::new(
-                stacker::console::commands::cli::config::ConfigDiffCommand::new(
-                    file, from, to, service, json, strict, remote, project,
-                ),
-            ),
-            ConfigCommands::Check {
-                file,
-                environment,
-                service,
-                json,
-                strict,
-                remote,
-                project,
-            } => Box::new(
-                stacker::console::commands::cli::config::ConfigCheckCommand::new(
-                    file,
-                    environment,
-                    service,
-                    json,
-                    strict,
-                    remote,
-                    project,
-                ),
-            ),
-            ConfigCommands::Promote {
-                file,
-                from,
-                to,
-                service,
-                keys,
-                json,
-                remote,
-                project,
-            } => Box::new(
-                stacker::console::commands::cli::config::ConfigPromoteCommand::new(
-                    file, from, to, service, keys, json, remote, project,
-                ),
-            ),
-            ConfigCommands::Contract { command } => match command {
-                ConfigContractCommands::Suggest {
-                    file,
-                    environment,
-                    service,
-                } => Box::new(
-                    stacker::console::commands::cli::config::ConfigContractSuggestCommand::new(
-                        file,
-                        environment,
-                        service,
-                    ),
-                ),
-            },
             ConfigCommands::Example => {
                 Box::new(stacker::console::commands::cli::config::ConfigExampleCommand::new())
             }
@@ -1870,12 +1779,9 @@ fn get_command(
                 domain,
                 upstream,
                 ssl,
-                force,
-                json,
-                deployment,
             } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyAddCommand::new(
-                    domain, upstream, ssl, force, json, deployment,
+                    domain, upstream, ssl, false, false, None,
                 ),
             ),
             ProxyCommands::Detect { json, deployment } => Box::new(
@@ -2257,15 +2163,21 @@ fn get_command(
                     json,
                     deployment,
                     environment,
-                } => Box::new(agent::AgentDeployAppCommand::new(
-                    app,
-                    image,
-                    force,
-                    runtime,
-                    json,
-                    deployment,
-                    environment,
-                )),
+                    plan,
+                    apply_plan,
+                } => Box::new(
+                    agent::AgentDeployAppCommand::new(
+                        app,
+                        image,
+                        force,
+                        runtime,
+                        json,
+                        deployment,
+                        environment,
+                    )
+                    .with_plan(plan)
+                    .with_apply_plan(apply_plan),
+                ),
                 AgentCommands::RemoveApp {
                     app,
                     volumes,

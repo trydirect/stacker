@@ -51,6 +51,39 @@ Feature: MCP WebSocket Server
     Then the MCP response should have result
     And the MCP tool response should not be an error
 
+  Scenario: Canonical deployment inspection workflow returns stable MCP payloads
+    Given I have a test deployment with hash "deployment_ai_eval" and status "running"
+    When I connect to the MCP WebSocket endpoint
+    And I send an MCP initialize request
+    And I send an MCP tools/call request for "get_deployment_state" with arguments:
+      """
+      {"deployment_hash":"deployment_ai_eval"}
+      """
+    Then the MCP response should have result
+    And the MCP tool response should not be an error
+    And the MCP tool text response should contain "\"schemaVersion\":\"v1alpha1\""
+    When I send an MCP tools/call request for "explain_topology" with arguments:
+      """
+      {"deployment_hash":"deployment_ai_eval"}
+      """
+    Then the MCP response should have result
+    And the MCP tool response should not be an error
+    And the MCP tool text response should contain "\"runtimeComposePath\": \"/home/trydirect/project/docker-compose.yml\""
+    When I send an MCP tools/call request for "get_deployment_plan" with arguments:
+      """
+      {"deployment_hash":"deployment_ai_eval","operation":"deploy"}
+      """
+    Then the MCP response should have result
+    And the MCP tool response should not be an error
+    And the MCP tool text response should contain "\"fingerprint\":\""
+    When I send an MCP tools/call request for "get_deployment_events" with arguments:
+      """
+      {"deployment_hash":"deployment_ai_eval"}
+      """
+    Then the MCP response should have result
+    And the MCP tool response should not be an error
+    And the MCP tool text response should contain "\"events\":[]"
+
   Scenario: Call unknown tool returns error
     When I connect to the MCP WebSocket endpoint
     And I send an MCP initialize request
