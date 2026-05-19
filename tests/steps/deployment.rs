@@ -1,4 +1,4 @@
-use cucumber::{given, then, when};
+use cucumber::{given, when};
 use serde_json::json;
 
 use super::StepWorld;

@@ -5,7 +5,6 @@ use common::{USER_A_TOKEN, USER_B_TOKEN};
 /// Admin endpoints (/admin/*) are protected by Casbin RBAC.
 /// Mock users have role "group_user" which has no admin policies.
 /// Requests should be denied with 403 Forbidden.
-
 #[tokio::test]
 async fn test_admin_list_users_rejects_non_admin() {
     let Some(app) = common::spawn_app_two_users().await else {

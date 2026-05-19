@@ -1,3 +1,5 @@
+#![allow(clippy::manual_try_fold)]
+
 use crate::steps::StepWorld;
 use cucumber::{then, when};
 use futures_util::{SinkExt, StreamExt};

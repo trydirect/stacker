@@ -10,7 +10,7 @@ async fn list() {
     let client = reqwest::Client::new(); // client
 
     let response = client
-        .get(&format!("{}/cloud", &app.address))
+        .get(format!("{}/cloud", &app.address))
         .header("Authorization", "Bearer test_token")
         .send()
         .await
@@ -34,7 +34,7 @@ async fn add_cloud() {
     });
 
     let response = client
-        .post(&format!("{}/cloud", &app.address))
+        .post(format!("{}/cloud", &app.address))
         .header("Authorization", "Bearer test_token")
         .json(&data)
         .send()

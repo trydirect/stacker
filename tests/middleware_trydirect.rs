@@ -4,7 +4,7 @@ use wiremock::MockServer;
 #[tokio::test]
 async fn middleware_trydirect_works() {
     // 1. Arrange
-    let trydirect_auth_server = MockServer::start().await;
+    let _trydirect_auth_server = MockServer::start().await;
 
     // 2. Act
     // 3. Assert
@@ -18,7 +18,7 @@ async fn middleware_trydirect_works() {
     let client = reqwest::Client::new(); // client
 
     let response = client
-        .get(&format!("{}/health_check", &app.address))
+        .get(format!("{}/health_check", &app.address))
         .send()
         .await
         .expect("Failed to execute request.");

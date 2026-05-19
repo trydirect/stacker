@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+
 mod common;
 
 use chrono::{Duration, Utc};
@@ -81,10 +83,7 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn find_marketplace_sync_payload<'a>(
-    requests: &'a [Request],
-    expected_action: &str,
-) -> Option<Value> {
+fn find_marketplace_sync_payload(requests: &[Request], expected_action: &str) -> Option<Value> {
     requests.iter().find_map(|request| {
         if request.url.path() != "/marketplace/sync" {
             return None;

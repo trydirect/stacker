@@ -1272,22 +1272,24 @@ impl CallableTrait for AgentStatusCommand {
                     .unwrap_or("unknown");
                 let version = item
                     .get("agent")
-                    .and_then(|a| a.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
+                    .and_then(|agent| agent_display_version(agent, None));
                 let n_apps = item
                     .get("apps")
                     .and_then(|v| v.as_array())
                     .map(|a| a.len())
                     .unwrap_or(0);
+                let version_label = version
+                    .as_deref()
+                    .map(agent_version_label)
+                    .unwrap_or_default();
 
                 progress::finish_success(
                     &pb,
                     &format!(
-                        "Agent status fetched — {} {} · v{} · {} app(s)",
+                        "Agent status fetched — {} {}{} · {} app(s)",
                         progress::status_icon(agent_status),
                         agent_status,
-                        version,
+                        version_label,
                         n_apps,
                     ),
                 );
@@ -1401,6 +1403,87 @@ fn is_stale_platform_project_container(container: &serde_json::Value) -> bool {
             .any(|code| normalized_name.contains(code))
 }
 
+fn agent_display_version(
+    agent: &serde_json::Value,
+    live_containers: Option<&Vec<serde_json::Value>>,
+) -> Option<String> {
+    agent
+        .get("system_info")
+        .and_then(agent_version_from_system_info)
+        .or_else(|| {
+            agent
+                .get("version")
+                .and_then(|value| value.as_str())
+                .and_then(non_placeholder_agent_version)
+        })
+        .or_else(|| {
+            live_containers.and_then(|containers| agent_version_from_live_containers(containers))
+        })
+}
+
+fn agent_version_from_system_info(system_info: &serde_json::Value) -> Option<String> {
+    [
+        "agent_version",
+        "agentVersion",
+        "status_panel_agent_version",
+        "statusPanelAgentVersion",
+        "dashboard_version",
+        "dashboardVersion",
+        "version",
+    ]
+    .iter()
+    .find_map(|key| {
+        system_info
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .and_then(non_placeholder_agent_version)
+    })
+}
+
+fn agent_version_from_live_containers(containers: &[serde_json::Value]) -> Option<String> {
+    containers.iter().find_map(|container| {
+        let name = container.get("name").and_then(|value| value.as_str())?;
+        let normalized_name = crate::project_app::normalize_app_code(name);
+        if !normalized_name.contains("statuspanel_agent")
+            && !normalized_name.contains("status_panel_agent")
+        {
+            return None;
+        }
+
+        container
+            .get("image")
+            .and_then(|value| value.as_str())
+            .and_then(image_tag)
+            .and_then(non_placeholder_agent_version)
+    })
+}
+
+fn image_tag(image: &str) -> Option<&str> {
+    let image_without_digest = image.split('@').next().unwrap_or(image);
+    image_without_digest
+        .rsplit_once(':')
+        .map(|(_, tag)| tag)
+        .filter(|tag| !tag.contains('/'))
+}
+
+fn non_placeholder_agent_version(version: &str) -> Option<String> {
+    let version = version.trim().trim_start_matches('v');
+    if version.is_empty()
+        || matches!(
+            version.to_ascii_lowercase().as_str(),
+            "1.0.0" | "latest" | "main" | "stable" | "unknown"
+        )
+    {
+        return None;
+    }
+
+    Some(version.to_string())
+}
+
+fn agent_version_label(version: &str) -> String {
+    format!(" · v{}", version.trim().trim_start_matches('v'))
+}
+
 /// Pretty-print a snapshot summary for human consumption.
 fn print_snapshot_summary(
     snap: &serde_json::Value,
@@ -1414,17 +1497,20 @@ fn print_snapshot_summary(
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let version = agent.get("version").and_then(|v| v.as_str()).unwrap_or("-");
+        let version_label = agent_display_version(agent, live_containers)
+            .as_deref()
+            .map(agent_version_label)
+            .unwrap_or_default();
         let heartbeat = agent
             .get("last_heartbeat")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
 
         println!(
-            "Agent:     {} {}  (v{})",
+            "Agent:     {} {}{}",
             progress::status_icon(status),
             status,
-            version
+            version_label
         );
         println!("Heartbeat: {}", heartbeat);
     } else {
@@ -2331,6 +2417,47 @@ environments:
         let snap = serde_json::json!({});
         // Should not panic
         print_snapshot_summary(&snap, None);
+    }
+
+    #[test]
+    fn agent_display_version_suppresses_placeholder_version() {
+        let agent = serde_json::json!({
+            "version": "1.0.0",
+            "status": "online"
+        });
+
+        assert_eq!(agent_display_version(&agent, None), None);
+    }
+
+    #[test]
+    fn agent_display_version_prefers_system_info_version() {
+        let agent = serde_json::json!({
+            "version": "1.0.0",
+            "system_info": {
+                "agent_version": "0.2.8"
+            }
+        });
+
+        assert_eq!(
+            agent_display_version(&agent, None),
+            Some("0.2.8".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_display_version_can_use_status_agent_container_tag() {
+        let agent = serde_json::json!({
+            "version": "1.0.0"
+        });
+        let containers = vec![serde_json::json!({
+            "name": "statuspanel-agent",
+            "image": "ghcr.io/trydirect/statuspanel-agent:0.3.1"
+        })];
+
+        assert_eq!(
+            agent_display_version(&agent, Some(&containers)),
+            Some("0.3.1".to_string())
+        );
     }
 
     #[test]

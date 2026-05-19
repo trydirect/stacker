@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod agent;
 pub mod agent_executor;
 pub mod cdc;

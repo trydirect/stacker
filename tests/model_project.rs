@@ -1,7 +1,5 @@
-use stacker::forms::project::App;
 use stacker::forms::project::DockerImage;
 use stacker::forms::project::ProjectForm;
-use std::collections::HashMap;
 
 //  Unit Test
 
@@ -30,7 +28,7 @@ fn test_deserialize_project() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/mock_data/custom.json"
     ));
-    let form = serde_json::from_str::<ProjectForm>(&body_str).unwrap();
+    let form = serde_json::from_str::<ProjectForm>(body_str).unwrap();
     println!("{:?}", form);
     // @todo assert required data
 

@@ -40,7 +40,7 @@ async fn get_auth_token(config: &IntegrationConfig) -> Result<String, String> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(&format!("{}/oauth_server/token", config.user_service_url))
+        .post(format!("{}/oauth_server/token", config.user_service_url))
         .form(&[
             ("grant_type", "password"),
             ("username", &config.test_user_email),
@@ -87,7 +87,7 @@ async fn test_get_user_profile() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/auth/me", config.user_service_url))
+        .get(format!("{}/auth/me", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -124,7 +124,7 @@ async fn test_get_subscription_plan() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/oauth_server/api/me", config.user_service_url))
+        .get(format!("{}/oauth_server/api/me", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -163,7 +163,7 @@ async fn test_list_installations() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/installations", config.user_service_url))
+        .get(format!("{}/installations", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -229,7 +229,7 @@ async fn test_get_installation_details() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!(
+        .get(format!(
             "{}/installations/{}",
             config.user_service_url, deployment_id
         ))
@@ -267,7 +267,7 @@ async fn test_search_applications() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(&format!("{}/applications", config.user_service_url))
+        .get(format!("{}/applications", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -328,7 +328,7 @@ async fn test_mcp_workflow_stack_configuration() {
     // Step 1: Get user profile
     println!("Step 1: get_user_profile");
     let profile_resp = client
-        .get(&format!("{}/auth/me", config.user_service_url))
+        .get(format!("{}/auth/me", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -347,7 +347,7 @@ async fn test_mcp_workflow_stack_configuration() {
     // Step 2: Get subscription plan
     println!("Step 2: get_subscription_plan");
     let plan_resp = client
-        .get(&format!("{}/oauth_server/api/me", config.user_service_url))
+        .get(format!("{}/oauth_server/api/me", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -369,7 +369,7 @@ async fn test_mcp_workflow_stack_configuration() {
     // Step 3: List installations (as proxy for checking deployment limits)
     println!("Step 3: list_installations");
     let installs_resp = client
-        .get(&format!("{}/installations", config.user_service_url))
+        .get(format!("{}/installations", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -383,7 +383,7 @@ async fn test_mcp_workflow_stack_configuration() {
     // Step 4: Search applications
     println!("Step 4: search_applications");
     let apps_resp = client
-        .get(&format!("{}/applications", config.user_service_url))
+        .get(format!("{}/applications", config.user_service_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
@@ -478,7 +478,7 @@ async fn test_confirmation_flow_restart_container() {
     //! 3. AI calls restart_container with requires_confirmation: true (execute)
     //! 4. Returns result
 
-    let stacker_url =
+    let _stacker_url =
         env::var("STACKER_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
 
     println!("\n=== Confirmation Flow Test: restart_container ===\n");

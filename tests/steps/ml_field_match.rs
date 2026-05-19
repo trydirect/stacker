@@ -89,7 +89,7 @@ async fn then_unmatched_target(world: &mut StepWorld, field_name: String) {
 
     let found = unmatched
         .iter()
-        .any(|v| v.as_str().map_or(false, |s| s == field_name));
+        .any(|v| v.as_str().is_some_and(|s| s == field_name));
 
     assert!(
         found,
