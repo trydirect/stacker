@@ -18,16 +18,16 @@ fn normalize_server_region_for_installer(provider: &str, server: &mut crate::for
         return;
     };
 
-    let datacenter = match region {
-        "nbg1" => "nbg1-dc3",
-        "fsn1" => "fsn1-dc14",
-        "hel1" => "hel1-dc2",
-        "ash" => "ash-dc1",
-        "hil" => "hil-dc1",
+    let location = match region {
+        "nbg1-dc3" => "nbg1",
+        "fsn1-dc14" => "fsn1",
+        "hel1-dc2" => "hel1",
+        "ash-dc1" => "ash",
+        "hil-dc1" => "hil",
         _ => return,
     };
 
-    server.region = Some(datacenter.to_string());
+    server.region = Some(location.to_string());
 }
 
 #[cfg(test)]
@@ -36,7 +36,7 @@ mod tests {
     use crate::forms::ServerForm;
 
     #[test]
-    fn normalizes_hetzner_location_to_datacenter_for_installer() {
+    fn preserves_hetzner_location_for_installer() {
         let mut server = ServerForm {
             region: Some("nbg1".to_string()),
             server: Some("cpx21".to_string()),
@@ -46,13 +46,13 @@ mod tests {
 
         normalize_server_region_for_installer("htz", &mut server);
 
-        assert_eq!(server.region.as_deref(), Some("nbg1-dc3"));
+        assert_eq!(server.region.as_deref(), Some("nbg1"));
         assert_eq!(server.server.as_deref(), Some("cpx21"));
         assert_eq!(server.os.as_deref(), Some("docker-ce"));
     }
 
     #[test]
-    fn preserves_existing_hetzner_datacenter() {
+    fn normalizes_hetzner_datacenter_to_location_for_installer() {
         let mut server = ServerForm {
             region: Some("fsn1-dc14".to_string()),
             ..Default::default()
@@ -60,7 +60,7 @@ mod tests {
 
         normalize_server_region_for_installer("htz", &mut server);
 
-        assert_eq!(server.region.as_deref(), Some("fsn1-dc14"));
+        assert_eq!(server.region.as_deref(), Some("fsn1"));
     }
 
     #[test]
