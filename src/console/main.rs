@@ -135,6 +135,9 @@ enum StackerCommands {
         /// Project name on the Stacker server
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
+        /// Deployment environment/profile to use
+        #[arg(long = "env", visible_alias = "environment", value_name = "NAME")]
+        environment: Option<String>,
         /// Name of saved cloud credential to reuse
         #[arg(long, value_name = "KEY_NAME")]
         key: Option<String>,
@@ -256,6 +259,26 @@ enum StackerConfigSetupCommands {
     Cloud {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+    },
+    /// Configure AI defaults in stacker.yml
+    Ai {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// AI provider: openai, anthropic, ollama, custom
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// AI endpoint, e.g. http://localhost:11434 for Ollama
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// AI model name, e.g. llama3.1
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+        /// AI request timeout in seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        /// AI task name. Repeat or use comma-separated values.
+        #[arg(long = "task", value_name = "TASK")]
+        tasks: Vec<String>,
     },
     /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
     RemotePayload {
@@ -402,6 +425,7 @@ fn get_command(
                 dry_run,
                 force_rebuild,
                 project,
+                environment,
                 key,
                 key_id,
                 server,
@@ -413,6 +437,7 @@ fn get_command(
                     force_rebuild,
                 )
                 .with_remote_overrides(project, key, server)
+                .with_environment(environment)
                 .with_key_id(key_id),
             )),
             StackerCommands::Connect { handoff } => Ok(Box::new(
@@ -459,6 +484,18 @@ fn get_command(
                 StackerConfigCommands::Setup { command } => match command {
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
+                    )),
+                    StackerConfigSetupCommands::Ai {
+                        file,
+                        provider,
+                        endpoint,
+                        model,
+                        timeout,
+                        tasks,
+                    } => Ok(Box::new(
+                        stacker::console::commands::cli::config::ConfigSetupAiCommand::new(
+                            file, provider, endpoint, model, timeout, tasks,
+                        ),
                     )),
                     StackerConfigSetupCommands::RemotePayload { file, out } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(file, out),

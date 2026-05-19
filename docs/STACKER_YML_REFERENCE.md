@@ -1006,6 +1006,7 @@ Configuration issues:
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
 | `stacker config fix` | Interactively fix missing required config fields |
+| `stacker config setup ai` | Configure `ai.*` settings without hand-editing YAML |
 | `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
@@ -1161,6 +1162,7 @@ stacker destroy --confirm --volumes    # Also remove volumes
 stacker config validate                # Check stacker.yml
 stacker config validate --file prod.yml
 stacker config show                    # Display resolved config
+stacker config setup ai --provider ollama --endpoint http://localhost:11434 --model llama3 --task dockerfile --task troubleshoot
 
 # AI
 stacker ai ask "How can I optimise this Dockerfile?"
@@ -1177,6 +1179,7 @@ stacker update --channel beta          # Check beta channel
 # Config
 stacker config fix                     # Interactively fix missing fields
 stacker config fix --file prod.yml     # Fix a specific config file
+stacker config setup ai                # Configure ai.* interactively
 ```
 
 ### `stacker ssh-key` — SSH Key Management

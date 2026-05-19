@@ -482,9 +482,8 @@ fn generate_config_template_path(
         config.deploy.compose_file = workspace_detection.recommended_compose_file.clone();
     }
 
-    // Serialize to YAML
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
+    // Serialize to YAML, keeping generated configs compact and validation-clean.
+    let yaml = serialize_generated_config(&config)?;
 
     let scan_summary = render_scan_summary(
         project_dir,
@@ -505,6 +504,70 @@ fn generate_config_template_path(
     std::fs::write(config_path, &content)?;
 
     Ok(config_path.to_path_buf())
+}
+
+fn serialize_generated_config(config: &StackerConfig) -> Result<String, CliError> {
+    let mut value = serde_yaml::to_value(config)
+        .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))?;
+
+    prune_generated_config_value(&mut value);
+    remove_disabled_generated_ai_section(&mut value);
+
+    serde_yaml::to_string(&value)
+        .map_err(|e| CliError::GeneratorError(format!("Failed to serialize config: {e}")))
+}
+
+fn prune_generated_config_value(value: &mut serde_yaml::Value) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            let keys = map.keys().cloned().collect::<Vec<_>>();
+            for key in &keys {
+                if let Some(child) = map.get_mut(key) {
+                    prune_generated_config_value(child);
+                }
+            }
+
+            for key in keys {
+                if map.get(&key).is_some_and(is_noise_generated_config_value) {
+                    map.remove(&key);
+                }
+            }
+        }
+        serde_yaml::Value::Sequence(items) => {
+            for item in items.iter_mut() {
+                prune_generated_config_value(item);
+            }
+            items.retain(|item| !is_noise_generated_config_value(item));
+        }
+        _ => {}
+    }
+}
+
+fn is_noise_generated_config_value(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Sequence(items) => items.is_empty(),
+        serde_yaml::Value::Mapping(map) => map.is_empty(),
+        _ => false,
+    }
+}
+
+fn remove_disabled_generated_ai_section(value: &mut serde_yaml::Value) {
+    let serde_yaml::Value::Mapping(root) = value else {
+        return;
+    };
+
+    let ai_key = serde_yaml::Value::String("ai".to_string());
+    let remove_ai = root
+        .get(&ai_key)
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|ai| ai.get(serde_yaml::Value::String("enabled".to_string())))
+        .and_then(serde_yaml::Value::as_bool)
+        == Some(false);
+
+    if remove_ai {
+        root.remove(&ai_key);
+    }
 }
 
 fn choose_primary_app(workspace_detection: &WorkspaceDetection) -> Option<&DiscoveredApp> {
@@ -1258,6 +1321,34 @@ mod tests {
         // Must be parseable
         let result = StackerConfig::from_file(&path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_init_output_from_compose_validates_without_empty_path_noise() {
+        let dir = setup_dir_with_nested_files(&[
+            ("package.json", r#"{"name":"web","version":"0.1.0"}"#),
+            (
+                "docker-compose.yml",
+                "services:\n  status-panel-web:\n    image: trydirect/status-panel-web:latest\n    ports:\n      - \"3000:3000\"\n    environment:\n      NEXT_PUBLIC_SITE_URL: https://status.stacker.my\n      INTENTIONAL_EMPTY: null\n      NODE_ENV: production\n",
+            ),
+        ]);
+        let path = generate_config(dir.path(), None, false, false).unwrap();
+        let rendered = std::fs::read_to_string(&path).unwrap();
+        let issues =
+            crate::console::commands::cli::config::run_validate(&path.to_string_lossy()).unwrap();
+
+        assert_eq!(issues, Vec::<String>::new());
+        assert!(rendered.contains("target: local"));
+        assert!(rendered.contains("type: none"));
+        assert!(rendered.contains("status_panel: false"));
+        assert!(rendered.contains("INTENTIONAL_EMPTY: ''"));
+        assert!(!rendered.contains(": null"));
+        assert!(!rendered.contains("dockerfile:"));
+        assert!(!rendered.contains("env_file:"));
+        assert!(!rendered.contains("hooks:"));
+        assert!(!rendered.contains("ports: []"));
+        assert!(!rendered.contains("environment: {}"));
+        assert!(!rendered.contains("depends_on: []"));
     }
 
     #[test]

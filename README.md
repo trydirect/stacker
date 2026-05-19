@@ -156,6 +156,7 @@ The end-user tool. No server required for local deploys.
 | `stacker config show` | Show resolved configuration |
 | `stacker config example` | Print a full commented reference |
 | `stacker config setup cloud` | Guided cloud deployment setup |
+| `stacker config setup ai` | Configure AI provider, endpoint, model, and tasks |
 | `stacker ai ask "question"` | Ask the AI about your stack |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |

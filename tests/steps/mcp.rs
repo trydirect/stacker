@@ -283,7 +283,7 @@ async fn assert_tool_is_error(world: &mut StepWorld) {
     );
 }
 
-#[then(regex = r#"^the MCP tool text response should contain "([^"]+)"$"#)]
+#[then(regex = r#"^the MCP tool text response should contain "(.+)"$"#)]
 async fn assert_tool_text_contains(world: &mut StepWorld, expected: String) {
     let resp = world.mcp_response.as_ref().expect("No MCP response");
     let result = resp.get("result").expect("No result in MCP response");
@@ -296,6 +296,8 @@ async fn assert_tool_text_contains(world: &mut StepWorld, expected: String) {
         .and_then(|item| item.get("text"))
         .and_then(|value| value.as_str())
         .expect("No text content in MCP tool response");
+
+    let expected = expected.replace("\\\"", "\"");
 
     assert!(
         text.contains(&expected),

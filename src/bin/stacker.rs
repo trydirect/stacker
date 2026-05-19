@@ -675,6 +675,26 @@ enum ConfigSetupCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Configure AI defaults in stacker.yml
+    Ai {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// AI provider: openai, anthropic, ollama, custom
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// AI endpoint, e.g. http://localhost:11434 for Ollama
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// AI model name, e.g. llama3.1
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+        /// AI request timeout in seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        /// AI task name. Repeat or use comma-separated values.
+        #[arg(long = "task", value_name = "TASK")]
+        tasks: Vec<String>,
+    },
     /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
     RemotePayload {
         #[arg(long, value_name = "FILE")]
@@ -1751,6 +1771,18 @@ fn get_command(
             ConfigCommands::Setup { command } => match command {
                 ConfigSetupCommands::Cloud { file } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
+                ),
+                ConfigSetupCommands::Ai {
+                    file,
+                    provider,
+                    endpoint,
+                    model,
+                    timeout,
+                    tasks,
+                } => Box::new(
+                    stacker::console::commands::cli::config::ConfigSetupAiCommand::new(
+                        file, provider, endpoint, model, timeout, tasks,
+                    ),
                 ),
                 ConfigSetupCommands::RemotePayload { file, out } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(

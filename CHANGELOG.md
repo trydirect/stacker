@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Onboarding setup helpers
+
+- Added `stacker config setup ai` to enable and update `ai.*` settings from the
+  CLI, including Ollama-friendly `--provider`, `--endpoint`, `--model`,
+  `--timeout`, and repeatable `--task` options.
+- Cloud/server deploys now bootstrap missing `.env` files from adjacent
+  `.env.example` files when compose or `stacker.yml` references them, using
+  restrictive local permissions where supported.
+- Cloud deploy `--key` and `--key-id` overrides are resolved through the active
+  logged-in Stacker API before prompt selection, and non-interactive shells now
+  receive actionable cloud credential guidance instead of hanging.
+- Deploy validation now prints concise private registry credential guidance when
+  images may require authentication and no registry auth is resolved.
+- `stacker config validate` now points users to `stacker config fix` when it
+  finds empty structural path fields.
+
 ## [0.2.8] — 2026-05-15
 ### Added — Configuration inventory, diff, check, and promotion planning
 

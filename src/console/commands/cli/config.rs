@@ -10,7 +10,8 @@ use crate::cli::config_inventory::{
     load_inventory, merge_remote_secret_names, ConfigInventory, InventoryOptions,
 };
 use crate::cli::config_parser::{
-    CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
+    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
+    StackerConfig,
 };
 use crate::cli::config_promote::{
     load_promotion_plan, promotion_plan_from_diff, ConfigPromotionPlan,
@@ -209,6 +210,15 @@ fn parse_cloud_provider(s: &str) -> Result<CloudProvider, CliError> {
         CliError::ConfigValidation(
             "Invalid cloud provider. Use: hetzner, digitalocean, aws, linode, vultr, contabo"
                 .to_string(),
+        )
+    })
+}
+
+fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
+    let json = format!("\"{}\"", s.trim().to_lowercase());
+    serde_json::from_str::<AiProviderType>(&json).map_err(|_| {
+        CliError::ConfigValidation(
+            "Invalid AI provider. Use: openai, anthropic, ollama, custom".to_string(),
         )
     })
 }
@@ -498,6 +508,132 @@ fn apply_cloud_settings(
     });
 }
 
+pub struct AiSetupOptions<'a> {
+    pub provider: Option<&'a str>,
+    pub endpoint: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub timeout: Option<u64>,
+    pub tasks: &'a [String],
+}
+
+pub fn run_setup_ai(
+    config_path: &str,
+    options: AiSetupOptions<'_>,
+) -> Result<Vec<String>, CliError> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Err(CliError::ConfigNotFound {
+            path: PathBuf::from(config_path),
+        });
+    }
+
+    let mut config = StackerConfig::from_file_raw(path)?;
+    let interactive = options.provider.is_none()
+        && options.endpoint.is_none()
+        && options.model.is_none()
+        && options.timeout.is_none()
+        && options.tasks.is_empty();
+
+    let provider = if let Some(provider) = options.provider {
+        parse_ai_provider(provider)?
+    } else if interactive {
+        parse_ai_provider(&prompt_with_default(
+            "AI provider (openai|anthropic|ollama|custom)",
+            &config.ai.provider.to_string(),
+        )?)?
+    } else {
+        AiProviderType::Ollama
+    };
+
+    let endpoint = if let Some(endpoint) = options.endpoint {
+        Some(endpoint.trim().to_string()).filter(|value| !value.is_empty())
+    } else if interactive {
+        let default = config
+            .ai
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+        Some(prompt_with_default("AI endpoint", &default)?).filter(|value| !value.trim().is_empty())
+    } else {
+        config.ai.endpoint.clone()
+    };
+
+    let model = if let Some(model) = options.model {
+        Some(model.trim().to_string()).filter(|value| !value.is_empty())
+    } else if interactive {
+        let default = config
+            .ai
+            .model
+            .clone()
+            .unwrap_or_else(|| "llama3.1".to_string());
+        Some(prompt_with_default("AI model", &default)?).filter(|value| !value.trim().is_empty())
+    } else {
+        config.ai.model.clone()
+    };
+
+    let timeout = if let Some(timeout) = options.timeout {
+        timeout
+    } else if interactive {
+        prompt_with_default("AI timeout seconds", &config.ai.timeout.to_string())?
+            .parse::<u64>()
+            .unwrap_or(config.ai.timeout)
+    } else if config.ai.timeout == 0 {
+        300
+    } else {
+        config.ai.timeout
+    };
+
+    let tasks = if !options.tasks.is_empty() {
+        options
+            .tasks
+            .iter()
+            .flat_map(|task| task.split(','))
+            .map(str::trim)
+            .filter(|task| !task.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    } else if interactive {
+        let default = if config.ai.tasks.is_empty() {
+            "dockerfile,compose,troubleshoot".to_string()
+        } else {
+            config.ai.tasks.join(",")
+        };
+        prompt_with_default("AI tasks (comma-separated)", &default)?
+            .split(',')
+            .map(str::trim)
+            .filter(|task| !task.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    } else if config.ai.tasks.is_empty() {
+        vec![
+            "dockerfile".to_string(),
+            "compose".to_string(),
+            "troubleshoot".to_string(),
+        ]
+    } else {
+        config.ai.tasks.clone()
+    };
+
+    config.ai.enabled = true;
+    config.ai.provider = provider;
+    config.ai.endpoint = endpoint;
+    config.ai.model = model;
+    config.ai.timeout = timeout;
+    config.ai.tasks = tasks;
+
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(config_path, &backup_path)?;
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, yaml)?;
+
+    Ok(vec![
+        "Enabled ai configuration".to_string(),
+        format!("Set ai.provider={}", config.ai.provider),
+        format!("Backup written to {}", backup_path),
+    ])
+}
+
 pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
@@ -780,7 +916,19 @@ pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
     }
 
     let mut messages = match load_raw_path_issues(path) {
-        Ok(issues) => issues.iter().map(render_raw_path_issue).collect::<Vec<_>>(),
+        Ok(issues) => {
+            let mut rendered = issues.iter().map(render_raw_path_issue).collect::<Vec<_>>();
+            if issues
+                .iter()
+                .any(|issue| matches!(issue.kind, RawPathIssueKind::Empty))
+            {
+                rendered.push(
+                    "Run `stacker config fix` to remove empty structural path fields safely."
+                        .to_string(),
+                );
+            }
+            rendered
+        }
         Err(_) => Vec::new(),
     };
 
@@ -968,6 +1116,61 @@ pub struct ConfigFixCommand {
 /// Interactive cloud setup wizard that writes deploy.target/deploy.cloud.
 pub struct ConfigSetupCloudCommand {
     pub file: Option<String>,
+}
+
+/// `stacker config setup ai [--file stacker.yml]`
+///
+/// Guided AI setup wizard that writes ai.* without replacing unrelated config.
+pub struct ConfigSetupAiCommand {
+    pub file: Option<String>,
+    pub provider: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub timeout: Option<u64>,
+    pub tasks: Vec<String>,
+}
+
+impl ConfigSetupAiCommand {
+    pub fn new(
+        file: Option<String>,
+        provider: Option<String>,
+        endpoint: Option<String>,
+        model: Option<String>,
+        timeout: Option<u64>,
+        tasks: Vec<String>,
+    ) -> Self {
+        Self {
+            file,
+            provider,
+            endpoint,
+            model,
+            timeout,
+            tasks,
+        }
+    }
+}
+
+impl CallableTrait for ConfigSetupAiCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let applied = run_setup_ai(
+            &path,
+            AiSetupOptions {
+                provider: self.provider.as_deref(),
+                endpoint: self.endpoint.as_deref(),
+                model: self.model.as_deref(),
+                timeout: self.timeout,
+                tasks: &self.tasks,
+            },
+        )?;
+
+        eprintln!("✓ Updated {}", path);
+        for item in applied {
+            eprintln!("  - {}", item);
+        }
+        eprintln!("Run: stacker config validate");
+        Ok(())
+    }
 }
 
 impl ConfigSetupCloudCommand {
@@ -1794,6 +1997,9 @@ app:
         assert!(issues
             .iter()
             .any(|issue| issue.contains("quoted path string")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("stacker config fix")));
     }
 
     #[test]
@@ -2071,5 +2277,47 @@ app:
             msg.contains("quoted path string"),
             "unexpected message: {msg}"
         );
+    }
+
+    #[test]
+    fn test_run_setup_ai_configures_ollama_without_removing_existing_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = write_config(
+            dir.path(),
+            r#"
+name: ai-app
+app:
+  type: static
+deploy:
+  target: local
+env:
+  KEEP_ME: "true"
+"#,
+        );
+
+        let applied = run_setup_ai(
+            &config_path,
+            AiSetupOptions {
+                provider: Some("ollama"),
+                endpoint: Some("http://localhost:11434"),
+                model: Some("llama3.1"),
+                timeout: Some(120),
+                tasks: &["dockerfile,compose".to_string()],
+            },
+        )
+        .unwrap();
+
+        assert!(applied.iter().any(|item| item.contains("ai.provider")));
+        let updated = StackerConfig::from_file(Path::new(&config_path)).unwrap();
+        assert!(updated.ai.enabled);
+        assert_eq!(updated.ai.provider, AiProviderType::Ollama);
+        assert_eq!(
+            updated.ai.endpoint.as_deref(),
+            Some("http://localhost:11434")
+        );
+        assert_eq!(updated.ai.model.as_deref(), Some("llama3.1"));
+        assert_eq!(updated.ai.timeout, 120);
+        assert_eq!(updated.ai.tasks, vec!["dockerfile", "compose"]);
+        assert_eq!(updated.env.get("KEEP_ME").map(String::as_str), Some("true"));
     }
 }
