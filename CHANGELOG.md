@@ -27,6 +27,14 @@ All notable changes to this project will be documented in this file.
   publishing install-service payloads.
 - `stacker config setup cloud` now suggests Hetzner `cx23` by default instead
   of older `cpx*` examples.
+- Remote config bundles now keep compose `env_file` and bind-mount references
+  project-relative so Docker Compose sees copied files under
+  `/home/trydirect/project`.
+- Cloud/server deploy output now lists config-bundle file mappings and rejects
+  absolute config-bundle destinations before sending a deploy request.
+- Deploy-time config files are now mirrored into the installer runtime-file
+  contract so non-compose files such as `.env` are materialized before Docker
+  Compose starts.
 
 ## [0.2.8] — 2026-05-15
 ### Added — Configuration inventory, diff, check, and promotion planning

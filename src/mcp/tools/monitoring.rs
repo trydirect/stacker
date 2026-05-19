@@ -28,6 +28,38 @@ const MAX_LOG_LIMIT: usize = 500;
 const COMMAND_RESULT_TIMEOUT_SECS: u64 = 8;
 const COMMAND_POLL_INTERVAL_MS: u64 = 400;
 
+fn paused_deployment_cli_commands(server_ip: Option<&str>) -> Vec<String> {
+    let mut commands = vec![
+        "stacker status".to_string(),
+        "stacker status --watch".to_string(),
+        "stacker agent status".to_string(),
+        "stacker logs --tail 100".to_string(),
+    ];
+
+    if let Some(ip) = server_ip.filter(|ip| !ip.trim().is_empty()) {
+        commands.push(format!(
+            "ssh -i ~/.config/stacker/ssh/<server-key> -p 22 root@{}",
+            ip
+        ));
+    }
+
+    commands
+}
+
+fn paused_deployment_mcp_sequence() -> Vec<&'static str> {
+    vec![
+        "get_deployment_status",
+        "get_deployment_events",
+        "get_deployment_state",
+        "get_docker_compose_yaml",
+        "list_containers",
+        "get_container_logs",
+        "get_error_summary",
+        "get_container_health",
+        "escalate_to_support",
+    ]
+}
+
 /// Helper to create a resolver from context.
 /// Uses UserServiceDeploymentResolver from connectors to support legacy installations.
 fn create_resolver(context: &ToolContext) -> UserServiceDeploymentResolver {
@@ -527,6 +559,18 @@ impl ToolHandler for DiagnoseDeploymentTool {
                 recommendations.push("Check deployment logs for error details".to_string());
                 recommendations.push("Verify cloud credentials are valid".to_string());
             }
+            "paused" => {
+                issues.push("Deployment is PAUSED and needs troubleshooting".to_string());
+                recommendations.push(
+                    "Continue with stacker status --watch to collect the final installer message"
+                        .to_string(),
+                );
+                recommendations.push(
+                    "Use the backup SSH command printed by deploy if the server IP is reachable"
+                        .to_string(),
+                );
+                recommendations.push("Inspect Docker Compose config, container logs, and config-bundle file mappings before redeploying".to_string());
+            }
             "pending" => {
                 issues.push("Deployment is still PENDING".to_string());
                 recommendations.push(
@@ -574,6 +618,30 @@ impl ToolHandler for DiagnoseDeploymentTool {
             "issues_found": issues.len(),
             "issues": issues,
             "recommendations": recommendations,
+            "mcp_tool_sequence": paused_deployment_mcp_sequence(),
+            "stacker_cli_commands": if status == "paused" || status == "failed" {
+                paused_deployment_cli_commands(server_ip.as_deref())
+            } else {
+                vec![
+                    "stacker status".to_string(),
+                    "stacker agent status".to_string(),
+                ]
+            },
+            "safe_ai_context": {
+                "include": [
+                    "deployment id/hash and status",
+                    "last installer message",
+                    "sanitized docker compose error",
+                    "redacted compose env_file/image/ports snippets",
+                    "config bundle source -> destination mappings"
+                ],
+                "exclude": [
+                    "cloud tokens",
+                    "registry tokens",
+                    "private SSH keys",
+                    "full .env contents"
+                ]
+            },
             "next_steps": if issues.is_empty() {
                 vec!["Deployment appears healthy. Use get_container_health for detailed metrics.".to_string()]
             } else {
@@ -613,6 +681,31 @@ impl ToolHandler for DiagnoseDeploymentTool {
                 "required": []
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{paused_deployment_cli_commands, paused_deployment_mcp_sequence};
+
+    #[test]
+    fn paused_deployment_cli_commands_include_status_and_ssh_when_ip_exists() {
+        let commands = paused_deployment_cli_commands(Some("178.105.162.176"));
+
+        assert!(commands.contains(&"stacker status".to_string()));
+        assert!(commands.contains(&"stacker status --watch".to_string()));
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("root@178.105.162.176")));
+    }
+
+    #[test]
+    fn paused_deployment_mcp_sequence_prioritizes_diagnosis_before_escalation() {
+        let sequence = paused_deployment_mcp_sequence();
+
+        assert_eq!(sequence.first(), Some(&"get_deployment_status"));
+        assert!(sequence.contains(&"get_container_logs"));
+        assert_eq!(sequence.last(), Some(&"escalate_to_support"));
     }
 }
 

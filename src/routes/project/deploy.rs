@@ -822,6 +822,85 @@ fn compose_content_from_config_files(
     Ok(None)
 }
 
+fn runtime_config_files_from_deploy_config_files(
+    config_files: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let files = config_files
+        .as_array()
+        .ok_or_else(|| "config_files must be an array".to_string())?;
+    let mut runtime_files = Vec::new();
+
+    for file in files {
+        let file_name = file
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                file.get("destination_path")
+                    .and_then(|value| value.as_str())
+                    .and_then(basename_from_path)
+            });
+
+        if file_name.is_some_and(crate::project_app::is_compose_filename) {
+            continue;
+        }
+
+        let path = file
+            .get("destination_path")
+            .or_else(|| file.get("path"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "config file is missing destination_path".to_string())?;
+        let content = file
+            .get("content")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| format!("config file '{}' is missing string content", path))?;
+
+        let mut runtime_file = serde_json::json!({
+            "path": path,
+            "content": content,
+        });
+        if let Some(mode) = file
+            .get("file_mode")
+            .or_else(|| file.get("mode"))
+            .and_then(|value| value.as_str())
+        {
+            runtime_file["mode"] = serde_json::json!(mode);
+        }
+        runtime_files.push(runtime_file);
+    }
+
+    Ok(serde_json::Value::Array(runtime_files))
+}
+
+fn merge_marketplace_config_files(target: &mut serde_json::Value, generated: &serde_json::Value) {
+    let Some(generated_files) = generated.as_array().filter(|files| !files.is_empty()) else {
+        return;
+    };
+
+    let custom = ensure_custom_object(target);
+    let existing = custom
+        .entry("marketplace_config_files".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    if !existing.is_array() {
+        *existing = serde_json::json!([]);
+    }
+
+    let existing_files = existing
+        .as_array_mut()
+        .expect("marketplace_config_files should be normalized to an array");
+    for generated_file in generated_files {
+        let generated_path = generated_file.get("path").and_then(|value| value.as_str());
+        if let Some(path) = generated_path {
+            existing_files
+                .retain(|file| file.get("path").and_then(|value| value.as_str()) != Some(path));
+        }
+        existing_files.push(generated_file.clone());
+    }
+}
+
 fn apply_deploy_bundle(
     project: &mut models::Project,
     form: &forms::project::Deploy,
@@ -845,6 +924,9 @@ fn apply_deploy_bundle(
         Some(config_files) => {
             upsert_root_field(&mut project.metadata, "config_files", config_files);
             upsert_root_field(&mut project.request_json, "config_files", config_files);
+            let runtime_config_files = runtime_config_files_from_deploy_config_files(config_files)?;
+            merge_marketplace_config_files(&mut project.metadata, &runtime_config_files);
+            merge_marketplace_config_files(&mut project.request_json, &runtime_config_files);
             compose_content_from_config_files(config_files)?
         }
         None => None,
@@ -1917,7 +1999,8 @@ mod tests {
                 {
                     "name": ".env",
                     "content": "WEBSITE_IMAGE=syncopiaapp/website:latest\n",
-                    "destination_path": "/opt/stacker/deployments/prod/files/.env"
+                    "destination_path": ".env",
+                    "file_mode": "0644"
                 }
             ])),
             config_bundle: Some(json!({
@@ -1925,7 +2008,7 @@ mod tests {
                     "environment": "prod",
                     "config_files": [
                         {
-                            "destination_path": "/opt/stacker/deployments/prod/files/.env"
+                            "destination_path": ".env"
                         }
                     ]
                 }
@@ -1951,7 +2034,19 @@ mod tests {
         assert_eq!(
             project.request_json["custom"]["deployment_artifacts"]["config_bundle"]["config_files"]
                 [0]["destination_path"],
-            json!("/opt/stacker/deployments/prod/files/.env")
+            json!(".env")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["path"],
+            json!(".env")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["content"],
+            json!("WEBSITE_IMAGE=syncopiaapp/website:latest\n")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["mode"],
+            json!("0644")
         );
     }
 

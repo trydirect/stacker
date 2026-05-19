@@ -2495,6 +2495,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                 config.env_file.as_deref(),
             )?;
             eprintln!("  Config bundle: {}", bundle.archive_path.display());
+            for file in &bundle.manifest.files {
+                eprintln!(
+                    "    Config file: {} -> {}",
+                    file.source_path, file.destination_path
+                );
+            }
             Some(bundle)
         } else {
             None

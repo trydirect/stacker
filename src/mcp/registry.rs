@@ -99,6 +99,7 @@ use crate::mcp::tools::{
     RecommendStackServicesTool,
     RemoveAppTool,
     RenderAnsibleTemplateTool,
+    RequestServerSnapshotTool,
     RestartContainerTool,
     SearchApplicationsTool,
     SearchMarketplaceTemplatesTool,
@@ -143,6 +144,7 @@ const MFA_REQUIRED_TOOLS: &[&str] = &[
     "apply_deployment_plan",
     "add_cloud",
     "delete_cloud",
+    "request_server_snapshot",
     "delete_project",
     "clone_project",
     "mark_notification_read",
@@ -231,6 +233,10 @@ impl ToolRegistry {
             Box::new(ListCloudServerSizesTool),
         );
         registry.register("list_cloud_images", Box::new(ListCloudImagesTool));
+        registry.register(
+            "request_server_snapshot",
+            Box::new(RequestServerSnapshotTool),
+        );
 
         // Phase 3: Project management
         registry.register("delete_project", Box::new(DeleteProjectTool));
