@@ -143,7 +143,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 
 ai:
@@ -532,7 +532,7 @@ Cloud infrastructure provisioning settings. Stacker uses Terraform/Ansible under
 
 | Value | Provider | Example Regions | Example Sizes |
 |-------|----------|----------------|---------------|
-| `hetzner` | Hetzner Cloud | `fsn1`, `nbg1`, `hel1` | `cpx21`, `cpx31`, `cpx41` |
+| `hetzner` | Hetzner Cloud | `fsn1`, `nbg1`, `hel1` | `cx23`, `cx33`, `cx43` |
 | `digitalocean` | DigitalOcean | `nyc1`, `sfo3`, `ams3` | `s-1vcpu-1gb`, `s-2vcpu-4gb` |
 | `aws` | Amazon Web Services | `us-east-1`, `eu-west-1` | `t3.micro`, `t3.small` |
 | `linode` | Linode (Akamai) | `us-east`, `eu-west` | `g6-nanode-1`, `g6-standard-2` |
@@ -544,7 +544,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 ```
 
@@ -610,7 +610,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
   registry:
     username: "${DOCKER_USERNAME}"
     password: "${DOCKER_PASSWORD}"
@@ -1500,7 +1500,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 ```
 

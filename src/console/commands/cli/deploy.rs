@@ -1807,6 +1807,13 @@ fn active_stacker_base_url(creds: &StoredCredentials) -> String {
 }
 
 fn cloud_config_from_info(cloud_info: &stacker_client::CloudInfo) -> Result<CloudConfig, CliError> {
+    merge_cloud_config_from_info(None, cloud_info)
+}
+
+fn merge_cloud_config_from_info(
+    existing: Option<&CloudConfig>,
+    cloud_info: &stacker_client::CloudInfo,
+) -> Result<CloudConfig, CliError> {
     let provider = cloud_provider_from_code(&cloud_info.provider).ok_or_else(|| {
         CliError::ConfigValidation(format!(
             "Unrecognised cloud provider '{}' for credential '{}'. Supported providers: hetzner (htz), digitalocean (do), aws, linode (lo), vultr (vu).",
@@ -1816,14 +1823,16 @@ fn cloud_config_from_info(cloud_info: &stacker_client::CloudInfo) -> Result<Clou
 
     Ok(CloudConfig {
         provider,
-        orchestrator: CloudOrchestrator::Remote,
-        region: None,
-        size: None,
-        install_image: None,
-        remote_payload_file: None,
-        ssh_key: None,
+        orchestrator: existing
+            .map(|cloud| cloud.orchestrator)
+            .unwrap_or(CloudOrchestrator::Remote),
+        region: existing.and_then(|cloud| cloud.region.clone()),
+        size: existing.and_then(|cloud| cloud.size.clone()),
+        install_image: existing.and_then(|cloud| cloud.install_image.clone()),
+        remote_payload_file: existing.and_then(|cloud| cloud.remote_payload_file.clone()),
+        ssh_key: existing.and_then(|cloud| cloud.ssh_key.clone()),
         key: Some(cloud_info.name.clone()),
-        server: None,
+        server: existing.and_then(|cloud| cloud.server.clone()),
     })
 }
 
@@ -1867,7 +1876,10 @@ fn apply_cloud_cli_override(
         cloud_info.name, cloud_info.id, cloud_info.provider
     );
     config.deploy.target = DeployTarget::Cloud;
-    config.deploy.cloud = Some(cloud_config_from_info(&cloud_info)?);
+    config.deploy.cloud = Some(merge_cloud_config_from_info(
+        config.deploy.cloud.as_ref(),
+        &cloud_info,
+    )?);
     Ok(())
 }
 
@@ -2624,6 +2636,8 @@ impl CallableTrait for DeployCommand {
                 && (result.deployment_id.is_some() || result.project_id.is_some())
         });
 
+        let mut watch_outcome = DeploymentWatchOutcome::Unknown;
+
         match result.target {
             DeployTarget::Local => {
                 // Always do a quick health check for local deploy unless --no-watch
@@ -2636,14 +2650,16 @@ impl CallableTrait for DeployCommand {
                 }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
-                watch_cloud_deployment(&result)?;
+                watch_outcome = watch_cloud_deployment(&result)?;
             }
             _ => {}
         }
 
+        let should_fetch_remote_details = !matches!(watch_outcome, DeploymentWatchOutcome::Failed);
+
         // ── Deployment lock: persist deployment context ──
-        self.save_deployment_lock(&project_dir, &result)?;
-        if should_install_cloud_backup_key(&result, self.dry_run) {
+        self.save_deployment_lock(&project_dir, &result, should_fetch_remote_details)?;
+        if should_fetch_remote_details && should_install_cloud_backup_key(&result, self.dry_run) {
             self.install_cloud_backup_key(&result);
         }
 
@@ -2763,6 +2779,7 @@ impl DeployCommand {
         &self,
         project_dir: &Path,
         result: &DeployResult,
+        fetch_remote_details: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Build the initial lock from the deploy result
         let mut lock = match result.target {
@@ -2798,24 +2815,26 @@ impl DeployCommand {
                     }
                 }
 
-                if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(
-                        project_id as i32,
-                        DeployTarget::Server,
-                        result.server_name.as_deref(),
-                    ) {
-                        Ok(Some(info)) => {
-                            l = l.with_server_info(
-                                info.srv_ip.clone(),
-                                info.ssh_user.clone(),
-                                info.ssh_port.map(|p| p as u16),
-                                info.name.clone(),
-                                info.cloud_id,
-                            );
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            eprintln!("  ⚠ Could not fetch server details: {}", e);
+                if fetch_remote_details {
+                    if let Some(project_id) = result.project_id {
+                        match fetch_server_for_project(
+                            project_id as i32,
+                            DeployTarget::Server,
+                            result.server_name.as_deref(),
+                        ) {
+                            Ok(Some(info)) => {
+                                l = l.with_server_info(
+                                    info.srv_ip.clone(),
+                                    info.ssh_user.clone(),
+                                    info.ssh_port.map(|p| p as u16),
+                                    info.name.clone(),
+                                    info.cloud_id,
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                eprintln!("  ⚠ Could not fetch server details: {}", e);
+                            }
                         }
                     }
                 }
@@ -2850,37 +2869,39 @@ impl DeployCommand {
                 }
 
                 // Try to fetch provisioned server details from the Stacker API
-                if let Some(project_id) = result.project_id {
-                    match fetch_server_for_project(
-                        project_id as i32,
-                        DeployTarget::Cloud,
-                        result.server_name.as_deref(),
-                    ) {
-                        Ok(Some(info)) => {
-                            l = l.with_server_info(
-                                info.srv_ip.clone(),
-                                info.ssh_user.clone(),
-                                info.ssh_port.map(|p| p as u16),
-                                info.name.clone(),
-                                info.cloud_id,
-                            );
-                            if let Some(ref ip) = info.srv_ip {
+                if fetch_remote_details {
+                    if let Some(project_id) = result.project_id {
+                        match fetch_server_for_project(
+                            project_id as i32,
+                            DeployTarget::Cloud,
+                            result.server_name.as_deref(),
+                        ) {
+                            Ok(Some(info)) => {
+                                l = l.with_server_info(
+                                    info.srv_ip.clone(),
+                                    info.ssh_user.clone(),
+                                    info.ssh_port.map(|p| p as u16),
+                                    info.name.clone(),
+                                    info.cloud_id,
+                                );
+                                if let Some(ref ip) = info.srv_ip {
+                                    eprintln!(
+                                        "  Server details: {} ({}@{}:{})",
+                                        info.name.as_deref().unwrap_or("unnamed"),
+                                        info.ssh_user.as_deref().unwrap_or("root"),
+                                        ip,
+                                        info.ssh_port.unwrap_or(22),
+                                    );
+                                }
+                            }
+                            Ok(None) => {
                                 eprintln!(
-                                    "  Server details: {} ({}@{}:{})",
-                                    info.name.as_deref().unwrap_or("unnamed"),
-                                    info.ssh_user.as_deref().unwrap_or("root"),
-                                    ip,
-                                    info.ssh_port.unwrap_or(22),
+                                    "  ℹ Server details not yet available (may still be provisioning)."
                                 );
                             }
-                        }
-                        Ok(None) => {
-                            eprintln!(
-                                "  ℹ Server details not yet available (may still be provisioning)."
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("  ⚠ Could not fetch server details: {}", e);
+                            Err(e) => {
+                                eprintln!("  ⚠ Could not fetch server details: {}", e);
+                            }
                         }
                     }
                 }
@@ -3265,8 +3286,17 @@ fn is_terminal(status: &str) -> bool {
     TERMINAL_STATUSES.iter().any(|s| *s == status)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeploymentWatchOutcome {
+    Completed,
+    Failed,
+    Unknown,
+}
+
 /// Watch remote deployment status until it reaches a terminal state.
-fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::error::Error>> {
+fn watch_cloud_deployment(
+    result: &DeployResult,
+) -> Result<DeploymentWatchOutcome, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     let (base_url, creds) = match resolve_saved_stacker_base_url("deployment status") {
@@ -3274,7 +3304,7 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
         Err(e) => {
             eprintln!("  Cannot watch deployment status: {}", e);
             eprintln!("  Run `stacker status --watch` later to check progress.");
-            return Ok(());
+            return Ok(DeploymentWatchOutcome::Unknown);
         }
     };
 
@@ -3282,7 +3312,7 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
         Some(id) => id as i32,
         None => {
             eprintln!("  No project ID — run `stacker status --watch` to check progress.");
-            return Ok(());
+            return Ok(DeploymentWatchOutcome::Unknown);
         }
     };
 
@@ -3333,14 +3363,15 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                                 &spin,
                                 &format!("Deployment #{} completed", info.id),
                             );
+                            return Ok(DeploymentWatchOutcome::Completed);
                         } else {
                             let msg = info.status_message.as_deref().unwrap_or(&info.status);
                             progress::finish_error(
                                 &spin,
                                 &format!("Deployment #{} — {}", info.id, msg),
                             );
+                            return Ok(DeploymentWatchOutcome::Failed);
                         }
-                        return Ok(());
                     }
                 }
                 Ok(None) => {
@@ -3357,14 +3388,14 @@ fn watch_cloud_deployment(result: &DeployResult) -> Result<(), Box<dyn std::erro
                     eprintln!("  ⚠ Could not poll live deployment status: {}", e);
                     eprintln!("  Installation may still be in progress.");
                     eprintln!("  Run `stacker status --watch` to retry.");
-                    return Ok(());
+                    return Ok(DeploymentWatchOutcome::Unknown);
                 }
             }
 
             if start.elapsed() > timeout {
                 progress::finish_error(&spin, "Watch timeout (10m) — deployment still in progress");
                 eprintln!("  Run `stacker status --watch` to continue watching.");
-                return Ok(());
+                return Ok(DeploymentWatchOutcome::Unknown);
             }
 
             tokio::time::sleep(poll_interval).await;
@@ -4338,6 +4369,37 @@ include:
         assert_eq!(config.provider, CloudProvider::Hetzner);
         assert_eq!(config.key.as_deref(), Some("htz-5"));
         assert_eq!(config.orchestrator, CloudOrchestrator::Remote);
+    }
+
+    #[test]
+    fn test_cloud_config_from_cli_override_preserves_existing_region_and_size() {
+        let existing = CloudConfig {
+            provider: CloudProvider::Hetzner,
+            orchestrator: CloudOrchestrator::Remote,
+            region: Some("nbg1".to_string()),
+            size: Some("cpx21".to_string()),
+            install_image: None,
+            remote_payload_file: None,
+            ssh_key: None,
+            key: None,
+            server: None,
+        };
+        let cloud = stacker_client::CloudInfo {
+            id: 5,
+            user_id: "u1".to_string(),
+            name: "htz-5".to_string(),
+            provider: "htz".to_string(),
+            cloud_token: None,
+            cloud_key: None,
+            cloud_secret: None,
+            save_token: None,
+        };
+
+        let config = merge_cloud_config_from_info(Some(&existing), &cloud).unwrap();
+
+        assert_eq!(config.key.as_deref(), Some("htz-5"));
+        assert_eq!(config.region.as_deref(), Some("nbg1"));
+        assert_eq!(config.size.as_deref(), Some("cpx21"));
     }
 
     #[test]

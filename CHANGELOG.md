@@ -19,6 +19,14 @@ All notable changes to this project will be documented in this file.
   images may require authentication and no registry auth is resolved.
 - `stacker config validate` now points users to `stacker config fix` when it
   finds empty structural path fields.
+- Cloud/server deploys now skip post-deploy server IP polling and local backup
+  key installation after terminal paused/error statuses, avoiding repeated
+  "server IP not yet assigned" retries after a failed installer run.
+- Hetzner cloud deploys now normalize user-facing location aliases such as
+  `nbg1` to installer-compatible datacenter values such as `nbg1-dc3` before
+  publishing install-service payloads.
+- `stacker config setup cloud` now suggests Hetzner `cx23` by default instead
+  of older `cpx*` examples.
 
 ## [0.2.8] — 2026-05-15
 ### Added — Configuration inventory, diff, check, and promotion planning

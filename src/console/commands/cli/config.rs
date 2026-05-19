@@ -236,7 +236,7 @@ fn default_region_for_provider(provider: CloudProvider) -> &'static str {
 
 fn default_size_for_provider(provider: CloudProvider) -> &'static str {
     match provider {
-        CloudProvider::Hetzner => "cpx11",
+        CloudProvider::Hetzner => "cx23",
         CloudProvider::Digitalocean => "s-1vcpu-2gb",
         CloudProvider::Aws => "t3.small",
         CloudProvider::Linode => "g6-standard-2",
@@ -793,7 +793,7 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     .cloud
                     .as_ref()
                     .and_then(|c| c.size.clone())
-                    .unwrap_or_else(|| "cpx11".to_string());
+                    .unwrap_or_else(|| default_size_for_provider(provider).to_string());
                 let size = prompt_with_default("Cloud size", &size_default)?;
 
                 let ssh_key = config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone());
