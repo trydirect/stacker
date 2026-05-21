@@ -1127,13 +1127,13 @@ impl CallableTrait for InitCommand {
             }
 
             if !generated {
-                let builder = DockerfileBuilder::from(config.app.app_type);
+                let builder = DockerfileBuilder::for_project(&project_dir, config.app.app_type);
                 builder.write_to(&dockerfile_path, true)?;
                 eprintln!("✓ Regenerated {}/Dockerfile (template)", OUTPUT_DIR);
             }
         } else if needs_dockerfile {
             let dockerfile_path = output_dir.join("Dockerfile");
-            let builder = DockerfileBuilder::from(config.app.app_type);
+            let builder = DockerfileBuilder::for_project(&project_dir, config.app.app_type);
             builder.write_to(&dockerfile_path, false)?;
             eprintln!("✓ Generated {}/Dockerfile", OUTPUT_DIR);
         }

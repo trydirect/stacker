@@ -12,24 +12,31 @@ use crate::cli::field_matcher::{DeterministicFieldMatcher, FieldMatcher};
 use crate::cli::fmt;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
+use crate::cli::service_catalog::ServiceCatalog;
 use crate::cli::stacker_client::{
     AgentCommandInfo, AgentEnqueueRequest, CreatePipeInstanceApiRequest,
     CreatePipeTemplateApiRequest,
 };
 use crate::console::commands::CallableTrait;
 use crate::forms::status_panel::{
-    ProbeContainer, ProbeEndpoint, ProbeEndpointsCommandReport, ProbeForm, ProbeOperation,
-    ProbeResource, ProbeResourceItem,
+    ProbeAttempt, ProbeContainer, ProbeEndpoint, ProbeEndpointsCommandReport, ProbeForm,
+    ProbeOperation, ProbeResource, ProbeResourceItem,
 };
 use chrono::Utc;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 /// Default poll timeout for pipe probe commands (seconds).
 const PROBE_TIMEOUT_SECS: u64 = 90;
 
 /// Default poll interval (seconds).
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
+
+/// Current on-disk schema version for cached pipe discovery results.
+const PIPE_SCAN_CACHE_VERSION: u32 = 1;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Deployment hash resolution (mirrors agent module)
@@ -259,6 +266,7 @@ fn print_command_result(info: &AgentCommandInfo, json_output: bool) {
 struct LocalPortBinding {
     container_port: u16,
     host_port: Option<u16>,
+    host_ip: Option<String>,
     protocol: String,
 }
 
@@ -290,6 +298,327 @@ fn default_local_probe_protocols() -> Vec<String> {
         "websocket".to_string(),
         "grpc".to_string(),
     ]
+}
+
+fn default_pipe_create_protocols() -> Vec<String> {
+    vec![
+        "openapi".to_string(),
+        "html_forms".to_string(),
+        "rest".to_string(),
+    ]
+}
+
+fn normalize_protocols(protocols: &[String]) -> Vec<String> {
+    protocols
+        .iter()
+        .map(|protocol| protocol.trim().to_ascii_lowercase())
+        .filter(|protocol| !protocol.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PipeDiscoverySelector {
+    mode: String,
+    selector_kind: String,
+    selector: String,
+    deployment_hash: Option<String>,
+    container: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PipeDiscoveryRequest {
+    selector: PipeDiscoverySelector,
+    protocols_requested: Vec<String>,
+    capture_samples: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedPipeDiscovery {
+    version: u32,
+    selector: PipeDiscoverySelector,
+    protocols_requested: Vec<String>,
+    capture_samples: bool,
+    cached_at: String,
+    report: ProbeEndpointsCommandReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DiscoverySource {
+    Cached,
+    Fresh,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveryRun {
+    info: AgentCommandInfo,
+    source: DiscoverySource,
+}
+
+impl PipeDiscoveryRequest {
+    fn local(selector: &str, protocols: &[String], capture_samples: bool) -> Self {
+        Self {
+            selector: PipeDiscoverySelector {
+                mode: "local".to_string(),
+                selector_kind: "containers".to_string(),
+                selector: selector.to_string(),
+                deployment_hash: None,
+                container: None,
+            },
+            protocols_requested: normalize_protocols(protocols),
+            capture_samples,
+        }
+    }
+
+    fn remote(
+        deployment_hash: &str,
+        app: &str,
+        container: Option<&str>,
+        protocols: &[String],
+        capture_samples: bool,
+    ) -> Self {
+        Self {
+            selector: PipeDiscoverySelector {
+                mode: "remote".to_string(),
+                selector_kind: "app".to_string(),
+                selector: app.to_string(),
+                deployment_hash: Some(deployment_hash.to_string()),
+                container: container.map(str::to_string),
+            },
+            protocols_requested: normalize_protocols(protocols),
+            capture_samples,
+        }
+    }
+}
+
+fn pipe_scan_cache_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join(".stacker").join("pipe-scan-cache")
+}
+
+fn encode_cache_key<T: Serialize>(value: &T) -> Result<String, CliError> {
+    let payload = serde_json::to_vec(value).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to serialize pipe discovery cache key: {err}"
+        ))
+    })?;
+    let digest = Sha256::digest(payload);
+    Ok(digest.iter().map(|byte| format!("{:02x}", byte)).collect())
+}
+
+fn exact_pipe_scan_cache_path(
+    project_dir: &Path,
+    request: &PipeDiscoveryRequest,
+) -> Result<PathBuf, CliError> {
+    Ok(pipe_scan_cache_dir(project_dir).join(format!("{}.json", encode_cache_key(request)?)))
+}
+
+fn latest_pipe_scan_cache_path(
+    project_dir: &Path,
+    selector: &PipeDiscoverySelector,
+) -> Result<PathBuf, CliError> {
+    Ok(pipe_scan_cache_dir(project_dir)
+        .join(format!("latest-{}.json", encode_cache_key(selector)?)))
+}
+
+fn read_cached_pipe_discovery(path: &Path) -> Result<Option<CachedPipeDiscovery>, CliError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = std::fs::read(path).map_err(CliError::Io)?;
+    let cached: CachedPipeDiscovery = serde_json::from_slice(&bytes).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to parse pipe discovery cache ({}): {}",
+            path.display(),
+            err
+        ))
+    })?;
+
+    Ok((cached.version == PIPE_SCAN_CACHE_VERSION).then_some(cached))
+}
+
+fn cache_entry_to_agent_info(entry: &CachedPipeDiscovery) -> Result<AgentCommandInfo, CliError> {
+    Ok(AgentCommandInfo {
+        command_id: format!("cached-{}", encode_cache_key(&entry.selector)?),
+        deployment_hash: entry.report.deployment_hash.clone(),
+        command_type: "probe_endpoints".to_string(),
+        status: "completed".to_string(),
+        priority: "normal".to_string(),
+        parameters: Some(serde_json::json!({
+            "app_code": entry.selector.selector.clone(),
+            "container": entry.selector.container.clone(),
+            "protocols": entry.protocols_requested.clone(),
+            "capture_samples": entry.capture_samples,
+        })),
+        result: Some(serde_json::to_value(&entry.report).map_err(|err| {
+            CliError::ConfigValidation(format!(
+                "Failed to serialize cached pipe discovery report: {}",
+                err
+            ))
+        })?),
+        error: None,
+        created_at: entry.cached_at.clone(),
+        updated_at: entry.cached_at.clone(),
+    })
+}
+
+fn write_pipe_scan_cache(
+    project_dir: &Path,
+    request: &PipeDiscoveryRequest,
+    report: &ProbeEndpointsCommandReport,
+) -> Result<(), CliError> {
+    let cache_dir = pipe_scan_cache_dir(project_dir);
+    std::fs::create_dir_all(&cache_dir).map_err(CliError::Io)?;
+
+    let entry = CachedPipeDiscovery {
+        version: PIPE_SCAN_CACHE_VERSION,
+        selector: request.selector.clone(),
+        protocols_requested: request.protocols_requested.clone(),
+        capture_samples: request.capture_samples,
+        cached_at: Utc::now().to_rfc3339(),
+        report: report.clone(),
+    };
+    let payload = serde_json::to_vec_pretty(&entry).map_err(|err| {
+        CliError::ConfigValidation(format!("Failed to serialize pipe discovery cache: {}", err))
+    })?;
+
+    let exact_path = exact_pipe_scan_cache_path(project_dir, request)?;
+    std::fs::write(&exact_path, &payload).map_err(CliError::Io)?;
+
+    let latest_path = latest_pipe_scan_cache_path(project_dir, &request.selector)?;
+    std::fs::write(&latest_path, &payload).map_err(CliError::Io)?;
+    Ok(())
+}
+
+fn load_latest_pipe_scan_cache(
+    project_dir: &Path,
+    selector: &PipeDiscoverySelector,
+) -> Result<Option<AgentCommandInfo>, CliError> {
+    let path = latest_pipe_scan_cache_path(project_dir, selector)?;
+    let Some(entry) = read_cached_pipe_discovery(&path)? else {
+        return Ok(None);
+    };
+    cache_entry_to_agent_info(&entry).map(Some)
+}
+
+fn load_exact_pipe_scan_cache(
+    project_dir: &Path,
+    request: &PipeDiscoveryRequest,
+) -> Result<Option<AgentCommandInfo>, CliError> {
+    let path = exact_pipe_scan_cache_path(project_dir, request)?;
+    let Some(entry) = read_cached_pipe_discovery(&path)? else {
+        return Ok(None);
+    };
+    cache_entry_to_agent_info(&entry).map(Some)
+}
+
+fn detection_outcome(
+    endpoints: &[ProbeEndpoint],
+    forms: &[ProbeForm],
+    resources: &[ProbeResource],
+) -> String {
+    if !endpoints.is_empty() || !forms.is_empty() || !resources.is_empty() {
+        "detected".to_string()
+    } else {
+        "empty".to_string()
+    }
+}
+
+fn selector_is_smtpish(selector: &str) -> bool {
+    let canonical = ServiceCatalog::resolve_alias(selector);
+    if canonical == "smtp" || canonical == "mailhog" {
+        return true;
+    }
+
+    selector
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "smtp" | "mailhog"))
+}
+
+fn classify_probe_target_kind(selector: &str, report: &ProbeEndpointsCommandReport) -> String {
+    if !report.endpoints.is_empty() {
+        return "http_endpoint".to_string();
+    }
+    if !report.forms.is_empty() {
+        return "html_form".to_string();
+    }
+
+    let resource_protocols = report
+        .resources
+        .iter()
+        .map(|resource| resource.protocol.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    if resource_protocols.contains("smtp") || selector_is_smtpish(selector) {
+        return "smtp".to_string();
+    }
+    if resource_protocols.len() == 1 {
+        return resource_protocols
+            .iter()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "resource".to_string());
+    }
+    if resource_protocols.len() > 1 {
+        return "resource".to_string();
+    }
+    if selector_is_smtpish(selector) {
+        return "smtp".to_string();
+    }
+
+    "unknown".to_string()
+}
+
+fn enrich_probe_report_metadata(
+    report: &mut ProbeEndpointsCommandReport,
+    selector: &str,
+    container: Option<&str>,
+    request: &PipeDiscoveryRequest,
+) {
+    if report.protocols_requested.is_empty() {
+        report.protocols_requested = request.protocols_requested.clone();
+    }
+
+    if report.probe_attempts.is_empty() {
+        report.probe_attempts.push(ProbeAttempt {
+            scope: if request.selector.mode == "local" {
+                "local_selector".to_string()
+            } else {
+                "remote_app".to_string()
+            },
+            selector: Some(selector.to_string()),
+            container: container.map(str::to_string),
+            protocols: report.protocols_requested.clone(),
+            outcome: detection_outcome(&report.endpoints, &report.forms, &report.resources),
+        });
+    }
+
+    if report.target_kind.is_none() {
+        report.target_kind = Some(classify_probe_target_kind(selector, report));
+    }
+}
+
+fn decode_probe_report(info: &AgentCommandInfo) -> Result<ProbeEndpointsCommandReport, CliError> {
+    let result = info.result.clone().ok_or_else(|| {
+        CliError::ConfigValidation("probe_endpoints result payload is missing".to_string())
+    })?;
+    serde_json::from_value(result).map_err(|err| {
+        CliError::ConfigValidation(format!("Invalid probe_endpoints result payload: {}", err))
+    })
+}
+
+fn with_probe_report(
+    mut info: AgentCommandInfo,
+    report: &ProbeEndpointsCommandReport,
+) -> Result<AgentCommandInfo, CliError> {
+    info.result = Some(serde_json::to_value(report).map_err(|err| {
+        CliError::ConfigValidation(format!(
+            "Failed to encode probe_endpoints result payload: {}",
+            err
+        ))
+    })?);
+    Ok(info)
 }
 
 fn parse_port_key(key: &str) -> Option<(u16, String)> {
@@ -365,24 +694,28 @@ fn parse_local_container_inspect(
     if let Some(port_map) = value["NetworkSettings"]["Ports"].as_object() {
         for (key, host_bindings) in port_map {
             if let Some((container_port, protocol)) = parse_port_key(key) {
-                let host_ports: Vec<Option<u16>> = if let Some(bindings) = host_bindings.as_array()
-                {
-                    bindings
-                        .iter()
-                        .map(|binding| {
-                            binding["HostPort"]
-                                .as_str()
-                                .and_then(|v| v.parse::<u16>().ok())
-                        })
-                        .collect()
-                } else {
-                    vec![None]
-                };
-                for host_port in host_ports {
+                let binding_targets: Vec<(Option<u16>, Option<String>)> =
+                    if let Some(bindings) = host_bindings.as_array() {
+                        bindings
+                            .iter()
+                            .map(|binding| {
+                                (
+                                    binding["HostPort"]
+                                        .as_str()
+                                        .and_then(|v| v.parse::<u16>().ok()),
+                                    binding["HostIp"].as_str().map(str::to_string),
+                                )
+                            })
+                            .collect()
+                    } else {
+                        vec![(None, None)]
+                    };
+                for (host_port, host_ip) in binding_targets {
                     if seen.insert((container_port, host_port, protocol.clone())) {
                         ports.push(LocalPortBinding {
                             container_port,
                             host_port,
+                            host_ip,
                             protocol: protocol.clone(),
                         });
                     }
@@ -398,6 +731,7 @@ fn parse_local_container_inspect(
                     ports.push(LocalPortBinding {
                         container_port,
                         host_port: None,
+                        host_ip: None,
                         protocol,
                     });
                 }
@@ -411,6 +745,7 @@ fn parse_local_container_inspect(
                 ports.push(LocalPortBinding {
                     container_port: value,
                     host_port: None,
+                    host_ip: None,
                     protocol: "tcp".to_string(),
                 });
             }
@@ -430,6 +765,15 @@ fn parse_local_container_inspect(
     })
 }
 
+fn docker_host_http_target(host_ip: Option<&str>, host_port: u16) -> String {
+    match host_ip.unwrap_or_default() {
+        "::" => format!("http://[::1]:{}", host_port),
+        "" | "0.0.0.0" => format!("http://localhost:{}", host_port),
+        ip if ip.contains(':') => format!("http://[{}]:{}", ip, host_port),
+        ip => format!("http://{}:{}", ip, host_port),
+    }
+}
+
 fn local_http_candidate_urls(container: &LocalContainerInfo) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = BTreeSet::new();
@@ -438,7 +782,7 @@ fn local_http_candidate_urls(container: &LocalContainerInfo) -> Vec<String> {
             continue;
         }
         if let Some(host_port) = port.host_port {
-            let url = format!("http://127.0.0.1:{}", host_port);
+            let url = docker_host_http_target(port.host_ip.as_deref(), host_port);
             if seen.insert(url.clone()) {
                 urls.push(url);
             }
@@ -451,6 +795,25 @@ fn local_http_candidate_urls(container: &LocalContainerInfo) -> Vec<String> {
         }
     }
     urls
+}
+
+fn docker_exec(container: &str, args: &[String]) -> Option<String> {
+    let output = std::process::Command::new("docker")
+        .arg("exec")
+        .arg(container)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn local_resource_probe_plan(container: &LocalContainerInfo) -> Vec<String> {
@@ -551,25 +914,6 @@ fn parse_openapi_endpoint(
 
 fn try_parse_json(value: &str) -> Option<serde_json::Value> {
     serde_json::from_str(value).ok()
-}
-
-fn docker_exec(container: &str, args: &[String]) -> Option<String> {
-    let output = std::process::Command::new("docker")
-        .arg("exec")
-        .arg(container)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let trimmed = stdout.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
 
 fn local_http_probe(
@@ -800,7 +1144,9 @@ fn first_container_address(container: &LocalContainerInfo, default_port: u16) ->
         .find(|port| port.container_port == default_port)
     {
         if let Some(host_port) = port.host_port {
-            return format!("127.0.0.1:{}", host_port);
+            return docker_host_http_target(port.host_ip.as_deref(), host_port)
+                .trim_start_matches("http://")
+                .to_string();
         }
     }
     container
@@ -1176,7 +1522,9 @@ where
     let mut forms = Vec::new();
     let mut resources = Vec::new();
     let mut containers_out = Vec::new();
+    let mut probe_attempts = Vec::new();
     let mut protocols_detected = BTreeSet::new();
+    let protocols_requested = normalize_protocols(protocols);
     let total = containers.len();
 
     for (index, container) in containers.iter().enumerate() {
@@ -1184,6 +1532,7 @@ where
         let (http_endpoints, http_forms, http_detected) =
             local_http_probe(container, protocols, capture_samples, 3);
         let (resource_items, resource_detected) = local_resource_probe(container, protocols);
+        let attempt_outcome = detection_outcome(&http_endpoints, &http_forms, &resource_items);
 
         for protocol in http_detected
             .into_iter()
@@ -1191,6 +1540,13 @@ where
         {
             protocols_detected.insert(protocol);
         }
+        probe_attempts.push(ProbeAttempt {
+            scope: "local_container".to_string(),
+            selector: Some(app_code.to_string()),
+            container: Some(container.name.clone()),
+            protocols: protocols_requested.clone(),
+            outcome: attempt_outcome,
+        });
         endpoints.extend(http_endpoints);
         forms.extend(http_forms);
         resources.extend(resource_items);
@@ -1229,21 +1585,27 @@ where
         });
     }
 
-    ProbeEndpointsCommandReport {
+    let mut report = ProbeEndpointsCommandReport {
         command_type: "probe_endpoints".to_string(),
         deployment_hash: "local".to_string(),
         app_code: app_code.to_string(),
         protocols_detected: protocols_detected.into_iter().collect(),
+        protocols_requested,
         containers: containers_out,
         endpoints,
         resources,
         forms,
+        probe_attempts,
+        target_kind: None,
         probed_at: Utc::now().to_rfc3339(),
-    }
+    };
+    report.target_kind = Some(classify_probe_target_kind(app_code, &report));
+    report
 }
 
 fn local_report_to_agent_info(
     report: &ProbeEndpointsCommandReport,
+    capture_samples: bool,
 ) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
     Ok(AgentCommandInfo {
         command_id: "local-scan".to_string(),
@@ -1251,7 +1613,11 @@ fn local_report_to_agent_info(
         command_type: "probe_endpoints".to_string(),
         status: "completed".to_string(),
         priority: "normal".to_string(),
-        parameters: None,
+        parameters: Some(serde_json::json!({
+            "app_code": report.app_code,
+            "protocols": report.protocols_requested,
+            "capture_samples": capture_samples,
+        })),
         result: Some(serde_json::to_value(report)?),
         error: None,
         created_at: report.probed_at.clone(),
@@ -1352,6 +1718,7 @@ impl PipeScanCommand {
     /// Local scan: discover containers via `docker ps`.
     fn scan_local(
         &self,
+        project_dir: &Path,
         prefix: &str,
         filter: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1401,10 +1768,17 @@ impl PipeScanCommand {
         );
         progress::finish_success(&probe_pb, &format!("{}Probe stage complete", prefix));
 
+        let request = PipeDiscoveryRequest::local(
+            filter.unwrap_or("local"),
+            &protocols,
+            self.capture_samples,
+        );
+        write_pipe_scan_cache(project_dir, &request, &report)?;
+
         if self.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            let info = local_report_to_agent_info(&report)?;
+            let info = local_report_to_agent_info(&report, self.capture_samples)?;
             print_scan_result(&info);
             println!("  Use these container names with 'stacker pipe create <source> <target>'");
         }
@@ -1414,6 +1788,7 @@ impl PipeScanCommand {
 
     fn scan_remote(
         &self,
+        project_dir: &Path,
         ctx: &CliRuntime,
         hash: &str,
         app: &str,
@@ -1428,19 +1803,8 @@ impl PipeScanCommand {
         } else {
             self.protocols.clone()
         };
-
-        let params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
-            app_code: app.to_string(),
-            container: container.map(|value| value.to_string()),
-            protocols,
-            probe_timeout: 5,
-            capture_samples: self.capture_samples,
-        };
-
-        let request = AgentEnqueueRequest::new(hash, "probe_endpoints")
-            .with_parameters(&params)
-            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-
+        let request =
+            PipeDiscoveryRequest::remote(hash, app, container, &protocols, self.capture_samples);
         let description = match container {
             Some(container_name) => {
                 format!(
@@ -1451,7 +1815,8 @@ impl PipeScanCommand {
             None => format!("Scanning app {} for endpoints", app),
         };
 
-        let info = run_agent_command(ctx, &request, &description, PROBE_TIMEOUT_SECS)?;
+        let info = run_remote_probe(ctx, &request, &description)?;
+        cache_probe_if_completed(project_dir, &request, &info)?;
 
         if self.json {
             print_command_result(&info, true);
@@ -1467,12 +1832,13 @@ impl CallableTrait for PipeScanCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe scan")?;
         let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
         let prefix = mode_prefix(&deploy_ctx);
 
         if deploy_ctx.is_local() {
             self.request.maybe_print_legacy_hint(true);
             let filter = self.request.local_filter()?;
-            return self.scan_local(prefix, filter);
+            return self.scan_local(&project_dir, prefix, filter);
         }
 
         let hash = match &deploy_ctx {
@@ -1481,7 +1847,7 @@ impl CallableTrait for PipeScanCommand {
         };
         self.request.maybe_print_legacy_hint(false);
         let (app, container) = self.request.remote_selector()?;
-        self.scan_remote(&ctx, &hash, app, container)
+        self.scan_remote(&project_dir, &ctx, &hash, app, container)
     }
 }
 
@@ -1794,14 +2160,21 @@ fn result_has_resources(info: &AgentCommandInfo) -> bool {
         .unwrap_or(false)
 }
 
-fn build_local_scan_info(
-    selector: &str,
-    protocols: &[String],
-    capture_samples: bool,
-) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
-    let containers = discover_local_containers(Some(selector))?;
-    let report = build_local_probe_report(selector, &containers, protocols, capture_samples);
-    local_report_to_agent_info(&report)
+fn scan_inspection_hint(name: &str, deploy_ctx: &DeploymentContext) -> String {
+    match deploy_ctx {
+        DeploymentContext::Local => {
+            format!(
+                "Run `stacker pipe scan --containers {}` to inspect discovery results.",
+                name
+            )
+        }
+        DeploymentContext::Remote(_) => {
+            format!(
+                "Run `stacker pipe scan --app {}` to inspect discovery results.",
+                name
+            )
+        }
+    }
 }
 
 fn local_container_for_operation(operation: &SelectableOperation, fallback: &str) -> String {
@@ -1831,24 +2204,176 @@ fn operation_labels(operations: &[SelectableOperation]) -> Vec<String> {
     operations.iter().map(operation_label).collect()
 }
 
-fn explain_no_local_operations(name: &str, info: &AgentCommandInfo) -> String {
+fn explain_no_selectable_operations(
+    name: &str,
+    info: &AgentCommandInfo,
+    deploy_ctx: &DeploymentContext,
+    role: &str,
+) -> String {
+    let target_kind = decode_probe_report(info)
+        .ok()
+        .and_then(|report| report.target_kind)
+        .unwrap_or_else(|| {
+            if selector_is_smtpish(name) {
+                "smtp".to_string()
+            } else if result_has_resources(info) {
+                "resource".to_string()
+            } else {
+                "unknown".to_string()
+            }
+        });
+
+    if target_kind == "smtp" {
+        return format!(
+            "'{}' looks like an SMTP {}. `stacker pipe create` currently supports HTTP endpoints and HTML forms only.\nUse an HTTP-capable bridge/webhook target first, validate locally, then export remotely.\n{}",
+            name,
+            role,
+            scan_inspection_hint(name, deploy_ctx)
+        );
+    }
+
     if result_has_resources(info) {
         format!(
-            "Resources were discovered for '{}', but `pipe create` currently supports HTTP endpoints and HTML forms only.\nRun `stacker pipe scan --containers {}` to inspect the discovered resources.",
-            name, name
+            "Resources were discovered for '{}', but `pipe create` currently supports HTTP endpoints and HTML forms only.\n{}",
+            name,
+            scan_inspection_hint(name, deploy_ctx)
         )
     } else {
         format!(
-            "No selectable HTTP endpoints or HTML forms were discovered for '{}'.\nRun `stacker pipe scan --containers {}` to inspect discovery results.",
-            name, name
+            "No selectable HTTP endpoints or HTML forms were discovered for '{}'.\n{}",
+            name,
+            scan_inspection_hint(name, deploy_ctx)
         )
     }
+}
+
+fn describe_discovery_run(run: &DiscoveryRun) -> String {
+    let report = decode_probe_report(&run.info).ok();
+    let requested = report
+        .as_ref()
+        .map(|report| {
+            if report.protocols_requested.is_empty() {
+                "default".to_string()
+            } else {
+                report.protocols_requested.join(",")
+            }
+        })
+        .unwrap_or_else(|| "default".to_string());
+    let capture_samples = run
+        .info
+        .parameters
+        .as_ref()
+        .and_then(|parameters| parameters.get("capture_samples"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    let source = match run.source {
+        DiscoverySource::Cached => "cached",
+        DiscoverySource::Fresh => "fresh",
+    };
+
+    format!(
+        "{} result (protocols: {}, capture_samples: {})",
+        source, requested, capture_samples
+    )
+}
+
+fn prepare_local_discovery(
+    _project_dir: &Path,
+    request: &PipeDiscoveryRequest,
+) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
+    let selector = request.selector.selector.as_str();
+    let mut report = build_local_probe_report(
+        selector,
+        &discover_local_containers(Some(selector))?,
+        &request.protocols_requested,
+        request.capture_samples,
+    );
+    enrich_probe_report_metadata(&mut report, selector, None, request);
+    local_report_to_agent_info(&report, request.capture_samples)
+}
+
+fn run_remote_probe(
+    ctx: &CliRuntime,
+    request: &PipeDiscoveryRequest,
+    description: &str,
+) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
+    let deployment_hash = request.selector.deployment_hash.as_deref().ok_or_else(|| {
+        CliError::ConfigValidation("Remote discovery requires a deployment hash".to_string())
+    })?;
+    let params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
+        app_code: request.selector.selector.clone(),
+        container: request.selector.container.clone(),
+        protocols: request.protocols_requested.clone(),
+        probe_timeout: 5,
+        capture_samples: request.capture_samples,
+    };
+
+    let agent_request = AgentEnqueueRequest::new(deployment_hash, "probe_endpoints")
+        .with_parameters(&params)
+        .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+    let info = run_agent_command(ctx, &agent_request, description, PROBE_TIMEOUT_SECS)?;
+    if info.status != "completed" {
+        return Ok(info);
+    }
+
+    let mut report = decode_probe_report(&info)?;
+    enrich_probe_report_metadata(
+        &mut report,
+        &request.selector.selector,
+        request.selector.container.as_deref(),
+        request,
+    );
+    with_probe_report(info, &report).map_err(Into::into)
+}
+
+fn cache_probe_if_completed(
+    project_dir: &Path,
+    request: &PipeDiscoveryRequest,
+    info: &AgentCommandInfo,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if info.status != "completed" {
+        return Ok(());
+    }
+    let report = decode_probe_report(info)?;
+    write_pipe_scan_cache(project_dir, request, &report)?;
+    Ok(())
+}
+
+fn load_or_run_discovery<F>(
+    project_dir: &Path,
+    request: &PipeDiscoveryRequest,
+    fresh_scan: F,
+) -> Result<DiscoveryRun, Box<dyn std::error::Error>>
+where
+    F: FnOnce() -> Result<AgentCommandInfo, Box<dyn std::error::Error>>,
+{
+    if let Some(info) = load_exact_pipe_scan_cache(project_dir, request)? {
+        return Ok(DiscoveryRun {
+            info,
+            source: DiscoverySource::Cached,
+        });
+    }
+    if let Some(info) = load_latest_pipe_scan_cache(project_dir, &request.selector)? {
+        return Ok(DiscoveryRun {
+            info,
+            source: DiscoverySource::Cached,
+        });
+    }
+
+    let info = fresh_scan()?;
+    cache_probe_if_completed(project_dir, request, &info)?;
+    Ok(DiscoveryRun {
+        info,
+        source: DiscoverySource::Fresh,
+    })
 }
 
 #[cfg(test)]
 mod selectable_operation_tests {
     use super::*;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn extract_operations_includes_html_forms_and_container() {
@@ -1883,101 +2408,189 @@ mod selectable_operation_tests {
         assert_eq!(ops[0].path, "/contact");
         assert_eq!(ops[0].fields, vec!["name".to_string(), "email".to_string()]);
     }
+
+    fn sample_report(protocols_requested: Vec<String>) -> ProbeEndpointsCommandReport {
+        ProbeEndpointsCommandReport {
+            command_type: "probe_endpoints".to_string(),
+            deployment_hash: "local".to_string(),
+            app_code: "status-panel-web".to_string(),
+            protocols_detected: protocols_requested.clone(),
+            protocols_requested,
+            containers: vec![],
+            endpoints: vec![],
+            resources: vec![],
+            forms: vec![ProbeForm {
+                container: Some("status-panel-web".to_string()),
+                id: "contact".to_string(),
+                action: "/contact".to_string(),
+                method: "POST".to_string(),
+                fields: vec!["name".to_string(), "email".to_string()],
+            }],
+            probe_attempts: vec![ProbeAttempt {
+                scope: "local_selector".to_string(),
+                selector: Some("status-panel-web".to_string()),
+                container: Some("status-panel-web".to_string()),
+                protocols: vec!["html_forms".to_string()],
+                outcome: "detected".to_string(),
+            }],
+            target_kind: Some("html_form".to_string()),
+            probed_at: "2026-05-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn exact_cache_round_trip_reuses_discovery_result() {
+        let dir = tempdir().expect("temp dir");
+        let request =
+            PipeDiscoveryRequest::local("status-panel-web", &["html_forms".to_string()], true);
+        let report = sample_report(vec!["html_forms".to_string()]);
+
+        write_pipe_scan_cache(dir.path(), &request, &report).expect("cache write should succeed");
+        let cached = load_exact_pipe_scan_cache(dir.path(), &request)
+            .expect("cache read should succeed")
+            .expect("exact cache entry should exist");
+
+        assert_eq!(cached.status, "completed");
+        let cached_report = decode_probe_report(&cached).expect("cached report should decode");
+        assert_eq!(cached_report.protocols_requested, vec!["html_forms"]);
+        assert_eq!(cached_report.forms.len(), 1);
+    }
+
+    #[test]
+    fn selector_cache_preserves_narrow_protocol_scope_for_create() {
+        let dir = tempdir().expect("temp dir");
+        let narrow_request =
+            PipeDiscoveryRequest::local("status-panel-web", &["html_forms".to_string()], true);
+        let report = sample_report(vec!["html_forms".to_string()]);
+        write_pipe_scan_cache(dir.path(), &narrow_request, &report)
+            .expect("cache write should succeed");
+
+        let default_request =
+            PipeDiscoveryRequest::local("status-panel-web", &default_pipe_create_protocols(), true);
+        let cached_run = load_or_run_discovery(dir.path(), &default_request, || {
+            panic!("fresh scan should not run when selector cache exists")
+        })
+        .expect("selector cache should be reused");
+
+        assert_eq!(cached_run.source, DiscoverySource::Cached);
+        let cached_report =
+            decode_probe_report(&cached_run.info).expect("cached selector report should decode");
+        assert_eq!(cached_report.protocols_requested, vec!["html_forms"]);
+        assert_eq!(cached_report.forms[0].action, "/contact");
+    }
+
+    #[test]
+    fn unsupported_smtp_target_returns_actionable_guidance() {
+        let info = AgentCommandInfo {
+            command_id: "cached-smtp".to_string(),
+            deployment_hash: "local".to_string(),
+            command_type: "probe_endpoints".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: Some(json!({
+                "app_code": "smtp",
+                "protocols": ["html_forms"],
+                "capture_samples": true
+            })),
+            result: Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "local",
+                "app_code": "smtp",
+                "protocols_detected": [],
+                "protocols_requested": ["html_forms"],
+                "containers": [],
+                "endpoints": [],
+                "resources": [],
+                "forms": [],
+                "probe_attempts": [{
+                    "scope": "local_selector",
+                    "selector": "smtp",
+                    "protocols": ["html_forms"],
+                    "outcome": "empty"
+                }],
+                "target_kind": "smtp",
+                "probed_at": "2026-05-01T00:00:00Z"
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message =
+            explain_no_selectable_operations("smtp", &info, &DeploymentContext::Local, "target");
+
+        assert!(message.contains("SMTP target"));
+        assert!(message.contains("HTTP-capable bridge/webhook target"));
+        assert!(message.contains("stacker pipe scan --containers smtp"));
+    }
 }
 
 impl CallableTrait for PipeCreateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe create")?;
         let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
         let prefix = mode_prefix(&deploy_ctx);
         let local_mode = deploy_ctx.is_local();
         let hash = match &deploy_ctx {
             DeploymentContext::Remote(h) => Some(h.clone()),
             DeploymentContext::Local => None,
         };
+        let create_protocols = default_pipe_create_protocols();
 
-        let (source_info, target_info) = if local_mode {
+        let (source_run, target_run) = if local_mode {
             println!(
-                "{}Scanning local source '{}' and target '{}'...",
+                "{}Preparing local discovery for source '{}' and target '{}'...",
                 prefix, self.source, self.target
             );
+            let source_request = PipeDiscoveryRequest::local(&self.source, &create_protocols, true);
+            let target_request = PipeDiscoveryRequest::local(&self.target, &create_protocols, true);
             (
-                build_local_scan_info(
-                    &self.source,
-                    &[
-                        "openapi".to_string(),
-                        "html_forms".to_string(),
-                        "rest".to_string(),
-                        "graphql".to_string(),
-                    ],
-                    true,
-                )?,
-                build_local_scan_info(
-                    &self.target,
-                    &[
-                        "openapi".to_string(),
-                        "html_forms".to_string(),
-                        "rest".to_string(),
-                        "graphql".to_string(),
-                    ],
-                    true,
-                )?,
+                load_or_run_discovery(&project_dir, &source_request, || {
+                    prepare_local_discovery(&project_dir, &source_request)
+                })?,
+                load_or_run_discovery(&project_dir, &target_request, || {
+                    prepare_local_discovery(&project_dir, &target_request)
+                })?,
             )
         } else {
             let hash = hash.clone().expect("remote hash");
             println!(
-                "Scanning source app '{}' and target app '{}'...",
+                "Preparing discovery for source app '{}' and target app '{}'...",
                 self.source, self.target
             );
+            let source_request =
+                PipeDiscoveryRequest::remote(&hash, &self.source, None, &create_protocols, true);
+            let target_request =
+                PipeDiscoveryRequest::remote(&hash, &self.target, None, &create_protocols, true);
 
-            let source_params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
-                app_code: self.source.clone(),
-                container: None,
-                protocols: vec![
-                    "openapi".to_string(),
-                    "html_forms".to_string(),
-                    "rest".to_string(),
-                ],
-                probe_timeout: 5,
-                capture_samples: true,
-            };
-
-            let source_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
-                .with_parameters(&source_params)
-                .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-
-            let source_info = run_agent_command(
-                &ctx,
-                &source_request,
-                &format!("Scanning source: {}", self.source),
-                PROBE_TIMEOUT_SECS,
-            )?;
-
-            let target_params = crate::forms::status_panel::ProbeEndpointsCommandRequest {
-                app_code: self.target.clone(),
-                container: None,
-                protocols: vec![
-                    "openapi".to_string(),
-                    "html_forms".to_string(),
-                    "rest".to_string(),
-                ],
-                probe_timeout: 5,
-                capture_samples: true,
-            };
-
-            let target_request = AgentEnqueueRequest::new(&hash, "probe_endpoints")
-                .with_parameters(&target_params)
-                .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-
-            let target_info = run_agent_command(
-                &ctx,
-                &target_request,
-                &format!("Scanning target: {}", self.target),
-                PROBE_TIMEOUT_SECS,
-            )?;
-
-            (source_info, target_info)
+            (
+                load_or_run_discovery(&project_dir, &source_request, || {
+                    run_remote_probe(
+                        &ctx,
+                        &source_request,
+                        &format!("Scanning source: {}", self.source),
+                    )
+                })?,
+                load_or_run_discovery(&project_dir, &target_request, || {
+                    run_remote_probe(
+                        &ctx,
+                        &target_request,
+                        &format!("Scanning target: {}", self.target),
+                    )
+                })?,
+            )
         };
+        println!(
+            "  Source discovery: {}",
+            describe_discovery_run(&source_run)
+        );
+        println!(
+            "  Target discovery: {}",
+            describe_discovery_run(&target_run)
+        );
+        let source_info = source_run.info;
+        let target_info = target_run.info;
 
         if source_info.status != "completed" || target_info.status != "completed" {
             eprintln!("Scan failed for one or both apps. Cannot create pipe.");
@@ -1997,14 +2610,14 @@ impl CallableTrait for PipeCreateCommand {
         if source_ops.is_empty() {
             eprintln!(
                 "{}",
-                explain_no_local_operations(&self.source, &source_info)
+                explain_no_selectable_operations(&self.source, &source_info, &deploy_ctx, "source")
             );
             return Ok(());
         }
         if target_ops.is_empty() {
             eprintln!(
                 "{}",
-                explain_no_local_operations(&self.target, &target_info)
+                explain_no_selectable_operations(&self.target, &target_info, &deploy_ctx, "target")
             );
             return Ok(());
         }
@@ -3186,11 +3799,13 @@ mod tests {
                 LocalPortBinding {
                     container_port: 5050,
                     host_port: None,
+                    host_ip: None,
                     protocol: "tcp".to_string(),
                 },
                 LocalPortBinding {
                     container_port: 8080,
                     host_port: Some(18080),
+                    host_ip: Some("::".to_string()),
                     protocol: "tcp".to_string(),
                 },
             ],
@@ -3201,7 +3816,7 @@ mod tests {
 
         let urls = local_http_candidate_urls(&container);
         assert!(urls.contains(&"http://172.18.0.20:5050".to_string()));
-        assert!(urls.contains(&"http://127.0.0.1:18080".to_string()));
+        assert!(urls.contains(&"http://[::1]:18080".to_string()));
     }
 
     #[test]
@@ -3251,6 +3866,7 @@ mod tests {
             ports: vec![LocalPortBinding {
                 container_port: 5432,
                 host_port: None,
+                host_ip: None,
                 protocol: "tcp".to_string(),
             }],
             status: "running".to_string(),
@@ -3266,6 +3882,7 @@ mod tests {
             ports: vec![LocalPortBinding {
                 container_port: 5672,
                 host_port: None,
+                host_ip: None,
                 protocol: "tcp".to_string(),
             }],
             status: "running".to_string(),

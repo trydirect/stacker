@@ -925,6 +925,21 @@ pub struct ProbeOperation {
     pub sample_response: Option<serde_json::Value>,
 }
 
+/// Metadata about an attempted probe run or probe target.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeAttempt {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub container: Option<String>,
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub outcome: String,
+}
+
 /// A discovered HTML form
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProbeForm {
@@ -994,11 +1009,17 @@ pub struct ProbeEndpointsCommandReport {
     pub app_code: String,
     pub protocols_detected: Vec<String>,
     #[serde(default)]
+    pub protocols_requested: Vec<String>,
+    #[serde(default)]
     pub containers: Vec<ProbeContainer>,
     pub endpoints: Vec<ProbeEndpoint>,
     #[serde(default)]
     pub resources: Vec<ProbeResource>,
     pub forms: Vec<ProbeForm>,
+    #[serde(default)]
+    pub probe_attempts: Vec<ProbeAttempt>,
+    #[serde(default)]
+    pub target_kind: Option<String>,
     pub probed_at: String,
 }
 
@@ -1431,8 +1452,12 @@ mod tests {
         .expect("probe_endpoints params must be present");
 
         assert_eq!(params["app_code"], "crm");
-        assert_eq!(params["protocols"], json!(["openapi", "rest"]));
+        assert_eq!(
+            params["protocols"],
+            json!(["openapi", "html_forms", "rest"])
+        );
         assert_eq!(params["probe_timeout"], 5);
+        assert_eq!(params["capture_samples"], false);
     }
 
     #[test]
@@ -1558,6 +1583,44 @@ mod tests {
         .expect("valid result should pass");
 
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn probe_endpoints_result_accepts_metadata_fields() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "hash_a",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "hash_a",
+                "app_code": "crm",
+                "protocols_detected": ["html_forms"],
+                "protocols_requested": ["html_forms"],
+                "endpoints": [],
+                "resources": [],
+                "forms": [{
+                    "id": "contact",
+                    "action": "/contact",
+                    "method": "POST",
+                    "fields": ["name", "email"]
+                }],
+                "probe_attempts": [{
+                    "scope": "remote_app",
+                    "selector": "crm",
+                    "container": "crm-web",
+                    "protocols": ["html_forms"],
+                    "outcome": "detected"
+                }],
+                "target_kind": "html_form",
+                "probed_at": "2026-03-20T12:00:00Z"
+            })),
+        )
+        .expect("valid metadata result should pass")
+        .expect("result payload should be present");
+
+        assert_eq!(result["protocols_requested"], json!(["html_forms"]));
+        assert_eq!(result["probe_attempts"][0]["scope"], "remote_app");
+        assert_eq!(result["target_kind"], "html_form");
     }
 
     // ── check_connections ────────────────────────────────────────────

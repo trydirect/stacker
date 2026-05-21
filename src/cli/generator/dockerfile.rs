@@ -1,7 +1,9 @@
 use std::fmt;
+use std::path::Path;
 
 use crate::cli::config_parser::AppType;
 use crate::cli::error::CliError;
+use serde::Deserialize;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // DockerfileBuilder — generates Dockerfiles from AppType
@@ -112,6 +114,41 @@ impl From<AppType> for DockerfileBuilder {
 impl DockerfileBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn for_project(project_dir: &Path, app_type: AppType) -> Self {
+        match app_type {
+            AppType::Node => {
+                Self::for_node_project(project_dir).unwrap_or_else(|| Self::from(app_type))
+            }
+            _ => Self::from(app_type),
+        }
+    }
+
+    fn for_node_project(project_dir: &Path) -> Option<Self> {
+        let package_json = std::fs::read_to_string(project_dir.join("package.json")).ok()?;
+        let manifest: NodePackageManifest = serde_json::from_str(&package_json).ok()?;
+        let has_next_dependency = manifest.dependencies.contains_key("next")
+            || manifest.dev_dependencies.contains_key("next");
+        let has_build_script = manifest.scripts.contains_key("build");
+        let has_start_script = manifest.scripts.contains_key("start");
+
+        if has_next_dependency && has_build_script && has_start_script {
+            return Some(
+                Self::default()
+                    .base_image("node:20-alpine")
+                    .work_dir("/app")
+                    .env("NEXT_TELEMETRY_DISABLED", "1")
+                    .copy("package*.json", "./")
+                    .run("npm ci")
+                    .copy(".", ".")
+                    .run("npm run build")
+                    .expose(3000)
+                    .cmd(vec!["npm".into(), "run".into(), "start".into()]),
+            );
+        }
+
+        None
     }
 
     pub fn base_image<S: Into<String>>(mut self, image: S) -> Self {
@@ -258,6 +295,16 @@ impl DockerfileBuilder {
         std::fs::write(path, content)?;
         Ok(())
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NodePackageManifest {
+    #[serde(default)]
+    scripts: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    dependencies: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -421,6 +468,52 @@ mod tests {
 
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("FROM node:20-alpine"));
+    }
+
+    #[test]
+    fn test_project_aware_nextjs_node_dockerfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{
+              "scripts": {
+                "build": "next build",
+                "start": "next start -H 0.0.0.0 -p ${PORT:-3000}"
+              },
+              "dependencies": {
+                "next": "16.2.6"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let content = DockerfileBuilder::for_project(dir.path(), AppType::Node).build();
+        assert!(content.contains("RUN npm ci"));
+        assert!(content.contains("RUN npm run build"));
+        assert!(content.contains("CMD [\"npm\", \"run\", \"start\"]"));
+        assert!(content.contains("ENV NEXT_TELEMETRY_DISABLED=1"));
+        assert!(!content.contains("CMD [\"node\", \"server.js\"]"));
+    }
+
+    #[test]
+    fn test_project_aware_node_falls_back_without_nextjs_hints() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{
+              "scripts": {
+                "start": "node index.js"
+              },
+              "dependencies": {
+                "express": "^5.0.0"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let content = DockerfileBuilder::for_project(dir.path(), AppType::Node).build();
+        assert!(content.contains("RUN npm ci --production"));
+        assert!(content.contains("CMD [\"node\", \"server.js\"]"));
     }
 
     #[test]

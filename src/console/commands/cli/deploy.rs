@@ -2531,7 +2531,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     if needs_dockerfile {
         if force_rebuild || !dockerfile_path.exists() {
-            let builder = DockerfileBuilder::from(config.app.app_type);
+            let builder = DockerfileBuilder::for_project(&project_dir, config.app.app_type);
             builder.write_to(&dockerfile_path, force_rebuild)?;
         } else {
             eprintln!(
