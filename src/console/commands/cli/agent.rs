@@ -1855,6 +1855,38 @@ fn fallback_server_config_for_agent_install(
     })
 }
 
+const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY: &str = "status_panel_only";
+const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE: &str = "true";
+const AGENT_INSTALL_MODE_KEY: &str = "statuspanel_install_mode";
+const AGENT_INSTALL_MODE_VALUE: &str = "status_only";
+
+fn add_agent_install_scope_contract(deploy_form: &mut serde_json::Value) {
+    if let Some(root) = deploy_form.as_object_mut() {
+        root.entry(AGENT_INSTALL_MODE_KEY.to_string())
+            .or_insert_with(|| serde_json::Value::String(AGENT_INSTALL_MODE_VALUE.to_string()));
+    }
+
+    let Some(vars) = deploy_form
+        .get_mut("stack")
+        .and_then(|value| value.get_mut("vars"))
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    if vars.iter().any(|value| {
+        value.get("key").and_then(|key| key.as_str())
+            == Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY)
+    }) {
+        return;
+    }
+
+    vars.push(serde_json::json!({
+        "key": AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY,
+        "value": AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE,
+    }));
+}
+
 fn build_agent_install_deploy_request(
     config: &crate::cli::config_parser::StackerConfig,
     server: &crate::cli::stacker_client::ServerInfo,
@@ -1927,6 +1959,7 @@ fn build_agent_install_deploy_request(
             }
         }
 
+        add_agent_install_scope_contract(&mut deploy_form);
         return Ok((None, deploy_form));
     }
 
@@ -1938,7 +1971,7 @@ fn build_agent_install_deploy_request(
         )
     })?;
 
-    let deploy_form = serde_json::json!({
+    let mut deploy_form = serde_json::json!({
         "cloud": {
             "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
             "save_token": true,
@@ -1967,6 +2000,7 @@ fn build_agent_install_deploy_request(
         },
     });
 
+    add_agent_install_scope_contract(&mut deploy_form);
     Ok((Some(cloud_id), deploy_form))
 }
 
@@ -2098,6 +2132,19 @@ mod tests {
             connection_mode: "ssh".to_string(),
             key_status: "uploaded".to_string(),
         }
+    }
+
+    fn stack_var_value<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        deploy_form["stack"]["vars"]
+            .as_array()?
+            .iter()
+            .find(|value| value.get("key").and_then(|item| item.as_str()) == Some(key))
+            .and_then(|value| value.get("value"))
+            .and_then(|value| value.as_str())
+    }
+
+    fn top_level_str<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        deploy_form.get(key).and_then(|value| value.as_str())
     }
 
     #[test]
@@ -2521,6 +2568,14 @@ environments:
             .as_array()
             .expect("integrated_features array")
             .contains(&serde_json::Value::String("statuspanel".to_string())));
+        assert_eq!(
+            stack_var_value(&deploy_form, AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY),
+            Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE)
+        );
+        assert_eq!(
+            top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
+            Some(AGENT_INSTALL_MODE_VALUE)
+        );
     }
 
     #[test]
@@ -2546,6 +2601,14 @@ environments:
         assert_eq!(deploy_form["cloud"]["provider"], "htz");
         assert_eq!(deploy_form["server"]["server_id"], 7);
         assert_eq!(deploy_form["server"]["connection_mode"], "status_panel");
+        assert_eq!(
+            stack_var_value(&deploy_form, AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY),
+            Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE)
+        );
+        assert_eq!(
+            top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
+            Some(AGENT_INSTALL_MODE_VALUE)
+        );
     }
 
     #[test]

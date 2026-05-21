@@ -679,10 +679,94 @@ impl DockerHubImageTarget {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequiredImagePlatform {
+    os: String,
+    architecture: String,
+}
+
+impl RequiredImagePlatform {
+    fn linux_amd64() -> Self {
+        Self {
+            os: "linux".to_string(),
+            architecture: "amd64".to_string(),
+        }
+    }
+
+    fn display_name(&self) -> String {
+        format!("{}/{}", self.os, self.architecture)
+    }
+
+    fn matches(&self, image: &DockerHubTagImage) -> bool {
+        image
+            .os
+            .as_deref()
+            .map(|os| os.eq_ignore_ascii_case(&self.os))
+            .unwrap_or(false)
+            && image
+                .architecture
+                .as_deref()
+                .map(|architecture| architecture.eq_ignore_ascii_case(&self.architecture))
+                .unwrap_or(false)
+    }
+}
+
+fn required_image_platform_for_deploy_target(
+    deploy_target: &DeployTarget,
+) -> Option<RequiredImagePlatform> {
+    match deploy_target {
+        DeployTarget::Cloud | DeployTarget::Server => Some(RequiredImagePlatform::linux_amd64()),
+        DeployTarget::Local => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DockerHubImageCheckResult {
+    Available,
+    Missing,
+    MissingPlatform {
+        required: RequiredImagePlatform,
+        available: Vec<String>,
+    },
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DockerHubTagDetails {
+    #[serde(default)]
+    images: Vec<DockerHubTagImage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DockerHubTagImage {
+    architecture: Option<String>,
+    os: Option<String>,
+}
+
+fn available_docker_hub_platforms(images: &[DockerHubTagImage]) -> Vec<String> {
+    let mut platforms = std::collections::BTreeSet::new();
+
+    for image in images {
+        let Some(os) = image.os.as_deref() else {
+            continue;
+        };
+        let Some(architecture) = image.architecture.as_deref() else {
+            continue;
+        };
+        let os = os.trim();
+        let architecture = architecture.trim();
+        if os.is_empty() || architecture.is_empty() {
+            continue;
+        }
+        platforms.insert(format!("{}/{}", os, architecture));
+    }
+
+    platforms.into_iter().collect()
+}
 fn validate_compose_images_for_deploy(
     compose_path: &Path,
     registry: Option<&RegistryConfig>,
     image_env: &std::collections::BTreeMap<String, String>,
+    required_platform: Option<&RequiredImagePlatform>,
 ) -> Result<(), CliError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -691,21 +775,31 @@ fn validate_compose_images_for_deploy(
             CliError::ConfigValidation(format!("Failed to create async runtime: {}", e))
         })?;
 
-    validate_compose_images_for_deploy_with_checker(compose_path, image_env, |target| {
-        rt.block_on(check_docker_hub_image_exists(target, registry))
-    })
+    validate_compose_images_for_deploy_with_checker(
+        compose_path,
+        image_env,
+        required_platform,
+        |target| {
+            rt.block_on(check_docker_hub_image_exists(
+                target,
+                registry,
+                required_platform,
+            ))
+        },
+    )
 }
 
 fn validate_compose_images_for_deploy_with_checker<F>(
     compose_path: &Path,
     image_env: &std::collections::BTreeMap<String, String>,
+    required_platform: Option<&RequiredImagePlatform>,
     mut checker: F,
 ) -> Result<(), CliError>
 where
-    F: FnMut(&DockerHubImageTarget) -> Result<bool, String>,
+    F: FnMut(&DockerHubImageTarget) -> Result<DockerHubImageCheckResult, String>,
 {
     let images = collect_compose_image_refs(compose_path)?;
-    let mut missing = Vec::new();
+    let mut problems = Vec::new();
 
     for image_ref in images {
         let resolved_image =
@@ -723,13 +817,31 @@ where
         };
 
         match checker(&target) {
-            Ok(true) => {}
-            Ok(false) => missing.push(format!(
+            Ok(DockerHubImageCheckResult::Available) => {}
+            Ok(DockerHubImageCheckResult::Missing) => problems.push(format!(
                 "{} (service '{}' in {})",
                 target.display_name(),
                 image_ref.service_name,
                 image_ref.source_path.display()
             )),
+            Ok(DockerHubImageCheckResult::MissingPlatform {
+                required,
+                available,
+            }) => {
+                let available_suffix = if available.is_empty() {
+                    String::new()
+                } else {
+                    format!("; available platforms: {}", available.join(", "))
+                };
+                problems.push(format!(
+                    "{} (service '{}' in {}) does not publish required platform {}{}",
+                    target.display_name(),
+                    image_ref.service_name,
+                    image_ref.source_path.display(),
+                    required.display_name(),
+                    available_suffix
+                ));
+            }
             Err(err) => eprintln!(
                 "  Warning: could not verify image {} before deploy: {}",
                 target.display_name(),
@@ -738,12 +850,18 @@ where
         }
     }
 
-    if missing.is_empty() {
+    if problems.is_empty() {
         Ok(())
+    } else if let Some(required_platform) = required_platform {
+        Err(CliError::ConfigValidation(format!(
+            "Compose image preflight failed. These images are missing, inaccessible, or incompatible with required platform {}: {}",
+            required_platform.display_name(),
+            problems.join("; ")
+        )))
     } else {
         Err(CliError::ConfigValidation(format!(
             "Compose image preflight failed. These images are missing or inaccessible: {}",
-            missing.join("; ")
+            problems.join("; ")
         )))
     }
 }
@@ -1026,7 +1144,8 @@ fn docker_hub_auth(registry: Option<&RegistryConfig>) -> Option<(&str, &str)> {
 async fn check_docker_hub_image_exists(
     target: &DockerHubImageTarget,
     registry: Option<&RegistryConfig>,
-) -> Result<bool, String> {
+    required_platform: Option<&RequiredImagePlatform>,
+) -> Result<DockerHubImageCheckResult, String> {
     let client = reqwest::Client::new();
     let auth_token = if let Some((username, password)) = docker_hub_auth(registry) {
         Some(login_to_docker_hub(&client, username, password).await?)
@@ -1051,15 +1170,31 @@ async fn check_docker_hub_image_exists(
     }
 
     let response = request.send().await.map_err(|e| e.to_string())?;
-    if response.status().is_success() {
-        Ok(true)
-    } else if response.status() == reqwest::StatusCode::NOT_FOUND
-        || response.status() == reqwest::StatusCode::UNAUTHORIZED
-        || response.status() == reqwest::StatusCode::FORBIDDEN
+    let status = response.status();
+    if status.is_success() {
+        if let Some(required_platform) = required_platform {
+            let body: DockerHubTagDetails = response.json().await.map_err(|e| e.to_string())?;
+            if !body.images.is_empty()
+                && !body
+                    .images
+                    .iter()
+                    .any(|image| required_platform.matches(image))
+            {
+                return Ok(DockerHubImageCheckResult::MissingPlatform {
+                    required: required_platform.clone(),
+                    available: available_docker_hub_platforms(&body.images),
+                });
+            }
+        }
+
+        Ok(DockerHubImageCheckResult::Available)
+    } else if status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
     {
-        Ok(false)
+        Ok(DockerHubImageCheckResult::Missing)
     } else {
-        Err(format!("Docker Hub API returned {}", response.status()))
+        Err(format!("Docker Hub API returned {}", status))
     }
 }
 
@@ -2449,11 +2584,13 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
         print_registry_auth_guidance_if_needed(&compose_path, &config, &image_env)?;
     }
+    let required_image_platform = required_image_platform_for_deploy_target(&deploy_target);
     if !dry_run {
         validate_compose_images_for_deploy(
             &compose_path,
             config.deploy.registry.as_ref(),
             &image_env,
+            required_image_platform.as_ref(),
         )?;
     }
 
@@ -4419,17 +4556,83 @@ include:
         )
         .unwrap();
 
-        let err =
-            validate_compose_images_for_deploy_with_checker(&compose_path, &image_env, |target| {
-                Ok(target.repository != "syncopia-device-api")
-            })
-            .unwrap_err();
+        let err = validate_compose_images_for_deploy_with_checker(
+            &compose_path,
+            &image_env,
+            None,
+            |target| {
+                Ok(if target.repository == "syncopia-device-api" {
+                    DockerHubImageCheckResult::Missing
+                } else {
+                    DockerHubImageCheckResult::Available
+                })
+            },
+        )
+        .unwrap_err();
 
         let message = err.to_string();
         assert!(message.contains("Compose image preflight failed"));
         assert!(message.contains("docker.io/optimum/syncopia-device-api:latest"));
         assert!(message.contains("service 'api'"));
         assert!(!message.contains("ghcr.io/example/worker:latest"));
+    }
+
+    #[test]
+    fn test_required_image_platform_for_deploy_target_only_enforces_remote_linux_amd64() {
+        assert_eq!(
+            required_image_platform_for_deploy_target(&DeployTarget::Local),
+            None
+        );
+        assert_eq!(
+            required_image_platform_for_deploy_target(&DeployTarget::Cloud),
+            Some(RequiredImagePlatform::linux_amd64())
+        );
+        assert_eq!(
+            required_image_platform_for_deploy_target(&DeployTarget::Server),
+            Some(RequiredImagePlatform::linux_amd64())
+        );
+    }
+
+    #[test]
+    fn test_validate_compose_images_for_deploy_reports_missing_required_platform_before_remote_deploy(
+    ) {
+        let dir = TempDir::new().unwrap();
+        let compose_path = dir.path().join("docker-compose.yml");
+        let image_env = std::collections::BTreeMap::new();
+        let required_platform = RequiredImagePlatform::linux_amd64();
+        std::fs::write(
+            &compose_path,
+            "services:
+  api:
+    image: optimum/syncopia-device-api:latest
+  proxy:
+    image: jc21/nginx-proxy-manager:latest
+",
+        )
+        .unwrap();
+
+        let err = validate_compose_images_for_deploy_with_checker(
+            &compose_path,
+            &image_env,
+            Some(&required_platform),
+            |target| {
+                Ok(if target.repository == "syncopia-device-api" {
+                    DockerHubImageCheckResult::MissingPlatform {
+                        required: required_platform.clone(),
+                        available: vec!["linux/arm64".to_string()],
+                    }
+                } else {
+                    DockerHubImageCheckResult::Available
+                })
+            },
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("required platform linux/amd64"));
+        assert!(message.contains("available platforms: linux/arm64"));
+        assert!(message.contains("docker.io/optimum/syncopia-device-api:latest"));
+        assert!(message.contains("service 'api'"));
     }
 
     #[test]
@@ -4488,11 +4691,19 @@ include:
         )
         .unwrap();
 
-        let err =
-            validate_compose_images_for_deploy_with_checker(&compose_path, &image_env, |target| {
-                Ok(target.repository != "syncopia-website")
-            })
-            .unwrap_err();
+        let err = validate_compose_images_for_deploy_with_checker(
+            &compose_path,
+            &image_env,
+            None,
+            |target| {
+                Ok(if target.repository == "syncopia-website" {
+                    DockerHubImageCheckResult::Missing
+                } else {
+                    DockerHubImageCheckResult::Available
+                })
+            },
+        )
+        .unwrap_err();
 
         let message = err.to_string();
         assert!(message.contains("docker.io/optimum/syncopia-website:latest"));
