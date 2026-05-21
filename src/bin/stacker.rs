@@ -552,6 +552,64 @@ enum ServiceCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Import custom services from a local Docker Compose file after a safety review
+    Import {
+        /// Target custom service name for a single selected service
+        name: String,
+        /// Local Docker Compose file to review and import
+        #[arg(long, value_name = "PATH")]
+        from_compose: Option<std::path::PathBuf>,
+        /// Planned future source; currently returns a safe not-yet-implemented error
+        #[arg(long, value_name = "OWNER/REPO")]
+        from_github: Option<String>,
+        /// Planned future source; currently returns a safe not-yet-implemented error
+        #[arg(long, value_name = "URL")]
+        from_url: Option<String>,
+        /// Compose service name to import. Omit to import all image-backed services.
+        #[arg(long, value_name = "COMPOSE_SERVICE")]
+        service: Option<String>,
+        /// Rename imported services as old=new. Repeat for multiple services.
+        #[arg(long, value_name = "OLD=NEW")]
+        rename: Vec<String>,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Review only; do not write stacker.yml
+        #[arg(long)]
+        review: bool,
+        /// Skip confirmation prompt and write after review
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Output structured JSON with secret-like environment values redacted
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deploy/update a configured service through the remote app deploy path
+    Deploy {
+        /// Service name from stacker.yml to deploy
+        name: String,
+        /// Force recreate the remote container
+        #[arg(long)]
+        force: bool,
+        /// Container runtime: "runc" (default) or "kata"
+        #[arg(long, default_value = "runc")]
+        runtime: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+        /// Deploy environment/profile, e.g. local, dev, prod
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
+        /// Print a read-only deploy-app plan instead of applying changes
+        #[arg(long)]
+        plan: bool,
+        /// Revalidate and apply a previously generated deploy-app plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
+    },
     /// Remove a service from stacker.yml
     Remove {
         /// Service name to remove
@@ -992,7 +1050,7 @@ enum PipeCommands {
         /// Narrow the remote app scan to a specific container
         #[arg(long, requires = "app")]
         container: Option<String>,
-        /// Protocols to probe (default: openapi,rest)
+        /// Protocols to probe (default: openapi,html_forms,rest)
         #[arg(long, value_delimiter = ',')]
         protocols: Vec<String>,
         /// Capture sample responses from discovered endpoints
@@ -1877,6 +1935,52 @@ fn get_command(
         StackerCommands::Service { command: svc_cmd } => match svc_cmd {
             ServiceCommands::Add { name, file } => Box::new(
                 stacker::console::commands::cli::service::ServiceAddCommand::new(name, file),
+            ),
+            ServiceCommands::Import {
+                name,
+                from_compose,
+                from_github,
+                from_url,
+                service,
+                rename,
+                file,
+                review,
+                yes,
+                json,
+            } => Box::new(
+                stacker::console::commands::cli::service::ServiceImportCommand::new(
+                    name,
+                    from_compose,
+                    from_github,
+                    from_url,
+                    service,
+                    rename,
+                    file,
+                    review,
+                    yes,
+                    json,
+                ),
+            ),
+            ServiceCommands::Deploy {
+                name,
+                force,
+                runtime,
+                json,
+                deployment,
+                environment,
+                plan,
+                apply_plan,
+            } => Box::new(
+                stacker::console::commands::cli::service::ServiceDeployCommand::new(
+                    name,
+                    force,
+                    runtime,
+                    json,
+                    deployment,
+                    environment,
+                    plan,
+                    apply_plan,
+                ),
             ),
             ServiceCommands::Remove { name, file } => Box::new(
                 stacker::console::commands::cli::service::ServiceRemoveCommand::new(name, file),

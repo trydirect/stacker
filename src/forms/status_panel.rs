@@ -870,7 +870,11 @@ pub fn validate_command_result(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn default_probe_protocols() -> Vec<String> {
-    vec!["openapi".to_string(), "rest".to_string()]
+    vec![
+        "openapi".to_string(),
+        "html_forms".to_string(),
+        "rest".to_string(),
+    ]
 }
 
 fn default_probe_timeout() -> u32 {

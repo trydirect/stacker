@@ -1420,7 +1420,11 @@ impl PipeScanCommand {
         container: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let protocols = if self.protocols.is_empty() {
-            vec!["openapi".to_string(), "rest".to_string()]
+            vec![
+                "openapi".to_string(),
+                "html_forms".to_string(),
+                "rest".to_string(),
+            ]
         } else {
             self.protocols.clone()
         };

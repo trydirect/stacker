@@ -9,10 +9,11 @@
 //! The CLI never connects to the agent directly. All communication is mediated
 //! by the Stacker server.
 
-use crate::cli::config_bundle::build_config_bundle;
+use crate::cli::config_bundle::{build_config_bundle, ConfigBundleArtifacts};
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::error::CliError;
 use crate::cli::fmt;
+use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::install_runner::resolve_docker_registry_credentials;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
@@ -204,8 +205,38 @@ fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
         .unwrap_or_else(|| "Agent command reported an application error".to_string());
     if let Some(code) = result.get("error_code").and_then(|value| value.as_str()) {
         message = format!("{} ({})", message, code);
+        if code == "npm_create_failed" {
+            message = format!(
+                "{}\n\n{}",
+                message,
+                npm_create_failed_guidance(Some(result))
+            );
+        }
     }
     Some(message)
+}
+
+fn npm_create_failed_guidance(result: Option<&serde_json::Value>) -> String {
+    let domain = result
+        .and_then(|value| value.get("domain_names"))
+        .and_then(|value| value.as_array())
+        .and_then(|domains| domains.first())
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            result
+                .and_then(|value| value.get("domain"))
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("<domain>");
+
+    format!(
+        "Route diagnostics:\n\
+         - Nginx Proxy Manager may have created the host despite returning an error; check for an existing host for {domain} and retry configure-proxy to adopt it.\n\
+         - Verify DNS A/AAAA records for {domain} point at this server before requesting Let's Encrypt.\n\
+         - Ensure cloud firewall ports are open: stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp\n\
+         - Check for a duplicate NPM proxy host using the same domain.\n\
+         - Retry without SSL to isolate certificate issuance: stacker agent configure-proxy <app> --domain {domain} --port <port> --no-ssl --deployment <deployment>."
+    )
 }
 
 async fn execute_agent_command(
@@ -829,12 +860,19 @@ fn local_config_files_for_agent_deploy(
     }
 
     let bundle = if compose_path == configured_compose_path.as_path() {
-        build_config_bundle(
+        let mut bundle = build_config_bundle(
             project_dir,
             &environment,
             &configured_compose_path,
             config.env_file.as_deref(),
-        )?
+        )?;
+        if materialize_stacker_service_in_bundle(&mut bundle, &config, app_code)? {
+            result.notices.push(format!(
+                "Materialized service '{}' from stacker.yml into the remote compose payload.",
+                app_code
+            ));
+        }
+        bundle
     } else {
         let app_bundle = build_config_bundle(project_dir, &environment, compose_path, None)?;
         let project_compose = std::fs::read_to_string(&configured_compose_path).map_err(|err| {
@@ -887,6 +925,51 @@ fn bundle_compose_content(
         })
 }
 
+fn materialize_stacker_service_in_bundle(
+    bundle: &mut ConfigBundleArtifacts,
+    config: &StackerConfig,
+    app_code: &str,
+) -> Result<bool, CliError> {
+    let compose = bundle_compose_content(bundle)?;
+    let updated = merge_stacker_config_service(&compose, config, app_code)?;
+    if updated == compose {
+        return Ok(false);
+    }
+
+    std::fs::write(&bundle.remote_compose_path, &updated)?;
+    if let Some(file) = bundle.config_files.iter_mut().find(|file| {
+        file.get("destination_path").and_then(|path| path.as_str()) == Some("docker-compose.yml")
+    }) {
+        file["content"] = serde_json::Value::String(updated);
+    }
+    Ok(true)
+}
+
+fn merge_stacker_config_service(
+    project_compose: &str,
+    config: &StackerConfig,
+    app_code: &str,
+) -> Result<String, CliError> {
+    let project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
+    let service_exists = project_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|services| services.contains_key(serde_yaml::Value::String(app_code.to_string())))
+        .unwrap_or(false);
+    if service_exists
+        || !config
+            .services
+            .iter()
+            .any(|service| service.name == app_code)
+    {
+        return Ok(project_compose.to_string());
+    }
+
+    let generated_compose = ComposeDefinition::try_from(config)?.render();
+    merge_compose_service(project_compose, &generated_compose, app_code)
+}
+
 fn merge_compose_service(
     project_compose: &str,
     app_compose: &str,
@@ -895,7 +978,7 @@ fn merge_compose_service(
     let mut project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
     let app_doc: serde_yaml::Value = serde_yaml::from_str(app_compose)?;
 
-    let app_service = app_doc
+    let mut app_service = app_doc
         .as_mapping()
         .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
         .and_then(serde_yaml::Value::as_mapping)
@@ -906,6 +989,8 @@ fn merge_compose_service(
                 "app-local compose does not define service '{app_code}'"
             ))
         })?;
+    let should_merge_networks = !project_service_networks(&project_doc).is_empty();
+    align_service_networks_with_project(&mut app_service, &project_doc);
 
     let project_services = project_doc
         .as_mapping_mut()
@@ -916,11 +1001,87 @@ fn merge_compose_service(
         })?;
     project_services.insert(serde_yaml::Value::String(app_code.to_string()), app_service);
 
-    merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+    if should_merge_networks {
+        merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+    }
     merge_compose_top_level_mapping(&mut project_doc, &app_doc, "volumes");
 
     serde_yaml::to_string(&project_doc)
         .map_err(|err| CliError::ConfigValidation(format!("failed to merge compose: {err}")))
+}
+
+fn align_service_networks_with_project(
+    app_service: &mut serde_yaml::Value,
+    project_doc: &serde_yaml::Value,
+) {
+    let project_networks = project_service_networks(project_doc);
+    let Some(service_map) = app_service.as_mapping_mut() else {
+        return;
+    };
+    let networks_key = serde_yaml::Value::String("networks".to_string());
+    if project_networks.is_empty() {
+        service_map.remove(&networks_key);
+        return;
+    }
+
+    service_map.insert(
+        networks_key,
+        serde_yaml::Value::Sequence(
+            project_networks
+                .into_iter()
+                .map(serde_yaml::Value::String)
+                .collect(),
+        ),
+    );
+}
+
+fn project_service_networks(project_doc: &serde_yaml::Value) -> Vec<String> {
+    let Some(project_services) = project_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Vec::new();
+    };
+
+    let mut networks = Vec::new();
+    for service in project_services.values() {
+        let Some(networks_value) = service
+            .as_mapping()
+            .and_then(|service| service.get(serde_yaml::Value::String("networks".to_string())))
+        else {
+            continue;
+        };
+        collect_network_names(networks_value, &mut networks);
+    }
+    networks
+}
+
+fn collect_network_names(value: &serde_yaml::Value, networks: &mut Vec<String>) {
+    match value {
+        serde_yaml::Value::String(name) => push_unique_network(networks, name),
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                if let Some(name) = item.as_str() {
+                    push_unique_network(networks, name);
+                }
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for key in map.keys() {
+                if let Some(name) = key.as_str() {
+                    push_unique_network(networks, name);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_unique_network(networks: &mut Vec<String>, name: &str) {
+    if !networks.iter().any(|existing| existing == name) {
+        networks.push(name.to_string());
+    }
 }
 
 fn merge_compose_top_level_mapping(
@@ -2320,6 +2481,56 @@ environments:
     }
 
     #[test]
+    fn local_config_files_materializes_stacker_yml_service_into_project_compose() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            r#"
+services:
+  status-panel-web:
+    image: trydirect/status-panel-web:latest
+"#,
+        )
+        .expect("project compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: status-panel
+project:
+  identity: status-panel
+app:
+  image: trydirect/status-panel-web:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+services:
+  - name: smtp
+    image: trydirect/smtp
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    volumes:
+      - smtp_data:/data
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "smtp", None).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("status-panel-web:"));
+        assert!(compose.contains("smtp:"));
+        assert!(compose.contains("image: trydirect/smtp"));
+        assert!(compose.contains("smtp_data:"));
+        assert!(!compose.contains("app-network"));
+    }
+
+    #[test]
     fn local_config_files_merges_app_local_service_into_project_compose() {
         let dir = TempDir::new().expect("temp dir");
         let root = dir.path();
@@ -2703,6 +2914,38 @@ environments:
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn agent_command_error_message_adds_proxy_route_diagnostics_for_npm_create_failed() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_proxy".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "error_code": "npm_create_failed",
+                "message": "Failed to create proxy host: 500 Internal Server Error - Internal Error",
+                "domain_names": ["status.stacker.my"],
+                "forward_port": 3000
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+
+        assert!(message.contains("npm_create_failed"));
+        assert!(message.contains("Route diagnostics"));
+        assert!(message.contains("status.stacker.my"));
+        assert!(message.contains(
+            "stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp"
+        ));
+        assert!(message.contains("--no-ssl"));
     }
 
     #[test]

@@ -11,6 +11,48 @@ use crate::cli::runtime::CliRuntime;
 use crate::console::commands::cli::agent::AgentConfigureProxyCommand;
 use crate::console::commands::CallableTrait;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyProviderKind {
+    NginxProxyManager,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProxyProviderMetadata {
+    pub kind: ProxyProviderKind,
+    pub canonical_name: &'static str,
+    pub service_catalog_name: &'static str,
+    pub internal_api_url: &'static str,
+}
+
+impl ProxyProviderKind {
+    pub fn from_alias(alias: &str) -> Option<Self> {
+        match normalize_proxy_provider_alias(alias).as_str() {
+            "npm" | "nginxproxymanager" => Some(Self::NginxProxyManager),
+            _ => None,
+        }
+    }
+
+    pub fn metadata(self) -> ProxyProviderMetadata {
+        match self {
+            Self::NginxProxyManager => ProxyProviderMetadata {
+                kind: self,
+                canonical_name: "nginx-proxy-manager",
+                service_catalog_name: "nginx_proxy_manager",
+                internal_api_url: "http://nginx_proxy_manager:81",
+            },
+        }
+    }
+}
+
+fn normalize_proxy_provider_alias(alias: &str) -> String {
+    alias
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
 /// Parse SSL mode string to `SslMode` enum.
 pub fn parse_ssl_mode(s: Option<&str>) -> SslMode {
     match s.map(|v| v.to_lowercase()).as_deref() {
@@ -317,6 +359,31 @@ mod tests {
         fn is_available(&self) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn proxy_provider_aliases_resolve_to_nginx_proxy_manager() {
+        for alias in [
+            "npm",
+            "nginx-proxy-manager",
+            "nginx_proxy_manager",
+            "Nginx Proxy Manager",
+        ] {
+            assert_eq!(
+                ProxyProviderKind::from_alias(alias),
+                Some(ProxyProviderKind::NginxProxyManager)
+            );
+        }
+        assert_eq!(ProxyProviderKind::from_alias("traefik"), None);
+    }
+
+    #[test]
+    fn nginx_proxy_manager_metadata_uses_stack_service_defaults() {
+        let metadata = ProxyProviderKind::NginxProxyManager.metadata();
+
+        assert_eq!(metadata.service_catalog_name, "nginx_proxy_manager");
+        assert_eq!(metadata.internal_api_url, "http://nginx_proxy_manager:81");
+        assert_eq!(metadata.canonical_name, "nginx-proxy-manager");
     }
 
     #[test]
