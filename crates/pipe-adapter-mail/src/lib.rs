@@ -1,4 +1,5 @@
 use async_native_tls::TlsConnector;
+use async_std::net::TcpStream;
 use async_trait::async_trait;
 use futures_util::{AsyncRead, AsyncWrite, TryStreamExt};
 use lettre::message::{header::ContentType, Mailbox, MultiPart, SinglePart};
@@ -15,7 +16,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use async_std::net::TcpStream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SmtpDeliveryRequest {
@@ -108,18 +108,15 @@ impl MailSourceClient for LiveMailSourceClient {
     ) -> Result<Vec<NormalizedMailMessage>, PipeAdapterError> {
         if request.tls {
             let tls = TlsConnector::new();
-            let mut client = async_pop::connect(
-                (request.host.as_str(), request.port),
-                &request.host,
-                &tls,
-            )
-            .await
-            .map_err(|err| {
-                PipeAdapterError::Message(format!(
-                    "pop3 adapter failed to connect to {}:{}: {}",
-                    request.host, request.port, err
-                ))
-            })?;
+            let mut client =
+                async_pop::connect((request.host.as_str(), request.port), &request.host, &tls)
+                    .await
+                    .map_err(|err| {
+                        PipeAdapterError::Message(format!(
+                            "pop3 adapter failed to connect to {}:{}: {}",
+                            request.host, request.port, err
+                        ))
+                    })?;
             poll_pop3_client(&mut client, request).await
         } else {
             let mut client = async_pop::connect_plain((request.host.as_str(), request.port))
@@ -200,7 +197,11 @@ where
                 index, request.host, request.port, err
             ))
         })?;
-        messages.push(parse_normalized_mail_message(raw.as_ref(), None, Some(uid))?);
+        messages.push(parse_normalized_mail_message(
+            raw.as_ref(),
+            None,
+            Some(uid),
+        )?);
     }
 
     let _ = client.quit().await;
@@ -333,7 +334,7 @@ impl<T: SmtpClient> SmtpTargetAdapter<T> {
         let envelope = match payload {
             PipeAdapterPayload::Json(value) => SmtpEnvelope::from_json(value, &self.config)?,
             PipeAdapterPayload::MailMessage(message) => {
-                SmtpEnvelope::from_message(message, &self.config)?
+                SmtpEnvelope::from_message(*message, &self.config)?
             }
         };
 
@@ -474,7 +475,7 @@ impl<T: MailSourceClient> PipeSourceAdapter for ImapSourceAdapter<T> {
             .into_iter()
             .map(|message| PipeAdapterDispatch {
                 adapter: self.reference.clone(),
-                payload: PipeAdapterPayload::MailMessage(message),
+                payload: PipeAdapterPayload::MailMessage(Box::new(message)),
             })
             .collect())
     }
@@ -495,7 +496,7 @@ impl<T: MailSourceClient> PipeSourceAdapter for Pop3SourceAdapter<T> {
             .into_iter()
             .map(|message| PipeAdapterDispatch {
                 adapter: self.reference.clone(),
-                payload: PipeAdapterPayload::MailMessage(message),
+                payload: PipeAdapterPayload::MailMessage(Box::new(message)),
             })
             .collect())
     }
@@ -805,9 +806,9 @@ fn filter_new_messages(
     seen_ids: &Arc<Mutex<HashSet<String>>>,
     messages: Vec<NormalizedMailMessage>,
 ) -> Result<Vec<NormalizedMailMessage>, PipeAdapterError> {
-    let mut seen_ids = seen_ids.lock().map_err(|_| {
-        PipeAdapterError::Message("mail adapter state lock poisoned".to_string())
-    })?;
+    let mut seen_ids = seen_ids
+        .lock()
+        .map_err(|_| PipeAdapterError::Message("mail adapter state lock poisoned".to_string()))?;
     let mut fresh = Vec::new();
 
     for message in messages {
@@ -949,10 +950,7 @@ fn parse_mail_addresses(
         ))
     })?;
 
-    Ok(addresses
-        .iter()
-        .flat_map(flatten_mail_addr)
-        .collect())
+    Ok(addresses.iter().flat_map(flatten_mail_addr).collect())
 }
 
 fn flatten_mail_addr(address: &MailAddr) -> Vec<NormalizedMailAddress> {
@@ -1183,7 +1181,7 @@ mod tests {
         assert_eq!(dispatches[0].adapter.code, "imap");
         assert_eq!(
             dispatches[0].payload,
-            PipeAdapterPayload::MailMessage(NormalizedMailMessage {
+            PipeAdapterPayload::MailMessage(Box::new(NormalizedMailMessage {
                 subject: Some("Incident opened".to_string()),
                 mailbox: Some("INBOX".to_string()),
                 body: pipe_adapter_sdk::NormalizedMailBody {
@@ -1191,7 +1189,7 @@ mod tests {
                     html: None,
                 },
                 ..Default::default()
-            })
+            }))
         );
     }
 
@@ -1224,14 +1222,14 @@ mod tests {
         assert_eq!(dispatches[0].adapter.code, "pop3");
         assert_eq!(
             dispatches[0].payload,
-            PipeAdapterPayload::MailMessage(NormalizedMailMessage {
+            PipeAdapterPayload::MailMessage(Box::new(NormalizedMailMessage {
                 subject: Some("Welcome".to_string()),
                 body: pipe_adapter_sdk::NormalizedMailBody {
                     text: Some("hello".to_string()),
                     html: None,
                 },
                 ..Default::default()
-            })
+            }))
         );
     }
 }

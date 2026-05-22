@@ -309,8 +309,14 @@ volumes:
             services: vec![ServiceDefinition {
                 name: "smtp".to_string(),
                 image: "trydirect/smtp".to_string(),
-                ports: vec!["1025:1025".to_string(), "8025:8025".to_string()],
-                environment: HashMap::new(),
+                ports: vec!["1025:25".to_string()],
+                environment: HashMap::from([
+                    (
+                        "RELAY_NETWORKS".to_string(),
+                        ":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16".to_string(),
+                    ),
+                    ("PORT".to_string(), "25".to_string()),
+                ]),
                 volumes: vec!["smtp_data:/data".to_string()],
                 depends_on: Vec::new(),
             }],
@@ -325,6 +331,8 @@ volumes:
         let updated = std::fs::read_to_string(dir.path().join("docker-compose.yml")).unwrap();
         assert!(updated.contains("smtp:"));
         assert!(updated.contains("image: trydirect/smtp"));
+        assert!(updated.contains("\"1025:25\"") || updated.contains("1025:25"));
+        assert!(updated.contains("RELAY_NETWORKS"));
         assert!(updated.contains("default_network"));
         assert!(updated.contains("smtp_data:"));
     }

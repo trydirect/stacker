@@ -472,13 +472,19 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             code: "smtp".into(),
             name: "SMTP Test Server".into(),
             category: "mail".into(),
-            description: "Attachable SMTP companion app for local delivery and email capture"
+            description: "Attachable SMTP companion app for local delivery and relay testing"
                 .into(),
             service: ServiceDefinition {
                 name: "smtp".into(),
                 image: "trydirect/smtp".into(),
-                ports: vec!["1025:1025".into(), "8025:8025".into()],
-                environment: HashMap::new(),
+                ports: vec!["1025:25".into()],
+                environment: HashMap::from([
+                    (
+                        "RELAY_NETWORKS".into(),
+                        ":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16".into(),
+                    ),
+                    ("PORT".into(), "25".into()),
+                ]),
                 volumes: vec!["smtp_data:/data".into()],
                 depends_on: vec![],
             },
@@ -643,8 +649,19 @@ mod tests {
         assert_eq!(entry.category, "mail");
         assert_eq!(entry.service.name, "smtp");
         assert_eq!(entry.service.image, "trydirect/smtp");
-        assert!(entry.service.ports.contains(&"1025:1025".to_string()));
-        assert!(entry.service.ports.contains(&"8025:8025".to_string()));
+        assert!(entry.service.ports.contains(&"1025:25".to_string()));
+        assert_eq!(
+            entry.service.environment.get("PORT").map(String::as_str),
+            Some("25")
+        );
+        assert_eq!(
+            entry
+                .service
+                .environment
+                .get("RELAY_NETWORKS")
+                .map(String::as_str),
+            Some(":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16")
+        );
     }
 
     #[test]

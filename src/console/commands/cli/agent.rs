@@ -2512,8 +2512,10 @@ services:
   - name: smtp
     image: trydirect/smtp
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "1025:25"
+    environment:
+      PORT: "25"
+      RELAY_NETWORKS: ":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16"
     volumes:
       - smtp_data:/data
 "#,
@@ -2526,6 +2528,8 @@ services:
         assert!(compose.contains("status-panel-web:"));
         assert!(compose.contains("smtp:"));
         assert!(compose.contains("image: trydirect/smtp"));
+        assert!(compose.contains("1025:25"));
+        assert!(compose.contains("RELAY_NETWORKS"));
         assert!(compose.contains("smtp_data:"));
         assert!(!compose.contains("app-network"));
     }

@@ -10,6 +10,10 @@
 use crate::cli::error::CliError;
 use crate::cli::field_matcher::{DeterministicFieldMatcher, FieldMatcher};
 use crate::cli::fmt;
+use crate::cli::local_pipe_store::{
+    LocalPipeBinding, LocalPipeDiagnostics, LocalPipeDocument, LocalPipeInstance, LocalPipeStore,
+    LocalPipeTemplate, NewLocalPipeDocument,
+};
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::service_catalog::ServiceCatalog;
@@ -24,9 +28,11 @@ use crate::forms::status_panel::{
 };
 use chrono::Utc;
 use dialoguer::Password;
+use pipe_adapter_mail::SmtpTargetAdapter;
 use pipe_adapter_sdk::{
     builtin_registry, selector_matches_builtin_kind, PipeAdapterCatalog, PipeAdapterKind,
-    PipeAdapterMetadata, PipeAdapterReference, PipeAdapterRole,
+    PipeAdapterMetadata, PipeAdapterPayload, PipeAdapterReference, PipeAdapterRole,
+    PipeTargetAdapter,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -174,6 +180,40 @@ fn resolve_deployment_context(
          or run from a directory with a deployment lock or stacker.yml."
             .to_string(),
     ))
+}
+
+fn resolve_local_deployment_context(
+    explicit: &Option<String>,
+    project_dir: &Path,
+) -> Result<Option<DeploymentContext>, CliError> {
+    if explicit
+        .as_ref()
+        .map(|hash| !hash.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    if let Some(target) =
+        crate::cli::deployment_lock::DeploymentLock::read_active_target(project_dir)?
+    {
+        if target == "local" {
+            return Ok(Some(DeploymentContext::Local));
+        }
+    }
+
+    let config_path = project_dir.join("stacker.yml");
+    if config_path.exists() {
+        if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
+            .and_then(|config| config.with_resolved_deploy_target(None))
+        {
+            if config.deploy.target == crate::cli::config_parser::DeployTarget::Local {
+                return Ok(Some(DeploymentContext::Local));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -772,6 +812,13 @@ fn docker_host_http_target(host_ip: Option<&str>, host_port: u16) -> String {
         "" | "0.0.0.0" => format!("http://localhost:{}", host_port),
         ip if ip.contains(':') => format!("http://[{}]:{}", ip, host_port),
         ip => format!("http://{}:{}", ip, host_port),
+    }
+}
+
+fn docker_host_target(host_ip: Option<&str>) -> String {
+    match host_ip.unwrap_or_default() {
+        "::" | "" | "0.0.0.0" => "127.0.0.1".to_string(),
+        ip => ip.to_string(),
     }
 }
 
@@ -2938,9 +2985,16 @@ mod selectable_operation_tests {
 
 impl CallableTrait for PipeCreateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let ctx = CliRuntime::new("pipe create")?;
-        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
         let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        let (ctx, deploy_ctx) =
+            match resolve_local_deployment_context(&self.deployment, &project_dir)? {
+                Some(local_ctx) => (None, local_ctx),
+                None => {
+                    let ctx = CliRuntime::new("pipe create")?;
+                    let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+                    (Some(ctx), deploy_ctx)
+                }
+            };
         let prefix = mode_prefix(&deploy_ctx);
         let local_mode = deploy_ctx.is_local();
         let hash = match &deploy_ctx {
@@ -2966,6 +3020,7 @@ impl CallableTrait for PipeCreateCommand {
                     prepare_local_discovery(&project_dir, &source_request)
                 })?
             } else {
+                let ctx = ctx.as_ref().expect("remote runtime");
                 let remote_hash = hash.clone().expect("remote hash");
                 println!("Preparing discovery for source app '{}'...", self.source);
                 let source_request = PipeDiscoveryRequest::remote(
@@ -2998,6 +3053,7 @@ impl CallableTrait for PipeCreateCommand {
                     prepare_local_discovery(&project_dir, &target_request)
                 })?
             } else {
+                let ctx = ctx.as_ref().expect("remote runtime");
                 let remote_hash = hash.clone().expect("remote hash");
                 println!("Preparing discovery for target app '{}'...", self.target);
                 let target_request = PipeDiscoveryRequest::remote(
@@ -3271,15 +3327,6 @@ impl CallableTrait for PipeCreateCommand {
             is_public: Some(false),
         };
 
-        let pb = progress::spinner("Creating pipe template...");
-        let template = ctx
-            .block_on(ctx.client.create_pipe_template(&template_request))
-            .map_err(|e| {
-                progress::finish_error(&pb, "Template creation failed");
-                e
-            })?;
-        progress::finish_success(&pb, "Template created");
-
         let source_container_name = if let Some(adapter) = &src_op.adapter {
             adapter.code.clone()
         } else if local_mode {
@@ -3287,7 +3334,7 @@ impl CallableTrait for PipeCreateCommand {
         } else {
             self.source.clone()
         };
-        let target_container_name = if tgt_op.adapter.is_some() {
+        let local_target_container_name = if tgt_op.adapter.is_some() {
             None
         } else if local_mode {
             Some(local_container_for_operation(tgt_op, &self.target))
@@ -3312,13 +3359,113 @@ impl CallableTrait for PipeCreateCommand {
             None
         };
 
-        // Step 8: Create instance linked to this deployment
+        if local_mode {
+            let store = LocalPipeStore::new(&project_dir);
+            let mut notes = Vec::new();
+            if let Some(run) = &source_run {
+                notes.push(format!("source discovery: {}", describe_discovery_run(run)));
+            }
+            if let Some(run) = &target_run {
+                notes.push(format!("target discovery: {}", describe_discovery_run(run)));
+            }
+
+            let local_pipe = LocalPipeDocument::draft(NewLocalPipeDocument {
+                name: pipe_name.clone(),
+                source: LocalPipeBinding {
+                    selector: self.source.clone(),
+                    container: src_op.container.clone(),
+                    adapter: source_adapter.clone(),
+                    method: src_method.clone(),
+                    path: src_path.clone(),
+                    fields: src_fields.clone(),
+                },
+                target: LocalPipeBinding {
+                    selector: self.target.clone(),
+                    container: tgt_op.container.clone(),
+                    adapter: target_adapter.clone(),
+                    method: tgt_method.clone(),
+                    path: tgt_path.clone(),
+                    fields: tgt_fields.clone(),
+                },
+                template: LocalPipeTemplate {
+                    description: template_request.description.clone(),
+                    source_app_type: template_request.source_app_type.clone(),
+                    source_endpoint: template_request.source_endpoint.clone(),
+                    target_app_type: template_request.target_app_type.clone(),
+                    target_endpoint: template_request.target_endpoint.clone(),
+                    target_external_url: template_request.target_external_url.clone(),
+                    field_mapping: template_request.field_mapping.clone(),
+                    config: template_request.config.clone(),
+                    is_public: template_request.is_public.unwrap_or(false),
+                },
+                instance: LocalPipeInstance {
+                    source_adapter: source_adapter.clone(),
+                    source_container: source_container_name.clone(),
+                    target_adapter: target_adapter.clone(),
+                    target_container: local_target_container_name.clone(),
+                    target_url: target_url.clone(),
+                    field_mapping_override: None,
+                    config_override: None,
+                    trigger_count: 0,
+                    error_count: 0,
+                    last_triggered_at: None,
+                },
+                diagnostics: LocalPipeDiagnostics { notes },
+            })?;
+            let path = store.save_new(&local_pipe)?;
+
+            if self.json {
+                let mut output = serde_json::json!({
+                    "local": true,
+                    "path": path.display().to_string(),
+                    "pipe": local_pipe,
+                });
+                redact_sensitive_json(&mut output);
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                println!(
+                    "\n  {}✓ Local pipe '{}' created successfully",
+                    prefix, pipe_name
+                );
+                println!("  Local ID:     {}", local_pipe.id);
+                println!("  File:         {}", path.display());
+                println!(
+                    "  Source:       {} ({})",
+                    local_pipe.source_display(),
+                    src_path
+                );
+                println!(
+                    "  Target:       {} ({})",
+                    local_pipe.target_display(),
+                    tgt_path
+                );
+                println!("  Status:       {}", local_pipe.status);
+                println!("  Mapping:      {}", serde_json::to_string(&field_mapping)?);
+                println!(
+                    "  Promote:      stacker pipe deploy {} <deployment_hash>",
+                    local_pipe.id
+                );
+            }
+
+            return Ok(());
+        }
+
+        let ctx = ctx.as_ref().expect("remote runtime");
+        let pb = progress::spinner("Creating pipe template...");
+        let template = ctx
+            .block_on(ctx.client.create_pipe_template(&template_request))
+            .map_err(|e| {
+                progress::finish_error(&pb, "Template creation failed");
+                e
+            })?;
+        progress::finish_success(&pb, "Template created");
+
         let instance_request = CreatePipeInstanceApiRequest {
             deployment_hash: hash.clone(),
             source_adapter,
             source_container: source_container_name.clone(),
             target_adapter,
-            target_container: target_container_name.clone(),
+            target_container: local_target_container_name.clone(),
             target_url: target_url.clone(),
             template_id: Some(template.id.clone()),
             field_mapping_override: None,
@@ -3338,19 +3485,12 @@ impl CallableTrait for PipeCreateCommand {
             let mut output = serde_json::json!({
                 "template": template,
                 "instance": instance,
-                "local": local_mode,
+                "local": false,
             });
             redact_sensitive_json(&mut output);
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            if local_mode {
-                println!(
-                    "\n  {}✓ Local pipe '{}' created successfully",
-                    prefix, pipe_name
-                );
-            } else {
-                println!("\n  ✓ Pipe '{}' created successfully", pipe_name);
-            }
+            println!("\n  ✓ Pipe '{}' created successfully", pipe_name);
             println!("  Template ID:  {}", template.id);
             println!("  Instance ID:  {}", instance.id);
             let source_display = src_op
@@ -3362,14 +3502,11 @@ impl CallableTrait for PipeCreateCommand {
                 .adapter
                 .as_ref()
                 .map(|metadata| format!("{} adapter", metadata.code))
-                .or_else(|| target_container_name.clone())
+                .or_else(|| local_target_container_name.clone())
                 .or(target_url.clone())
                 .unwrap_or_else(|| self.target.clone());
             println!("  Source:       {} ({})", source_display, src_path);
             println!("  Target:       {} ({})", target_display, tgt_path);
-            if local_mode {
-                println!("  Mode:         local (no deployment required)");
-            }
             println!(
                 "  Status:       {} (use 'stacker pipe activate {}' to start)",
                 instance.status, instance.id
@@ -3398,25 +3535,81 @@ impl PipeListCommand {
 
 impl CallableTrait for PipeListCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        if let Some(deploy_ctx) = resolve_local_deployment_context(&self.deployment, &project_dir)?
+        {
+            let prefix = mode_prefix(&deploy_ctx);
+            let pb = progress::spinner(&format!("{}Fetching pipes...", prefix));
+            let store = LocalPipeStore::new(&project_dir);
+            let pipes = store.list().map_err(|e| {
+                progress::finish_error(&pb, "Failed to fetch local pipes");
+                e
+            })?;
+            progress::finish_success(&pb, &format!("{}{} pipe(s) found", prefix, pipes.len()));
+
+            if pipes.is_empty() {
+                println!("No pipes configured for this deployment.");
+                println!("Use 'stacker pipe create <source> <target>' to create a pipe.");
+                return Ok(());
+            }
+
+            if self.json {
+                let mut output = serde_json::to_value(&pipes)?;
+                redact_sensitive_json(&mut output);
+                println!("{}", serde_json::to_string_pretty(&output)?);
+                return Ok(());
+            }
+
+            println!(
+                "\n{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
+                "ID", "SOURCE", "TARGET", "STATUS", "TRIGGERS", "ERRORS", "LAST TRIGGERED"
+            );
+            println!("{}", "─".repeat(120));
+
+            for pipe in &pipes {
+                let last = pipe
+                    .instance
+                    .last_triggered_at
+                    .as_deref()
+                    .unwrap_or("never");
+                let status_icon = match pipe.status.as_str() {
+                    "active" => "● active",
+                    "paused" => "◉ paused",
+                    "error" => "✗ error",
+                    _ => "○ draft",
+                };
+
+                println!(
+                    "{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
+                    &pipe.id,
+                    truncate_str(pipe.source_display(), 14),
+                    truncate_str(pipe.target_display(), 14),
+                    status_icon,
+                    pipe.instance.trigger_count,
+                    pipe.instance.error_count,
+                    last,
+                );
+            }
+
+            println!("\n{} pipe(s) total.", pipes.len());
+            return Ok(());
+        }
+
         let ctx = CliRuntime::new("pipe list")?;
         let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
         let prefix = mode_prefix(&deploy_ctx);
+        let hash = match &deploy_ctx {
+            DeploymentContext::Remote(hash) => hash,
+            DeploymentContext::Local => unreachable!("local mode handled above"),
+        };
 
         let pb = progress::spinner(&format!("{}Fetching pipes...", prefix));
-        let pipes = match &deploy_ctx {
-            DeploymentContext::Local => ctx
-                .block_on(ctx.client.list_local_pipe_instances())
-                .map_err(|e| {
-                    progress::finish_error(&pb, "Failed to fetch local pipes");
-                    e
-                })?,
-            DeploymentContext::Remote(hash) => ctx
-                .block_on(ctx.client.list_pipe_instances(hash))
-                .map_err(|e| {
+        let pipes = ctx
+            .block_on(ctx.client.list_pipe_instances(hash))
+            .map_err(|e| {
                 progress::finish_error(&pb, "Failed to fetch pipes");
                 e
-            })?,
-        };
+            })?;
         progress::finish_success(&pb, &format!("{}{} pipe(s) found", prefix, pipes.len()));
 
         if pipes.is_empty() {
@@ -3432,7 +3625,6 @@ impl CallableTrait for PipeListCommand {
             return Ok(());
         }
 
-        // Table header
         println!(
             "\n{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
             "ID", "SOURCE", "TARGET", "STATUS", "TRIGGERS", "ERRORS", "LAST TRIGGERED"
@@ -3552,6 +3744,309 @@ fn select_field_matcher(
     Box::new(DeterministicFieldMatcher)
 }
 
+fn example_local_trigger_command(pipe_id: &str) -> String {
+    format!(
+        "stacker pipe trigger {} --data '{}'",
+        pipe_id,
+        r#"{"email":"person@example.com","subject":"Local pipe test","message":"Hello from the local contact form"}"#
+    )
+}
+
+fn source_field_names(source_data: &serde_json::Value) -> Vec<String> {
+    source_data
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn lookup_json_path<'a>(
+    source_data: &'a serde_json::Value,
+    expression: &str,
+) -> Option<&'a serde_json::Value> {
+    if expression == "$" {
+        return Some(source_data);
+    }
+
+    let mut current = source_data;
+    for segment in expression.strip_prefix("$.")?.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        current = current.get(segment)?;
+    }
+
+    Some(current)
+}
+
+fn apply_field_mapping(
+    source_data: &serde_json::Value,
+    mapping: &serde_json::Value,
+) -> serde_json::Value {
+    let mut output = serde_json::Map::new();
+
+    if let Some(mapping_object) = mapping.as_object() {
+        for (target_field, expression) in mapping_object {
+            if let Some(path) = expression.as_str() {
+                if let Some(value) = lookup_json_path(source_data, path) {
+                    output.insert(target_field.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    serde_json::Value::Object(output)
+}
+
+fn infer_local_mapping(
+    pipe: &LocalPipeDocument,
+    source_data: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let source_fields = source_field_names(source_data);
+    if source_fields.is_empty() || pipe.target.fields.is_empty() {
+        return None;
+    }
+
+    let matcher = select_field_matcher(false, false, false);
+    let result = matcher.match_fields(&source_fields, &pipe.target.fields, Some(source_data));
+    let mapping = result.mapping.as_object()?;
+    if mapping.is_empty() {
+        return None;
+    }
+
+    Some(apply_field_mapping(source_data, &result.mapping))
+}
+
+fn apply_smtp_defaults(source_data: &serde_json::Value, payload: &mut serde_json::Value) {
+    let Some(source_object) = source_data.as_object() else {
+        return;
+    };
+    let Some(payload_object) = payload.as_object_mut() else {
+        return;
+    };
+
+    if !payload_object.contains_key("subject") {
+        if let Some(subject) = source_object.get("subject") {
+            payload_object.insert("subject".to_string(), subject.clone());
+        }
+    }
+
+    if !payload_object.contains_key("from_email") {
+        if let Some(email) = source_object.get("email") {
+            payload_object.insert("from_email".to_string(), email.clone());
+        }
+    }
+
+    if !payload_object.contains_key("reply_to_email") {
+        if let Some(email) = source_object.get("email") {
+            payload_object.insert("reply_to_email".to_string(), email.clone());
+        }
+    }
+
+    if !payload_object.contains_key("body_text") {
+        if let Some(message) = source_object.get("message") {
+            payload_object.insert("body_text".to_string(), message.clone());
+        }
+    }
+}
+
+fn build_local_trigger_payload(
+    pipe: &LocalPipeDocument,
+    source_data: &serde_json::Value,
+) -> serde_json::Value {
+    let mut payload = if pipe
+        .effective_field_mapping()
+        .as_object()
+        .map(|mapping| !mapping.is_empty())
+        .unwrap_or(false)
+    {
+        apply_field_mapping(source_data, pipe.effective_field_mapping())
+    } else {
+        infer_local_mapping(pipe, source_data).unwrap_or_else(|| source_data.clone())
+    };
+
+    if pipe
+        .instance
+        .target_adapter
+        .as_ref()
+        .map(|adapter| adapter.code == "smtp")
+        .unwrap_or(false)
+    {
+        apply_smtp_defaults(source_data, &mut payload);
+    }
+
+    payload
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")
+}
+
+fn local_target_aliases(container: &LocalContainerInfo) -> Vec<&str> {
+    let mut aliases = vec![container.name.as_str()];
+    if let Some(service) = container.labels.get("com.docker.compose.service") {
+        aliases.push(service.as_str());
+    }
+    aliases
+}
+
+fn matches_local_target_alias(container: &LocalContainerInfo, candidate: &str) -> bool {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    local_target_aliases(container).into_iter().any(|alias| {
+        alias.eq_ignore_ascii_case(candidate)
+            || alias
+                .to_ascii_lowercase()
+                .contains(&candidate.to_ascii_lowercase())
+    })
+}
+
+fn find_local_target_container(
+    pipe: &LocalPipeDocument,
+    configured_host: Option<&str>,
+) -> Result<Option<LocalContainerInfo>, CliError> {
+    let explicit_container = pipe
+        .instance
+        .target_container
+        .as_deref()
+        .or(pipe.target.container.as_deref());
+    let selector = pipe.target.selector.as_str();
+    let containers = discover_local_containers(None).map_err(|error| {
+        CliError::ConfigValidation(format!(
+            "Failed to inspect local Docker containers for pipe '{}': {}",
+            pipe.id, error
+        ))
+    })?;
+
+    Ok(containers.into_iter().find(|container| {
+        explicit_container
+            .map(|name| matches_local_target_alias(container, name))
+            .unwrap_or(false)
+            || matches_local_target_alias(container, selector)
+            || configured_host
+                .filter(|host| !is_loopback_host(host))
+                .map(|host| matches_local_target_alias(container, host))
+                .unwrap_or(false)
+    }))
+}
+
+fn remap_smtp_target_reference_for_container(
+    mut target_adapter: PipeAdapterReference,
+    target_selector: &str,
+    container: &LocalContainerInfo,
+) -> Result<PipeAdapterReference, CliError> {
+    let Some(config) = target_adapter
+        .config
+        .as_mut()
+        .and_then(|value| value.as_object_mut())
+    else {
+        return Ok(target_adapter);
+    };
+
+    let configured_host = config
+        .get("host")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let configured_port = config
+        .get("port")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(587);
+
+    if let Some(binding) = container.ports.iter().find(|port| {
+        port.protocol == "tcp"
+            && (port.container_port == configured_port || port.host_port == Some(configured_port))
+    }) {
+        if let Some(host_port) = binding.host_port {
+            config.insert(
+                "host".to_string(),
+                serde_json::json!(docker_host_target(binding.host_ip.as_deref())),
+            );
+            config.insert("port".to_string(), serde_json::json!(host_port));
+            return Ok(target_adapter);
+        }
+    }
+
+    if configured_host
+        .as_deref()
+        .map(is_loopback_host)
+        .unwrap_or(false)
+    {
+        return Err(CliError::ConfigValidation(format!(
+            "Local SMTP target '{}' is configured for {}:{}, but the matching container '{}' does not publish that port to the host.\n\
+             Publish the SMTP port in Docker Compose / stacker.yml or recreate the pipe with a host-reachable endpoint.",
+            target_selector,
+            configured_host.unwrap_or_else(|| "localhost".to_string()),
+            configured_port,
+            container.name
+        )));
+    }
+
+    if let Some(address) = container.addresses.first() {
+        config.insert("host".to_string(), serde_json::json!(address));
+        return Ok(target_adapter);
+    }
+
+    Ok(target_adapter)
+}
+
+fn normalize_local_smtp_target_reference(
+    pipe: &LocalPipeDocument,
+    target_adapter: PipeAdapterReference,
+) -> Result<PipeAdapterReference, CliError> {
+    let configured_host = target_adapter
+        .config
+        .as_ref()
+        .and_then(|value| value.get("host"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    let Some(container) = find_local_target_container(pipe, configured_host.as_deref())? else {
+        return Ok(target_adapter);
+    };
+
+    remap_smtp_target_reference_for_container(target_adapter, &pipe.target.selector, &container)
+}
+
+async fn run_local_target_adapter(
+    pipe: &LocalPipeDocument,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, CliError> {
+    let target_adapter = pipe.instance.target_adapter.clone().ok_or_else(|| {
+        CliError::ConfigValidation(format!(
+            "Local trigger requires a target adapter. Pipe '{}' does not have one.",
+            pipe.id
+        ))
+    })?;
+
+    match target_adapter.code.as_str() {
+        "smtp" => {
+            let resolved_adapter = normalize_local_smtp_target_reference(pipe, target_adapter)?;
+            let adapter = SmtpTargetAdapter::from_reference(resolved_adapter).map_err(|error| {
+                CliError::ConfigValidation(format!(
+                    "Invalid SMTP adapter configuration for local pipe '{}': {}",
+                    pipe.id, error
+                ))
+            })?;
+
+            adapter
+                .deliver(PipeAdapterPayload::Json(payload))
+                .await
+                .map_err(|error| {
+                    CliError::ConfigValidation(format!(
+                        "Local SMTP delivery failed for pipe '{}': {}",
+                        pipe.id, error
+                    ))
+                })
+        }
+        other => Err(CliError::ConfigValidation(format!(
+            "Local trigger currently supports only the smtp target adapter. Pipe '{}' targets '{}'.",
+            pipe.id, other
+        ))),
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // stacker pipe activate — activate a pipe instance
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3584,6 +4079,36 @@ impl PipeActivateCommand {
 
 impl CallableTrait for PipeActivateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        if let Some(deploy_ctx) = resolve_local_deployment_context(&self.deployment, &project_dir)?
+        {
+            let prefix = mode_prefix(&deploy_ctx);
+            let store = LocalPipeStore::new(&project_dir);
+            let mut pipe = store.resolve(&self.pipe_id)?;
+            pipe.set_status("active");
+            let local_path = store.save(&pipe)?;
+
+            if self.json {
+                let mut output = serde_json::json!({
+                    "local": true,
+                    "pipe": pipe,
+                    "file": local_path,
+                    "note": "Local activate marks the pipe active in .stacker/pipes. Use pipe trigger for one-shot execution."
+                });
+                redact_sensitive_json(&mut output);
+                println!("{}", serde_json::to_string_pretty(&output)?);
+                return Ok(());
+            }
+
+            println!("\n  {}✓ Local pipe '{}' marked active", prefix, pipe.id);
+            println!("  File: {}", local_path.display());
+            println!(
+                "  Note: local background listeners are not implemented yet for file-backed pipes."
+            );
+            println!("  Test now: {}", example_local_trigger_command(&pipe.id));
+            return Ok(());
+        }
+
         let ctx = CliRuntime::new("pipe activate")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
@@ -3718,6 +4243,31 @@ impl PipeDeactivateCommand {
 
 impl CallableTrait for PipeDeactivateCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        if let Some(deploy_ctx) = resolve_local_deployment_context(&self.deployment, &project_dir)?
+        {
+            let prefix = mode_prefix(&deploy_ctx);
+            let store = LocalPipeStore::new(&project_dir);
+            let mut pipe = store.resolve(&self.pipe_id)?;
+            pipe.set_status("paused");
+            let local_path = store.save(&pipe)?;
+
+            if self.json {
+                let mut output = serde_json::json!({
+                    "local": true,
+                    "pipe": pipe,
+                    "file": local_path
+                });
+                redact_sensitive_json(&mut output);
+                println!("{}", serde_json::to_string_pretty(&output)?);
+                return Ok(());
+            }
+
+            println!("\n  {}✓ Local pipe '{}' paused", prefix, pipe.id);
+            println!("  File: {}", local_path.display());
+            return Ok(());
+        }
+
         let ctx = CliRuntime::new("pipe deactivate")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
@@ -3784,8 +4334,15 @@ impl PipeTriggerCommand {
 
 impl CallableTrait for PipeTriggerCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let ctx = CliRuntime::new("pipe trigger")?;
-        let deploy_ctx = resolve_deployment_context(&self.deployment, &ctx)?;
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        let deploy_ctx = if let Some(local_ctx) =
+            resolve_local_deployment_context(&self.deployment, &project_dir)?
+        {
+            local_ctx
+        } else {
+            let ctx = CliRuntime::new("pipe trigger")?;
+            resolve_deployment_context(&self.deployment, &ctx)?
+        };
         let prefix = mode_prefix(&deploy_ctx);
 
         let input_data = match &self.data {
@@ -3797,89 +4354,69 @@ impl CallableTrait for PipeTriggerCommand {
             None => None,
         };
 
-        // Local mode: execute locally via docker exec
         if deploy_ctx.is_local() {
+            let store = LocalPipeStore::new(&project_dir);
+            let mut pipe = store.resolve(&self.pipe_id)?;
+            let source_data = input_data.ok_or_else(|| {
+                CliError::ConfigValidation(format!(
+                    "Local trigger requires --data '<json>' for now.\nExample: {}",
+                    example_local_trigger_command(&pipe.id)
+                ))
+            })?;
+            let effective_payload = build_local_trigger_payload(&pipe, &source_data);
             let pb = progress::spinner(&format!(
                 "{}Triggering pipe '{}' locally...",
                 prefix, self.pipe_id
             ));
-
-            // Fetch the pipe instance to get source/target info
-            let instance = ctx
-                .block_on(ctx.client.get_pipe_instance(&self.pipe_id))
-                .map_err(|e| {
-                    progress::finish_error(&pb, "Failed to fetch pipe instance");
-                    e
-                })?
-                .ok_or_else(|| {
-                    progress::finish_error(&pb, "Pipe not found");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    progress::finish_error(&pb, "Local runtime initialization failed");
                     CliError::ConfigValidation(format!(
-                        "Pipe instance '{}' not found",
-                        self.pipe_id
+                        "Cannot start local pipe runtime: {}",
+                        error
                     ))
                 })?;
 
-            // For local trigger, we attempt docker exec on the source container
-            let data_json = input_data
-                .as_ref()
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "{}".to_string());
-
-            let output = std::process::Command::new("docker")
-                .args([
-                    "exec",
-                    &instance.source_container,
-                    "curl",
-                    "-s",
-                    "-X",
-                    "POST",
-                    "-H",
-                    "Content-Type: application/json",
-                    "-d",
-                    &data_json,
-                    "http://localhost:80/",
-                ])
-                .output();
-
-            match output {
-                Ok(o) if o.status.success() => {
+            match runtime.block_on(run_local_target_adapter(&pipe, effective_payload.clone())) {
+                Ok(result) => {
+                    pipe.record_trigger_success();
+                    let local_path = store.save(&pipe)?;
                     progress::finish_success(&pb, &format!("{}Pipe triggered locally", prefix));
-                    let stdout = String::from_utf8_lossy(&o.stdout);
                     if self.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "status": "completed",
-                                "local": true,
-                                "pipe_id": self.pipe_id,
-                                "output": stdout.trim(),
-                            }))?
-                        );
+                        let mut output = serde_json::json!({
+                            "status": "completed",
+                            "local": true,
+                            "pipe_id": pipe.id,
+                            "file": local_path,
+                            "input_data": source_data,
+                            "effective_payload": effective_payload,
+                            "result": result,
+                        });
+                        redact_sensitive_json(&mut output);
+                        println!("{}", serde_json::to_string_pretty(&output)?);
                     } else {
-                        println!("\n  {}✓ Pipe '{}' triggered locally", prefix, self.pipe_id);
-                        if !stdout.trim().is_empty() {
-                            println!("  Output: {}", stdout.trim());
-                        }
+                        println!("\n  {}✓ Pipe '{}' triggered locally", prefix, pipe.id);
+                        println!("  File: {}", local_path.display());
+                        println!(
+                            "  Trigger count: {}  Errors: {}",
+                            pipe.instance.trigger_count, pipe.instance.error_count
+                        );
                     }
                 }
-                Ok(o) => {
+                Err(error) => {
+                    pipe.record_trigger_failure();
+                    let _ = store.save(&pipe);
                     progress::finish_error(&pb, "Local trigger failed");
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    eprintln!(
-                        "{}Docker exec failed on container '{}': {}",
-                        prefix, instance.source_container, stderr
-                    );
-                }
-                Err(e) => {
-                    progress::finish_error(&pb, "Docker not available");
-                    eprintln!("Cannot run docker exec: {}", e);
+                    return Err(Box::new(error));
                 }
             }
 
             return Ok(());
         }
 
-        // Remote mode
+        let ctx = CliRuntime::new("pipe trigger")?;
         let hash = match &deploy_ctx {
             DeploymentContext::Remote(h) => h.clone(),
             _ => unreachable!(),
@@ -4078,35 +4615,65 @@ impl PipeDeployCommand {
 impl CallableTrait for PipeDeployCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("pipe deploy")?;
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+        let store = LocalPipeStore::new(&project_dir);
+        let local_pipe = store.resolve(&self.instance_id)?;
 
-        let pb = progress::spinner(&format!(
-            "Deploying local pipe {} → {}...",
-            &self.instance_id, &self.deployment_hash
+        let template_pb = progress::spinner(&format!(
+            "Promoting local pipe {} → {}...",
+            &local_pipe.id, &self.deployment_hash
         ));
-        let remote = ctx
+        let template = ctx
             .block_on(
                 ctx.client
-                    .deploy_pipe(&self.instance_id, &self.deployment_hash),
+                    .create_pipe_template(&local_pipe.to_template_request()),
             )
             .map_err(|e| {
-                progress::finish_error(&pb, "Deploy failed");
+                progress::finish_error(&template_pb, "Template promotion failed");
                 e
             })?;
-        progress::finish_success(&pb, "Pipe deployed to remote");
+        progress::finish_success(&template_pb, "Template promoted");
+
+        let instance_request =
+            local_pipe.to_instance_request(self.deployment_hash.clone(), template.id.clone());
+
+        let instance_pb = progress::spinner("Creating remote pipe instance...");
+        let remote = ctx
+            .block_on(ctx.client.create_pipe_instance(&instance_request))
+            .map_err(|e| {
+                progress::finish_error(&instance_pb, "Remote instance creation failed");
+                e
+            })?;
+        progress::finish_success(&instance_pb, "Pipe deployed to remote");
+
+        let mut updated_pipe = local_pipe.clone();
+        updated_pipe.record_promotion(&self.deployment_hash, &template.id, &remote.id);
+        let local_path = store.save(&updated_pipe)?;
 
         if self.json {
-            println!("{}", serde_json::to_string_pretty(&remote)?);
+            let mut output = serde_json::json!({
+                "local_pipe": updated_pipe,
+                "remote_template_id": template.id,
+                "remote_instance": remote,
+            });
+            redact_sensitive_json(&mut output);
+            println!("{}", serde_json::to_string_pretty(&output)?);
             return Ok(());
         }
 
         println!("\n  ✓ Local pipe promoted to remote deployment");
-        println!("  Remote instance ID: {}", remote.id);
-        println!("  Deployment:         {}", &remote.deployment_hash);
-        println!("  Source:             {}", remote.source_container);
+        println!("  Local pipe ID:       {}", updated_pipe.id);
+        println!("  Local file:          {}", local_path.display());
+        println!("  Remote template ID:  {}", template.id);
+        println!("  Remote instance ID:  {}", remote.id);
+        println!("  Deployment:          {}", &remote.deployment_hash);
+        println!("  Source:              {}", remote.source_container);
         if let Some(ref t) = remote.target_container {
-            println!("  Target:             {}", t);
+            println!("  Target:              {}", t);
+        } else if let Some(ref adapter) = remote.target_adapter {
+            println!("  Target:              {} adapter", adapter.code);
         }
-        println!("  Status:             {}", remote.status);
+        println!("  Status:              {}", remote.status);
         println!(
             "\n  Use 'stacker pipe activate {}' to start the remote pipe.",
             remote.id
@@ -4121,6 +4688,128 @@ mod tests {
     use super::*;
     use crate::cli::field_matcher::{DeterministicFieldMatcher, FieldMatcher};
     use serde_json::json;
+
+    fn sample_local_smtp_pipe(mapping: serde_json::Value) -> LocalPipeDocument {
+        LocalPipeDocument::draft(NewLocalPipeDocument {
+            name: "status-panel-web-to-smtp".to_string(),
+            source: LocalPipeBinding {
+                selector: "status-panel-web".to_string(),
+                container: Some("status-panel-web".to_string()),
+                adapter: None,
+                method: "POST".to_string(),
+                path: "/contact".to_string(),
+                fields: vec![
+                    "name".to_string(),
+                    "email".to_string(),
+                    "subject".to_string(),
+                    "message".to_string(),
+                ],
+            },
+            target: LocalPipeBinding {
+                selector: "smtp".to_string(),
+                container: None,
+                adapter: Some(
+                    PipeAdapterReference::new("smtp")
+                        .with_role(PipeAdapterRole::Target)
+                        .with_config(json!({
+                            "host": "smtp",
+                            "port": 1025,
+                            "from": "info@example.com",
+                            "to": ["ops@example.com"],
+                            "tls": false
+                        })),
+                ),
+                method: "SEND".to_string(),
+                path: "adapter:smtp".to_string(),
+                fields: vec![
+                    "from_email".to_string(),
+                    "reply_to_email".to_string(),
+                    "subject".to_string(),
+                    "body_text".to_string(),
+                    "body_html".to_string(),
+                ],
+            },
+            template: LocalPipeTemplate {
+                description: Some("POST /contact -> SEND adapter:smtp".to_string()),
+                source_app_type: "status-panel-web".to_string(),
+                source_endpoint: json!({"method":"POST","path":"/contact"}),
+                target_app_type: "smtp".to_string(),
+                target_endpoint: json!({"adapter":"smtp","mode":"adapter"}),
+                target_external_url: None,
+                field_mapping: mapping,
+                config: Some(json!({"retry_count": 3})),
+                is_public: false,
+            },
+            instance: LocalPipeInstance {
+                source_adapter: None,
+                source_container: "status-panel-web".to_string(),
+                target_adapter: Some(
+                    PipeAdapterReference::new("smtp")
+                        .with_role(PipeAdapterRole::Target)
+                        .with_config(json!({
+                            "host": "smtp",
+                            "port": 1025,
+                            "from": "info@example.com",
+                            "to": ["ops@example.com"],
+                            "tls": false
+                        })),
+                ),
+                target_container: None,
+                target_url: None,
+                field_mapping_override: None,
+                config_override: None,
+                trigger_count: 0,
+                error_count: 0,
+                last_triggered_at: None,
+            },
+            diagnostics: LocalPipeDiagnostics::default(),
+        })
+        .expect("sample local pipe should be valid")
+    }
+
+    fn sample_smtp_container(host_port: Option<u16>) -> LocalContainerInfo {
+        LocalContainerInfo {
+            id: "abc123".to_string(),
+            name: "status-smtp-1".to_string(),
+            image: "mailpit/mailpit:latest".to_string(),
+            network: "status_default".to_string(),
+            addresses: vec!["172.18.0.30".to_string()],
+            ports: vec![LocalPortBinding {
+                container_port: 1025,
+                host_port,
+                host_ip: Some("0.0.0.0".to_string()),
+                protocol: "tcp".to_string(),
+            }],
+            status: "running".to_string(),
+            env: BTreeMap::new(),
+            labels: BTreeMap::from([(
+                "com.docker.compose.service".to_string(),
+                "smtp".to_string(),
+            )]),
+        }
+    }
+
+    fn sample_exim_container(host_port: Option<u16>) -> LocalContainerInfo {
+        LocalContainerInfo {
+            id: "def456".to_string(),
+            name: "status-smtp-1".to_string(),
+            image: "exim:latest".to_string(),
+            network: "status_default".to_string(),
+            addresses: vec!["172.18.0.31".to_string()],
+            ports: vec![LocalPortBinding {
+                container_port: 25,
+                host_port,
+                host_ip: Some("0.0.0.0".to_string()),
+                protocol: "tcp".to_string(),
+            }],
+            status: "running".to_string(),
+            env: BTreeMap::new(),
+            labels: BTreeMap::from([(
+                "com.docker.compose.service".to_string(),
+                "smtp".to_string(),
+            )]),
+        }
+    }
 
     #[test]
     fn test_smart_field_match_exact() {
@@ -4226,6 +4915,121 @@ mod tests {
         let ctx = DeploymentContext::Remote("hash".to_string());
         let prefix = mode_prefix(&ctx);
         assert!(prefix.is_empty());
+    }
+
+    #[test]
+    fn test_apply_field_mapping_supports_nested_paths() {
+        let mapped = apply_field_mapping(
+            &json!({
+                "contact": {
+                    "email": "person@example.com"
+                },
+                "message": "hello"
+            }),
+            &json!({
+                "reply_to_email": "$.contact.email",
+                "body_text": "$.message"
+            }),
+        );
+
+        assert_eq!(
+            mapped,
+            json!({
+                "reply_to_email": "person@example.com",
+                "body_text": "hello"
+            })
+        );
+    }
+
+    #[test]
+    fn test_build_local_trigger_payload_applies_smtp_defaults() {
+        let pipe = sample_local_smtp_pipe(json!({
+            "subject": "$.subject"
+        }));
+
+        let payload = build_local_trigger_payload(
+            &pipe,
+            &json!({
+                "name": "Alice",
+                "email": "alice@example.com",
+                "subject": "Status question",
+                "message": "Hello from the contact form"
+            }),
+        );
+
+        assert_eq!(
+            payload,
+            json!({
+                "subject": "Status question",
+                "from_email": "alice@example.com",
+                "reply_to_email": "alice@example.com",
+                "body_text": "Hello from the contact form"
+            })
+        );
+    }
+
+    #[test]
+    fn test_example_local_trigger_command_uses_expected_shape() {
+        let command = example_local_trigger_command("pipe-123");
+        assert!(command.contains("stacker pipe trigger pipe-123 --data"));
+        assert!(command.contains("\"email\":\"person@example.com\""));
+    }
+
+    #[test]
+    fn test_remap_smtp_target_reference_prefers_published_host_port() {
+        let pipe = sample_local_smtp_pipe(json!({}));
+        let adapter = pipe.instance.target_adapter.clone().expect("smtp adapter");
+        let remapped = remap_smtp_target_reference_for_container(
+            adapter,
+            "smtp",
+            &sample_smtp_container(Some(11025)),
+        )
+        .expect("smtp target should be remapped");
+        let config = remapped.config.expect("smtp config");
+
+        assert_eq!(config["host"], serde_json::json!("127.0.0.1"));
+        assert_eq!(config["port"], serde_json::json!(11025));
+    }
+
+    #[test]
+    fn test_remap_smtp_target_reference_accepts_host_published_port_mapping() {
+        let pipe = sample_local_smtp_pipe(json!({}));
+        let adapter = pipe.instance.target_adapter.clone().expect("smtp adapter");
+        let remapped = remap_smtp_target_reference_for_container(
+            adapter,
+            "smtp",
+            &sample_exim_container(Some(1025)),
+        )
+        .expect("smtp target should use the published host port");
+        let config = remapped.config.expect("smtp config");
+
+        assert_eq!(config["host"], serde_json::json!("127.0.0.1"));
+        assert_eq!(config["port"], serde_json::json!(1025));
+    }
+
+    #[test]
+    fn test_remap_smtp_target_reference_rejects_unpublished_localhost_target() {
+        let mut pipe = sample_local_smtp_pipe(json!({}));
+        if let Some(adapter) = pipe.instance.target_adapter.as_mut() {
+            if let Some(config) = adapter
+                .config
+                .as_mut()
+                .and_then(|value| value.as_object_mut())
+            {
+                config.insert("host".to_string(), serde_json::json!("localhost"));
+            }
+        }
+
+        let adapter = pipe.instance.target_adapter.clone().expect("smtp adapter");
+        let error = remap_smtp_target_reference_for_container(
+            adapter,
+            "smtp",
+            &sample_smtp_container(None),
+        )
+        .expect_err("localhost target should require a published port");
+
+        let message = error.to_string();
+        assert!(message.contains("does not publish that port to the host"));
     }
 
     #[test]

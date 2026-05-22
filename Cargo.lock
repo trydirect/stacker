@@ -6613,6 +6613,7 @@ dependencies = [
  "lapin",
  "lazy_static",
  "mockito",
+ "pipe-adapter-mail",
  "pipe-adapter-sdk",
  "predicates",
  "prometheus",

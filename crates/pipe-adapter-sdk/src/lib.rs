@@ -123,7 +123,7 @@ pub struct NormalizedMailMessage {
 #[serde(rename_all = "snake_case")]
 pub enum PipeAdapterPayload {
     Json(serde_json::Value),
-    MailMessage(NormalizedMailMessage),
+    MailMessage(Box<NormalizedMailMessage>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
