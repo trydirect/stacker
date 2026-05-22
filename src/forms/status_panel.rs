@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use pipe_adapter_sdk::PipeAdapterReference;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -581,10 +582,14 @@ pub fn validate_command_parameters(
             if params.pipe_instance_id.trim().is_empty() {
                 return Err("activate_pipe: pipe_instance_id is required".to_string());
             }
-            // Validate target: at least one of target_container or target_url
-            if params.target_container.is_none() && params.target_url.is_none() {
+            // Validate target: at least one of target_container, target_url, or target_adapter
+            if params.target_container.is_none()
+                && params.target_url.is_none()
+                && params.target_adapter.is_none()
+            {
                 return Err(
-                    "activate_pipe: either target_container or target_url is required".to_string(),
+                    "activate_pipe: either target_container, target_url, or target_adapter is required"
+                        .to_string(),
                 );
             }
             // Validate trigger_type
@@ -1032,6 +1037,9 @@ pub struct ProbeEndpointsCommandReport {
 pub struct ActivatePipeCommandRequest {
     /// UUID of the pipe instance to activate
     pub pipe_instance_id: String,
+    /// Optional typed source adapter reference for connector-style transports
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     /// Source container name
     #[serde(default)]
     pub source_container: Option<String>,
@@ -1059,6 +1067,9 @@ pub struct ActivatePipeCommandRequest {
     /// Target external URL (for external pipes)
     #[serde(default)]
     pub target_url: Option<String>,
+    /// Optional typed target adapter reference for connector-style transports
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     /// Target endpoint path
     #[serde(default = "default_pipe_target_endpoint")]
     pub target_endpoint: String,
@@ -1113,6 +1124,9 @@ pub struct TriggerPipeCommandRequest {
     /// Optional input data to feed into the pipe (overrides source fetch)
     #[serde(default)]
     pub input_data: Option<serde_json::Value>,
+    /// Optional typed source adapter reference for connector-style transports
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     /// Optional source container override
     #[serde(default)]
     pub source_container: Option<String>,
@@ -1125,6 +1139,9 @@ pub struct TriggerPipeCommandRequest {
     /// Optional external target override
     #[serde(default)]
     pub target_url: Option<String>,
+    /// Optional typed target adapter reference for connector-style transports
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     /// Optional internal target override
     #[serde(default)]
     pub target_container: Option<String>,
@@ -1227,11 +1244,17 @@ mod tests {
             "activate_pipe.rabbitmq.command.json" => include_str!(
                 "../../tests/fixtures/pipe-contract/activate_pipe.rabbitmq.command.json"
             ),
+            "activate_pipe.adapter.command.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/activate_pipe.adapter.command.json"
+            ),
             "deactivate_pipe.command.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/deactivate_pipe.command.json")
             }
             "trigger_pipe.manual.command.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.manual.command.json")
+            }
+            "trigger_pipe.adapter.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.adapter.command.json")
             }
             "trigger_pipe.replay.command.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.command.json")
@@ -1251,6 +1274,9 @@ mod tests {
             "trigger_pipe.replay.report.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.report.json")
             }
+            "trigger_pipe.smtp_adapter.report.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/trigger_pipe.smtp_adapter.report.json"
+            ),
             "npm_credentials.v1_email_password.json" => {
                 include_str!("../../tests/fixtures/npm_credentials/v1_email_password.json")
             }
@@ -1825,6 +1851,29 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_accepts_adapter_references() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "source_adapter": {
+                    "code": "imap",
+                    "role": "source",
+                    "config": { "mailbox": "INBOX" }
+                },
+                "target_adapter": {
+                    "code": "smtp",
+                    "role": "target",
+                    "config": { "host": "smtp" }
+                },
+                "target_url": "https://bridge.internal/pipes/contact",
+                "trigger_type": "webhook"
+            })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn activate_pipe_accepts_shared_webhook_fixture() {
         let result = validate_command_parameters(
             "activate_pipe",
@@ -1843,10 +1892,39 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_accepts_shared_adapter_fixture() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(fixture("activate_pipe.adapter.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn trigger_pipe_requires_instance_id() {
         let err =
             validate_command_parameters("trigger_pipe", &Some(json!({ "pipe_instance_id": "" })));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn trigger_pipe_accepts_adapter_references() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "source_adapter": {
+                    "code": "pop3",
+                    "role": "source"
+                },
+                "target_adapter": {
+                    "code": "smtp",
+                    "role": "target"
+                },
+                "trigger_type": "manual"
+            })),
+        );
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1865,6 +1943,15 @@ mod tests {
         let result = validate_command_parameters(
             "trigger_pipe",
             &Some(fixture("trigger_pipe.manual.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_accepts_shared_adapter_fixture() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(fixture("trigger_pipe.adapter.command.json")),
         );
         assert!(result.is_ok());
     }
@@ -2191,6 +2278,20 @@ mod tests {
         let payload = result.unwrap().unwrap();
         assert_eq!(payload["trigger_type"], "replay");
         assert_eq!(payload["lifecycle"]["trigger_count"], 2);
+    }
+
+    #[test]
+    fn trigger_pipe_smtp_adapter_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.smtp_adapter.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.expect("fixture should validate").expect("payload");
+        assert_eq!(payload["target_response"]["transport"], "smtp");
+        assert_eq!(payload["target_response"]["adapter"], "smtp");
+        assert_eq!(payload["target_response"]["delivered"], true);
     }
 
     #[test]

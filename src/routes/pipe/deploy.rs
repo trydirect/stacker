@@ -74,6 +74,8 @@ pub async fn deploy_pipe_handler(
         source_instance.source_container.clone(),
         user.id.clone(),
     );
+    remote.source_adapter = source_instance.source_adapter.clone();
+    remote.target_adapter = source_instance.target_adapter.clone();
     remote.target_container = source_instance.target_container.clone();
     remote.target_url = source_instance.target_url.clone();
     remote.template_id = source_instance.template_id;

@@ -2,6 +2,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{PipeInstance, PipeTemplate, User};
 use actix_web::{post, web, Responder, Result};
+use pipe_adapter_sdk::PipeAdapterReference;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
@@ -29,7 +30,11 @@ pub struct CreatePipeTemplateRequest {
 pub struct CreatePipeInstanceRequest {
     #[serde(default)]
     pub deployment_hash: Option<String>,
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     pub source_container: String,
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     #[serde(default)]
     pub target_container: Option<String>,
     #[serde(default)]
@@ -124,9 +129,9 @@ pub async fn create_instance_handler(
     if req.source_container.trim().is_empty() {
         return Err(JsonResponse::<()>::build().bad_request("source_container is required"));
     }
-    if req.target_container.is_none() && req.target_url.is_none() {
+    if req.target_container.is_none() && req.target_url.is_none() && req.target_adapter.is_none() {
         return Err(JsonResponse::<()>::build()
-            .bad_request("either target_container or target_url is required"));
+            .bad_request("either target_container, target_url, or target_adapter is required"));
     }
 
     // For remote pipes, verify deployment belongs to the requesting user
@@ -167,6 +172,16 @@ pub async fn create_instance_handler(
 
     if let Some(template_id) = req.template_id {
         instance = instance.with_template(template_id);
+    }
+    if let Some(adapter) = &req.source_adapter {
+        let adapter = serde_json::to_value(adapter)
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err.to_string()))?;
+        instance = instance.with_source_adapter(adapter);
+    }
+    if let Some(adapter) = &req.target_adapter {
+        let adapter = serde_json::to_value(adapter)
+            .map_err(|err| JsonResponse::<()>::build().internal_server_error(err.to_string()))?;
+        instance = instance.with_target_adapter(adapter);
     }
     if let Some(target) = &req.target_container {
         instance = instance.with_target_container(target.clone());

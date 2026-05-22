@@ -1,0 +1,39 @@
+{
+  "pipe_instance_id": "pipe-adapter-1",
+  "input_data": {
+    "subject": "Incident opened",
+    "body": {
+      "text": "CPU usage exceeded threshold"
+    },
+    "from": [
+      {
+        "email": "alerts@example.com"
+      }
+    ],
+    "to": [
+      {
+        "email": "ops@example.com"
+      }
+    ]
+  },
+  "source_adapter": {
+    "code": "imap",
+    "role": "source",
+    "config": {
+      "mailbox": "INBOX"
+    }
+  },
+  "target_adapter": {
+    "code": "smtp",
+    "role": "target",
+    "config": {
+      "host": "smtp.example.com",
+      "from": "alerts@example.com"
+    }
+  },
+  "field_mapping": {
+    "subject": "$.subject",
+    "body": "$.body.text"
+  },
+  "trigger_type": "manual"
+}

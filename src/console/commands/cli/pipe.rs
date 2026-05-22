@@ -23,10 +23,16 @@ use crate::forms::status_panel::{
     ProbeOperation, ProbeResource, ProbeResourceItem,
 };
 use chrono::Utc;
+use dialoguer::Password;
+use pipe_adapter_sdk::{
+    builtin_registry, selector_matches_builtin_kind, PipeAdapterCatalog, PipeAdapterKind,
+    PipeAdapterMetadata, PipeAdapterReference, PipeAdapterRole,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 /// Default poll timeout for pipe probe commands (seconds).
@@ -348,6 +354,7 @@ struct CachedPipeDiscovery {
 enum DiscoverySource {
     Cached,
     Fresh,
+    Synthetic,
 }
 
 #[derive(Debug, Clone)]
@@ -527,14 +534,8 @@ fn detection_outcome(
 
 fn selector_is_smtpish(selector: &str) -> bool {
     let canonical = ServiceCatalog::resolve_alias(selector);
-    if canonical == "smtp" || canonical == "mailhog" {
-        return true;
-    }
-
-    selector
-        .to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .any(|token| matches!(token, "smtp" | "mailhog"))
+    selector_matches_builtin_kind(&canonical, PipeAdapterKind::SmtpTarget)
+        || selector_matches_builtin_kind(selector, PipeAdapterKind::SmtpTarget)
 }
 
 fn classify_probe_target_kind(selector: &str, report: &ProbeEndpointsCommandReport) -> String {
@@ -1607,9 +1608,16 @@ fn local_report_to_agent_info(
     report: &ProbeEndpointsCommandReport,
     capture_samples: bool,
 ) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
+    probe_report_to_agent_info(report, capture_samples)
+}
+
+fn probe_report_to_agent_info(
+    report: &ProbeEndpointsCommandReport,
+    capture_samples: bool,
+) -> Result<AgentCommandInfo, Box<dyn std::error::Error>> {
     Ok(AgentCommandInfo {
-        command_id: "local-scan".to_string(),
-        deployment_hash: "local".to_string(),
+        command_id: format!("synthetic-{}", report.app_code),
+        deployment_hash: report.deployment_hash.clone(),
         command_type: "probe_endpoints".to_string(),
         status: "completed".to_string(),
         priority: "normal".to_string(),
@@ -2085,6 +2093,7 @@ impl PipeCreateCommand {
 #[derive(Debug, Clone)]
 struct SelectableOperation {
     container: Option<String>,
+    adapter: Option<PipeAdapterMetadata>,
     method: String,
     path: String,
     summary: String,
@@ -2116,6 +2125,7 @@ fn extract_operations(info: &AgentCommandInfo) -> Vec<SelectableOperation> {
                         let sample = op.get("sample_response").filter(|v| !v.is_null()).cloned();
                         ops.push(SelectableOperation {
                             container: container.clone(),
+                            adapter: None,
                             method,
                             path,
                             summary,
@@ -2140,6 +2150,7 @@ fn extract_operations(info: &AgentCommandInfo) -> Vec<SelectableOperation> {
                     .unwrap_or_default();
                 ops.push(SelectableOperation {
                     container: form["container"].as_str().map(String::from),
+                    adapter: None,
                     method,
                     path,
                     summary: format!("HTML form {}", form["id"].as_str().unwrap_or("?")),
@@ -2158,6 +2169,267 @@ fn result_has_resources(info: &AgentCommandInfo) -> bool {
         .and_then(|result| result["resources"].as_array())
         .map(|resources| !resources.is_empty())
         .unwrap_or(false)
+}
+
+fn builtin_adapter_for_selector(
+    selector: &str,
+    role: PipeAdapterRole,
+) -> Option<PipeAdapterMetadata> {
+    let registry = builtin_registry();
+    let canonical = ServiceCatalog::resolve_alias(selector);
+    let candidates = [canonical, selector.to_string()];
+    candidates
+        .iter()
+        .find_map(|candidate| {
+            registry.find(candidate).or_else(|| {
+                registry
+                    .adapters()
+                    .into_iter()
+                    .find(|metadata| selector_matches_builtin_kind(candidate, metadata.kind))
+            })
+        })
+        .filter(|metadata| metadata.supports_role(role))
+}
+
+fn adapter_fields(kind: PipeAdapterKind) -> Vec<String> {
+    match kind {
+        PipeAdapterKind::SmtpTarget => vec![
+            "from_email".to_string(),
+            "reply_to_email".to_string(),
+            "subject".to_string(),
+            "body_text".to_string(),
+            "body_html".to_string(),
+        ],
+        PipeAdapterKind::WebhookBridge
+        | PipeAdapterKind::HttpEndpoint
+        | PipeAdapterKind::HtmlForm => {
+            vec![]
+        }
+        PipeAdapterKind::Pop3Source | PipeAdapterKind::ImapSource => vec![
+            "subject".to_string(),
+            "from_email".to_string(),
+            "to_email".to_string(),
+            "body_text".to_string(),
+            "body_html".to_string(),
+        ],
+    }
+}
+
+fn adapter_sample(kind: PipeAdapterKind) -> Option<serde_json::Value> {
+    match kind {
+        PipeAdapterKind::Pop3Source | PipeAdapterKind::ImapSource => Some(serde_json::json!({
+            "subject": "Incident opened",
+            "from_email": "alerts@example.com",
+            "to_email": "ops@example.com",
+            "body_text": "CPU usage exceeded threshold"
+        })),
+        _ => None,
+    }
+}
+
+fn synthetic_adapter_operation(metadata: &PipeAdapterMetadata) -> SelectableOperation {
+    let method = match metadata.kind {
+        PipeAdapterKind::SmtpTarget => "SEND",
+        PipeAdapterKind::Pop3Source | PipeAdapterKind::ImapSource => "POLL",
+        PipeAdapterKind::WebhookBridge => "POST",
+        PipeAdapterKind::HttpEndpoint => "HTTP",
+        PipeAdapterKind::HtmlForm => "FORM",
+    };
+    SelectableOperation {
+        container: None,
+        adapter: Some(metadata.clone()),
+        method: method.to_string(),
+        path: format!("adapter:{}", metadata.code),
+        summary: format!("{} adapter", metadata.display_name),
+        fields: adapter_fields(metadata.kind),
+        sample: adapter_sample(metadata.kind),
+    }
+}
+
+fn template_endpoint_for_operation(operation: &SelectableOperation) -> serde_json::Value {
+    if let Some(adapter) = &operation.adapter {
+        serde_json::json!({
+            "mode": "adapter",
+            "adapter": adapter.code,
+            "display_name": adapter.display_name,
+        })
+    } else {
+        serde_json::json!({
+            "path": operation.path,
+            "method": operation.method,
+        })
+    }
+}
+
+fn prompt_text(
+    prompt: &str,
+    default: Option<&str>,
+    allow_empty: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut input = dialoguer::Input::<String>::new().with_prompt(prompt.to_string());
+    if let Some(default) = default {
+        input = input.default(default.to_string());
+    }
+    if allow_empty {
+        input = input.allow_empty(true);
+    }
+    Ok(input.interact_text()?.trim().to_string())
+}
+
+fn prompt_optional_text(
+    prompt: &str,
+    default: Option<&str>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let value = prompt_text(prompt, default, true)?;
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn prompt_secret(prompt: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let value = if io::stdin().is_terminal() {
+        Password::new()
+            .with_prompt(prompt)
+            .allow_empty_password(true)
+            .interact()?
+    } else {
+        prompt_text(prompt, None, true)?
+    };
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
+    }
+}
+
+fn prompt_port(prompt: &str, default: u16) -> Result<u16, Box<dyn std::error::Error>> {
+    let value = prompt_text(prompt, Some(&default.to_string()), false)?;
+    value
+        .parse::<u16>()
+        .map_err(|err| format!("Invalid port '{}': {}", value, err).into())
+}
+
+fn prompt_adapter_reference(
+    metadata: &PipeAdapterMetadata,
+) -> Result<(PipeAdapterReference, Option<String>), Box<dyn std::error::Error>> {
+    let mut reference = PipeAdapterReference::new(metadata.code.clone());
+    let role = metadata.roles.first().copied();
+    if let Some(role) = role {
+        reference = reference.with_role(role);
+    }
+
+    let mut config = serde_json::Map::new();
+    let mut target_url = None;
+    match metadata.kind {
+        PipeAdapterKind::SmtpTarget => {
+            let host = prompt_text("SMTP host", None, false)?;
+            let port = prompt_port("SMTP port", 587)?;
+            let username = prompt_optional_text("SMTP username", None)?;
+            let password = prompt_secret("SMTP password")?;
+            let from = prompt_optional_text("SMTP from address", None)?;
+            let to = prompt_text("SMTP recipient address", None, false)?;
+            let tls = dialoguer::Confirm::new()
+                .with_prompt("Use TLS for SMTP")
+                .default(true)
+                .interact()?;
+            config.insert("host".to_string(), serde_json::json!(host));
+            config.insert("port".to_string(), serde_json::json!(port));
+            config.insert("to".to_string(), serde_json::json!([to]));
+            config.insert("tls".to_string(), serde_json::json!(tls));
+            if let Some(username) = username {
+                config.insert("username".to_string(), serde_json::json!(username));
+            }
+            if let Some(password) = password {
+                config.insert("password".to_string(), serde_json::json!(password));
+            }
+            if let Some(from) = from {
+                config.insert("from".to_string(), serde_json::json!(from));
+            }
+        }
+        PipeAdapterKind::ImapSource => {
+            let host = prompt_text("IMAP host", None, false)?;
+            let port = prompt_port("IMAP port", 993)?;
+            let username = prompt_text("IMAP username", None, false)?;
+            let password = prompt_secret("IMAP password")?;
+            let mailbox = prompt_text("IMAP mailbox", Some("INBOX"), false)?;
+            let tls = dialoguer::Confirm::new()
+                .with_prompt("Use TLS for IMAP")
+                .default(true)
+                .interact()?;
+            config.insert("host".to_string(), serde_json::json!(host));
+            config.insert("port".to_string(), serde_json::json!(port));
+            config.insert("username".to_string(), serde_json::json!(username));
+            config.insert("mailbox".to_string(), serde_json::json!(mailbox));
+            config.insert("tls".to_string(), serde_json::json!(tls));
+            if let Some(password) = password {
+                config.insert("password".to_string(), serde_json::json!(password));
+            }
+        }
+        PipeAdapterKind::Pop3Source => {
+            let host = prompt_text("POP3 host", None, false)?;
+            let port = prompt_port("POP3 port", 995)?;
+            let username = prompt_text("POP3 username", None, false)?;
+            let password = prompt_secret("POP3 password")?;
+            let tls = dialoguer::Confirm::new()
+                .with_prompt("Use TLS for POP3")
+                .default(true)
+                .interact()?;
+            config.insert("host".to_string(), serde_json::json!(host));
+            config.insert("port".to_string(), serde_json::json!(port));
+            config.insert("username".to_string(), serde_json::json!(username));
+            config.insert("tls".to_string(), serde_json::json!(tls));
+            if let Some(password) = password {
+                config.insert("password".to_string(), serde_json::json!(password));
+            }
+        }
+        PipeAdapterKind::WebhookBridge => {
+            let url = prompt_text("Webhook URL", None, false)?;
+            target_url = Some(url.clone());
+            config.insert("url".to_string(), serde_json::json!(url));
+        }
+        PipeAdapterKind::HttpEndpoint | PipeAdapterKind::HtmlForm => {}
+    }
+
+    if !config.is_empty() {
+        reference = reference.with_config(serde_json::Value::Object(config));
+    }
+
+    Ok((reference, target_url))
+}
+
+fn is_sensitive_adapter_key(key: &str) -> bool {
+    let lowered = key.trim().to_ascii_lowercase();
+    lowered.contains("password")
+        || lowered.contains("secret")
+        || lowered.contains("token")
+        || lowered.contains("credential")
+        || lowered == "auth"
+        || lowered.ends_with("_auth")
+        || lowered.contains("api_key")
+        || lowered.ends_with("_key")
+}
+
+fn redact_sensitive_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for item in values {
+                redact_sensitive_json(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if is_sensitive_adapter_key(key) {
+                    *value = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_sensitive_json(value);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn scan_inspection_hint(name: &str, deploy_ctx: &DeploymentContext) -> String {
@@ -2270,6 +2542,7 @@ fn describe_discovery_run(run: &DiscoveryRun) -> String {
     let source = match run.source {
         DiscoverySource::Cached => "cached",
         DiscoverySource::Fresh => "fresh",
+        DiscoverySource::Synthetic => "synthetic",
     };
 
     format!(
@@ -2325,6 +2598,52 @@ fn run_remote_probe(
         request,
     );
     with_probe_report(info, &report).map_err(Into::into)
+}
+
+fn synthetic_transport_target_report(
+    request: &PipeDiscoveryRequest,
+) -> ProbeEndpointsCommandReport {
+    let deployment_hash = request
+        .selector
+        .deployment_hash
+        .clone()
+        .unwrap_or_else(|| "local".to_string());
+
+    ProbeEndpointsCommandReport {
+        command_type: "probe_endpoints".to_string(),
+        deployment_hash,
+        app_code: request.selector.selector.clone(),
+        protocols_detected: Vec::new(),
+        protocols_requested: request.protocols_requested.clone(),
+        containers: Vec::new(),
+        endpoints: Vec::new(),
+        resources: Vec::new(),
+        forms: Vec::new(),
+        probe_attempts: vec![ProbeAttempt {
+            scope: if request.selector.mode == "local" {
+                "local_selector".to_string()
+            } else {
+                "remote_app".to_string()
+            },
+            selector: Some(request.selector.selector.clone()),
+            container: request.selector.container.clone(),
+            protocols: request.protocols_requested.clone(),
+            outcome: "skipped_transport_target".to_string(),
+        }],
+        target_kind: Some("smtp".to_string()),
+        probed_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn synthetic_transport_target_discovery(
+    request: &PipeDiscoveryRequest,
+) -> Result<DiscoveryRun, Box<dyn std::error::Error>> {
+    let report = synthetic_transport_target_report(request);
+    let info = probe_report_to_agent_info(&report, request.capture_samples)?;
+    Ok(DiscoveryRun {
+        info,
+        source: DiscoverySource::Synthetic,
+    })
 }
 
 fn cache_probe_if_completed(
@@ -2523,6 +2842,98 @@ mod selectable_operation_tests {
         assert!(message.contains("HTTP-capable bridge/webhook target"));
         assert!(message.contains("stacker pipe scan --containers smtp"));
     }
+
+    #[test]
+    fn smtp_target_discovery_is_synthetic_for_remote_targets() {
+        let request = PipeDiscoveryRequest::remote(
+            "deployment-123",
+            "smtp",
+            None,
+            &default_pipe_create_protocols(),
+            true,
+        );
+
+        let run = synthetic_transport_target_discovery(&request)
+            .expect("smtp transport target should synthesize discovery");
+        let report = decode_probe_report(&run.info).expect("synthetic report should decode");
+
+        assert_eq!(run.source, DiscoverySource::Synthetic);
+        assert_eq!(run.info.status, "completed");
+        assert_eq!(report.app_code, "smtp");
+        assert_eq!(report.target_kind.as_deref(), Some("smtp"));
+        assert!(report.endpoints.is_empty());
+        assert!(report.forms.is_empty());
+        assert_eq!(report.probe_attempts[0].outcome, "skipped_transport_target");
+    }
+
+    #[test]
+    fn describe_discovery_run_labels_synthetic_results() {
+        let request = PipeDiscoveryRequest::local("smtp", &default_pipe_create_protocols(), true);
+        let run = synthetic_transport_target_discovery(&request)
+            .expect("smtp transport target should synthesize discovery");
+
+        let description = describe_discovery_run(&run);
+
+        assert!(description.contains("synthetic"));
+        assert!(description.contains("protocols:"));
+    }
+
+    #[test]
+    fn builtin_adapter_detection_resolves_source_and_target_roles() {
+        let source = builtin_adapter_for_selector("imap", PipeAdapterRole::Source)
+            .expect("imap source adapter should resolve");
+        let target = builtin_adapter_for_selector("mailhog", PipeAdapterRole::Target)
+            .expect("mailhog smtp target adapter should resolve");
+
+        assert_eq!(source.code, "imap");
+        assert_eq!(source.kind, PipeAdapterKind::ImapSource);
+        assert_eq!(target.code, "mailhog");
+        assert_eq!(target.kind, PipeAdapterKind::SmtpTarget);
+    }
+
+    #[test]
+    fn synthetic_adapter_operation_exposes_expected_mail_fields() {
+        let metadata = builtin_adapter_for_selector("smtp", PipeAdapterRole::Target)
+            .expect("smtp target adapter should resolve");
+        let operation = synthetic_adapter_operation(&metadata);
+
+        assert!(operation.adapter.is_some());
+        assert_eq!(operation.method, "SEND");
+        assert_eq!(operation.path, "adapter:smtp");
+        assert!(operation.fields.contains(&"subject".to_string()));
+        assert!(operation.fields.contains(&"body_text".to_string()));
+    }
+
+    #[test]
+    fn redact_sensitive_json_masks_adapter_secrets() {
+        let mut value = serde_json::json!({
+            "instance": {
+                "target_adapter": {
+                    "code": "smtp",
+                    "config": {
+                        "host": "smtp.example.com",
+                        "password": "supersecret",
+                        "api_key": "key-123"
+                    }
+                }
+            }
+        });
+
+        redact_sensitive_json(&mut value);
+
+        assert_eq!(
+            value["instance"]["target_adapter"]["config"]["password"],
+            "[REDACTED]"
+        );
+        assert_eq!(
+            value["instance"]["target_adapter"]["config"]["api_key"],
+            "[REDACTED]"
+        );
+        assert_eq!(
+            value["instance"]["target_adapter"]["config"]["host"],
+            "smtp.example.com"
+        );
+    }
 }
 
 impl CallableTrait for PipeCreateCommand {
@@ -2538,92 +2949,159 @@ impl CallableTrait for PipeCreateCommand {
         };
         let create_protocols = default_pipe_create_protocols();
 
-        let (source_run, target_run) = if local_mode {
-            println!(
-                "{}Preparing local discovery for source '{}' and target '{}'...",
-                prefix, self.source, self.target
-            );
-            let source_request = PipeDiscoveryRequest::local(&self.source, &create_protocols, true);
-            let target_request = PipeDiscoveryRequest::local(&self.target, &create_protocols, true);
-            (
+        let source_adapter_meta =
+            builtin_adapter_for_selector(&self.source, PipeAdapterRole::Source);
+        let target_adapter_meta =
+            builtin_adapter_for_selector(&self.target, PipeAdapterRole::Target);
+
+        let source_run = if source_adapter_meta.is_none() {
+            Some(if local_mode {
+                println!(
+                    "{}Preparing local discovery for source '{}'...",
+                    prefix, self.source
+                );
+                let source_request =
+                    PipeDiscoveryRequest::local(&self.source, &create_protocols, true);
                 load_or_run_discovery(&project_dir, &source_request, || {
                     prepare_local_discovery(&project_dir, &source_request)
-                })?,
-                load_or_run_discovery(&project_dir, &target_request, || {
-                    prepare_local_discovery(&project_dir, &target_request)
-                })?,
-            )
-        } else {
-            let hash = hash.clone().expect("remote hash");
-            println!(
-                "Preparing discovery for source app '{}' and target app '{}'...",
-                self.source, self.target
-            );
-            let source_request =
-                PipeDiscoveryRequest::remote(&hash, &self.source, None, &create_protocols, true);
-            let target_request =
-                PipeDiscoveryRequest::remote(&hash, &self.target, None, &create_protocols, true);
-
-            (
+                })?
+            } else {
+                let remote_hash = hash.clone().expect("remote hash");
+                println!("Preparing discovery for source app '{}'...", self.source);
+                let source_request = PipeDiscoveryRequest::remote(
+                    &remote_hash,
+                    &self.source,
+                    None,
+                    &create_protocols,
+                    true,
+                );
                 load_or_run_discovery(&project_dir, &source_request, || {
                     run_remote_probe(
                         &ctx,
                         &source_request,
                         &format!("Scanning source: {}", self.source),
                     )
-                })?,
+                })?
+            })
+        } else {
+            None
+        };
+        let target_run = if target_adapter_meta.is_none() {
+            Some(if local_mode {
+                println!(
+                    "{}Preparing local discovery for target '{}'...",
+                    prefix, self.target
+                );
+                let target_request =
+                    PipeDiscoveryRequest::local(&self.target, &create_protocols, true);
+                load_or_run_discovery(&project_dir, &target_request, || {
+                    prepare_local_discovery(&project_dir, &target_request)
+                })?
+            } else {
+                let remote_hash = hash.clone().expect("remote hash");
+                println!("Preparing discovery for target app '{}'...", self.target);
+                let target_request = PipeDiscoveryRequest::remote(
+                    &remote_hash,
+                    &self.target,
+                    None,
+                    &create_protocols,
+                    true,
+                );
                 load_or_run_discovery(&project_dir, &target_request, || {
                     run_remote_probe(
                         &ctx,
                         &target_request,
                         &format!("Scanning target: {}", self.target),
                     )
-                })?,
-            )
+                })?
+            })
+        } else {
+            None
         };
-        println!(
-            "  Source discovery: {}",
-            describe_discovery_run(&source_run)
-        );
-        println!(
-            "  Target discovery: {}",
-            describe_discovery_run(&target_run)
-        );
-        let source_info = source_run.info;
-        let target_info = target_run.info;
 
-        if source_info.status != "completed" || target_info.status != "completed" {
+        if let Some(run) = &source_run {
+            println!("  Source discovery: {}", describe_discovery_run(run));
+        } else if let Some(metadata) = &source_adapter_meta {
+            println!(
+                "  Source adapter: {} ({})",
+                metadata.display_name, metadata.code
+            );
+        }
+        if let Some(run) = &target_run {
+            println!("  Target discovery: {}", describe_discovery_run(run));
+        } else if let Some(metadata) = &target_adapter_meta {
+            println!(
+                "  Target adapter: {} ({})",
+                metadata.display_name, metadata.code
+            );
+        }
+
+        if source_run
+            .as_ref()
+            .is_some_and(|run| run.info.status != "completed")
+            || target_run
+                .as_ref()
+                .is_some_and(|run| run.info.status != "completed")
+        {
             eprintln!("Scan failed for one or both apps. Cannot create pipe.");
-            if source_info.status != "completed" {
-                eprintln!("  Source '{}': {}", self.source, source_info.status);
+            if let Some(run) = &source_run {
+                if run.info.status != "completed" {
+                    eprintln!("  Source '{}': {}", self.source, run.info.status);
+                }
             }
-            if target_info.status != "completed" {
-                eprintln!("  Target '{}': {}", self.target, target_info.status);
+            if let Some(run) = &target_run {
+                if run.info.status != "completed" {
+                    eprintln!("  Target '{}': {}", self.target, run.info.status);
+                }
             }
             return Ok(());
         }
 
         // Step 2: Extract discovered endpoints
-        let source_ops = extract_operations(&source_info);
-        let target_ops = extract_operations(&target_info);
+        let source_ops = if let Some(metadata) = &source_adapter_meta {
+            vec![synthetic_adapter_operation(metadata)]
+        } else {
+            extract_operations(&source_run.as_ref().expect("source discovery").info)
+        };
+        let target_ops = if let Some(metadata) = &target_adapter_meta {
+            vec![synthetic_adapter_operation(metadata)]
+        } else {
+            extract_operations(&target_run.as_ref().expect("target discovery").info)
+        };
 
         if source_ops.is_empty() {
             eprintln!(
                 "{}",
-                explain_no_selectable_operations(&self.source, &source_info, &deploy_ctx, "source")
+                explain_no_selectable_operations(
+                    &self.source,
+                    &source_run.as_ref().expect("source discovery").info,
+                    &deploy_ctx,
+                    "source",
+                )
             );
             return Ok(());
         }
         if target_ops.is_empty() {
             eprintln!(
                 "{}",
-                explain_no_selectable_operations(&self.target, &target_info, &deploy_ctx, "target")
+                explain_no_selectable_operations(
+                    &self.target,
+                    &target_run.as_ref().expect("target discovery").info,
+                    &deploy_ctx,
+                    "target",
+                )
             );
             return Ok(());
         }
 
         // Step 3: Let user select source endpoint
-        let source_idx = {
+        let source_idx = if source_ops.len() == 1 {
+            println!(
+                "\n  Using source {}",
+                operation_label(source_ops.first().expect("single source op"))
+            );
+            0
+        } else {
             let source_labels = operation_labels(&source_ops);
             println!("\n  Select source endpoint (data comes FROM here):");
             dialoguer::Select::new()
@@ -2638,7 +3116,13 @@ impl CallableTrait for PipeCreateCommand {
         let src_sample = &src_op.sample;
 
         // Step 4: Let user select target endpoint
-        let target_idx = {
+        let target_idx = if target_ops.len() == 1 {
+            println!(
+                "\n  Using target {}",
+                operation_label(target_ops.first().expect("single target op"))
+            );
+            0
+        } else {
             let target_labels = operation_labels(&target_ops);
             println!("\n  Select target endpoint (data goes TO here):");
             dialoguer::Select::new()
@@ -2778,15 +3262,9 @@ impl CallableTrait for PipeCreateCommand {
                 src_method, src_path, tgt_method, tgt_path
             )),
             source_app_type: self.source.clone(),
-            source_endpoint: serde_json::json!({
-                "path": src_path,
-                "method": src_method,
-            }),
+            source_endpoint: template_endpoint_for_operation(src_op),
             target_app_type: self.target.clone(),
-            target_endpoint: serde_json::json!({
-                "path": tgt_path,
-                "method": tgt_method,
-            }),
+            target_endpoint: template_endpoint_for_operation(tgt_op),
             target_external_url: None,
             field_mapping: field_mapping.clone(),
             config: Some(config),
@@ -2802,23 +3280,46 @@ impl CallableTrait for PipeCreateCommand {
             })?;
         progress::finish_success(&pb, "Template created");
 
-        let source_container_name = if local_mode {
+        let source_container_name = if let Some(adapter) = &src_op.adapter {
+            adapter.code.clone()
+        } else if local_mode {
             local_container_for_operation(src_op, &self.source)
         } else {
             self.source.clone()
         };
-        let target_container_name = if local_mode {
-            local_container_for_operation(tgt_op, &self.target)
+        let target_container_name = if tgt_op.adapter.is_some() {
+            None
+        } else if local_mode {
+            Some(local_container_for_operation(tgt_op, &self.target))
         } else {
-            self.target.clone()
+            Some(self.target.clone())
+        };
+        let (source_adapter, _) = if let Some(metadata) = &src_op.adapter {
+            prompt_adapter_reference(metadata)?
+        } else {
+            (PipeAdapterReference::new(""), None)
+        };
+        let source_adapter = src_op.adapter.as_ref().map(|_| source_adapter);
+        let (target_adapter, adapter_target_url) = if let Some(metadata) = &tgt_op.adapter {
+            prompt_adapter_reference(metadata)?
+        } else {
+            (PipeAdapterReference::new(""), None)
+        };
+        let target_adapter = tgt_op.adapter.as_ref().map(|_| target_adapter);
+        let target_url = if target_adapter.is_some() {
+            adapter_target_url
+        } else {
+            None
         };
 
         // Step 8: Create instance linked to this deployment
         let instance_request = CreatePipeInstanceApiRequest {
             deployment_hash: hash.clone(),
+            source_adapter,
             source_container: source_container_name.clone(),
-            target_container: Some(target_container_name.clone()),
-            target_url: None,
+            target_adapter,
+            target_container: target_container_name.clone(),
+            target_url: target_url.clone(),
             template_id: Some(template.id.clone()),
             field_mapping_override: None,
             config_override: None,
@@ -2834,11 +3335,12 @@ impl CallableTrait for PipeCreateCommand {
         progress::finish_success(&pb, "Pipe instance created");
 
         if self.json {
-            let output = serde_json::json!({
+            let mut output = serde_json::json!({
                 "template": template,
                 "instance": instance,
                 "local": local_mode,
             });
+            redact_sensitive_json(&mut output);
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             if local_mode {
@@ -2851,8 +3353,20 @@ impl CallableTrait for PipeCreateCommand {
             }
             println!("  Template ID:  {}", template.id);
             println!("  Instance ID:  {}", instance.id);
-            println!("  Source:       {} ({})", source_container_name, src_path);
-            println!("  Target:       {} ({})", target_container_name, tgt_path);
+            let source_display = src_op
+                .adapter
+                .as_ref()
+                .map(|metadata| format!("{} adapter", metadata.code))
+                .unwrap_or_else(|| source_container_name.clone());
+            let target_display = tgt_op
+                .adapter
+                .as_ref()
+                .map(|metadata| format!("{} adapter", metadata.code))
+                .or_else(|| target_container_name.clone())
+                .or(target_url.clone())
+                .unwrap_or_else(|| self.target.clone());
+            println!("  Source:       {} ({})", source_display, src_path);
+            println!("  Target:       {} ({})", target_display, tgt_path);
             if local_mode {
                 println!("  Mode:         local (no deployment required)");
             }
@@ -2912,7 +3426,9 @@ impl CallableTrait for PipeListCommand {
         }
 
         if self.json {
-            println!("{}", serde_json::to_string_pretty(&pipes)?);
+            let mut output = serde_json::to_value(&pipes)?;
+            redact_sensitive_json(&mut output);
+            println!("{}", serde_json::to_string_pretty(&output)?);
             return Ok(());
         }
 
@@ -2924,9 +3440,16 @@ impl CallableTrait for PipeListCommand {
         println!("{}", "─".repeat(120));
 
         for pipe in &pipes {
+            let source = pipe
+                .source_adapter
+                .as_ref()
+                .map(|adapter| adapter.code.as_str())
+                .unwrap_or(&pipe.source_container);
             let target = pipe
-                .target_container
-                .as_deref()
+                .target_adapter
+                .as_ref()
+                .map(|adapter| adapter.code.as_str())
+                .or(pipe.target_container.as_deref())
                 .or(pipe.target_url.as_deref())
                 .unwrap_or("-");
             let last = pipe.last_triggered_at.as_deref().unwrap_or("never");
@@ -2940,7 +3463,7 @@ impl CallableTrait for PipeListCommand {
             println!(
                 "{:<38} {:<15} {:<15} {:<10} {:>8} {:>8} {}",
                 &pipe.id,
-                truncate_str(&pipe.source_container, 14),
+                truncate_str(source, 14),
                 truncate_str(target, 14),
                 status_icon,
                 pipe.trigger_count,
@@ -3136,11 +3659,13 @@ impl CallableTrait for PipeActivateCommand {
         // 2. Send activate_pipe command to agent
         let params = serde_json::json!({
             "pipe_instance_id": self.pipe_id,
-            "source_container": pipe.source_container,
+            "source_adapter": pipe.source_adapter.clone(),
+            "source_container": pipe.source_container.clone(),
             "source_endpoint": source_endpoint,
             "source_method": source_method,
-            "target_container": pipe.target_container,
-            "target_url": pipe.target_url,
+            "target_adapter": pipe.target_adapter.clone(),
+            "target_container": pipe.target_container.clone(),
+            "target_url": pipe.target_url.clone(),
             "target_endpoint": target_endpoint,
             "target_method": target_method,
             "field_mapping": field_mapping,

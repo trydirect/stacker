@@ -15,6 +15,7 @@ use crate::handoff::{DeploymentHandoffPayload, DeploymentHandoffResolveRequest};
 use crate::services::{
     DeployPlan, DeployPlanOperation, DeploymentEventFeed, DeploymentState, TypedErrorEnvelope,
 };
+use pipe_adapter_sdk::PipeAdapterReference;
 use serde::{Deserialize, Serialize};
 
 /// Default Stacker server base URL (distinct from the User Service auth URL).
@@ -315,7 +316,11 @@ pub struct PipeInstanceInfo {
     #[serde(default)]
     pub template_id: Option<String>,
     pub deployment_hash: String,
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     pub source_container: String,
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     #[serde(default)]
     pub target_container: Option<String>,
     #[serde(default)]
@@ -396,7 +401,11 @@ pub struct CreatePipeTemplateApiRequest {
 pub struct CreatePipeInstanceApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_adapter: Option<PipeAdapterReference>,
     pub source_container: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_adapter: Option<PipeAdapterReference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_container: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4213,6 +4222,83 @@ mod tests {
             "feature array should not contain nginx_proxy_manager project app: {:?}",
             features
         );
+    }
+
+    #[test]
+    fn pipe_instance_request_serializes_adapter_references() {
+        let request = CreatePipeInstanceApiRequest {
+            deployment_hash: Some("dep-123".into()),
+            source_adapter: Some(
+                PipeAdapterReference::new("imap")
+                    .with_config(serde_json::json!({ "mailbox": "INBOX" })),
+            ),
+            source_container: "status-panel-web".into(),
+            target_adapter: Some(
+                PipeAdapterReference::new("smtp")
+                    .with_config(serde_json::json!({ "host": "smtp.example.com" })),
+            ),
+            target_container: None,
+            target_url: Some("smtp://mail.example.com:587".into()),
+            template_id: Some("tpl-123".into()),
+            field_mapping_override: Some(serde_json::json!({ "subject": "$.subject" })),
+            config_override: Some(serde_json::json!({ "timeout_secs": 30 })),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["source_adapter"]["code"], "imap");
+        assert_eq!(value["target_adapter"]["code"], "smtp");
+        assert_eq!(value["source_adapter"]["config"]["mailbox"], "INBOX");
+        assert_eq!(
+            value["target_adapter"]["config"]["host"],
+            "smtp.example.com"
+        );
+    }
+
+    #[test]
+    fn pipe_instance_info_deserializes_adapter_references() {
+        let value = serde_json::json!({
+            "id": "pipe-123",
+            "template_id": "tpl-123",
+            "deployment_hash": "dep-123",
+            "source_adapter": {
+                "code": "imap",
+                "role": "source",
+                "config": { "mailbox": "INBOX" }
+            },
+            "source_container": "status-panel-web",
+            "target_adapter": {
+                "code": "smtp",
+                "role": "target",
+                "config": { "host": "smtp.example.com" }
+            },
+            "target_container": "smtp",
+            "target_url": null,
+            "field_mapping_override": { "subject": "$.subject" },
+            "config_override": { "timeout_secs": 30 },
+            "status": "draft",
+            "last_triggered_at": null,
+            "trigger_count": 0,
+            "error_count": 0,
+            "created_by": "user-123",
+            "created_at": "2026-05-21T00:00:00Z",
+            "updated_at": "2026-05-21T00:00:00Z"
+        });
+
+        let info: PipeInstanceInfo = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            info.source_adapter
+                .as_ref()
+                .map(|adapter| adapter.code.as_str()),
+            Some("imap")
+        );
+        assert_eq!(
+            info.target_adapter
+                .as_ref()
+                .map(|adapter| adapter.code.as_str()),
+            Some("smtp")
+        );
+        assert_eq!(info.source_container, "status-panel-web");
+        assert_eq!(info.target_container.as_deref(), Some("smtp"));
     }
 
     #[test]
