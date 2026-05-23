@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 const CONFIGURE_PROXY_CAPABILITY_MODE_ENV: &str = "STACKER_CONFIGURE_PROXY_CAPABILITY_MODE";
+const PIPE_COMMAND_TYPES: &[&str] = &["activate_pipe", "deactivate_pipe", "trigger_pipe"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConfigureProxyCapabilityMode {
@@ -39,6 +40,10 @@ impl ConfigureProxyCapabilityMode {
 
 fn configure_proxy_requires_vault_capability(capabilities: &[String]) -> bool {
     has_capability_value(capabilities, NPM_CREDENTIAL_SOURCE_KEY, "vault")
+}
+
+fn command_requires_pipes_capability(command_type: &str) -> bool {
+    PIPE_COMMAND_TYPES.contains(&command_type)
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,7 +88,10 @@ pub async fn enqueue_handler(
         status_panel::validate_command_parameters(&payload.command_type, &payload.parameters)
             .map_err(|err| JsonResponse::<()>::build().bad_request(err))?;
 
+    let requires_pipes_capability = command_requires_pipes_capability(&payload.command_type);
+
     let agent = if payload.command_type == "configure_proxy"
+        || requires_pipes_capability
         || validated_parameters
             .as_ref()
             .and_then(|params| params.get("runtime"))
@@ -114,6 +122,19 @@ pub async fn enqueue_handler(
                     "Agent does not support Kata runtime. Check agent capabilities at GET /deployments/{hash}/capabilities"
                 ));
             }
+        }
+    }
+
+    if requires_pipes_capability {
+        let capabilities = agent
+            .as_ref()
+            .map(|agent| extract_capabilities(agent.capabilities.clone()))
+            .unwrap_or_default();
+
+        if !has_capability(&capabilities, "pipes") {
+            return Err(JsonResponse::<()>::build().bad_request(
+                "Agent does not support pipe commands. Check agent capabilities at GET /deployments/{hash}/capabilities"
+            ));
         }
     }
 
@@ -271,6 +292,14 @@ mod tests {
         assert!(!configure_proxy_requires_vault_capability(&[
             "status_panel".to_string()
         ]));
+    }
+
+    #[test]
+    fn pipe_commands_require_pipe_capability() {
+        assert!(command_requires_pipes_capability("activate_pipe"));
+        assert!(command_requires_pipes_capability("deactivate_pipe"));
+        assert!(command_requires_pipes_capability("trigger_pipe"));
+        assert!(!command_requires_pipes_capability("restart"));
     }
 
     #[test]

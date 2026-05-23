@@ -19,7 +19,7 @@ use crate::cli::runtime::CliRuntime;
 use crate::cli::service_catalog::ServiceCatalog;
 use crate::cli::stacker_client::{
     AgentCommandInfo, AgentEnqueueRequest, CreatePipeInstanceApiRequest,
-    CreatePipeTemplateApiRequest,
+    CreatePipeTemplateApiRequest, PipeTemplateInfo,
 };
 use crate::console::commands::CallableTrait;
 use crate::forms::status_panel::{
@@ -3677,6 +3677,42 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
+fn pipe_template_matches_request(
+    existing: &CreatePipeTemplateApiRequest,
+    candidate: &PipeTemplateInfo,
+) -> bool {
+    candidate.description == existing.description
+        && candidate.source_app_type == existing.source_app_type
+        && candidate.source_endpoint == existing.source_endpoint
+        && candidate.target_app_type == existing.target_app_type
+        && candidate.target_endpoint == existing.target_endpoint
+        && candidate.target_external_url == existing.target_external_url
+        && candidate.field_mapping == existing.field_mapping
+        && candidate.config == existing.config
+        && candidate.is_public.unwrap_or(false) == existing.is_public.unwrap_or(false)
+}
+
+fn find_reusable_pipe_template(
+    templates: &[PipeTemplateInfo],
+    request: &CreatePipeTemplateApiRequest,
+) -> Result<Option<PipeTemplateInfo>, CliError> {
+    let Some(existing) = templates
+        .iter()
+        .find(|template| template.name == request.name)
+    else {
+        return Ok(None);
+    };
+
+    if pipe_template_matches_request(request, existing) {
+        Ok(Some(existing.clone()))
+    } else {
+        Err(CliError::ConfigValidation(format!(
+            "Remote pipe template '{}' already exists with a different definition. Rename the local pipe or update the remote template before deploying.",
+            request.name
+        )))
+    }
+}
+
 /// Select the appropriate field matcher based on CLI flags and stacker.yml config.
 ///
 /// Priority:
@@ -4618,21 +4654,41 @@ impl CallableTrait for PipeDeployCommand {
         let project_dir = std::env::current_dir().map_err(CliError::Io)?;
         let store = LocalPipeStore::new(&project_dir);
         let local_pipe = store.resolve(&self.instance_id)?;
+        let template_request = local_pipe.to_template_request();
 
         let template_pb = progress::spinner(&format!(
-            "Promoting local pipe {} → {}...",
+            "Resolving remote template for {} → {}...",
             &local_pipe.id, &self.deployment_hash
         ));
-        let template = ctx
-            .block_on(
-                ctx.client
-                    .create_pipe_template(&local_pipe.to_template_request()),
-            )
+        let templates = ctx
+            .block_on(ctx.client.list_pipe_templates(
+                Some(&template_request.source_app_type),
+                Some(&template_request.target_app_type),
+            ))
             .map_err(|e| {
-                progress::finish_error(&template_pb, "Template promotion failed");
+                progress::finish_error(&template_pb, "Template lookup failed");
                 e
             })?;
-        progress::finish_success(&template_pb, "Template promoted");
+        let template =
+            match find_reusable_pipe_template(&templates, &template_request).map_err(|e| {
+                progress::finish_error(&template_pb, "Template promotion failed");
+                e
+            })? {
+                Some(existing) => {
+                    progress::finish_success(&template_pb, "Using existing template");
+                    existing
+                }
+                None => {
+                    let created = ctx
+                        .block_on(ctx.client.create_pipe_template(&template_request))
+                        .map_err(|e| {
+                            progress::finish_error(&template_pb, "Template promotion failed");
+                            e
+                        })?;
+                    progress::finish_success(&template_pb, "Template promoted");
+                    created
+                }
+            };
 
         let instance_request =
             local_pipe.to_instance_request(self.deployment_hash.clone(), template.id.clone());
@@ -4809,6 +4865,60 @@ mod tests {
                 "smtp".to_string(),
             )]),
         }
+    }
+
+    fn sample_template_request() -> CreatePipeTemplateApiRequest {
+        sample_local_smtp_pipe(json!({"subject": "$.subject"})).to_template_request()
+    }
+
+    fn sample_template_info() -> PipeTemplateInfo {
+        let request = sample_template_request();
+        PipeTemplateInfo {
+            id: "tmpl-1".to_string(),
+            name: request.name,
+            description: request.description,
+            source_app_type: request.source_app_type,
+            source_endpoint: request.source_endpoint,
+            target_app_type: request.target_app_type,
+            target_endpoint: request.target_endpoint,
+            target_external_url: request.target_external_url,
+            field_mapping: request.field_mapping,
+            config: request.config,
+            is_public: request.is_public,
+            created_by: "user-1".to_string(),
+            created_at: "2026-05-23T00:00:00Z".to_string(),
+            updated_at: "2026-05-23T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_find_reusable_pipe_template_reuses_identical_template() {
+        let request = sample_template_request();
+        let existing = sample_template_info();
+
+        let resolved = find_reusable_pipe_template(&[existing.clone()], &request)
+            .expect("lookup should succeed");
+
+        let resolved = resolved.expect("template should be reused");
+        assert_eq!(resolved.id, existing.id);
+        assert_eq!(resolved.name, existing.name);
+    }
+
+    #[test]
+    fn test_find_reusable_pipe_template_rejects_conflicting_template() {
+        let request = sample_template_request();
+        let mut existing = sample_template_info();
+        existing.target_endpoint = json!({"adapter":"smtp","mode":"adapter","variant":"other"});
+
+        let error = find_reusable_pipe_template(&[existing], &request)
+            .expect_err("conflicting template should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("already exists with a different definition"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

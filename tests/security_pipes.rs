@@ -6,6 +6,7 @@
 mod common;
 
 use reqwest::StatusCode;
+use serde_json::json;
 use sqlx::Row;
 
 /// Insert a private pipe template for the given user. Returns its UUID.
@@ -213,4 +214,68 @@ async fn test_owner_can_list_own_pipe_instances() {
         .expect("request failed");
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_update_pipe_instance_rejects_other_user() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let (_hash_a, inst_id) = seed_pipe_instance(&app.db_pool, common::USER_A_ID).await;
+
+    let resp = client
+        .put(format!(
+            "{}/api/v1/pipes/instances/{}/status",
+            app.address, inst_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
+        .json(&json!({ "status": "paused" }))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "User B must not update User A's pipe instance"
+    );
+
+    let status: String = sqlx::query_scalar("SELECT status FROM pipe_instances WHERE id = $1")
+        .bind(inst_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch pipe status");
+    assert_eq!(status, "active");
+}
+
+#[tokio::test]
+async fn test_owner_can_update_own_pipe_instance_status() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let (_hash_a, inst_id) = seed_pipe_instance(&app.db_pool, common::USER_A_ID).await;
+
+    let resp = client
+        .put(format!(
+            "{}/api/v1/pipes/instances/{}/status",
+            app.address, inst_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({ "status": "paused" }))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM pipe_instances WHERE id = $1")
+        .bind(inst_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch pipe status");
+    assert_eq!(status, "paused");
 }

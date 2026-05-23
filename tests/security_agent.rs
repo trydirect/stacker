@@ -96,6 +96,68 @@ async fn test_owner_can_enqueue_on_own_deployment() {
     );
 }
 
+#[tokio::test]
+async fn test_pipe_enqueue_rejects_agent_without_pipes_capability() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id =
+        create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-pipe-cap-001").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO agents (
+            deployment_hash,
+            capabilities,
+            status,
+            last_heartbeat,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, 'online', NOW(), NOW(), NOW())
+        "#,
+    )
+    .bind("dep-pipe-cap-001")
+    .bind(serde_json::json!(["docker", "compose", "logs"]))
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to insert test agent without pipes capability");
+
+    let resp = client
+        .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .json(&serde_json::json!({
+            "deployment_hash": "dep-pipe-cap-001",
+            "command_type": "activate_pipe",
+            "parameters": {
+                "pipe_instance_id": "11111111-1111-1111-1111-111111111111",
+                "target_url": "https://example.com/hook",
+                "trigger_type": "webhook"
+            }
+        }))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "Pipe enqueue should be rejected when agent lacks pipes capability. Got: {}",
+        resp.status()
+    );
+
+    let body: serde_json::Value = resp.json().await.expect("Response should be JSON");
+    let body_text = body.to_string();
+    assert!(
+        body_text.contains("does not support pipe commands"),
+        "Expected pipe capability error, got: {}",
+        body_text
+    );
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Commands list — User B should NOT list User A's commands
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

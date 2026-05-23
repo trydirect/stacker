@@ -550,6 +550,15 @@ impl DeployStrategy for CloudDeploy {
                         }
                     };
 
+                    if context.managed_proxy_feature_enabled {
+                        cleanup_stale_managed_proxy_container(
+                            &client,
+                            project.id,
+                            DeployTarget::Cloud,
+                        )
+                        .await?;
+                    }
+
                     // Step 2: Resolve cloud credentials
                     let provider_str = cloud_cfg.provider.to_string();
                     let provider_code = provider_code_for_remote(&provider_str);
@@ -1054,6 +1063,232 @@ fn ensure_remote_cloud_credentials_available(
     })
 }
 
+fn stale_managed_proxy_container_names(
+    containers: &[serde_json::Value],
+    app_code: &str,
+) -> Vec<String> {
+    let normalized_code = crate::project_app::normalize_app_code(app_code);
+    containers
+        .iter()
+        .filter_map(|container| {
+            let name = container.get("name").and_then(|value| value.as_str())?;
+            let normalized_name = crate::project_app::normalize_app_code(name);
+            let image = container
+                .get("image")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_lowercase();
+
+            let is_project_scoped = normalized_name.starts_with("project_")
+                && normalized_name.contains(&normalized_code);
+            let is_duplicate_npm_image =
+                image.contains("nginx-proxy-manager") && normalized_name != normalized_code;
+
+            if is_project_scoped || is_duplicate_npm_image {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn stale_managed_proxy_app_codes(
+    project_apps: &[stacker_client::ProjectAppInfo],
+    app_code: &str,
+) -> Vec<String> {
+    let normalized_code = crate::project_app::normalize_app_code(app_code);
+    project_apps
+        .iter()
+        .filter(|app| {
+            crate::project_app::normalize_app_code(&app.code) == normalized_code
+                || crate::project_app::normalize_app_code(&app.name) == normalized_code
+        })
+        .map(|app| app.code.clone())
+        .collect()
+}
+
+async fn wait_for_agent_command_completion(
+    client: &StackerClient,
+    deployment_hash: &str,
+    command_id: &str,
+    timeout_secs: u64,
+    target: DeployTarget,
+) -> Result<stacker_client::AgentCommandInfo, CliError> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let interval = std::time::Duration::from_secs(2);
+    let mut last_status = "pending".to_string();
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CliError::DeployFailed {
+                target,
+                reason: format!(
+                    "Timed out waiting for cleanup command '{}' on deployment '{}' (last status: {})",
+                    command_id, deployment_hash, last_status
+                ),
+            });
+        }
+
+        let status = client
+            .agent_command_status(deployment_hash, command_id)
+            .await?;
+        last_status = status.status.clone();
+
+        match status.status.as_str() {
+            "completed" | "failed" => return Ok(status),
+            _ => continue,
+        }
+    }
+}
+
+async fn fetch_live_containers(
+    client: &StackerClient,
+    deployment_hash: &str,
+    target: DeployTarget,
+) -> Result<Vec<serde_json::Value>, CliError> {
+    let params = crate::forms::status_panel::ListContainersCommandRequest {
+        include_health: true,
+        include_logs: false,
+        log_lines: 10,
+    };
+    let request = stacker_client::AgentEnqueueRequest::new(deployment_hash, "list_containers")
+        .with_parameters(&params)
+        .map_err(|error| {
+            CliError::ConfigValidation(format!("Invalid list_containers parameters: {}", error))
+        })?;
+
+    let completed = client.agent_poll_result(&request, 120, 2).await?;
+    if completed.status != "completed" {
+        let detail = completed
+            .error
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown error".to_string());
+        return Err(CliError::DeployFailed {
+            target,
+            reason: format!("Failed to fetch live containers before deploy: {}", detail),
+        });
+    }
+
+    Ok(completed
+        .result
+        .and_then(|result| {
+            result
+                .get("containers")
+                .and_then(|value| value.as_array())
+                .cloned()
+        })
+        .unwrap_or_default())
+}
+
+async fn cleanup_stale_managed_proxy_container(
+    client: &StackerClient,
+    project_id: i32,
+    target: DeployTarget,
+) -> Result<bool, CliError> {
+    let project_apps = client.list_project_apps(project_id).await?;
+    let stale_project_app_codes =
+        stale_managed_proxy_app_codes(&project_apps, "nginx_proxy_manager");
+    let deployment = client.get_deployment_status_by_project(project_id).await?;
+    let stale_container_names = if let Some(deployment) = deployment.as_ref() {
+        match fetch_live_containers(client, &deployment.deployment_hash, target).await {
+            Ok(containers) => {
+                stale_managed_proxy_container_names(&containers, "nginx_proxy_manager")
+            }
+            Err(CliError::AgentNotFound { .. }) => Vec::new(),
+            Err(error) => return Err(error),
+        }
+    } else {
+        Vec::new()
+    };
+
+    if stale_project_app_codes.is_empty() && stale_container_names.is_empty() {
+        return Ok(false);
+    }
+
+    if !stale_project_app_codes.is_empty() {
+        eprintln!(
+            "  Found stale managed proxy app registrations ({}); deleting them before deploy...",
+            stale_project_app_codes.join(", ")
+        );
+        for app_code in &stale_project_app_codes {
+            client
+                .delete_project_app(
+                    project_id,
+                    app_code,
+                    deployment
+                        .as_ref()
+                        .map(|value| value.deployment_hash.as_str()),
+                )
+                .await?;
+        }
+    }
+
+    if stale_container_names.is_empty() {
+        eprintln!("  Removed stale managed nginx_proxy_manager project state");
+        return Ok(true);
+    }
+
+    let Some(deployment) = deployment else {
+        eprintln!("  Removed stale managed nginx_proxy_manager project state");
+        return Ok(true);
+    };
+
+    eprintln!(
+        "  Found stale managed proxy containers on deployment '{}': {}; removing them before managed proxy restart...",
+        deployment.deployment_hash,
+        stale_container_names.join(", ")
+    );
+
+    for container_name in &stale_container_names {
+        let params = crate::forms::status_panel::RemoveAppCommandRequest {
+            app_code: container_name.clone(),
+            delete_config: false,
+            remove_volumes: false,
+            remove_image: false,
+        };
+        let request =
+            stacker_client::AgentEnqueueRequest::new(&deployment.deployment_hash, "remove_app")
+                .with_parameters(&params)
+                .map_err(|error| {
+                    CliError::ConfigValidation(format!("Invalid cleanup parameters: {}", error))
+                })?;
+
+        let enqueued = client.agent_enqueue(&request).await?;
+        let completed = wait_for_agent_command_completion(
+            client,
+            &deployment.deployment_hash,
+            &enqueued.command_id,
+            120,
+            target,
+        )
+        .await?;
+
+        if completed.status != "completed" {
+            let detail = completed
+                .error
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown error".to_string());
+            return Err(CliError::DeployFailed {
+                target,
+                reason: format!(
+                    "Failed to remove stale managed proxy container '{}' before deploy: {}",
+                    container_name, detail
+                ),
+            });
+        }
+    }
+
+    if !stale_project_app_codes.is_empty() {
+        eprintln!("  Removed stale managed nginx_proxy_manager project state and containers");
+    } else {
+        eprintln!("  Removed stale managed nginx_proxy_manager containers");
+    }
+    Ok(true)
+}
+
 /// Resolve Docker registry credentials from the stacker.yml `deploy.registry` section
 /// and/or environment variables. Env vars override config values (same pattern as cloud_token).
 ///
@@ -1425,6 +1660,15 @@ impl DeployStrategy for ServerDeploy {
                     }
                 };
 
+                if context.managed_proxy_feature_enabled {
+                    cleanup_stale_managed_proxy_container(
+                        &client,
+                        project.id,
+                        DeployTarget::Server,
+                    )
+                    .await?;
+                }
+
                 let existing_server = client.list_servers().await?.into_iter().find(|server| {
                     server.project_id == project.id
                         && (server.srv_ip.as_deref() == Some(server_cfg.host.as_str())
@@ -1744,6 +1988,125 @@ mod tests {
             })
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn test_stale_managed_proxy_container_names_detect_project_scoped_nginx_proxy_manager() {
+        let containers = vec![
+            serde_json::json!({
+                "name": "nginx-proxy-manager",
+                "state": "running",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+            serde_json::json!({
+                "name": "project-nginx_proxy_manager-1",
+                "state": "exited",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+        ];
+
+        assert_eq!(
+            stale_managed_proxy_container_names(&containers, "nginx_proxy_manager"),
+            vec!["project-nginx_proxy_manager-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_stale_managed_proxy_container_names_ignore_managed_container_only() {
+        let containers = vec![serde_json::json!({
+            "name": "nginx-proxy-manager",
+            "state": "running",
+            "image": "jc21/nginx-proxy-manager:latest"
+        })];
+
+        assert!(stale_managed_proxy_container_names(&containers, "nginx_proxy_manager").is_empty());
+    }
+
+    #[test]
+    fn test_stale_managed_proxy_container_names_detect_duplicate_npm_container_alias() {
+        let containers = vec![
+            serde_json::json!({
+                "name": "nginx-proxy-manager",
+                "state": "running",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+            serde_json::json!({
+                "name": "nginx-proxy-manager-app-1",
+                "state": "running",
+                "image": "jc21/nginx-proxy-manager:latest"
+            }),
+        ];
+
+        assert_eq!(
+            stale_managed_proxy_container_names(&containers, "nginx_proxy_manager"),
+            vec!["nginx-proxy-manager-app-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_stale_managed_proxy_app_codes_detect_nginx_proxy_manager_registration() {
+        let apps = vec![
+            stacker_client::ProjectAppInfo {
+                id: 1,
+                project_id: 1,
+                code: "nginx_proxy_manager".to_string(),
+                name: "Nginx Proxy Manager".to_string(),
+                image: "jc21/nginx-proxy-manager".to_string(),
+                enabled: true,
+                deploy_order: None,
+                parent_app_code: None,
+            },
+            stacker_client::ProjectAppInfo {
+                id: 2,
+                project_id: 1,
+                code: "status-panel-web".to_string(),
+                name: "Status Panel".to_string(),
+                image: "trydirect/status".to_string(),
+                enabled: true,
+                deploy_order: None,
+                parent_app_code: None,
+            },
+        ];
+
+        assert_eq!(
+            stale_managed_proxy_app_codes(&apps, "nginx_proxy_manager"),
+            vec!["nginx_proxy_manager".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_stale_managed_proxy_app_codes_match_hyphenated_aliases() {
+        let apps = vec![stacker_client::ProjectAppInfo {
+            id: 1,
+            project_id: 1,
+            code: "nginx-proxy-manager".to_string(),
+            name: "Nginx Proxy Manager".to_string(),
+            image: "jc21/nginx-proxy-manager".to_string(),
+            enabled: true,
+            deploy_order: None,
+            parent_app_code: None,
+        }];
+
+        assert_eq!(
+            stale_managed_proxy_app_codes(&apps, "nginx_proxy_manager"),
+            vec!["nginx-proxy-manager".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_stale_managed_proxy_app_codes_ignore_unrelated_apps() {
+        let apps = vec![stacker_client::ProjectAppInfo {
+            id: 2,
+            project_id: 1,
+            code: "status-panel-web".to_string(),
+            name: "Status Panel".to_string(),
+            image: "trydirect/status".to_string(),
+            enabled: true,
+            deploy_order: None,
+            parent_app_code: None,
+        }];
+
+        assert!(stale_managed_proxy_app_codes(&apps, "nginx_proxy_manager").is_empty());
     }
 
     #[test]

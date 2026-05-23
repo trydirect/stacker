@@ -690,6 +690,52 @@ impl StackerClient {
         })
     }
 
+    /// Delete one project app target by exact code.
+    pub async fn delete_project_app(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        deployment_hash: Option<&str>,
+    ) -> Result<(), CliError> {
+        let suffix = if let Some(hash) = deployment_hash.filter(|value| !value.trim().is_empty()) {
+            format!(
+                "/{}/apps/{}?deployment_hash={}",
+                project_id,
+                app_code,
+                urlencoding::encode(hash)
+            )
+        } else {
+            format!("/{}/apps/{}", project_id, app_code)
+        };
+
+        let resp = self
+            .send_project_request(
+                reqwest::Method::DELETE,
+                &suffix,
+                None,
+                "DELETE /project/{id}/apps/{code}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("DELETE /project/{project_id}/apps/{app_code}"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
     // ── Deployments ───────────────────────────────────
 
     /// List deployments for the authenticated user.
