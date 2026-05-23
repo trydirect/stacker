@@ -2021,6 +2021,51 @@ const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE: &str = "true";
 const AGENT_INSTALL_MODE_KEY: &str = "statuspanel_install_mode";
 const AGENT_INSTALL_MODE_VALUE: &str = "status_only";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentInstallConfigPersistence {
+    config_path: PathBuf,
+    backup_path: PathBuf,
+    changed: bool,
+}
+
+fn persist_agent_install_config(
+    config_path: &Path,
+) -> Result<AgentInstallConfigPersistence, CliError> {
+    let mut config = crate::cli::config_parser::StackerConfig::from_file_raw(config_path)?;
+    let changed = !config.monitoring.status_panel;
+    let backup_path = PathBuf::from(format!("{}.bak", config_path.display()));
+
+    if changed {
+        config.monitoring.status_panel = true;
+        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
+        })?;
+        std::fs::copy(config_path, &backup_path)?;
+        std::fs::write(config_path, yaml)?;
+    }
+
+    Ok(AgentInstallConfigPersistence {
+        config_path: config_path.to_path_buf(),
+        backup_path,
+        changed,
+    })
+}
+
+fn print_agent_install_config_persistence(result: &AgentInstallConfigPersistence) {
+    if result.changed {
+        eprintln!(
+            "✓ Updated monitoring.status_panel=true in {}",
+            result.config_path.display()
+        );
+        eprintln!("  Backup written to {}", result.backup_path.display());
+    } else {
+        eprintln!(
+            "✓ monitoring.status_panel already enabled in {}",
+            result.config_path.display()
+        );
+    }
+}
+
 fn add_agent_install_scope_contract(deploy_form: &mut serde_json::Value) {
     if let Some(root) = deploy_form.as_object_mut() {
         root.entry(AGENT_INSTALL_MODE_KEY.to_string())
@@ -2233,6 +2278,7 @@ impl CallableTrait for AgentInstallCommand {
         match result {
             Ok(resp) => {
                 progress::finish_success(&pb, "Status Panel agent installation triggered");
+                let persistence = persist_agent_install_config(&config_path)?;
 
                 if self.json {
                     println!(
@@ -2252,6 +2298,7 @@ impl CallableTrait for AgentInstallCommand {
                     println!();
                     println!("The Status Panel agent will be installed on the server.");
                     println!("Once ready, use `stacker agent status` to verify connectivity.");
+                    print_agent_install_config_persistence(&persistence);
                 }
             }
             Err(e) => {
@@ -2823,6 +2870,89 @@ environments:
         assert_eq!(
             top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
             Some(AGENT_INSTALL_MODE_VALUE)
+        );
+    }
+
+    #[test]
+    fn persist_agent_install_config_enables_status_panel_monitoring() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  image: ${APP_IMAGE}\nmonitoring:\n  status_panel: false\n",
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let written = std::fs::read_to_string(&config_path).expect("written config");
+        assert!(written.contains("${APP_IMAGE}"));
+
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn persist_agent_install_config_is_noop_when_status_panel_monitoring_enabled() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\nmonitoring:\n  status_panel: true\n",
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(!result.changed);
+        assert!(!result.backup_path.exists());
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn given_stacker_agent_install_when_config_is_persisted_then_stacker_yml_reflects_status_panel()
+    {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            r#"
+name: web
+proxy:
+  type: nginx-proxy-manager
+  domains:
+    - domain: status.stacker.my
+      ssl: auto
+      upstream: status-panel-web:3000
+monitoring:
+  status_panel: false
+  healthcheck: null
+  metrics: null
+"#,
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+        assert_eq!(
+            config
+                .proxy
+                .domains
+                .first()
+                .map(|domain| domain.domain.as_str()),
+            Some("status.stacker.my")
         );
     }
 

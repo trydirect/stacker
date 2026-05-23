@@ -4,6 +4,7 @@ use actix_web::{get, web, Responder, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
+use std::sync::Arc;
 
 use crate::{
     db,
@@ -43,6 +44,37 @@ pub struct CapabilitiesResponse {
     pub capabilities: Vec<String>,
     pub commands: Vec<CapabilityCommand>,
     pub features: CapabilityFeatures,
+}
+
+async fn can_view_capabilities(
+    pool: &PgPool,
+    user: &crate::models::User,
+    deployment_hash: &str,
+) -> Result<bool> {
+    if user.role == "agent" {
+        return Ok(user.id == deployment_hash);
+    }
+
+    let deployment = db::deployment::fetch_by_deployment_hash(pool, deployment_hash)
+        .await
+        .map_err(|err| JsonResponse::<CapabilitiesResponse>::build().internal_server_error(err))?;
+
+    let Some(deployment) = deployment else {
+        return Ok(false);
+    };
+
+    if deployment.user_id.as_deref() == Some(&user.id) {
+        return Ok(true);
+    }
+
+    Ok(
+        db::project_member::fetch(pool, deployment.project_id, &user.id)
+            .await
+            .map_err(|err| {
+                JsonResponse::<CapabilitiesResponse>::build().internal_server_error(err)
+            })?
+            .is_some(),
+    )
 }
 
 struct CommandMetadata {
@@ -130,9 +162,14 @@ const COMMAND_CATALOG: &[CommandMetadata] = &[
 #[get("/{deployment_hash}/capabilities")]
 pub async fn capabilities_handler(
     path: web::Path<String>,
+    user: web::ReqData<Arc<crate::models::User>>,
     pg_pool: web::Data<PgPool>,
 ) -> Result<impl Responder> {
     let deployment_hash = path.into_inner();
+
+    if !can_view_capabilities(pg_pool.get_ref(), user.as_ref(), &deployment_hash).await? {
+        return Err(JsonResponse::<CapabilitiesResponse>::build().not_found("Deployment not found"));
+    }
 
     let agent = db::agent::fetch_by_deployment_hash(pg_pool.get_ref(), &deployment_hash)
         .await

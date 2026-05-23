@@ -19,7 +19,7 @@ use crate::cli::runtime::CliRuntime;
 use crate::cli::service_catalog::ServiceCatalog;
 use crate::cli::stacker_client::{
     AgentCommandInfo, AgentEnqueueRequest, CreatePipeInstanceApiRequest,
-    CreatePipeTemplateApiRequest, PipeTemplateInfo,
+    CreatePipeTemplateApiRequest, DeploymentCapabilitiesInfo, PipeTemplateInfo,
 };
 use crate::console::commands::CallableTrait;
 use crate::forms::status_panel::{
@@ -277,6 +277,42 @@ fn run_agent_command(
     }
 
     result
+}
+
+fn validate_pipe_command_capabilities(
+    capabilities: &DeploymentCapabilitiesInfo,
+) -> Result<(), CliError> {
+    if capabilities.features.pipes {
+        return Ok(());
+    }
+
+    let capabilities_list = if capabilities.capabilities.is_empty() {
+        "(none)".to_string()
+    } else {
+        capabilities.capabilities.join(", ")
+    };
+
+    Err(CliError::ConfigValidation(format!(
+        "The active agent for deployment '{}' does not support pipe commands.\n\
+         Agent status: {}\n\
+         Capabilities: {}\n\
+         Update or relink the Status Panel agent so it advertises 'pipes', then retry.",
+        capabilities.deployment_hash,
+        if capabilities.status.is_empty() {
+            "unknown"
+        } else {
+            &capabilities.status
+        },
+        capabilities_list
+    )))
+}
+
+fn ensure_remote_pipe_command_capability(
+    ctx: &CliRuntime,
+    deployment_hash: &str,
+) -> Result<(), CliError> {
+    let capabilities = ctx.block_on(ctx.client.deployment_capabilities(deployment_hash))?;
+    validate_pipe_command_capabilities(&capabilities)
 }
 
 fn print_command_result(info: &AgentCommandInfo, json_output: bool) {
@@ -4147,6 +4183,7 @@ impl CallableTrait for PipeActivateCommand {
 
         let ctx = CliRuntime::new("pipe activate")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        ensure_remote_pipe_command_capability(&ctx, &hash)?;
 
         // Fetch pipe instance details to get source/target info
         let pb = progress::spinner("Fetching pipe details...");
@@ -4306,6 +4343,7 @@ impl CallableTrait for PipeDeactivateCommand {
 
         let ctx = CliRuntime::new("pipe deactivate")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+        ensure_remote_pipe_command_capability(&ctx, &hash)?;
 
         // 1. Update status to "paused" via API
         let pb = progress::spinner("Setting pipe status to paused...");
@@ -4457,6 +4495,7 @@ impl CallableTrait for PipeTriggerCommand {
             DeploymentContext::Remote(h) => h.clone(),
             _ => unreachable!(),
         };
+        ensure_remote_pipe_command_capability(&ctx, &hash)?;
 
         let params = serde_json::json!({
             "pipe_instance_id": self.pipe_id,
@@ -5381,5 +5420,42 @@ mod tests {
                 (2, 2, "local-web-1".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn test_validate_pipe_command_capabilities_accepts_pipes_feature() {
+        let capabilities = DeploymentCapabilitiesInfo {
+            deployment_hash: "dep-123".to_string(),
+            status: "online".to_string(),
+            capabilities: vec!["docker".to_string(), "pipes".to_string()],
+            features: crate::cli::stacker_client::DeploymentCapabilityFeatures {
+                pipes: true,
+                ..Default::default()
+            },
+        };
+
+        assert!(validate_pipe_command_capabilities(&capabilities).is_ok());
+    }
+
+    #[test]
+    fn test_validate_pipe_command_capabilities_rejects_missing_pipes_feature() {
+        let capabilities = DeploymentCapabilitiesInfo {
+            deployment_hash: "dep-456".to_string(),
+            status: "online".to_string(),
+            capabilities: vec![
+                "docker".to_string(),
+                "compose".to_string(),
+                "logs".to_string(),
+            ],
+            features: crate::cli::stacker_client::DeploymentCapabilityFeatures::default(),
+        };
+
+        let error = validate_pipe_command_capabilities(&capabilities)
+            .expect_err("missing pipes capability should be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("does not support pipe commands"));
+        assert!(message.contains("dep-456"));
+        assert!(message.contains("docker, compose, logs"));
     }
 }

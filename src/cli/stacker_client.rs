@@ -2528,6 +2528,53 @@ impl StackerClient {
         Ok((json, hash))
     }
 
+    /// Fetch deployment agent capabilities.
+    ///
+    /// `GET /api/v1/deployments/{deployment_hash}/capabilities`
+    pub async fn deployment_capabilities(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<DeploymentCapabilitiesInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/capabilities",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!(
+                    "Failed to fetch deployment capabilities: {}",
+                    e
+                ))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Capabilities lookup failed",
+                    &format!("GET /api/v1/deployments/{deployment_hash}/capabilities"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        let api: ApiResponse<DeploymentCapabilitiesInfo> = resp.json().await.map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid deployment capabilities response: {}", e))
+        })?;
+
+        api.item.ok_or_else(|| {
+            CliError::ConfigValidation("Empty deployment capabilities response".to_string())
+        })
+    }
+
     // ── Pipe management ─────────────────────────────
 
     /// List pipe instances for a deployment.
@@ -3231,6 +3278,32 @@ pub struct AgentCommandInfo {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeploymentCapabilityFeatures {
+    #[serde(default)]
+    pub kata_runtime: bool,
+    #[serde(default)]
+    pub compose: bool,
+    #[serde(default)]
+    pub backup: bool,
+    #[serde(default)]
+    pub pipes: bool,
+    #[serde(default)]
+    pub proxy_credentials_vault: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeploymentCapabilitiesInfo {
+    #[serde(default)]
+    pub deployment_hash: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub features: DeploymentCapabilityFeatures,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Helper: build deploy form from stacker.yml config
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3280,13 +3353,14 @@ fn parse_docker_image(image: &str) -> (Option<String>, String, Option<String>) {
     }
 }
 
-/// Parse a port mapping string like "8080:80", "8080:80/tcp", or "3000"
+/// Parse a port mapping string like "8080:80", "127.0.0.1:8080:80", or "3000"
 /// into (host_port, container_port) tuple.
 fn parse_port_mapping(port_str: &str) -> (String, String) {
     // Remove protocol suffix like "/tcp", "/udp"
     let port_no_proto = port_str.split('/').next().unwrap_or(port_str);
-    if let Some((host, container)) = port_no_proto.split_once(':') {
-        (host.to_string(), container.to_string())
+    if let Some((host_part, container)) = port_no_proto.rsplit_once(':') {
+        let host_port = host_part.rsplit(':').next().unwrap_or(host_part);
+        (host_port.to_string(), container.to_string())
     } else {
         (port_no_proto.to_string(), port_no_proto.to_string())
     }
@@ -3374,13 +3448,8 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     app
 }
 
-fn is_nginx_proxy_manager_service(svc: &ServiceDefinition) -> bool {
-    let service_name = svc.name.to_ascii_lowercase().replace('-', "_");
-    let image = svc.image.to_ascii_lowercase();
-
-    service_name == "nginx_proxy_manager"
-        || service_name == "npm"
-        || image.contains("nginx-proxy-manager")
+fn is_platform_managed_service(svc: &ServiceDefinition) -> bool {
+    crate::project_app::is_platform_managed_app_identity(&svc.name, Some(&svc.image))
 }
 
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
@@ -3516,17 +3585,11 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         web_apps.push(main_app);
     }
 
-    let proxy_is_managed = matches!(
-        config.proxy.proxy_type,
-        crate::cli::config_parser::ProxyType::Nginx
-            | crate::cli::config_parser::ProxyType::NginxProxyManager
-    );
-
-    // Include additional services as service targets. Managed proxy services
-    // are installed via extended_features, not as project apps, to avoid
-    // duplicate NPM containers.
+    // Include additional services as service targets. Platform-managed apps
+    // are installed by their own roles and directories, not by the project
+    // compose, to avoid duplicate containers and host-port conflicts.
     for svc in &config.services {
-        if proxy_is_managed && is_nginx_proxy_manager_service(svc) {
+        if is_platform_managed_service(svc) {
             continue;
         }
         service_apps.push(service_to_app_json(svc, &network_ids));
@@ -4389,6 +4452,79 @@ mod tests {
             .filter_map(|app| app["code"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(codes, vec!["redis"]);
+    }
+
+    #[test]
+    fn test_build_project_body_skips_platform_managed_services_even_without_proxy() {
+        let npm_service = ServiceDefinition {
+            name: "nginx_proxy_manager".to_string(),
+            image: "jc21/nginx-proxy-manager:latest".to_string(),
+            ports: vec![
+                "80:80".to_string(),
+                "443:443".to_string(),
+                "81:81".to_string(),
+            ],
+            environment: std::collections::HashMap::new(),
+            volumes: vec!["npm_data:/data".to_string()],
+            depends_on: vec![],
+        };
+        let statuspanel_service = ServiceDefinition {
+            name: "statuspanel".to_string(),
+            image: "ghcr.io/trydirect/statuspanel:latest".to_string(),
+            ports: vec!["5000:5000".to_string()],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let smtp_service = ServiceDefinition {
+            name: "smtp".to_string(),
+            image: "trydirect/smtp:latest".to_string(),
+            ports: vec!["127.0.0.1:1025:25".to_string()],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .add_service(npm_service)
+            .add_service(statuspanel_service)
+            .add_service(smtp_service)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::None,
+                auto_detect: false,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let service = body["custom"]["service"].as_array().unwrap();
+        let codes = service
+            .iter()
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec!["smtp"]);
+    }
+
+    #[test]
+    fn test_parse_port_mapping_accepts_host_ip_bindings() {
+        assert_eq!(
+            parse_port_mapping("127.0.0.1:1025:25"),
+            ("1025".to_string(), "25".to_string())
+        );
+        assert_eq!(
+            parse_port_mapping("127.0.0.1:1025:25/tcp"),
+            ("1025".to_string(), "25".to_string())
+        );
+        assert_eq!(
+            parse_port_mapping("3000:3000"),
+            ("3000".to_string(), "3000".to_string())
+        );
+        assert_eq!(
+            parse_port_mapping("8080"),
+            ("8080".to_string(), "8080".to_string())
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::cli::config_parser::{
-    CloudOrchestrator, DeployTarget, DomainConfig, SslMode, StackerConfig,
+    CloudOrchestrator, DeployTarget, DomainConfig, ProxyType, SslMode, StackerConfig,
 };
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
@@ -10,6 +10,7 @@ use crate::cli::proxy_manager::{
 use crate::cli::runtime::CliRuntime;
 use crate::console::commands::cli::agent::AgentConfigureProxyCommand;
 use crate::console::commands::CallableTrait;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyProviderKind {
@@ -73,6 +74,94 @@ pub fn build_domain_config(
         domain: domain.to_string(),
         ssl: parse_ssl_mode(ssl),
         upstream: upstream.unwrap_or("http://app:8080").to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProxyConfigPersistence {
+    config_path: PathBuf,
+    backup_path: PathBuf,
+    changed: bool,
+}
+
+fn upsert_proxy_domain_config(
+    config: &mut StackerConfig,
+    proxy_type: ProxyType,
+    domain_config: DomainConfig,
+) -> bool {
+    let mut changed = false;
+
+    if config.proxy.proxy_type != proxy_type {
+        config.proxy.proxy_type = proxy_type;
+        changed = true;
+    }
+
+    if let Some(existing) = config
+        .proxy
+        .domains
+        .iter_mut()
+        .find(|entry| entry.domain.eq_ignore_ascii_case(&domain_config.domain))
+    {
+        if existing.ssl != domain_config.ssl || existing.upstream != domain_config.upstream {
+            existing.ssl = domain_config.ssl;
+            existing.upstream = domain_config.upstream;
+            changed = true;
+        }
+        return changed;
+    }
+
+    config.proxy.domains.push(domain_config);
+    true
+}
+
+fn persist_proxy_config_to_stacker_yml(
+    project_dir: &Path,
+    proxy_type: ProxyType,
+    domain_config: DomainConfig,
+) -> Result<Option<ProxyConfigPersistence>, CliError> {
+    let config_path = project_dir.join("stacker.yml");
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let mut config = StackerConfig::from_file_raw(&config_path)?;
+    let changed = upsert_proxy_domain_config(&mut config, proxy_type, domain_config);
+    let backup_path = PathBuf::from(format!("{}.bak", config_path.display()));
+
+    if !changed {
+        return Ok(Some(ProxyConfigPersistence {
+            config_path,
+            backup_path,
+            changed,
+        }));
+    }
+
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::copy(&config_path, &backup_path)?;
+    std::fs::write(&config_path, yaml)?;
+
+    Ok(Some(ProxyConfigPersistence {
+        config_path,
+        backup_path,
+        changed,
+    }))
+}
+
+fn print_proxy_config_persistence(result: Option<&ProxyConfigPersistence>) {
+    let Some(result) = result else {
+        eprintln!("⚠ No stacker.yml found; proxy config was not persisted locally.");
+        return;
+    };
+
+    if result.changed {
+        eprintln!("✓ Updated proxy config in {}", result.config_path.display());
+        eprintln!("  Backup written to {}", result.backup_path.display());
+    } else {
+        eprintln!(
+            "✓ Proxy config already up to date in {}",
+            result.config_path.display()
+        );
     }
 }
 
@@ -169,6 +258,8 @@ impl ProxyAddCommand {
 impl CallableTrait for ProxyAddCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
+        let domain_config =
+            build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
         let use_agent = self.deployment.is_some() || is_cloud_or_remote(&project_dir);
         if use_agent {
             let upstream = self.upstream.as_deref().unwrap_or("app:8080");
@@ -185,13 +276,25 @@ impl CallableTrait for ProxyAddCommand {
                 self.json,
                 self.deployment.clone(),
             );
-            return command.call();
+            command.call()?;
+            let persistence = persist_proxy_config_to_stacker_yml(
+                &project_dir,
+                ProxyType::NginxProxyManager,
+                domain_config,
+            )?;
+            if !self.json {
+                print_proxy_config_persistence(persistence.as_ref());
+            }
+            return Ok(());
         }
 
-        let config =
-            build_domain_config(&self.domain, self.upstream.as_deref(), self.ssl.as_deref());
-        let block = generate_nginx_server_block(&config)?;
+        let block = generate_nginx_server_block(&domain_config)?;
+        let persistence =
+            persist_proxy_config_to_stacker_yml(&project_dir, ProxyType::Nginx, domain_config)?;
         println!("{}", block);
+        if !self.json {
+            print_proxy_config_persistence(persistence.as_ref());
+        }
         eprintln!(
             "✓ Proxy config generated for {}; apply this nginx snippet to configure a local proxy",
             self.domain
@@ -345,7 +448,7 @@ impl CallableTrait for ProxyDetectCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::ProxyType;
+    use crate::cli::config_parser::{ConfigBuilder, ProxyConfig};
     use crate::cli::proxy_manager::ContainerInfo;
 
     struct MockRuntime {
@@ -413,6 +516,136 @@ mod tests {
         let cfg = build_domain_config("app.io", Some("http://web:3000"), Some("auto"));
         assert_eq!(cfg.upstream, "http://web:3000");
         assert_eq!(cfg.ssl, SslMode::Auto);
+    }
+
+    #[test]
+    fn upsert_proxy_domain_config_sets_type_and_adds_domain() {
+        let mut config = ConfigBuilder::new().name("demo").build().unwrap();
+        let changed = upsert_proxy_domain_config(
+            &mut config,
+            ProxyType::NginxProxyManager,
+            build_domain_config("example.com", Some("app:3000"), Some("auto")),
+        );
+
+        assert!(changed);
+        assert_eq!(config.proxy.proxy_type, ProxyType::NginxProxyManager);
+        assert_eq!(config.proxy.domains.len(), 1);
+        assert_eq!(config.proxy.domains[0].domain, "example.com");
+        assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
+        assert_eq!(config.proxy.domains[0].upstream, "app:3000");
+    }
+
+    #[test]
+    fn upsert_proxy_domain_config_updates_existing_domain_without_duplicate() {
+        let mut config = ConfigBuilder::new()
+            .name("demo")
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::None,
+                auto_detect: false,
+                domains: vec![build_domain_config(
+                    "Example.com",
+                    Some("app:3000"),
+                    Some("off"),
+                )],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let changed = upsert_proxy_domain_config(
+            &mut config,
+            ProxyType::NginxProxyManager,
+            build_domain_config("example.com", Some("web:8080"), Some("auto")),
+        );
+
+        assert!(changed);
+        assert_eq!(config.proxy.proxy_type, ProxyType::NginxProxyManager);
+        assert_eq!(config.proxy.domains.len(), 1);
+        assert_eq!(config.proxy.domains[0].domain, "Example.com");
+        assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
+        assert_eq!(config.proxy.domains[0].upstream, "web:8080");
+    }
+
+    #[test]
+    fn persist_proxy_config_to_stacker_yml_writes_backup_and_preserves_env_placeholders() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  type: node\n  image: ${APP_IMAGE}\nproxy:\n  type: none\n  domains: []\n",
+        )
+        .unwrap();
+
+        let result = persist_proxy_config_to_stacker_yml(
+            dir.path(),
+            ProxyType::NginxProxyManager,
+            build_domain_config(
+                "status.example.com",
+                Some("status-panel-web:3000"),
+                Some("auto"),
+            ),
+        )
+        .unwrap()
+        .expect("stacker.yml exists");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("${APP_IMAGE}"));
+
+        let config = StackerConfig::from_file_raw(&config_path).unwrap();
+        assert_eq!(config.proxy.proxy_type, ProxyType::NginxProxyManager);
+        assert_eq!(config.proxy.domains.len(), 1);
+        assert_eq!(config.proxy.domains[0].domain, "status.example.com");
+        assert_eq!(config.proxy.domains[0].upstream, "status-panel-web:3000");
+        assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
+    }
+
+    #[test]
+    fn given_stacker_proxy_add_when_config_is_persisted_then_stacker_yml_reflects_proxy_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            r#"
+name: web
+services:
+  - name: status-panel-web
+    image: trydirect/status-panel-web:0.1.0
+proxy:
+  type: none
+  auto_detect: false
+  domains: []
+"#,
+        )
+        .unwrap();
+
+        let result = persist_proxy_config_to_stacker_yml(
+            dir.path(),
+            ProxyType::NginxProxyManager,
+            build_domain_config(
+                "status.stacker.my",
+                Some("status-panel-web:3000"),
+                Some("auto"),
+            ),
+        )
+        .unwrap()
+        .expect("stacker.yml exists");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let config = StackerConfig::from_file_raw(&config_path).unwrap();
+        assert_eq!(config.proxy.proxy_type, ProxyType::NginxProxyManager);
+        assert_eq!(config.proxy.domains.len(), 1);
+        assert_eq!(config.proxy.domains[0].domain, "status.stacker.my");
+        assert_eq!(config.proxy.domains[0].ssl, SslMode::Auto);
+        assert_eq!(config.proxy.domains[0].upstream, "status-panel-web:3000");
+        assert!(config
+            .services
+            .iter()
+            .all(|service| service.name != "nginx_proxy_manager"));
     }
 
     #[test]

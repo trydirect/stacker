@@ -32,6 +32,31 @@ async fn insert_test_command(
     cmd_id
 }
 
+async fn insert_test_agent(
+    pool: &sqlx::PgPool,
+    deployment_hash: &str,
+    capabilities: serde_json::Value,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO agents (
+            deployment_hash,
+            capabilities,
+            status,
+            last_heartbeat,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, 'online', NOW(), NOW(), NOW())
+        "#,
+    )
+    .bind(deployment_hash)
+    .bind(capabilities)
+    .execute(pool)
+    .await
+    .expect("Failed to insert test agent");
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Enqueue — User B should NOT enqueue on User A's deployment
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -107,24 +132,12 @@ async fn test_pipe_enqueue_rejects_agent_without_pipes_capability() {
     let _dep_id =
         create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-pipe-cap-001").await;
 
-    sqlx::query(
-        r#"
-        INSERT INTO agents (
-            deployment_hash,
-            capabilities,
-            status,
-            last_heartbeat,
-            created_at,
-            updated_at
-        )
-        VALUES ($1, $2, 'online', NOW(), NOW(), NOW())
-        "#,
+    insert_test_agent(
+        &app.db_pool,
+        "dep-pipe-cap-001",
+        serde_json::json!(["docker", "compose", "logs"]),
     )
-    .bind("dep-pipe-cap-001")
-    .bind(serde_json::json!(["docker", "compose", "logs"]))
-    .execute(&app.db_pool)
-    .await
-    .expect("Failed to insert test agent without pipes capability");
+    .await;
 
     let resp = client
         .post(format!("{}/api/v1/agent/commands/enqueue", &app.address))
@@ -156,6 +169,112 @@ async fn test_pipe_enqueue_rejects_agent_without_pipes_capability() {
         "Expected pipe capability error, got: {}",
         body_text
     );
+}
+
+#[tokio::test]
+async fn test_capabilities_rejects_unauthenticated() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cap-anon").await;
+    insert_test_agent(
+        &app.db_pool,
+        "dep-cap-anon",
+        serde_json::json!(["docker", "compose", "logs"]),
+    )
+    .await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/dep-cap-anon/capabilities",
+            &app.address
+        ))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "Capabilities should not be visible anonymously. Got: {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn test_capabilities_rejects_other_user() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id =
+        create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cap-owner").await;
+    insert_test_agent(
+        &app.db_pool,
+        "dep-cap-owner",
+        serde_json::json!(["docker", "compose", "logs"]),
+    )
+    .await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/dep-cap-owner/capabilities",
+            &app.address
+        ))
+        .header("Authorization", format!("Bearer {}", USER_B_TOKEN))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        404,
+        "Capabilities for another user's deployment should be hidden. Got: {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn test_owner_can_read_deployment_capabilities() {
+    let Some(app) = spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let project_id = create_test_project(&app.db_pool, USER_A_ID).await;
+    let _dep_id = create_test_deployment(&app.db_pool, USER_A_ID, project_id, "dep-cap-own").await;
+    insert_test_agent(
+        &app.db_pool,
+        "dep-cap-own",
+        serde_json::json!(["docker", "compose", "logs", "pipes"]),
+    )
+    .await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/dep-cap-own/capabilities",
+            &app.address
+        ))
+        .header("Authorization", format!("Bearer {}", USER_A_TOKEN))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "Owner should read deployment capabilities. Got: {}",
+        resp.status()
+    );
+
+    let body: serde_json::Value = resp.json().await.expect("Response should be JSON");
+    assert_eq!(body["deployment_hash"], "dep-cap-own");
+    assert_eq!(body["features"]["pipes"], true);
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
