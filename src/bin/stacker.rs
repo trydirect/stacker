@@ -775,7 +775,10 @@ enum SecretsCommands {
   Use the target code listed by `stacker secrets apps` for --service.\n\
 \n\
   Remote server secret from stdin:\n\
-    cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42")]
+    cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42\n\
+\n\
+  Status Panel Nginx Proxy Manager credentials from a JSON file:\n\
+    stacker secrets set npm_credentials --scope server --server-id 42 --body-file ./npm_credentials.json")]
     Set {
         /// Local mode: KEY=VALUE. Remote mode: secret name.
         input: String,

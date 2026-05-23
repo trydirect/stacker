@@ -1281,6 +1281,8 @@ stacker agent remove-app --app my-app --remove-volumes --remove-images
 
 # Reverse proxy
 # The agent resolves Nginx Proxy Manager credentials from Vault using STACKER_SERVER_ID.
+# Update those credentials with:
+# stacker secrets set npm_credentials --scope server --server-id <server-id> --body-file ./npm_credentials.json
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
 stacker agent configure-proxy --app my-app --domain app.local --no-ssl
 

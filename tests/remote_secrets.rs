@@ -13,7 +13,7 @@ use stacker::mcp::{ToolContext, ToolHandler};
 use stacker::models::ProjectApp;
 use stacker::services::{runtime_env_contract_response, ConfigRenderer, VaultService};
 use std::sync::Arc;
-use wiremock::matchers::{method, path_regex};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 struct TwoUserVaultApp {
@@ -61,6 +61,13 @@ fn server_secret_path_regex(user_id: &str, server_id: i32, name: &str) -> String
     format!(
         r"/v1/agent/users/{}/servers/{}/secrets/{}",
         user_id, server_id, name
+    )
+}
+
+fn status_panel_npm_credentials_path(server_id: i32) -> String {
+    format!(
+        "/v1/secret/debug/status_panel/hosts/{}/npm_credentials",
+        server_id
     )
 }
 
@@ -315,6 +322,110 @@ async fn test_server_secret_crud_returns_metadata_only_and_uses_vault_v1() {
     assert!(requests
         .iter()
         .all(|request| !request.url.path().contains("/metadata/")));
+}
+
+#[tokio::test]
+async fn test_server_npm_credentials_use_status_panel_host_path() {
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+    let vault_server = MockServer::start().await;
+
+    configuration.vault.address = vault_server.uri();
+    configuration.vault.token = "test-vault-token".to_string();
+    configuration.vault.api_prefix = "v1".to_string();
+    configuration.vault.agent_path_prefix = "secret/debug/status_panel".to_string();
+    configuration.vault.ssh_key_path_prefix = Some("users".to_string());
+    configuration.connectors.install_service =
+        Some(stacker::connectors::InstallServiceConfig { enabled: false });
+
+    let Some(app) = common::spawn_app_with_test_auth_configuration(configuration).await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let server_id =
+        common::create_test_server(&app.db_pool, common::USER_A_ID, project_id, "none", None).await;
+
+    Mock::given(method("POST"))
+        .and(path(status_panel_npm_credentials_path(server_id)))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&vault_server)
+        .await;
+
+    Mock::given(method("DELETE"))
+        .and(path(status_panel_npm_credentials_path(server_id)))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&vault_server)
+        .await;
+
+    let payload = json!({
+        "schema_version": 1,
+        "host": "http://nginx-proxy-manager:81",
+        "email": "admin@example.com",
+        "password": "secret",
+        "auth_mode": "email_password"
+    });
+
+    let client = reqwest::Client::new();
+    let put_response = client
+        .put(format!(
+            "{}/server/{}/secrets/npm_credentials",
+            app.address, server_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({ "value": payload.to_string() }))
+        .send()
+        .await
+        .expect("server npm_credentials PUT failed");
+
+    assert_eq!(put_response.status(), StatusCode::OK);
+    let put_body: Value = put_response.json().await.unwrap();
+    assert_eq!(put_body["item"]["name"], "npm_credentials");
+    assert_eq!(put_body["item"]["scope"], "server");
+    assert_eq!(put_body["item"]["server_id"], server_id);
+    assert_eq!(put_body["item"]["source"], "vault");
+    assert!(put_body["item"].get("value").is_none());
+
+    let get_response = client
+        .get(format!(
+            "{}/server/{}/secrets/npm_credentials",
+            app.address, server_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("server npm_credentials GET failed");
+
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_body: Value = get_response.json().await.unwrap();
+    assert_eq!(get_body["item"]["name"], "npm_credentials");
+
+    let delete_response = client
+        .delete(format!(
+            "{}/server/{}/secrets/npm_credentials",
+            app.address, server_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("server npm_credentials DELETE failed");
+
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let requests = vault_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method.to_string(), "POST");
+    assert_eq!(
+        requests[0].url.path(),
+        status_panel_npm_credentials_path(server_id)
+    );
+    let request_body: Value =
+        serde_json::from_slice(&requests[0].body).expect("npm_credentials body should be json");
+    assert_eq!(request_body, json!({ "data": payload }));
+    assert_eq!(requests[1].method.to_string(), "DELETE");
+    assert_eq!(
+        requests[1].url.path(),
+        status_panel_npm_credentials_path(server_id)
+    );
 }
 
 #[tokio::test]
