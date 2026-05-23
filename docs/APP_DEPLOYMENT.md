@@ -151,6 +151,54 @@ path "{prefix}/*" {
 
 ## Stacker Components
 
+### Service Deployment Scope Convention
+
+Default service deployments are project-scoped.
+
+When a service is declared in `stacker.yml`, `stacker service deploy <name>` and
+related non-platform service deploy flows must update the main project compose
+deployment:
+
+```text
+/home/trydirect/project/docker-compose.yml
+```
+
+Do not create a separate compose project such as
+`/home/trydirect/<service>/docker-compose.yml` for a normal custom service unless
+the user explicitly opts into standalone mode, for example with a future
+`--standalone` or `--scope standalone` flag.
+
+Only platform-managed services are allowed to live outside the project directory
+by default. Current examples:
+
+```text
+/home/trydirect/statuspanel
+/home/trydirect/nginx_proxy_manager
+```
+
+This convention prevents duplicate runtime ownership, where the same service
+exists both inside `/home/trydirect/project/docker-compose.yml` and as a separate
+standalone compose project. Before adding or changing service deployment code,
+verify whether the service is project-scoped or platform-managed and add
+regression tests for the chosen scope.
+
+Stacker-managed compose services must include stable runtime identity labels
+under the owned `stacker.my` reverse-DNS prefix:
+
+```yaml
+labels:
+  my.stacker.project_id: "123"
+  my.stacker.target: "cloud"
+  my.stacker.scope: "project"
+  my.stacker.service: "smtp"
+  my.stacker.dns: "smtp"
+```
+
+Use `my.stacker.service` for the logical Stacker service code and
+`my.stacker.dns` for the Docker network name that agents should use at runtime.
+For Nginx Proxy Manager, this means `my.stacker.service=nginx_proxy_manager` and
+`my.stacker.dns=nginx-proxy-manager`.
+
 ### 1. ConfigRenderer Service
 
 **Location**: `src/services/config_renderer.rs`

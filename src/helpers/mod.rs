@@ -23,6 +23,7 @@ pub mod dockerhub;
 pub mod env_path;
 pub mod fs;
 pub(crate) mod ip;
+pub mod stacker_labels;
 
 pub use dockerhub::*;
 

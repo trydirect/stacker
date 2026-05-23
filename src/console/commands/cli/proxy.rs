@@ -39,7 +39,7 @@ impl ProxyProviderKind {
                 kind: self,
                 canonical_name: "nginx-proxy-manager",
                 service_catalog_name: "nginx_proxy_manager",
-                internal_api_url: "http://nginx_proxy_manager:81",
+                internal_api_url: "http://nginx-proxy-manager:81",
             },
         }
     }
@@ -485,7 +485,7 @@ mod tests {
         let metadata = ProxyProviderKind::NginxProxyManager.metadata();
 
         assert_eq!(metadata.service_catalog_name, "nginx_proxy_manager");
-        assert_eq!(metadata.internal_api_url, "http://nginx_proxy_manager:81");
+        assert_eq!(metadata.internal_api_url, "http://nginx-proxy-manager:81");
         assert_eq!(metadata.canonical_name, "nginx-proxy-manager");
     }
 

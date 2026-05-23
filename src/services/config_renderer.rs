@@ -328,6 +328,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", digest)
 }
 
+fn project_target(project: &Project) -> Option<String> {
+    ["target", "deployment_target", "deploy_target"]
+        .iter()
+        .find_map(|key| {
+            project
+                .metadata
+                .get(*key)
+                .or_else(|| project.request_json.get(*key))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned)
+        })
+}
+
 pub fn env_body_hash(content: &str) -> String {
     let body = content
         .strip_prefix("# stacker-render ")
@@ -478,7 +492,16 @@ impl ConfigRenderer {
 
         for app in apps.iter().filter(|a| a.is_enabled()) {
             let environment = self.resolve_app_environment(pool, project, app).await?;
-            app_contexts.push(self.project_app_to_context(app, environment.effective())?);
+            let mut context = self.project_app_to_context(app, environment.effective())?;
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut context.labels,
+                Some(project.id),
+                project_target(project).as_deref(),
+                crate::helpers::stacker_labels::SCOPE_PROJECT,
+                &app.code,
+                &app.code,
+            );
+            app_contexts.push(context);
 
             let rendered_env = self.render_env_file(app, deployment_hash, &environment)?;
             let config = AppConfig {
@@ -1316,6 +1339,17 @@ mod tests {
     }
 
     #[test]
+    fn project_target_reads_stable_target_metadata() {
+        let project = Project {
+            metadata: json!({"target": "cloud"}),
+            request_json: json!({"target": "server"}),
+            ..Project::default()
+        };
+
+        assert_eq!(project_target(&project).as_deref(), Some("cloud"));
+    }
+
+    #[test]
     fn format_header_stamp_is_deterministic() {
         let generated_at = chrono::DateTime::parse_from_rfc3339("2026-05-13T17:00:00Z")
             .unwrap()
@@ -1697,5 +1731,48 @@ mod tests {
         let compose = renderer.render_compose(&[ctx], &project).unwrap();
 
         assert!(compose.contains("env_file:\n      - .env"));
+    }
+
+    #[test]
+    fn render_compose_includes_stacker_runtime_labels() {
+        let renderer = ConfigRenderer::new().unwrap();
+        let project = Project {
+            name: "demo".to_string(),
+            ..Project::default()
+        };
+        let mut labels = HashMap::new();
+        crate::helpers::stacker_labels::insert_runtime_labels(
+            &mut labels,
+            Some(42),
+            Some("cloud"),
+            crate::helpers::stacker_labels::SCOPE_PROJECT,
+            "web",
+            "web",
+        );
+        let ctx = AppRenderContext {
+            code: "web".to_string(),
+            name: "web".to_string(),
+            image: "nginx:latest".to_string(),
+            environment: HashMap::new(),
+            ports: vec![],
+            volumes: vec![],
+            domain: None,
+            ssl_enabled: false,
+            networks: vec![],
+            depends_on: vec![],
+            restart_policy: "unless-stopped".to_string(),
+            resources: ResourceLimits::default(),
+            labels,
+            healthcheck: None,
+            runtime: None,
+        };
+
+        let compose = renderer.render_compose(&[ctx], &project).unwrap();
+
+        assert!(compose.contains("my.stacker.project_id: \"42\""));
+        assert!(compose.contains("my.stacker.target: \"cloud\""));
+        assert!(compose.contains("my.stacker.scope: \"project\""));
+        assert!(compose.contains("my.stacker.service: \"web\""));
+        assert!(compose.contains("my.stacker.dns: \"web\""));
     }
 }

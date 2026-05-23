@@ -894,6 +894,20 @@ fn local_config_files_for_agent_deploy(
     if result.compose_content.is_none() {
         result.compose_content = Some(bundle_compose_content(&bundle)?);
     }
+    if let Some(compose_content) = result.compose_content.take() {
+        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(project_dir)?;
+        let target_label = active_target
+            .clone()
+            .or_else(|| lock.as_ref().map(|lock| lock.target.clone()));
+        let project_id_label = lock
+            .and_then(|lock| lock.project_id)
+            .map(|project_id| project_id.to_string());
+        result.compose_content = Some(annotate_project_compose_with_stacker_labels(
+            &compose_content,
+            target_label.as_deref(),
+            project_id_label.as_deref(),
+        )?);
+    }
 
     let deploy_config_files: Vec<_> = bundle
         .config_files
@@ -1008,6 +1022,89 @@ fn merge_compose_service(
 
     serde_yaml::to_string(&project_doc)
         .map_err(|err| CliError::ConfigValidation(format!("failed to merge compose: {err}")))
+}
+
+fn annotate_project_compose_with_stacker_labels(
+    compose_content: &str,
+    target: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<String, CliError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_content)?;
+    let services = doc
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .ok_or_else(|| CliError::ConfigValidation("compose does not define services".into()))?;
+
+    for (service_name, service) in services {
+        let Some(service_name) = service_name.as_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(service_map) = service.as_mapping_mut() else {
+            continue;
+        };
+        let labels_key = serde_yaml::Value::String("labels".to_string());
+        let mut labels = service_map
+            .remove(&labels_key)
+            .map(compose_labels_to_mapping)
+            .unwrap_or_default();
+
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::SCOPE,
+            crate::helpers::stacker_labels::SCOPE_PROJECT,
+        );
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::SERVICE,
+            &service_name,
+        );
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::DNS,
+            &service_name,
+        );
+        if let Some(target) = target.filter(|value| !value.trim().is_empty()) {
+            insert_compose_label(&mut labels, crate::helpers::stacker_labels::TARGET, target);
+        }
+        if let Some(project_id) = project_id.filter(|value| !value.trim().is_empty()) {
+            insert_compose_label(
+                &mut labels,
+                crate::helpers::stacker_labels::PROJECT_ID,
+                project_id,
+            );
+        }
+
+        service_map.insert(labels_key, serde_yaml::Value::Mapping(labels));
+    }
+
+    serde_yaml::to_string(&doc)
+        .map_err(|err| CliError::ConfigValidation(format!("failed to annotate compose: {err}")))
+}
+
+fn compose_labels_to_mapping(value: serde_yaml::Value) -> serde_yaml::Mapping {
+    match value {
+        serde_yaml::Value::Mapping(mapping) => mapping,
+        serde_yaml::Value::Sequence(items) => items
+            .into_iter()
+            .filter_map(|item| {
+                let label = item.as_str()?;
+                let (key, value) = label.split_once('=')?;
+                Some((
+                    serde_yaml::Value::String(key.to_string()),
+                    serde_yaml::Value::String(value.to_string()),
+                ))
+            })
+            .collect(),
+        _ => serde_yaml::Mapping::new(),
+    }
+}
+
+fn insert_compose_label(labels: &mut serde_yaml::Mapping, key: &str, value: &str) {
+    labels.insert(
+        serde_yaml::Value::String(key.to_string()),
+        serde_yaml::Value::String(value.to_string()),
+    );
 }
 
 fn align_service_networks_with_project(
@@ -2320,6 +2417,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn label_value<'a>(labels: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+        labels
+            .get(serde_yaml::Value::String(key.to_string()))
+            .and_then(serde_yaml::Value::as_str)
+    }
+
     fn sample_server_info() -> crate::cli::stacker_client::ServerInfo {
         crate::cli::stacker_client::ServerInfo {
             id: 7,
@@ -2578,7 +2681,39 @@ services:
         assert!(compose.contains("1025:25"));
         assert!(compose.contains("RELAY_NETWORKS"));
         assert!(compose.contains("smtp_data:"));
+        assert!(compose.contains("my.stacker.scope: project"));
+        assert!(compose.contains("my.stacker.service: smtp"));
+        assert!(compose.contains("my.stacker.dns: smtp"));
         assert!(!compose.contains("app-network"));
+    }
+
+    #[test]
+    fn annotate_project_compose_adds_stable_stacker_labels() {
+        let compose = r#"
+services:
+  smtp:
+    image: trydirect/smtp
+    labels:
+      - existing=value
+"#;
+
+        let annotated =
+            annotate_project_compose_with_stacker_labels(compose, Some("cloud"), Some("123"))
+                .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&annotated).unwrap();
+        let labels = doc
+            .get("services")
+            .and_then(|services| services.get("smtp"))
+            .and_then(|service| service.get("labels"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .unwrap();
+
+        assert_eq!(label_value(labels, "existing"), Some("value"));
+        assert_eq!(label_value(labels, "my.stacker.project_id"), Some("123"));
+        assert_eq!(label_value(labels, "my.stacker.target"), Some("cloud"));
+        assert_eq!(label_value(labels, "my.stacker.scope"), Some("project"));
+        assert_eq!(label_value(labels, "my.stacker.service"), Some("smtp"));
+        assert_eq!(label_value(labels, "my.stacker.dns"), Some("smtp"));
     }
 
     #[test]

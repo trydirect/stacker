@@ -22,6 +22,7 @@ pub struct ComposeService {
     pub depends_on: Vec<String>,
     pub restart: String,
     pub networks: Vec<String>,
+    pub labels: HashMap<String, String>,
     /// Container runtime (e.g., "kata"). None or "runc" means default.
     pub runtime: Option<String>,
 }
@@ -39,6 +40,7 @@ impl Default for ComposeService {
             depends_on: Vec::new(),
             restart: "unless-stopped".to_string(),
             networks: vec!["app-network".to_string()],
+            labels: HashMap::new(),
             runtime: None,
         }
     }
@@ -47,7 +49,7 @@ impl Default for ComposeService {
 /// Convert a `ServiceDefinition` (from stacker.yml) into a `ComposeService`.
 impl From<&ServiceDefinition> for ComposeService {
     fn from(svc: &ServiceDefinition) -> Self {
-        Self {
+        let mut compose_service = Self {
             name: svc.name.clone(),
             image: Some(svc.image.clone()),
             ports: svc.ports.clone(),
@@ -55,7 +57,16 @@ impl From<&ServiceDefinition> for ComposeService {
             volumes: svc.volumes.clone(),
             depends_on: svc.depends_on.clone(),
             ..Default::default()
-        }
+        };
+        crate::helpers::stacker_labels::insert_runtime_labels(
+            &mut compose_service.labels,
+            None::<String>,
+            None,
+            crate::helpers::stacker_labels::SCOPE_PROJECT,
+            &svc.name,
+            &svc.name,
+        );
+        compose_service
     }
 }
 
@@ -132,6 +143,14 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
         name: "app".to_string(),
         ..Default::default()
     };
+    crate::helpers::stacker_labels::insert_runtime_labels(
+        &mut svc.labels,
+        None::<String>,
+        None,
+        crate::helpers::stacker_labels::SCOPE_PROJECT,
+        "app",
+        "app",
+    );
 
     // If user specifies an image directly, use it.
     if let Some(ref img) = config.app.image {
@@ -193,7 +212,7 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
             Some(svc)
         }
         ProxyType::NginxProxyManager => {
-            let svc = ComposeService {
+            let mut svc = ComposeService {
                 name: "proxy-manager".to_string(),
                 image: Some("jc21/nginx-proxy-manager:latest".to_string()),
                 ports: vec![
@@ -204,6 +223,14 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
                 depends_on: vec!["app".to_string()],
                 ..Default::default()
             };
+            crate::helpers::stacker_labels::insert_runtime_labels(
+                &mut svc.labels,
+                None::<String>,
+                None,
+                crate::helpers::stacker_labels::SCOPE_PLATFORM,
+                "nginx_proxy_manager",
+                "nginx-proxy-manager",
+            );
             Some(svc)
         }
         ProxyType::Traefik => {
@@ -303,6 +330,15 @@ impl ComposeDefinition {
                 out.push_str("    networks:\n");
                 for n in &svc.networks {
                     out.push_str(&format!("      - {}\n", n));
+                }
+            }
+
+            if !svc.labels.is_empty() {
+                out.push_str("    labels:\n");
+                let mut keys: Vec<&String> = svc.labels.keys().collect();
+                keys.sort();
+                for k in keys {
+                    out.push_str(&format!("      {}: \"{}\"\n", k, svc.labels[k]));
                 }
             }
 
@@ -618,6 +654,42 @@ mod tests {
     }
 
     #[test]
+    fn service_definition_adds_project_scope_labels() {
+        let svc_def = ServiceDefinition {
+            name: "smtp".into(),
+            image: "trydirect/smtp:latest".into(),
+            ports: Vec::new(),
+            environment: HashMap::new(),
+            volumes: Vec::new(),
+            depends_on: Vec::new(),
+        };
+
+        let compose_svc = ComposeService::from(&svc_def);
+
+        assert_eq!(
+            compose_svc
+                .labels
+                .get(crate::helpers::stacker_labels::SCOPE)
+                .map(String::as_str),
+            Some("project")
+        );
+        assert_eq!(
+            compose_svc
+                .labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("smtp")
+        );
+        assert_eq!(
+            compose_svc
+                .labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("smtp")
+        );
+    }
+
+    #[test]
     fn test_extract_named_volume_returns_name() {
         assert_eq!(
             extract_named_volume("pg-data:/var/lib/postgresql/data"),
@@ -650,6 +722,24 @@ mod tests {
         assert!(npm.is_some());
         let npm = npm.unwrap();
         assert!(npm.ports.contains(&"81:81".to_string())); // NPM admin port
+        assert_eq!(
+            npm.labels
+                .get(crate::helpers::stacker_labels::SCOPE)
+                .map(String::as_str),
+            Some("platform")
+        );
+        assert_eq!(
+            npm.labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("nginx_proxy_manager")
+        );
+        assert_eq!(
+            npm.labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("nginx-proxy-manager")
+        );
     }
 
     #[test]
