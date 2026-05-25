@@ -2671,6 +2671,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         runtime: runtime.to_string(),
         config_bundle,
         managed_proxy_feature_enabled: true,
+        force_new,
     };
 
     let result = strategy.deploy(&config, &context, executor)?;

@@ -106,12 +106,19 @@ pub struct DeployContext {
 
     /// Whether the Stacker-managed proxy role should be requested from Install Service.
     pub managed_proxy_feature_enabled: bool,
+
+    /// Whether the user explicitly requested a fresh cloud server (`stacker deploy --force-new`).
+    pub force_new: bool,
 }
 
 impl DeployContext {
     pub fn install_image(&self) -> &str {
         self.image.as_deref().unwrap_or(DEFAULT_INSTALL_IMAGE)
     }
+}
+
+fn should_run_managed_proxy_preflight(context: &DeployContext, target: DeployTarget) -> bool {
+    context.managed_proxy_feature_enabled && !(target == DeployTarget::Cloud && context.force_new)
 }
 
 /// Outcome of a successful deployment.
@@ -550,7 +557,7 @@ impl DeployStrategy for CloudDeploy {
                         }
                     };
 
-                    if context.managed_proxy_feature_enabled {
+                    if should_run_managed_proxy_preflight(context, DeployTarget::Cloud) {
                         cleanup_stale_managed_proxy_container(
                             &client,
                             project.id,
@@ -1660,7 +1667,7 @@ impl DeployStrategy for ServerDeploy {
                     }
                 };
 
-                if context.managed_proxy_feature_enabled {
+                if should_run_managed_proxy_preflight(context, DeployTarget::Server) {
                     cleanup_stale_managed_proxy_container(
                         &client,
                         project.id,
@@ -2290,6 +2297,7 @@ mod tests {
             runtime: "runc".to_string(),
             config_bundle: None,
             managed_proxy_feature_enabled: true,
+            force_new: false,
         }
     }
 
@@ -2418,8 +2426,24 @@ mod tests {
             runtime: "runc".to_string(),
             config_bundle: None,
             managed_proxy_feature_enabled: true,
+            force_new: false,
         };
         assert_eq!(ctx.install_image(), "mycompany/install:v3");
+    }
+
+    #[test]
+    fn test_should_run_managed_proxy_preflight_skips_force_new_cloud() {
+        let mut ctx = sample_context(false);
+        ctx.force_new = true;
+
+        assert!(!should_run_managed_proxy_preflight(
+            &ctx,
+            DeployTarget::Cloud
+        ));
+        assert!(should_run_managed_proxy_preflight(
+            &ctx,
+            DeployTarget::Server
+        ));
     }
 
     #[test]
