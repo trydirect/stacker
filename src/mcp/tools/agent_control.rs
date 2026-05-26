@@ -112,6 +112,61 @@ async fn enqueue_and_wait(
     }
 }
 
+async fn enqueue_request_and_wait(
+    context: &ToolContext,
+    request: &crate::cli::stacker_client::AgentEnqueueRequest,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    let command_id = uuid::Uuid::new_v4().to_string();
+    let mut command = Command::new(
+        command_id.clone(),
+        request.deployment_hash.clone(),
+        request.command_type.clone(),
+        context.user.id.clone(),
+    );
+    if let Some(parameters) = request.parameters.clone() {
+        command = command.with_parameters(parameters);
+    }
+    if let Some(timeout_seconds) = request.timeout_seconds {
+        command = command.with_timeout(timeout_seconds);
+    }
+
+    let command = db::command::insert(&context.pg_pool, &command)
+        .await
+        .map_err(|e| format!("Failed to create command: {}", e))?;
+
+    db::command::add_to_queue(
+        &context.pg_pool,
+        &command.command_id,
+        &request.deployment_hash,
+        &CommandPriority::Normal,
+    )
+    .await
+    .map_err(|e| format!("Failed to queue command: {}", e))?;
+
+    if let Some(cmd) =
+        wait_for_command_result(&context.pg_pool, &command.command_id, timeout_secs).await?
+    {
+        let status = cmd.status.to_lowercase();
+        Ok(json!({
+            "status": status,
+            "command_id": cmd.command_id,
+            "deployment_hash": request.deployment_hash,
+            "command_type": request.command_type,
+            "result": cmd.result,
+            "error": cmd.error,
+        }))
+    } else {
+        Ok(json!({
+            "status": "queued",
+            "command_id": command.command_id,
+            "deployment_hash": request.deployment_hash,
+            "command_type": request.command_type,
+            "message": "Command queued. Agent will process shortly.",
+        }))
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Deploy App Tool
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -494,6 +549,191 @@ impl ToolHandler for GetAgentStatusTool {
                         "description": "The deployment hash"
                     }
                 }
+            }),
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Get Agent Command History Tool
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct GetAgentCommandHistoryTool;
+
+#[async_trait]
+impl ToolHandler for GetAgentCommandHistoryTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+            #[serde(default)]
+            limit: Option<usize>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+        let resolver = create_resolver(context);
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        let commands = db::command::fetch_by_deployment(&context.pg_pool, &deployment_hash).await?;
+        let limit = params.limit.unwrap_or(20);
+        let commands: Vec<Value> = commands
+            .into_iter()
+            .take(limit)
+            .map(|command| {
+                json!({
+                    "command_id": command.command_id,
+                    "type": command.r#type,
+                    "status": command.status,
+                    "priority": command.priority,
+                    "created_at": command.created_at.to_rfc3339(),
+                    "updated_at": command.updated_at.to_rfc3339(),
+                    "parameters": command.parameters,
+                    "result": command.result,
+                    "error": command.error,
+                    "timeout_seconds": command.timeout_seconds,
+                })
+            })
+            .collect();
+
+        Ok(ToolContent::Text {
+            text: json!({
+                "status": "ok",
+                "deployment_hash": deployment_hash,
+                "commands": commands,
+            })
+            .to_string(),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "get_agent_command_history".to_string(),
+            description: "List recent commands queued for a deployment's Status Panel agent, including status, timestamps, and any reported result or error.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "The deployment/installation ID"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "The deployment hash"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of commands to return (default: 20)"
+                    }
+                }
+            }),
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Execute Agent Command Tool
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct ExecuteAgentCommandTool;
+
+#[async_trait]
+impl ToolHandler for ExecuteAgentCommandTool {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolContent, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            deployment_id: Option<i64>,
+            #[serde(default)]
+            deployment_hash: Option<String>,
+            command_type: String,
+            #[serde(default)]
+            parameters: Option<Value>,
+            #[serde(default)]
+            timeout_seconds: Option<i32>,
+            #[serde(default)]
+            wait_timeout_seconds: Option<u64>,
+        }
+
+        let params: Args =
+            serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let identifier =
+            DeploymentIdentifier::try_from_options(params.deployment_hash, params.deployment_id)?;
+        let resolver = create_resolver(context);
+        let deployment_hash = resolver.resolve(&identifier).await?;
+
+        let mut request = crate::cli::stacker_client::AgentEnqueueRequest::new(
+            &deployment_hash,
+            &params.command_type,
+        );
+        if let Some(parameters) = params.parameters {
+            request = request.with_raw_parameters(parameters);
+        }
+        if let Some(timeout_seconds) = params.timeout_seconds {
+            request = request.with_timeout(timeout_seconds);
+        }
+
+        let result = enqueue_request_and_wait(
+            context,
+            &request,
+            params
+                .wait_timeout_seconds
+                .unwrap_or(COMMAND_RESULT_TIMEOUT_SECS),
+        )
+        .await?;
+
+        Ok(ToolContent::Text {
+            text: result.to_string(),
+        })
+    }
+
+    fn schema(&self) -> Tool {
+        Tool {
+            name: "execute_agent_command".to_string(),
+            description: "Queue a raw command for the Status Panel agent and optionally wait for the result. Use for advanced operations not covered by a dedicated MCP tool.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "deployment_id": {
+                        "type": "number",
+                        "description": "The deployment/installation ID"
+                    },
+                    "deployment_hash": {
+                        "type": "string",
+                        "description": "The deployment hash"
+                    },
+                    "command_type": {
+                        "type": "string",
+                        "description": "Raw agent command type to enqueue"
+                    },
+                    "parameters": {
+                        "description": "Optional raw JSON parameters for the command",
+                        "oneOf": [
+                            { "type": "object" },
+                            { "type": "array" },
+                            { "type": "string" },
+                            { "type": "number" },
+                            { "type": "boolean" },
+                            { "type": "null" }
+                        ],
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "description": "Optional agent-side timeout to store with the command request"
+                    },
+                    "wait_timeout_seconds": {
+                        "type": "number",
+                        "description": "How long MCP should wait for a terminal command result before returning queued status (default: 15)"
+                    }
+                },
+                "required": ["command_type"]
             }),
         }
     }

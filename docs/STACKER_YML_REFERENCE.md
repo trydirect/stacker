@@ -699,6 +699,10 @@ monitoring:
   status_panel: true
 ```
 
+If you install the agent later with `stacker agent install`, the CLI does **not** modify local
+`stacker.yml` by default. Pass `--persist-config` to also write
+`monitoring.status_panel: true` back into the local config file.
+
 ### `monitoring.healthcheck`
 
 *Optional* · `object` · Default: none
@@ -1280,8 +1284,8 @@ stacker agent remove-app --app my-app             # Remove container
 stacker agent remove-app --app my-app --remove-volumes --remove-images
 
 # Reverse proxy
-# The agent resolves Nginx Proxy Manager credentials from Vault using STACKER_SERVER_ID.
-# Update those credentials with:
+# Managed Status Panel + Nginx Proxy Manager deploys auto-seed default Vault credentials.
+# Update or repair those credentials with:
 # stacker secrets set npm_credentials --scope server --server-id <server-id> --body-file ./npm_credentials.json
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
 stacker agent configure-proxy --app my-app --domain app.local --no-ssl
@@ -1290,6 +1294,10 @@ stacker agent configure-proxy --app my-app --domain app.local --no-ssl
 stacker agent history                             # Recent command history
 stacker agent exec --command-type health          # Raw command
 stacker agent exec --command-type stacker.exec --params '{"container":"app","command":"ls -la"}'
+
+# Install Status Panel on an existing deployed server
+stacker agent install                             # Remote install only; leaves local stacker.yml unchanged
+stacker agent install --persist-config            # Also write monitoring.status_panel=true to local stacker.yml
 
 # Target a specific deployment
 stacker agent status --deployment abc123def

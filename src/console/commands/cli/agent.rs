@@ -2069,7 +2069,7 @@ impl CallableTrait for AgentHistoryCommand {
 
 // ── Install (deploy Status Panel to existing server) ─
 
-/// `stacker agent install [--file <path>] [--json]`
+/// `stacker agent install [--file <path>] [--persist-config] [--json]`
 ///
 /// Deploys the Status Panel agent to an existing server that was previously
 /// deployed without it. Reads the project identity from stacker.yml, finds
@@ -2077,12 +2077,17 @@ impl CallableTrait for AgentHistoryCommand {
 /// a deploy with only the statuspanel feature enabled.
 pub struct AgentInstallCommand {
     pub file: Option<String>,
+    pub persist_config: bool,
     pub json: bool,
 }
 
 impl AgentInstallCommand {
-    pub fn new(file: Option<String>, json: bool) -> Self {
-        Self { file, json }
+    pub fn new(file: Option<String>, persist_config: bool, json: bool) -> Self {
+        Self {
+            file,
+            persist_config,
+            json,
+        }
     }
 }
 
@@ -2146,6 +2151,17 @@ fn persist_agent_install_config(
         backup_path,
         changed,
     })
+}
+
+fn persist_agent_install_config_if_requested(
+    config_path: &Path,
+    persist_config: bool,
+) -> Result<Option<AgentInstallConfigPersistence>, CliError> {
+    if !persist_config {
+        return Ok(None);
+    }
+
+    persist_agent_install_config(config_path).map(Some)
 }
 
 fn print_agent_install_config_persistence(result: &AgentInstallConfigPersistence) {
@@ -2375,7 +2391,8 @@ impl CallableTrait for AgentInstallCommand {
         match result {
             Ok(resp) => {
                 progress::finish_success(&pb, "Status Panel agent installation triggered");
-                let persistence = persist_agent_install_config(&config_path)?;
+                let persistence =
+                    persist_agent_install_config_if_requested(&config_path, self.persist_config)?;
 
                 if self.json {
                     println!(
@@ -2395,7 +2412,13 @@ impl CallableTrait for AgentInstallCommand {
                     println!();
                     println!("The Status Panel agent will be installed on the server.");
                     println!("Once ready, use `stacker agent status` to verify connectivity.");
-                    print_agent_install_config_persistence(&persistence);
+                    if let Some(persistence) = persistence.as_ref() {
+                        print_agent_install_config_persistence(persistence);
+                    } else {
+                        println!(
+                            "Local stacker.yml unchanged. Re-run with --persist-config to set monitoring.status_panel=true locally."
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -3029,6 +3052,25 @@ environments:
         let config =
             crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
         assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn persist_agent_install_config_if_requested_skips_local_write_by_default() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        let original =
+            "name: demo\napp:\n  image: ${APP_IMAGE}\nmonitoring:\n  status_panel: false\n";
+        std::fs::write(&config_path, original).expect("stacker config");
+
+        let result =
+            persist_agent_install_config_if_requested(&config_path, false).expect("skip persist");
+
+        assert!(result.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("config should remain unchanged"),
+            original
+        );
+        assert!(!dir.path().join("stacker.yml.bak").exists());
     }
 
     #[test]

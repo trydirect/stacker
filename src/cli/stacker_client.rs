@@ -378,7 +378,7 @@ pub struct PipeReplayResponse {
 }
 
 /// Request body for creating a pipe template
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePipeTemplateApiRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -397,7 +397,7 @@ pub struct CreatePipeTemplateApiRequest {
 }
 
 /// Request body for creating a pipe instance
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePipeInstanceApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_hash: Option<String>,

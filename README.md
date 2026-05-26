@@ -175,7 +175,7 @@ The end-user tool. No server required for local deploys.
 | `stacker agent restart <app>` | Restart a container via the agent |
 | `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime; `--env <name>` selects the deploy environment/profile |
 | `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
-| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved on the agent from Vault) |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved from Vault and are auto-seeded for managed Status Panel + NPM deploys) |
 | `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent; use `stacker cloud firewall` for provider firewalls |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |

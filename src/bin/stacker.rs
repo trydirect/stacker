@@ -1383,6 +1383,9 @@ enum AgentCommands {
         /// Path to stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Persist monitoring.status_panel=true back to the local stacker.yml
+        #[arg(long)]
+        persist_config: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2395,9 +2398,11 @@ fn get_command(
                     json,
                     deployment,
                 )),
-                AgentCommands::Install { file, json } => {
-                    Box::new(agent::AgentInstallCommand::new(file, json))
-                }
+                AgentCommands::Install {
+                    file,
+                    persist_config,
+                    json,
+                } => Box::new(agent::AgentInstallCommand::new(file, persist_config, json)),
             }
         }
         StackerCommands::Cloud { command } => match command {
