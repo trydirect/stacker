@@ -1052,6 +1052,7 @@ Configuration issues:
 - `stacker.yml` — project configuration
 - `.stacker/Dockerfile` — generated Dockerfile (skipped if `app.image` or `app.dockerfile` is set)
 - `.stacker/docker-compose.yml` — generated compose definition (skipped if `deploy.compose_file` is set)
+- `.stacker/scenarios/qwen2.5-code/website-deploy/state.json` — saved only when the qwen website scenario bootstrap is accepted
 
 ```bash
 # Init
@@ -1073,6 +1074,12 @@ stacker init --with-ai --ai-provider anthropic --ai-model claude-sonnet-4-202505
 # ANTHROPIC_API_KEY    — Anthropic API key (used when provider is anthropic)
 STACKER_AI_TIMEOUT=900 stacker init --with-ai  # 15 min timeout for slow models
 ```
+
+If the project is a simple HTML or Next.js website and the Ollama model is
+`qwen2.5-code` or `qwen2.5-coder`, Stacker can offer a website deployment
+scenario immediately after `stacker init --with-ai`. That bootstrap reads the
+generated config first, asks only for missing deploy inputs, and stores the
+scenario state under `.stacker/scenarios/qwen2.5-code/website-deploy/`.
 
 ### `stacker deploy` flags
 
@@ -1171,6 +1178,8 @@ stacker config setup ai --provider ollama --endpoint http://localhost:11434 --mo
 # AI
 stacker ai ask "How can I optimise this Dockerfile?"
 stacker ai ask "Why is my container crashing?" --context ./logs.txt
+stacker ai ask "continue" --scenario website-deploy --step image-publish
+stacker ai --scenario website-deploy --step runtime-ops
 
 # Proxy
 stacker proxy add example.com --upstream http://app:3000 --ssl auto

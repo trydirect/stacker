@@ -161,3 +161,44 @@ The versioned evaluation scenarios live in
 `tests/contracts/stacker-ai-workflows.v1alpha1.json`.
 The stable response schemas and samples live alongside them in
 `tests/contracts/`.
+
+## Qwen website scenario bootstrap
+
+Stacker also includes a model-targeted convenience layer for simple website
+projects. This is separate from the canonical MCP workflow above.
+
+### Trigger
+
+- `stacker init --with-ai` generates `stacker.yml` and `.stacker/` artifacts as
+  usual.
+- If the project looks like a simple HTML/static site or a Next.js app, and the
+  configured Ollama model contains `qwen2.5-code` or `qwen2.5-coder`, Stacker
+  offers to bootstrap the built-in `website-deploy` scenario.
+
+### What the bootstrap does
+
+1. Reads the generated `stacker.yml` and local project hints.
+2. Seeds known scenario variables such as project name, app type, proxy shape,
+   cloud settings, and AI provider/model settings.
+3. Prompts only for missing deploy-critical values such as public domain, image
+   repository/tag, and cloud target details.
+4. Saves state under `.stacker/scenarios/qwen2.5-code/website-deploy/state.json`.
+5. Starts the scenario at the `init-validate` step and prints the next exact
+   commands to run.
+
+### Continue a scenario later
+
+```bash
+stacker ai ask "continue" --scenario website-deploy --step init-validate
+stacker ai ask "continue" --scenario website-deploy --step image-publish
+stacker ai ask "continue" --scenario website-deploy --step cloud-deploy
+stacker ai --scenario website-deploy --step runtime-ops
+```
+
+### Scenario content layout
+
+- Built-in files live under `scenarios/qwen2.5-code/website-deploy/`.
+- Project-local overrides can be placed under
+  `.stacker/scenarios/qwen2.5-code/website-deploy/`.
+- The saved state file lives beside those overrides in the same `.stacker`
+  directory tree.

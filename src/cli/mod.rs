@@ -2,6 +2,7 @@ pub mod ai_client;
 pub mod ai_field_matcher;
 pub mod ai_pipe_suggest;
 pub mod ai_scanner;
+pub mod ai_scenarios;
 pub mod ci_export;
 pub mod cloud_env;
 pub mod compose_service_sync;

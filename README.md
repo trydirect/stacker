@@ -55,11 +55,21 @@ stacker init --with-ai --ai-provider anthropic
 
 If the AI provider is unreachable, Stacker falls back to template-based generation automatically.
 
+When the project looks like a simple HTML or Next.js website and the configured
+Ollama model is `qwen2.5-code` or `qwen2.5-coder`, `stacker init --with-ai`
+can also bootstrap a website deployment scenario. The bootstrap seeds values
+from the generated `stacker.yml`, asks only for the missing deploy inputs, and
+saves scenario state under `.stacker/scenarios/qwen2.5-code/website-deploy/`
+for later continuation with `stacker ai`.
+
 ### AI deployment workflows
 
 For the canonical AI/MCP deployment flow — inspect state, explain topology or
 env provenance, preview a plan, apply it safely, and recover with events or
 rollback — see [AI deployment workflows](docs/AI_DEPLOYMENT_WORKFLOWS.md).
+
+For the qwen-specific website scenario flow, including `--scenario` and `--step`
+continuation, see the same guide.
 
 ---
 

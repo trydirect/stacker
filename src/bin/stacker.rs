@@ -1426,6 +1426,12 @@ struct AiArgs {
     /// Requires a tool-capable model (Ollama: llama3.1/qwen2.5-coder, OpenAI: any).
     #[arg(long)]
     write: bool,
+    /// Activate a built-in AI scenario such as `website-deploy`.
+    #[arg(long, global = true)]
+    scenario: Option<String>,
+    /// Select the active scenario step such as `init-validate` or `cloud-deploy`.
+    #[arg(long, global = true)]
+    step: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1858,6 +1864,8 @@ fn get_command(
         StackerCommands::Ai(ai_args) => match ai_args.command {
             None => Box::new(stacker::console::commands::cli::ai::AiChatCommand::new(
                 ai_args.write,
+                ai_args.scenario,
+                ai_args.step,
             )),
             Some(AiCommands::Ask {
                 question,
@@ -1867,6 +1875,7 @@ fn get_command(
             }) => Box::new(
                 stacker::console::commands::cli::ai::AiAskCommand::new(question, context)
                     .with_configure(configure)
+                    .with_scenario(ai_args.scenario, ai_args.step)
                     .with_write(ai_args.write || write),
             ),
         },
@@ -2568,6 +2577,50 @@ mod tests {
         match cli.command.unwrap() {
             StackerCommands::Whoami {} => {}
             _ => panic!("expected whoami command"),
+        }
+    }
+
+    #[test]
+    fn test_ai_ask_parses_scenario_flags() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "ai",
+            "ask",
+            "continue",
+            "--scenario",
+            "website-deploy",
+            "--step",
+            "cloud-deploy",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Ai(ai_args) => {
+                assert_eq!(ai_args.scenario.as_deref(), Some("website-deploy"));
+                assert_eq!(ai_args.step.as_deref(), Some("cloud-deploy"));
+            }
+            _ => panic!("expected ai command"),
+        }
+    }
+
+    #[test]
+    fn test_ai_chat_parses_scenario_flags() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "ai",
+            "--scenario",
+            "website-deploy",
+            "--step",
+            "init-validate",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Ai(ai_args) => {
+                assert_eq!(ai_args.scenario.as_deref(), Some("website-deploy"));
+                assert_eq!(ai_args.step.as_deref(), Some("init-validate"));
+            }
+            _ => panic!("expected ai command"),
         }
     }
 
