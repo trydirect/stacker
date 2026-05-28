@@ -1,3 +1,4 @@
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
@@ -40,6 +41,16 @@ impl CloudFirewallCommand {
         }
 
         let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+
+        if let Ok(Some(lock)) = DeploymentLock::load_active(&project_dir) {
+            if let Some(server_name) = lock.server_name {
+                if let Ok(Some(server)) =
+                    ctx.block_on(ctx.client.find_server_by_name(&server_name))
+                {
+                    return Ok(server.id);
+                }
+            }
+        }
         let config_path = project_dir.join("stacker.yml");
         if !config_path.exists() {
             return Err(CliError::ConfigValidation(

@@ -1641,6 +1641,92 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
         .filter(|part| !part.is_empty())
 }
 
+/// Detect host-port collisions between stacker.yml `services:` and a user-supplied compose file.
+///
+/// `config_with_compose_secret_target_services` merges compose services into the config by name,
+/// so two services with different names but the same host port will both survive the merge and
+/// cause Docker to fail at runtime.  This check catches that case locally before any remote
+/// operation is attempted.
+fn validate_cross_source_port_collisions(
+    config: &crate::cli::config_parser::StackerConfig,
+    compose_path: &Path,
+) -> Result<(), CliError> {
+    // Collect host-port → service-name mapping from stacker.yml services (and app).
+    let mut stacker_port_owners: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for svc in &config.services {
+        for spec in &svc.ports {
+            if let Some(port) = extract_host_port_from_string(spec) {
+                stacker_port_owners
+                    .entry(port)
+                    .or_insert_with(|| svc.name.clone());
+            }
+        }
+    }
+    for spec in &config.app.ports {
+        if let Some(port) = extract_host_port_from_string(spec) {
+            stacker_port_owners.entry(port).or_insert_with(|| "app".to_string());
+        }
+    }
+
+    if stacker_port_owners.is_empty() {
+        return Ok(());
+    }
+
+    // Parse the compose file and look for the same host ports.
+    let raw = std::fs::read_to_string(compose_path)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to parse compose file: {e}")))?;
+
+    let root = match doc {
+        serde_yaml::Value::Mapping(m) => m,
+        _ => return Ok(()),
+    };
+
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let services = match root.get(&services_key) {
+        Some(serde_yaml::Value::Mapping(m)) => m,
+        _ => return Ok(()),
+    };
+
+    let mut collisions: Vec<String> = Vec::new();
+    for (svc_key, svc_val) in services {
+        let compose_svc = svc_key.as_str().unwrap_or("<unknown>");
+        let svc_map = match svc_val {
+            serde_yaml::Value::Mapping(m) => m,
+            _ => continue,
+        };
+        let ports_key = serde_yaml::Value::String("ports".to_string());
+        let Some(serde_yaml::Value::Sequence(ports)) = svc_map.get(&ports_key) else {
+            continue;
+        };
+        for port in ports {
+            if let Some(host_port) = extract_published_host_port(port) {
+                if let Some(stacker_svc) = stacker_port_owners.get(&host_port) {
+                    collisions.push(format!(
+                        "port {} is used by '{}' in stacker.yml and '{}' in {}",
+                        host_port,
+                        stacker_svc,
+                        compose_svc,
+                        compose_path.display(),
+                    ));
+                }
+            }
+        }
+    }
+
+    if collisions.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::ConfigValidation(format!(
+            "Host-port collision between stacker.yml services and compose file — \
+             both sources will be deployed together but share the same host port(s): {}. \
+             Remove the duplicate service from one of the two files.",
+            collisions.join("; ")
+        )))
+    }
+}
+
 fn compose_app_build_source(compose_path: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(compose_path).ok()?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw).ok()?;
@@ -2542,42 +2628,46 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     }
 
     // 5b. docker-compose.yml
-    let compose_path = if let Some(ref existing) = config.deploy.compose_file {
-        let configured_path = project_dir.join(existing);
-        if configured_path.exists() {
-            configured_path
-        } else {
-            let generated_fallback = output_dir.join("docker-compose.yml");
-            if generated_fallback.exists() {
-                eprintln!(
-                    "  Configured compose file not found: {}. Falling back to {}",
-                    configured_path.display(),
-                    generated_fallback.display()
-                );
-                generated_fallback
+    let (compose_path, compose_is_user_supplied) =
+        if let Some(ref existing) = config.deploy.compose_file {
+            let configured_path = project_dir.join(existing);
+            if configured_path.exists() {
+                (configured_path, true)
             } else {
-                return Err(CliError::ConfigValidation(format!(
-                    "Compose file not found: {}",
-                    configured_path.display()
-                )));
+                let generated_fallback = output_dir.join("docker-compose.yml");
+                if generated_fallback.exists() {
+                    eprintln!(
+                        "  Configured compose file not found: {}. Falling back to {}",
+                        configured_path.display(),
+                        generated_fallback.display()
+                    );
+                    (generated_fallback, false)
+                } else {
+                    return Err(CliError::ConfigValidation(format!(
+                        "Compose file not found: {}",
+                        configured_path.display()
+                    )));
+                }
             }
-        }
-    } else {
-        let compose_out = output_dir.join("docker-compose.yml");
-        if force_rebuild || !compose_out.exists() {
-            let compose = ComposeDefinition::try_from(&config)?;
-            compose.write_to(&compose_out, force_rebuild)?;
         } else {
-            eprintln!(
-                "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
-                OUTPUT_DIR
-            );
-        }
-        compose_out
-    };
+            let compose_out = output_dir.join("docker-compose.yml");
+            if force_rebuild || !compose_out.exists() {
+                let compose = ComposeDefinition::try_from(&config)?;
+                compose.write_to(&compose_out, force_rebuild)?;
+            } else {
+                eprintln!(
+                    "  Using existing {}/docker-compose.yml (use --force-rebuild to regenerate)",
+                    OUTPUT_DIR
+                );
+            }
+            (compose_out, false)
+        };
 
     normalize_generated_compose_paths(&compose_path)?;
     validate_compose_for_deploy(&compose_path)?;
+    if compose_is_user_supplied {
+        validate_cross_source_port_collisions(&config, &compose_path)?;
+    }
     ensure_compose_env_files_if_needed(&compose_path)?;
     let image_env = build_image_env_lookup(project_dir, &config)?;
     merge_compose_public_ports_into_app_config(&mut config, &compose_path, &image_env)?;

@@ -16,6 +16,7 @@ use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
 use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{
@@ -72,11 +73,6 @@ impl RemoteSecretTarget {
                 }
             }
             RemoteSecretScope::Server => {
-                if self.server_id.is_none() {
-                    return Err(CliError::ConfigValidation(
-                        "Server-scoped secrets require --server-id".to_string(),
-                    ));
-                }
                 if self.project.is_some() || self.service.is_some() {
                     return Err(CliError::ConfigValidation(
                         "Server-scoped secrets do not accept --project or --service".to_string(),
@@ -338,6 +334,43 @@ fn remap_remote_secret_error(operation: &str, error: CliError) -> CliError {
         },
         other => other,
     }
+}
+
+/// Resolve a server ID from the deployment lock file when `--server-id` was not provided.
+///
+/// Reads `.stacker/deployment-cloud.lock` (or the generic lock), looks up the
+/// server by name via the API, and returns its platform ID.
+fn resolve_server_id_from_lock(ctx: &CliRuntime) -> Result<i32, CliError> {
+    let project_dir = std::env::current_dir().map_err(|e| {
+        CliError::ConfigValidation(format!("Cannot determine project directory: {}", e))
+    })?;
+
+    let lock = DeploymentLock::load_active(&project_dir)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to read deployment lock: {}", e)))?
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "No deployment lock found. Run `stacker deploy` first or provide --server-id."
+                    .to_string(),
+            )
+        })?;
+
+    let server_name = lock.server_name.ok_or_else(|| {
+        CliError::ConfigValidation(
+            "Deployment lock has no server name. Provide --server-id explicitly.".to_string(),
+        )
+    })?;
+
+    let server = ctx
+        .block_on(ctx.client.find_server_by_name(&server_name))?
+        .ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "Server '{}' from deployment lock not found on the Stacker platform. \
+                 Provide --server-id explicitly.",
+                server_name
+            ))
+        })?;
+
+    Ok(server.id)
 }
 
 fn resolve_project(
@@ -743,6 +776,7 @@ impl SecretsSetCommand {
         let value = resolve_remote_secret_value(options)?;
         let operation = "remote secrets set";
         let ctx = CliRuntime::new("remote secrets set")?;
+        let server_id_from_lock = || resolve_server_id_from_lock(&ctx);
 
         match options.target.scope {
             RemoteSecretScope::Service => {
@@ -769,11 +803,10 @@ impl SecretsSetCommand {
                 );
             }
             RemoteSecretScope::Server => {
-                let server_id = options.target.server_id().ok_or_else(|| {
-                    CliError::ConfigValidation(
-                        "Server-scoped secrets require --server-id".to_string(),
-                    )
-                })?;
+                let server_id = options
+                    .target
+                    .server_id()
+                    .map_or_else(server_id_from_lock, Ok)?;
                 let secret = ctx
                     .block_on(
                         ctx.client
@@ -876,6 +909,7 @@ impl CallableTrait for SecretsGetCommand {
                 options.validate()?;
                 let operation = "remote secrets get";
                 let ctx = CliRuntime::new("remote secrets get")?;
+                let server_id_from_lock = || resolve_server_id_from_lock(&ctx);
                 let secret = match options.target.scope {
                     RemoteSecretScope::Service => {
                         let project_ref =
@@ -896,11 +930,10 @@ impl CallableTrait for SecretsGetCommand {
                         .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                     RemoteSecretScope::Server => {
-                        let server_id = options.target.server_id().ok_or_else(|| {
-                            CliError::ConfigValidation(
-                                "Server-scoped secrets require --server-id".to_string(),
-                            )
-                        })?;
+                        let server_id = options
+                            .target
+                            .server_id()
+                            .map_or_else(server_id_from_lock, Ok)?;
                         ctx.block_on(
                             ctx.client
                                 .get_server_secret_metadata(server_id, &options.name),
@@ -999,6 +1032,7 @@ impl CallableTrait for SecretsListCommand {
                 options.validate()?;
                 let operation = "remote secrets list";
                 let ctx = CliRuntime::new("remote secrets list")?;
+                let server_id_from_lock = || resolve_server_id_from_lock(&ctx);
                 let secrets = match options.target.scope {
                     RemoteSecretScope::Service => {
                         let project_ref =
@@ -1015,11 +1049,10 @@ impl CallableTrait for SecretsListCommand {
                             .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
                     RemoteSecretScope::Server => {
-                        let server_id = options.target.server_id().ok_or_else(|| {
-                            CliError::ConfigValidation(
-                                "Server-scoped secrets require --server-id".to_string(),
-                            )
-                        })?;
+                        let server_id = options
+                            .target
+                            .server_id()
+                            .map_or_else(server_id_from_lock, Ok)?;
                         ctx.block_on(ctx.client.list_server_secrets(server_id))
                             .map_err(|error| remap_remote_secret_error(operation, error))?
                     }
@@ -1294,6 +1327,7 @@ impl CallableTrait for SecretsDeleteCommand {
                 target.validate()?;
                 let operation = "remote secrets delete";
                 let ctx = CliRuntime::new("remote secrets delete")?;
+                let server_id_from_lock = || resolve_server_id_from_lock(&ctx);
 
                 match target.scope {
                     RemoteSecretScope::Service => {
@@ -1311,11 +1345,8 @@ impl CallableTrait for SecretsDeleteCommand {
                         println!("✓ Deleted service secret {} from {}", key, app_code);
                     }
                     RemoteSecretScope::Server => {
-                        let server_id = target.server_id().ok_or_else(|| {
-                            CliError::ConfigValidation(
-                                "Server-scoped secrets require --server-id".to_string(),
-                            )
-                        })?;
+                        let server_id =
+                            target.server_id().map_or_else(server_id_from_lock, Ok)?;
                         ctx.block_on(ctx.client.delete_server_secret(server_id, key))
                             .map_err(|error| remap_remote_secret_error(operation, error))?;
                         println!("✓ Deleted server secret {} from server {}", key, server_id);

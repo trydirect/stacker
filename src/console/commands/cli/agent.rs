@@ -11,6 +11,7 @@
 
 use crate::cli::config_bundle::{build_config_bundle, ConfigBundleArtifacts};
 use crate::cli::config_parser::StackerConfig;
+use crate::cli::debug::cli_debug_enabled;
 use crate::cli::error::CliError;
 use crate::cli::fmt;
 use crate::cli::generator::compose::ComposeDefinition;
@@ -186,9 +187,35 @@ fn json_error_message(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn sanitize_npm_credentials_message(raw_message: String, code: Option<&str>) -> String {
+    // Fall back to substring match when the error arrives as a pre-formatted string
+    // with no structured "code" field (the server embeds the code inline).
+    if code == Some("npm_credentials_invalid")
+        || raw_message.contains("npm_credentials_invalid")
+    {
+        let user_msg = "NPM credentials are invalid or missing. \
+                        Update them with:\n  \
+                        stacker secrets set npm_credentials --scope server \
+                        --body-file ./npm_credentials.json"
+            .to_string();
+        if cli_debug_enabled() {
+            format!("{}\n  [debug] {}", user_msg, raw_message)
+        } else {
+            user_msg
+        }
+    } else {
+        raw_message
+    }
+}
+
 fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
     if let Some(error) = info.error.as_ref() {
-        return json_error_message(error).or_else(|| Some(fmt::pretty_json(error)));
+        let raw = json_error_message(error).unwrap_or_else(|| fmt::pretty_json(error));
+        let code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .or_else(|| error.get("error_code").and_then(|v| v.as_str()));
+        return Some(sanitize_npm_credentials_message(raw, code));
     }
 
     let result = info.result.as_ref()?;
@@ -201,16 +228,28 @@ fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
         return None;
     }
 
-    let mut message = json_error_message(result)
+    let raw_message = json_error_message(result)
         .unwrap_or_else(|| "Agent command reported an application error".to_string());
-    if let Some(code) = result.get("error_code").and_then(|value| value.as_str()) {
-        message = format!("{} ({})", message, code);
-        if code == "npm_create_failed" {
-            message = format!(
-                "{}\n\n{}",
-                message,
-                npm_create_failed_guidance(Some(result))
-            );
+
+    // "code" is already embedded into raw_message by format_error_message.
+    // "error_code" is a separate field not yet appended — handled below.
+    let inline_code = result.get("code").and_then(|v| v.as_str());
+    let extra_code = result.get("error_code").and_then(|v| v.as_str());
+
+    let mut message = sanitize_npm_credentials_message(raw_message, inline_code.or(extra_code));
+
+    // Append extra_code (the "error_code" field) if present — it is NOT yet in the message.
+    if let Some(code) = extra_code {
+        // Skip appending if sanitize_npm_credentials_message already replaced the whole message.
+        if inline_code != Some("npm_credentials_invalid") {
+            message = format!("{} ({})", message, code);
+            if code == "npm_create_failed" {
+                message = format!(
+                    "{}\n\n{}",
+                    message,
+                    npm_create_failed_guidance(Some(result))
+                );
+            }
         }
     }
     Some(message)
@@ -3224,6 +3263,161 @@ monitoring:
                 "Vault-backed proxy credential resolution is not configured on this agent (vault_not_configured)"
                     .to_string()
             )
+        );
+    }
+
+    // Shared lock so env-var tests don't race each other.
+    fn npm_creds_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn npm_creds_invalid_info_via_result(vault_path: &str) -> AgentCommandInfo {
+        AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "code": "npm_credentials_invalid",
+                "message": format!("NPM credentials in Vault are invalid at {}", vault_path),
+                "details": vault_path,
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn npm_creds_invalid_info_via_error(vault_path: &str) -> AgentCommandInfo {
+        AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "failed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: None,
+            error: Some(serde_json::json!({
+                "code": "npm_credentials_invalid",
+                "message": format!("NPM credentials in Vault are invalid at {}", vault_path),
+                "details": vault_path,
+            })),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_via_result_field() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        let message = agent_command_error_message(&npm_creds_invalid_info_via_result(vault_path))
+            .expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear in user-facing output: {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_via_error_field() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        let message = agent_command_error_message(&npm_creds_invalid_info_via_error(vault_path))
+            .expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear in user-facing output (error field path): {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_when_error_is_preformatted_string() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        // Simulate the server sending a pre-formatted string (no structured "code" field)
+        let info = AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "failed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: None,
+            error: Some(serde_json::Value::String(format!(
+                "NPM credentials in Vault are invalid at {vault_path} (npm_credentials_invalid): {vault_path}"
+            ))),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear when error is a pre-formatted string: {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_exposes_vault_path_in_debug_mode_for_npm_credentials_invalid() {
+        let _guard = npm_creds_env_lock();
+        std::env::set_var("STACKER_DEBUG", "1");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        // Test both paths in debug mode
+        let msg_via_result =
+            agent_command_error_message(&npm_creds_invalid_info_via_result(vault_path));
+        let msg_via_error =
+            agent_command_error_message(&npm_creds_invalid_info_via_error(vault_path));
+        std::env::remove_var("STACKER_DEBUG");
+
+        let msg_via_result = msg_via_result.expect("error message (result path)");
+        assert!(
+            msg_via_result.contains(vault_path),
+            "Vault path should appear in debug output (result path): {msg_via_result}"
+        );
+        assert!(
+            msg_via_result.contains("stacker secrets set npm_credentials"),
+            "Debug output should still include the remediation command: {msg_via_result}"
+        );
+
+        let msg_via_error = msg_via_error.expect("error message (error field path)");
+        assert!(
+            msg_via_error.contains(vault_path),
+            "Vault path should appear in debug output (error field path): {msg_via_error}"
+        );
+        assert!(
+            msg_via_error.contains("stacker secrets set npm_credentials"),
+            "Debug output should still include the remediation command: {msg_via_error}"
         );
     }
 
