@@ -99,6 +99,12 @@ enum StackerCommands {
         /// Stacker API base URL (or set STACKER_URL)
         #[arg(long = "server-url", visible_alias = "api-url")]
         server_url: Option<String>,
+        /// Authenticate via browser OAuth2 flow (opens a sign-in URL)
+        #[arg(long)]
+        browser: bool,
+        /// OAuth provider code for browser login: gc (Google), gh (GitHub), … (default: gc)
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
     },
     /// Show the saved login and current project's recorded deploy identity
     Whoami {},
@@ -394,12 +400,16 @@ fn get_command(
                 domain,
                 auth_url,
                 server_url,
+                browser,
+                provider,
             } => Ok(Box::new(
                 stacker::console::commands::cli::login::LoginCommand::new(
                     org,
                     domain,
                     auth_url,
                     server_url,
+                    browser,
+                    provider,
                 ),
             )),
             StackerCommands::Whoami {} => Ok(Box::new(

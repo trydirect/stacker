@@ -32,3 +32,4 @@ pub mod runtime;
 pub mod service_catalog;
 pub mod service_import;
 pub mod stacker_client;
+pub mod user_config;
