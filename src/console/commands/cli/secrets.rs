@@ -1814,11 +1814,11 @@ mod tests {
     }
 
     #[test]
-    fn test_remote_server_target_requires_server_id() {
+    fn test_remote_server_target_allows_missing_server_id() {
+        // server_id may be omitted at parse time; it is resolved from the
+        // lock file at execution time via server_id_from_lock().
         let target = RemoteSecretTarget::new(RemoteSecretScope::Server, None, None, None);
-
-        let error = target.validate().unwrap_err().to_string();
-        assert!(error.contains("--server-id"));
+        assert!(target.validate().is_ok());
     }
 
     #[test]

@@ -27,13 +27,12 @@ impl LoginCommand {
         provider: Option<String>,
         user: Option<String>,
     ) -> Self {
-        let cfg = UserConfig::load();
         Self {
             org,
             domain,
             auth_url,
             server_url,
-            browser: browser || cfg.browser_default(),
+            browser,  // raw flag only; browser_default() is applied in call()
             provider,
             user,
         }
@@ -118,7 +117,11 @@ impl LoginCommand {
 impl CallableTrait for LoginCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         // --user/-u always means email/password; skip prompt and browser.
-        let use_browser = self.user.is_none() && (self.browser || io::stdin().is_terminal());
+        // --browser flag forces browser; on a tty, browser_default() from config applies.
+        // Piped stdin always falls back to email/password regardless of config.
+        let use_browser = self.user.is_none() && (
+            self.browser || (io::stdin().is_terminal() && UserConfig::load().browser_default())
+        );
 
         if use_browser {
             // Resolve provider — may show an interactive menu.

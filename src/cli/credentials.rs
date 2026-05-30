@@ -586,7 +586,6 @@ pub fn fetch_user_email(auth_url: &str, access_token: &str) -> Result<Option<Str
     }
 
     let data: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
-    // /oauth_server/api/me returns {"user": {"email": ...}}
     let email = data.get("email")
         .or_else(|| data.get("user").and_then(|u| u.get("email")))
         .and_then(|v| v.as_str())
@@ -1171,7 +1170,11 @@ mod tests {
             domain: None,
         };
 
+        // Isolate from the real ~/.config/stacker/config.yml which may provide a fallback URL.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
         let err = login(&manager, &oauth, &request).unwrap_err();
+        std::env::remove_var("XDG_CONFIG_HOME");
         assert!(format!("{err}").contains("Missing auth URL"));
     }
 
@@ -1188,7 +1191,11 @@ mod tests {
             domain: None,
         };
 
+        // Isolate from the real ~/.config/stacker/config.yml which may provide a fallback URL.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
         let err = login(&manager, &oauth, &request).unwrap_err();
+        std::env::remove_var("XDG_CONFIG_HOME");
         assert!(format!("{err}").contains("Missing Stacker API URL"));
     }
 
