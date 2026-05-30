@@ -29,6 +29,7 @@ COPY ./tests/bdd.rs ./tests/bdd.rs
 
 COPY ./src ./src
 COPY ./crates ./crates
+COPY ./scenarios ./scenarios
 
 # for ls output use BUILDKIT_PROGRESS=plain docker build .
 #RUN ls -la /app/ >&2

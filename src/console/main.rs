@@ -105,6 +105,9 @@ enum StackerCommands {
         /// OAuth provider code for browser login: gc (Google), gh (GitHub), … (default: gc)
         #[arg(long, value_name = "PROVIDER")]
         provider: Option<String>,
+        /// Log in with username/password instead of browser OAuth (skips browser flow)
+        #[arg(short = 'u', long, value_name = "EMAIL")]
+        user: Option<String>,
     },
     /// Show the saved login and current project's recorded deploy identity
     Whoami {},
@@ -402,6 +405,7 @@ fn get_command(
                 server_url,
                 browser,
                 provider,
+                user,
             } => Ok(Box::new(
                 stacker::console::commands::cli::login::LoginCommand::new(
                     org,
@@ -410,6 +414,7 @@ fn get_command(
                     server_url,
                     browser,
                     provider,
+                    user,
                 ),
             )),
             StackerCommands::Whoami {} => Ok(Box::new(
@@ -514,7 +519,7 @@ fn get_command(
             },
             StackerCommands::Ai { command: ai_cmd, write } => match ai_cmd {
                 None => Ok(Box::new(
-                    stacker::console::commands::cli::ai::AiChatCommand::new(write),
+                    stacker::console::commands::cli::ai::AiChatCommand::new(write, None, None),
                 )),
                 Some(StackerAiCommands::Ask {
                     question,
