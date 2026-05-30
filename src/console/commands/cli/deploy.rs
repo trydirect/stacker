@@ -1665,7 +1665,9 @@ fn validate_cross_source_port_collisions(
     }
     for spec in &config.app.ports {
         if let Some(port) = extract_host_port_from_string(spec) {
-            stacker_port_owners.entry(port).or_insert_with(|| "app".to_string());
+            stacker_port_owners
+                .entry(port)
+                .or_insert_with(|| "app".to_string());
         }
     }
 

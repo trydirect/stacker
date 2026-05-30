@@ -1345,8 +1345,7 @@ impl CallableTrait for SecretsDeleteCommand {
                         println!("✓ Deleted service secret {} from {}", key, app_code);
                     }
                     RemoteSecretScope::Server => {
-                        let server_id =
-                            target.server_id().map_or_else(server_id_from_lock, Ok)?;
+                        let server_id = target.server_id().map_or_else(server_id_from_lock, Ok)?;
                         ctx.block_on(ctx.client.delete_server_secret(server_id, key))
                             .map_err(|error| remap_remote_secret_error(operation, error))?;
                         println!("✓ Deleted server secret {} from server {}", key, server_id);

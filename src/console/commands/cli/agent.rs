@@ -190,9 +190,7 @@ fn json_error_message(value: &serde_json::Value) -> Option<String> {
 fn sanitize_npm_credentials_message(raw_message: String, code: Option<&str>) -> String {
     // Fall back to substring match when the error arrives as a pre-formatted string
     // with no structured "code" field (the server embeds the code inline).
-    if code == Some("npm_credentials_invalid")
-        || raw_message.contains("npm_credentials_invalid")
-    {
+    if code == Some("npm_credentials_invalid") || raw_message.contains("npm_credentials_invalid") {
         let user_msg = "NPM credentials are invalid or missing. \
                         Update them with:\n  \
                         stacker secrets set npm_credentials --scope server \

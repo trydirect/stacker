@@ -1,6 +1,8 @@
 use std::io::{self, IsTerminal};
 
-use crate::cli::credentials::{browser_login, login, CredentialsManager, HttpOAuthClient, LoginRequest};
+use crate::cli::credentials::{
+    browser_login, login, CredentialsManager, HttpOAuthClient, LoginRequest,
+};
 use crate::cli::user_config::UserConfig;
 use crate::console::commands::CallableTrait;
 use dialoguer::{Password, Select};
@@ -32,7 +34,7 @@ impl LoginCommand {
             domain,
             auth_url,
             server_url,
-            browser,  // raw flag only; browser_default() is applied in call()
+            browser, // raw flag only; browser_default() is applied in call()
             provider,
             user,
         }
@@ -98,7 +100,8 @@ impl LoginCommand {
             .or_else(|| std::env::var("STACKER_API_URL").ok())
             .or_else(|| cfg.auth_url)
             .ok_or_else(|| {
-                "Missing auth URL. Pass --auth-url <user-service-url> or set STACKER_AUTH_URL.".into()
+                "Missing auth URL. Pass --auth-url <user-service-url> or set STACKER_AUTH_URL."
+                    .into()
             })
     }
 
@@ -109,7 +112,8 @@ impl LoginCommand {
             .or_else(|| std::env::var("STACKER_URL").ok())
             .or_else(|| cfg.server_url)
             .ok_or_else(|| {
-                "Missing Stacker API URL. Pass --server-url <stacker-api-url> or set STACKER_URL.".into()
+                "Missing Stacker API URL. Pass --server-url <stacker-api-url> or set STACKER_URL."
+                    .into()
             })
     }
 }
@@ -119,9 +123,9 @@ impl CallableTrait for LoginCommand {
         // --user/-u always means email/password; skip prompt and browser.
         // --browser flag forces browser; on a tty, browser_default() from config applies.
         // Piped stdin always falls back to email/password regardless of config.
-        let use_browser = self.user.is_none() && (
-            self.browser || (io::stdin().is_terminal() && UserConfig::load().browser_default())
-        );
+        let use_browser = self.user.is_none()
+            && (self.browser
+                || (io::stdin().is_terminal() && UserConfig::load().browser_default()));
 
         if use_browser {
             // Resolve provider — may show an interactive menu.

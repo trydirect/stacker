@@ -476,12 +476,15 @@ fn request_device_authorization(
     };
 
     Ok(DeviceAuthResponse {
-        device_code:               field("device_code")?,
-        user_code:                 field("user_code")?,
-        verification_uri:          field("verification_uri")?,
+        device_code: field("device_code")?,
+        user_code: field("user_code")?,
+        verification_uri: field("verification_uri")?,
         verification_uri_complete: field("verification_uri_complete")?,
-        expires_in: inner.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(300),
-        interval:   inner.get("interval").and_then(|v| v.as_u64()).unwrap_or(5),
+        expires_in: inner
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300),
+        interval: inner.get("interval").and_then(|v| v.as_u64()).unwrap_or(5),
     })
 }
 
@@ -557,9 +560,7 @@ fn poll_device_token(
                     "Session expired. Please run `stacker login` again.".to_string(),
                 ))
             }
-            Some(other) => {
-                return Err(CliError::AuthFailed(format!("Auth error: {other}")))
-            }
+            Some(other) => return Err(CliError::AuthFailed(format!("Auth error: {other}"))),
             None => {} // unexpected non-200 without error field — keep polling
         }
     }
@@ -586,7 +587,8 @@ pub fn fetch_user_email(auth_url: &str, access_token: &str) -> Result<Option<Str
     }
 
     let data: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
-    let email = data.get("email")
+    let email = data
+        .get("email")
         .or_else(|| data.get("user").and_then(|u| u.get("email")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -616,11 +618,23 @@ pub fn browser_login<S: CredentialStore>(
 
     let opened = {
         #[cfg(target_os = "macos")]
-        { std::process::Command::new("open").arg(&device_auth.verification_uri_complete).status().is_ok() }
+        {
+            std::process::Command::new("open")
+                .arg(&device_auth.verification_uri_complete)
+                .status()
+                .is_ok()
+        }
         #[cfg(target_os = "linux")]
-        { std::process::Command::new("xdg-open").arg(&device_auth.verification_uri_complete).status().is_ok() }
+        {
+            std::process::Command::new("xdg-open")
+                .arg(&device_auth.verification_uri_complete)
+                .status()
+                .is_ok()
+        }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        { false }
+        {
+            false
+        }
     };
     if opened {
         eprintln!("  (Browser opened automatically)");
@@ -647,7 +661,9 @@ pub fn browser_login<S: CredentialStore>(
         token_type: "Bearer".to_string(),
         expires_at,
         email,
-        server_url: Some(crate::cli::install_runner::normalize_stacker_server_url(server_url)),
+        server_url: Some(crate::cli::install_runner::normalize_stacker_server_url(
+            server_url,
+        )),
         org: org.map(|s| s.to_string()),
         domain: domain.map(|s| s.to_string()),
     };

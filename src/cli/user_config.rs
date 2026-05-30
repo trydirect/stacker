@@ -55,10 +55,7 @@ impl UserConfig {
 
     /// Default browser preference: `true` unless explicitly disabled.
     pub fn browser_default(&self) -> bool {
-        self.login
-            .as_ref()
-            .and_then(|l| l.browser)
-            .unwrap_or(true)
+        self.login.as_ref().and_then(|l| l.browser).unwrap_or(true)
     }
 
     /// Default provider: `gc` (Google) unless overridden.

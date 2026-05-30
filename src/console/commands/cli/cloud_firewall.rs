@@ -44,8 +44,7 @@ impl CloudFirewallCommand {
 
         if let Ok(Some(lock)) = DeploymentLock::load_active(&project_dir) {
             if let Some(server_name) = lock.server_name {
-                if let Ok(Some(server)) =
-                    ctx.block_on(ctx.client.find_server_by_name(&server_name))
+                if let Ok(Some(server)) = ctx.block_on(ctx.client.find_server_by_name(&server_name))
                 {
                     return Ok(server.id);
                 }
