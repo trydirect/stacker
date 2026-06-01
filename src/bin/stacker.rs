@@ -108,6 +108,11 @@ enum StackerCommands {
     },
     /// Build & deploy the stack
     Deploy {
+        /// Service name for surgical single-service deploy (e.g. `stacker deploy stacker-website`).
+        /// Reads local docker-compose.yml, injects the service into the remote compose, and
+        /// starts only that container — other running services are not touched.
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
         /// Deployment target: local, cloud, server
         #[arg(long, value_name = "TARGET")]
         target: Option<String>,
@@ -1327,10 +1332,10 @@ enum AgentCommands {
         /// Port to forward to
         #[arg(long)]
         port: u16,
-        /// Enable SSL/Let's Encrypt certificate issuance
-        #[arg(long, default_value_t = true)]
+        /// Enable SSL/Let's Encrypt certificate issuance (default: off; use --ssl to enable)
+        #[arg(long, default_value_t = false)]
         ssl: bool,
-        /// Disable SSL/Let's Encrypt and create a plain HTTP proxy host
+        /// Disable SSL/Let's Encrypt (no-op; SSL is off by default)
         #[arg(long = "no-ssl")]
         no_ssl: bool,
         /// Action: create, update, delete
@@ -1747,6 +1752,7 @@ fn get_command(
             )
         }
         StackerCommands::Deploy {
+            service,
             target,
             environment,
             file,
@@ -1770,6 +1776,7 @@ fn get_command(
                 dry_run,
                 force_rebuild,
             )
+            .with_service(service)
             .with_environment(environment)
             .with_remote_overrides(project, key, server)
             .with_key_id(key_id)

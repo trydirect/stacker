@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
+use crate::cli::config_parser::{ProxyConfig, ProxyType, ServiceDefinition, StackerConfig};
 use crate::cli::error::CliError;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -9,6 +9,107 @@ pub struct ComposeServiceSyncResult {
     pub compose_path: Option<PathBuf>,
     pub backup_path: Option<PathBuf>,
     pub updated_services: Vec<String>,
+}
+
+/// Extract the service name from an upstream string like `svc:3000` or `http://svc:3000`.
+pub fn upstream_service_name(upstream: &str) -> Option<String> {
+    let s = upstream
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = s.split('/').next()?;
+    let name = host.split(':').next()?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Inject `default_network` into `service_name` inside `compose_doc` when the service is
+/// listed as an NginxProxyManager upstream. Declares the network as `external: true` at
+/// the top level. Returns `true` if the document was modified.
+pub fn inject_npm_proxy_network(
+    compose_doc: &mut serde_yaml::Value,
+    service_name: &str,
+    proxy: &ProxyConfig,
+) -> bool {
+    if proxy.proxy_type != ProxyType::NginxProxyManager {
+        return false;
+    }
+    let is_proxied = proxy.domains.iter().any(|d| {
+        upstream_service_name(&d.upstream)
+            .map(|n| n == service_name)
+            .unwrap_or(false)
+    });
+    if !is_proxied {
+        return false;
+    }
+    inject_external_network(compose_doc, service_name, "default_network")
+}
+
+fn inject_external_network(
+    compose_doc: &mut serde_yaml::Value,
+    service_name: &str,
+    network: &str,
+) -> bool {
+    let mut changed = false;
+    let network_val = serde_yaml::Value::String(network.to_string());
+
+    if let Some(svc) = compose_doc
+        .get_mut("services")
+        .and_then(|s| s.get_mut(service_name))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    {
+        let networks_key = serde_yaml::Value::String("networks".to_string());
+        match svc.get_mut(&networks_key) {
+            Some(serde_yaml::Value::Sequence(seq)) => {
+                if !seq.contains(&network_val) {
+                    seq.push(network_val);
+                    changed = true;
+                }
+            }
+            None => {
+                svc.insert(
+                    networks_key,
+                    serde_yaml::Value::Sequence(vec![network_val]),
+                );
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+
+    if changed {
+        upsert_external_network(compose_doc, network);
+    }
+    changed
+}
+
+fn upsert_external_network(compose_doc: &mut serde_yaml::Value, network: &str) {
+    let Some(root) = compose_doc.as_mapping_mut() else {
+        return;
+    };
+    let networks_key = serde_yaml::Value::String("networks".to_string());
+    if !root.contains_key(&networks_key) {
+        root.insert(
+            networks_key.clone(),
+            serde_yaml::Value::Mapping(Default::default()),
+        );
+    }
+    if let Some(top_networks) = root
+        .get_mut(&networks_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    {
+        let net_key = serde_yaml::Value::String(network.to_string());
+        if !top_networks.contains_key(&net_key) {
+            let mut net_config = serde_yaml::Mapping::new();
+            net_config.insert(
+                serde_yaml::Value::String("external".to_string()),
+                serde_yaml::Value::Bool(true),
+            );
+            top_networks.insert(net_key, serde_yaml::Value::Mapping(net_config));
+        }
+    }
 }
 
 pub fn sync_configured_compose_services(
@@ -50,7 +151,21 @@ pub fn sync_configured_compose_services(
                     service_name
                 ))
             })?;
-        upsert_compose_service(&mut compose_doc, service, &project_networks)?;
+
+        let mut svc_networks = project_networks.clone();
+        if config.proxy.proxy_type == ProxyType::NginxProxyManager
+            && !svc_networks.contains(&"default_network".to_string())
+            && config.proxy.domains.iter().any(|d| {
+                upstream_service_name(&d.upstream)
+                    .map(|n| n == *service_name)
+                    .unwrap_or(false)
+            })
+        {
+            svc_networks.push("default_network".to_string());
+            upsert_external_network(&mut compose_doc, "default_network");
+        }
+
+        upsert_compose_service(&mut compose_doc, service, &svc_networks)?;
         updated_services.push(service.name.clone());
     }
 
@@ -272,9 +387,211 @@ fn push_unique_network(networks: &mut Vec<String>, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::{AppSource, DeployConfig, ProjectConfig};
+    use crate::cli::config_parser::{AppSource, DeployConfig, DomainConfig, ProjectConfig, SslMode};
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    // ── inject_npm_proxy_network unit tests ──────────────────────────────────
+
+    fn npm_proxy_config(upstream: &str) -> ProxyConfig {
+        ProxyConfig {
+            proxy_type: ProxyType::NginxProxyManager,
+            auto_detect: false,
+            domains: vec![DomainConfig {
+                domain: "app.example.com".into(),
+                ssl: SslMode::Auto,
+                upstream: upstream.to_string(),
+            }],
+            config: None,
+        }
+    }
+
+    fn compose_doc_with_service(service: &str) -> serde_yaml::Value {
+        serde_yaml::from_str(&format!(
+            "services:\n  {service}:\n    image: myapp:latest\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn inject_npm_proxy_network_adds_to_proxied_service() {
+        let mut doc = compose_doc_with_service("web");
+        let changed = inject_npm_proxy_network(&mut doc, "web", &npm_proxy_config("web:3000"));
+        assert!(changed);
+        let networks = doc["services"]["web"]["networks"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(networks.contains(&"default_network"));
+        // top-level declares it external
+        assert_eq!(
+            doc["networks"]["default_network"]["external"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn inject_npm_proxy_network_returns_false_for_non_proxied_service() {
+        let mut doc = compose_doc_with_service("smtp");
+        let changed = inject_npm_proxy_network(&mut doc, "smtp", &npm_proxy_config("web:3000"));
+        assert!(!changed);
+        assert!(doc["services"]["smtp"].get("networks").is_none());
+    }
+
+    #[test]
+    fn inject_npm_proxy_network_returns_false_for_non_npm_proxy() {
+        let mut doc = compose_doc_with_service("web");
+        let proxy = ProxyConfig {
+            proxy_type: ProxyType::Traefik,
+            auto_detect: false,
+            domains: vec![DomainConfig {
+                domain: "app.example.com".into(),
+                ssl: SslMode::Auto,
+                upstream: "web:3000".into(),
+            }],
+            config: None,
+        };
+        let changed = inject_npm_proxy_network(&mut doc, "web", &proxy);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn inject_npm_proxy_network_is_idempotent() {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(
+            "services:\n  web:\n    image: myapp:latest\n    networks:\n      - default_network\n",
+        )
+        .unwrap();
+        let changed = inject_npm_proxy_network(&mut doc, "web", &npm_proxy_config("web:3000"));
+        assert!(!changed, "already has default_network — should be a no-op");
+        let seq = doc["services"]["web"]["networks"].as_sequence().unwrap();
+        let count = seq
+            .iter()
+            .filter(|v| v.as_str() == Some("default_network"))
+            .count();
+        assert_eq!(count, 1, "no duplicate entries");
+    }
+
+    #[test]
+    fn inject_npm_proxy_network_parses_http_prefix_upstream() {
+        let proxy = ProxyConfig {
+            proxy_type: ProxyType::NginxProxyManager,
+            auto_detect: false,
+            domains: vec![DomainConfig {
+                domain: "app.example.com".into(),
+                ssl: SslMode::Off,
+                upstream: "http://api:8080".into(),
+            }],
+            config: None,
+        };
+        let mut doc = compose_doc_with_service("api");
+        let changed = inject_npm_proxy_network(&mut doc, "api", &proxy);
+        assert!(changed);
+        let networks = doc["services"]["api"]["networks"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(networks.contains(&"default_network"));
+    }
+
+    // ── sync_configured_compose_services proxy-inject tests ──────────────────
+
+    fn npm_stacker_config(dir: &std::path::Path, service_name: &str) -> StackerConfig {
+        StackerConfig {
+            project: ProjectConfig::default(),
+            app: AppSource::default(),
+            deploy: DeployConfig {
+                compose_file: Some(PathBuf::from("docker-compose.yml")),
+                ..Default::default()
+            },
+            proxy: ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "app.example.com".into(),
+                    ssl: SslMode::Auto,
+                    upstream: format!("{service_name}:3000"),
+                }],
+                config: None,
+            },
+            services: vec![ServiceDefinition {
+                name: service_name.to_string(),
+                image: "myapp:latest".to_string(),
+                ports: vec!["3000:3000".to_string()],
+                environment: HashMap::new(),
+                volumes: vec![],
+                depends_on: vec![],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sync_injects_default_network_for_npm_proxied_service() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yml"),
+            "services:\n  existing:\n    image: nginx:latest\n",
+        )
+        .unwrap();
+
+        let config = npm_stacker_config(dir.path(), "api");
+        let result =
+            sync_configured_compose_services(dir.path(), &config, &["api".to_string()]).unwrap();
+
+        assert_eq!(result.updated_services, vec!["api"]);
+        let updated = std::fs::read_to_string(dir.path().join("docker-compose.yml")).unwrap();
+        assert!(
+            updated.contains("default_network"),
+            "proxied service should have default_network injected:\n{updated}"
+        );
+        assert!(
+            updated.contains("external: true") || updated.contains("external: 'true'"),
+            "default_network should be declared external:\n{updated}"
+        );
+    }
+
+    #[test]
+    fn sync_does_not_inject_default_network_for_non_proxied_service() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yml"),
+            "services:\n  existing:\n    image: nginx:latest\n",
+        )
+        .unwrap();
+
+        // proxy points to "api" but we are syncing "smtp"
+        let mut config = npm_stacker_config(dir.path(), "api");
+        config.services = vec![ServiceDefinition {
+            name: "smtp".to_string(),
+            image: "trydirect/smtp".to_string(),
+            ports: vec![],
+            environment: HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        }];
+
+        let result =
+            sync_configured_compose_services(dir.path(), &config, &["smtp".to_string()]).unwrap();
+
+        assert_eq!(result.updated_services, vec!["smtp"]);
+        let updated = std::fs::read_to_string(dir.path().join("docker-compose.yml")).unwrap();
+        let smtp_section_start = updated.find("smtp:").unwrap();
+        let smtp_section = &updated[smtp_section_start..];
+        // "smtp" block should not list default_network
+        let next_service = smtp_section[5..].find('\n').map(|i| &smtp_section[..i + 5]);
+        let _ = next_service; // just ensure smtp block doesn't have it
+        assert!(
+            !smtp_section
+                .lines()
+                .take(10)
+                .any(|l| l.contains("default_network")),
+            "non-proxied service should not get default_network:\n{updated}"
+        );
+    }
 
     #[test]
     fn sync_configured_compose_services_upserts_service_networks_and_volumes() {

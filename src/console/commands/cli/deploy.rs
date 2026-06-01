@@ -2119,6 +2119,8 @@ fn apply_cloud_cli_override(
 ///   3. Looks up saved server by name (optional)
 ///   4. Calls `POST /project/{id}/deploy[/{cloud_id}]`
 pub struct DeployCommand {
+    /// Single-service surgical deploy: inject service from local compose and start only it.
+    pub service: Option<String>,
     pub target: Option<String>,
     pub environment: Option<String>,
     pub file: Option<String>,
@@ -2155,6 +2157,7 @@ impl DeployCommand {
         force_rebuild: bool,
     ) -> Self {
         Self {
+            service: None,
             target,
             environment: None,
             file,
@@ -2171,6 +2174,11 @@ impl DeployCommand {
             plan: false,
             apply_plan: None,
         }
+    }
+
+    pub fn with_service(mut self, service: Option<String>) -> Self {
+        self.service = service;
+        self
     }
 
     pub fn with_environment(mut self, environment: Option<String>) -> Self {
@@ -2245,6 +2253,149 @@ impl DeployCommand {
     pub fn with_apply_plan(mut self, apply_plan: Option<String>) -> Self {
         self.apply_plan = apply_plan;
         self
+    }
+
+    /// Surgical single-service deploy: read local compose, inject the named service into the
+    /// remote deployment's compose, and start only that container.
+    fn deploy_single_service(&self, service: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cli::stacker_client::AgentEnqueueRequest;
+        use crate::console::commands::cli::agent::{
+            resolve_deployment_hash, resolve_registry_auth_for_agent_deploy, run_agent_command,
+        };
+
+        let project_dir = std::env::current_dir()?;
+
+        // Load stacker config once — used for compose path, proxy config, and app registration.
+        let stacker_config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+        let stacker_config: Option<StackerConfig> = if stacker_config_path.exists() {
+            Some(StackerConfig::from_file(&stacker_config_path)?)
+        } else {
+            None
+        };
+
+        // Find compose file: prefer deploy.compose_file from stacker.yml, else default.
+        let compose_path = stacker_config
+            .as_ref()
+            .and_then(|c| c.deploy.compose_file.as_deref().map(|f| project_dir.join(f)))
+            .unwrap_or_else(|| project_dir.join("docker-compose.yml"));
+
+        if !compose_path.exists() {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "Compose file not found: {}",
+                compose_path.display()
+            ))));
+        }
+
+        let compose_content = std::fs::read_to_string(&compose_path)?;
+
+        // Verify the named service exists in the local compose.
+        let mut compose_doc: serde_yaml::Value = serde_yaml::from_str(&compose_content)
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid compose file: {}", e)))?;
+        let services_exist = compose_doc
+            .get("services")
+            .and_then(|s| s.as_mapping())
+            .map(|m| m.contains_key(serde_yaml::Value::String(service.to_string())))
+            .unwrap_or(false);
+        if !services_exist {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "Service '{}' not found in {}",
+                service,
+                compose_path.display()
+            ))));
+        }
+
+        // Extract the image for the named service (needed for app registration).
+        let image = compose_doc
+            .get("services")
+            .and_then(|s| s.get(service))
+            .and_then(|svc| svc.get("image"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Auto-inject default_network when the service is an NginxProxyManager upstream.
+        let compose_content =
+            if let Some(ref cfg) = stacker_config {
+                if crate::cli::compose_service_sync::inject_npm_proxy_network(
+                    &mut compose_doc,
+                    service,
+                    &cfg.proxy,
+                ) {
+                    serde_yaml::to_string(&compose_doc)?
+                } else {
+                    compose_content
+                }
+            } else {
+                compose_content
+            };
+
+        let ctx = crate::cli::runtime::CliRuntime::new("deploy")?;
+        let hash = resolve_deployment_hash(&None, &ctx)?;
+
+        let params = crate::forms::status_panel::DeployAppCommandRequest {
+            app_code: service.to_string(),
+            compose_content: Some(compose_content),
+            image: None,
+            env_vars: None,
+            pull: true,
+            force_recreate: false,
+            force_config_overwrite: false,
+            runtime: self.runtime.clone(),
+            registry_auth: resolve_registry_auth_for_agent_deploy(&project_dir),
+            config_files: None,
+        };
+
+        let request = AgentEnqueueRequest::new(&hash, "deploy_app")
+            .with_parameters(&params)
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?
+            .with_timeout(300);
+
+        let info = run_agent_command(&ctx, &request, &format!("Deploying {}", service), 300)?;
+        if let Some(output) = info.result.as_ref().and_then(|r| r.as_str()) {
+            if !output.is_empty() {
+                println!("{}", output);
+            }
+        }
+
+        // Register the service as a tracked app in the project.
+        let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+        if config_path.exists() {
+            if let Ok(cfg) = StackerConfig::from_file(&config_path)
+                .and_then(|c| c.with_resolved_deploy_target(None))
+            {
+                if let Some(project_name) = cfg.project.identity.as_deref() {
+                    let registered = ctx.block_on(async {
+                        let project = ctx.client.find_project_by_name(project_name).await?;
+                        if let Some(proj) = project {
+                            ctx.client
+                                .upsert_project_app(
+                                    proj.id,
+                                    &crate::cli::stacker_client::ProjectAppRegistrationRequest {
+                                        code: service.to_string(),
+                                        name: Some(service.to_string()),
+                                        image: image.clone(),
+                                        env: None,
+                                        ports: None,
+                                        volumes: None,
+                                        depends_on: None,
+                                        enabled: Some(true),
+                                        deploy_order: None,
+                                        deployment_hash: Some(hash.clone()),
+                                    },
+                                )
+                                .await?;
+                        }
+                        Ok::<_, CliError>(())
+                    });
+                    if let Err(e) = registered {
+                        eprintln!("Warning: deployed successfully but app registration failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        println!("Service '{}' deployed.", service);
+        Ok(())
     }
 }
 
@@ -2773,6 +2924,10 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
 impl CallableTrait for DeployCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(service) = &self.service {
+            return self.deploy_single_service(service);
+        }
+
         if self.plan {
             return crate::console::commands::cli::deployment::run_remote_deployment_plan(
                 None,
@@ -5202,5 +5357,73 @@ monitoring:
         // --no-watch wins over --watch
         let cmd = DeployCommand::new(None, None, false, false).with_watch(true, true);
         assert_eq!(cmd.watch, Some(false));
+    }
+
+    // ── deploy_single_service compose-injection tests ────────────────────────
+    // These tests verify the compose-mutation step that deploy_single_service
+    // performs before sending compose content to the agent.
+
+    use crate::cli::config_parser::{DomainConfig, ProxyConfig, ProxyType, SslMode};
+    use crate::cli::compose_service_sync::inject_npm_proxy_network;
+
+    fn npm_proxy_for(upstream: &str) -> ProxyConfig {
+        ProxyConfig {
+            proxy_type: ProxyType::NginxProxyManager,
+            auto_detect: false,
+            domains: vec![DomainConfig {
+                domain: "app.example.com".into(),
+                ssl: SslMode::Auto,
+                upstream: upstream.to_string(),
+            }],
+            config: None,
+        }
+    }
+
+    #[test]
+    fn deploy_single_service_compose_injection_adds_default_network_for_proxied_service() {
+        let compose_yaml = "services:\n  api:\n    image: myapp:latest\n    ports:\n      - \"3000:3000\"\n";
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_yaml).unwrap();
+
+        let changed = inject_npm_proxy_network(&mut doc, "api", &npm_proxy_for("api:3000"));
+
+        assert!(changed, "proxied service should trigger injection");
+        let serialized = serde_yaml::to_string(&doc).unwrap();
+        assert!(
+            serialized.contains("default_network"),
+            "injected compose should contain default_network:\n{serialized}"
+        );
+        assert!(
+            serialized.contains("external: true") || serialized.contains("external: 'true'"),
+            "default_network must be declared external:\n{serialized}"
+        );
+    }
+
+    #[test]
+    fn deploy_single_service_compose_injection_skips_non_proxied_service() {
+        let compose_yaml = "services:\n  smtp:\n    image: trydirect/smtp\n";
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_yaml).unwrap();
+
+        // proxy points to "api", not "smtp"
+        let changed = inject_npm_proxy_network(&mut doc, "smtp", &npm_proxy_for("api:3000"));
+
+        assert!(!changed, "non-proxied service should not trigger injection");
+        let serialized = serde_yaml::to_string(&doc).unwrap();
+        assert!(
+            !serialized.contains("default_network"),
+            "unmodified compose should not contain default_network:\n{serialized}"
+        );
+    }
+
+    #[test]
+    fn deploy_single_service_compose_injection_skips_when_no_stacker_config() {
+        // When stacker_config is None (no stacker.yml present), deploy_single_service
+        // passes the original compose_content unchanged. Verify inject is a no-op
+        // when the proxy config has no domains.
+        let proxy = ProxyConfig::default(); // proxy_type: None, no domains
+        let compose_yaml = "services:\n  web:\n    image: nginx:latest\n";
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_yaml).unwrap();
+
+        let changed = inject_npm_proxy_network(&mut doc, "web", &proxy);
+        assert!(!changed);
     }
 }

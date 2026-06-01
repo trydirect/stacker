@@ -38,7 +38,7 @@ const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 /// 1. Explicit `--deployment` flag value
 /// 2. `stacker.yml` project name → API project lookup → active agent hash (most reliable)
 /// 3. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash (fallback)
-fn resolve_deployment_hash(
+pub(crate) fn resolve_deployment_hash(
     explicit: &Option<String>,
     ctx: &CliRuntime,
 ) -> Result<String, CliError> {
@@ -96,7 +96,7 @@ fn resolve_deployment_hash(
     ))
 }
 
-fn resolve_registry_auth_for_agent_deploy(
+pub(crate) fn resolve_registry_auth_for_agent_deploy(
     project_dir: &Path,
 ) -> Option<crate::forms::status_panel::RegistryAuthCommandRequest> {
     let config_path = project_dir.join("stacker.yml");
@@ -272,7 +272,7 @@ fn npm_create_failed_guidance(result: Option<&serde_json::Value>) -> String {
          - Verify DNS A/AAAA records for {domain} point at this server before requesting Let's Encrypt.\n\
          - Ensure cloud firewall ports are open: stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp\n\
          - Check for a duplicate NPM proxy host using the same domain.\n\
-         - Retry without SSL to isolate certificate issuance: stacker agent configure-proxy <app> --domain {domain} --port <port> --no-ssl --deployment <deployment>."
+         - SSL is off by default; add --ssl only once DNS is confirmed and ports 80/443 are open."
     )
 }
 
@@ -332,7 +332,7 @@ async fn execute_agent_command(
     }
 }
 
-fn run_agent_command(
+pub(crate) fn run_agent_command(
     ctx: &CliRuntime,
     request: &AgentEnqueueRequest,
     spinner_msg: &str,
@@ -3448,7 +3448,7 @@ monitoring:
         assert!(message.contains(
             "stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp"
         ));
-        assert!(message.contains("--no-ssl"));
+        assert!(message.contains("--ssl"));
     }
 
     #[test]

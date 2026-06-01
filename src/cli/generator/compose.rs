@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
 
-use crate::cli::config_parser::{AppType, ProxyType, ServiceDefinition, StackerConfig};
+use crate::cli::config_parser::{AppType, DomainConfig, ProxyType, ServiceDefinition, StackerConfig};
 use crate::cli::error::CliError;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -78,6 +78,7 @@ impl From<&ServiceDefinition> for ComposeService {
 pub struct ComposeDefinition {
     pub services: Vec<ComposeService>,
     pub networks: Vec<String>,
+    pub external_networks: Vec<String>,
     pub volumes: Vec<String>,
 }
 
@@ -86,6 +87,7 @@ impl Default for ComposeDefinition {
         Self {
             services: Vec::new(),
             networks: vec!["app-network".to_string()],
+            external_networks: Vec::new(),
             volumes: Vec::new(),
         }
     }
@@ -129,6 +131,31 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 
         // --- Set top-level volumes ---
         compose.volumes = named_volumes;
+
+        // --- Auto-inject default_network for NginxProxyManager-proxied services ---
+        if config.proxy.proxy_type == ProxyType::NginxProxyManager
+            && !config.proxy.domains.is_empty()
+        {
+            let proxied: Vec<String> = config
+                .proxy
+                .domains
+                .iter()
+                .filter_map(|d| upstream_service_name_from_domain(d))
+                .collect();
+
+            let mut injected = false;
+            for svc in compose.services.iter_mut() {
+                if proxied.contains(&svc.name)
+                    && !svc.networks.contains(&"default_network".to_string())
+                {
+                    svc.networks.push("default_network".to_string());
+                    injected = true;
+                }
+            }
+            if injected {
+                compose.external_networks.push("default_network".to_string());
+            }
+        }
 
         Ok(compose)
     }
@@ -249,6 +276,21 @@ fn build_proxy_service(config: &StackerConfig) -> Option<ComposeService> {
     }
 }
 
+/// Extract the service (host) name from a DomainConfig upstream like `svc:3000` or `http://svc:3000`.
+fn upstream_service_name_from_domain(domain: &DomainConfig) -> Option<String> {
+    let s = domain
+        .upstream
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = s.split('/').next()?;
+    let name = host.split(':').next()?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// Extract a named volume from a volume string like "my-data:/var/lib/data".
 /// Returns `None` for bind mounts (starting with `.` or `/`).
 fn extract_named_volume(vol_str: &str) -> Option<String> {
@@ -346,10 +388,13 @@ impl ComposeDefinition {
         }
 
         // Top-level networks
-        if !self.networks.is_empty() {
+        if !self.networks.is_empty() || !self.external_networks.is_empty() {
             out.push_str("networks:\n");
             for n in &self.networks {
                 out.push_str(&format!("  {}:\n    driver: bridge\n", n));
+            }
+            for n in &self.external_networks {
+                out.push_str(&format!("  {}:\n    external: true\n", n));
             }
             out.push('\n');
         }
@@ -393,7 +438,9 @@ impl fmt::Display for ComposeDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::{AppSource, ConfigBuilder, DeployConfig, ProxyConfig, SslMode};
+    use crate::cli::config_parser::{
+        AppSource, ConfigBuilder, DeployConfig, DomainConfig, ProxyConfig, SslMode,
+    };
     use std::collections::HashMap;
 
     fn minimal_config(app_type: AppType) -> StackerConfig {
@@ -753,6 +800,7 @@ mod tests {
         let def = ComposeDefinition {
             services: vec![svc],
             networks: vec!["app-network".to_string()],
+            external_networks: vec![],
             volumes: vec![],
         };
         let output = def.render();
@@ -774,6 +822,7 @@ mod tests {
         let def = ComposeDefinition {
             services: vec![svc],
             networks: vec!["app-network".to_string()],
+            external_networks: vec![],
             volumes: vec![],
         };
         let output = def.render();
@@ -781,6 +830,117 @@ mod tests {
             !output.contains("runtime:"),
             "runc runtime should not appear in:\n{}",
             output
+        );
+    }
+
+    #[test]
+    fn npm_proxy_injects_default_network_into_proxied_service() {
+        let svc = ServiceDefinition {
+            name: "api".into(),
+            image: "myapp:latest".into(),
+            ports: vec!["8080:8080".into()],
+            environment: Default::default(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = ConfigBuilder::new()
+            .name("npm-proxied")
+            .app_type(AppType::Node)
+            .add_service(svc)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "api.example.com".into(),
+                    ssl: SslMode::Auto,
+                    upstream: "api:8080".into(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let api_svc = compose.services.iter().find(|s| s.name == "api").unwrap();
+        assert!(
+            api_svc.networks.contains(&"default_network".to_string()),
+            "proxied service should have default_network, got: {:?}",
+            api_svc.networks
+        );
+        assert!(
+            compose.external_networks.contains(&"default_network".to_string()),
+            "default_network should be declared as external"
+        );
+        let yaml = compose.render();
+        assert!(yaml.contains("external: true"), "rendered YAML should declare default_network external:\n{yaml}");
+    }
+
+    #[test]
+    fn npm_proxy_does_not_inject_into_unproxied_service() {
+        let smtp = ServiceDefinition {
+            name: "smtp".into(),
+            image: "trydirect/smtp".into(),
+            ports: vec![],
+            environment: Default::default(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = ConfigBuilder::new()
+            .name("partial-proxy")
+            .app_type(AppType::Node)
+            .add_service(smtp)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::NginxProxyManager,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "app.example.com".into(),
+                    ssl: SslMode::Off,
+                    upstream: "app:3000".into(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let smtp_svc = compose.services.iter().find(|s| s.name == "smtp").unwrap();
+        assert!(
+            !smtp_svc.networks.contains(&"default_network".to_string()),
+            "unproxied service should not get default_network"
+        );
+    }
+
+    #[test]
+    fn non_npm_proxy_does_not_inject_default_network() {
+        let svc = ServiceDefinition {
+            name: "web".into(),
+            image: "nginx:latest".into(),
+            ports: vec![],
+            environment: Default::default(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = ConfigBuilder::new()
+            .name("traefik-app")
+            .app_type(AppType::Node)
+            .add_service(svc)
+            .proxy(ProxyConfig {
+                proxy_type: ProxyType::Traefik,
+                auto_detect: false,
+                domains: vec![DomainConfig {
+                    domain: "web.example.com".into(),
+                    ssl: SslMode::Auto,
+                    upstream: "web:80".into(),
+                }],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        assert!(
+            compose.external_networks.is_empty(),
+            "Traefik proxy should not inject default_network"
         );
     }
 
@@ -795,6 +955,7 @@ mod tests {
         let def = ComposeDefinition {
             services: vec![svc],
             networks: vec!["app-network".to_string()],
+            external_networks: vec![],
             volumes: vec![],
         };
         let output = def.render();
