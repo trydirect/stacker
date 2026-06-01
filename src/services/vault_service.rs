@@ -220,6 +220,14 @@ impl VaultService {
         )
     }
 
+    pub fn status_panel_npm_credentials_path(&self, server_id: i32) -> String {
+        format!(
+            "{}/hosts/{}/npm_credentials",
+            self.prefix.trim_matches('/'),
+            server_id
+        )
+    }
+
     pub async fn fetch_secret_value(&self, logical_path: &str) -> Result<String, VaultError> {
         let response = self
             .http_client
@@ -290,6 +298,36 @@ impl VaultService {
             return Err(VaultError::Other(format!(
                 "Vault store failed with {}: {}",
                 status, body
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn store_structured_secret_value(
+        &self,
+        logical_path: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), VaultError> {
+        let payload = serde_json::json!({
+            "data": value
+        });
+
+        let response = self
+            .http_client
+            .post(self.secret_url(logical_path))
+            .header("X-Vault-Token", &self.token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| VaultError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(VaultError::Other(format!(
+                "Failed to store secret at {}: {} - {}",
+                logical_path, status, body
             )));
         }
 
@@ -760,6 +798,10 @@ mod tests {
         assert_eq!(
             service.server_secret_path("user-1", 99, "HOST_TOKEN"),
             "agent/users/user-1/servers/99/secrets/HOST_TOKEN"
+        );
+        assert_eq!(
+            service.status_panel_npm_credentials_path(99),
+            "agent/hosts/99/npm_credentials"
         );
         assert_eq!(
             service.secret_url("agent/users/user-1/projects/42/apps/web/secrets/S3_KEY"),

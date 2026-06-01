@@ -7,7 +7,7 @@ use super::StepWorld;
 
 #[given(regex = r#"^I have a DAG pipe template named "([^"]+)"$"#)]
 async fn given_dag_pipe_template(world: &mut StepWorld, name: String) {
-    let pool = world.db_pool.as_ref().expect("no db_pool");
+    let _pool = world.db_pool.as_ref().expect("no db_pool");
 
     // Use unique name per scenario to avoid parallel conflicts
     let unique_name = format!("{}-{}", name, uuid::Uuid::new_v4());
@@ -95,12 +95,12 @@ async fn create_dag_edge(world: &mut StepWorld, from_name: &str, to_name: &str) 
     let from_id = world
         .stored_ids
         .get(&format!("dag_step:{}", from_name))
-        .expect(&format!("No step named '{}'", from_name))
+        .unwrap_or_else(|| panic!("No step named '{}'", from_name))
         .clone();
     let to_id = world
         .stored_ids
         .get(&format!("dag_step:{}", to_name))
-        .expect(&format!("No step named '{}'", to_name))
+        .unwrap_or_else(|| panic!("No step named '{}'", to_name))
         .clone();
 
     let body = json!({
@@ -253,12 +253,12 @@ async fn when_add_dag_edge(world: &mut StepWorld, from_name: String, to_name: St
     let from_id = world
         .stored_ids
         .get(&format!("dag_step:{}", from_name))
-        .expect(&format!("No step named '{}'", from_name))
+        .unwrap_or_else(|| panic!("No step named '{}'", from_name))
         .clone();
     let to_id = world
         .stored_ids
         .get(&format!("dag_step:{}", to_name))
-        .expect(&format!("No step named '{}'", to_name))
+        .unwrap_or_else(|| panic!("No step named '{}'", to_name))
         .clone();
 
     let body = json!({
@@ -296,12 +296,12 @@ async fn when_add_dag_edge_with_condition(
     let from_id = world
         .stored_ids
         .get(&format!("dag_step:{}", from_name))
-        .expect(&format!("No step named '{}'", from_name))
+        .unwrap_or_else(|| panic!("No step named '{}'", from_name))
         .clone();
     let to_id = world
         .stored_ids
         .get(&format!("dag_step:{}", to_name))
-        .expect(&format!("No step named '{}'", to_name))
+        .unwrap_or_else(|| panic!("No step named '{}'", to_name))
         .clone();
 
     let docstring = step.docstring.as_ref().expect("Missing docstring");

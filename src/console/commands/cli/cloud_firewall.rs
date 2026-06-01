@@ -1,3 +1,4 @@
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::console::commands::CallableTrait;
@@ -40,6 +41,15 @@ impl CloudFirewallCommand {
         }
 
         let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+
+        if let Ok(Some(lock)) = DeploymentLock::load_active(&project_dir) {
+            if let Some(server_name) = lock.server_name {
+                if let Ok(Some(server)) = ctx.block_on(ctx.client.find_server_by_name(&server_name))
+                {
+                    return Ok(server.id);
+                }
+            }
+        }
         let config_path = project_dir.join("stacker.yml");
         if !config_path.exists() {
             return Err(CliError::ConfigValidation(
@@ -113,7 +123,7 @@ impl CallableTrait for CloudFirewallCommand {
             return Ok(());
         }
 
-        for line in format_response_lines(&response) {
+        for line in format_response_lines(&response, crate::cli::debug::cli_debug_enabled()) {
             println!("{}", line);
         }
 
@@ -121,7 +131,7 @@ impl CallableTrait for CloudFirewallCommand {
     }
 }
 
-fn format_response_lines(response: &ConfigureCloudFirewallResponse) -> Vec<String> {
+fn format_response_lines(response: &ConfigureCloudFirewallResponse, debug: bool) -> Vec<String> {
     let mut lines = Vec::new();
     if response.action == CloudFirewallAction::List {
         lines.push(format!(
@@ -136,8 +146,10 @@ fn format_response_lines(response: &ConfigureCloudFirewallResponse) -> Vec<Strin
             response.provider
         ));
     }
-    lines.push(format!("Operation: {}", response.operation_id));
-    lines.push(format!("Route: {}", response.routing_key));
+    if debug {
+        lines.push(format!("Operation: {}", response.operation_id));
+        lines.push(format!("Route: {}", response.routing_key));
+    }
 
     if let Some(firewall) = &response.firewall {
         let id = firewall
@@ -249,9 +261,33 @@ mod tests {
             }),
         };
 
-        let lines = format_response_lines(&response);
+        let lines = format_response_lines(&response, false);
 
         assert!(lines.contains(&"Firewall: frw-coolify-86b8 (#123)".to_string()));
         assert!(lines.contains(&"- in 8000/tcp from 0.0.0.0/0 (Coolify)".to_string()));
+        assert!(!lines.iter().any(|line| line.starts_with("Operation:")));
+        assert!(!lines.iter().any(|line| line.starts_with("Route:")));
+    }
+
+    #[test]
+    fn cloud_firewall_list_output_includes_debug_metadata_when_debug_enabled() {
+        let response = ConfigureCloudFirewallResponse {
+            operation_id: "cfw_test".to_string(),
+            accepted: true,
+            protocol_version: "stacker.cloud_firewall.v1".to_string(),
+            provider: "htz".to_string(),
+            server_id: 80,
+            action: CloudFirewallAction::List,
+            rules: Vec::new(),
+            routing_key: "install.firewall.htz.v1".to_string(),
+            message: "Cloud firewall list retrieved".to_string(),
+            firewall_name: Some("frw-coolify-86b8".to_string()),
+            firewall: None,
+        };
+
+        let lines = format_response_lines(&response, true);
+
+        assert!(lines.contains(&"Operation: cfw_test".to_string()));
+        assert!(lines.contains(&"Route: install.firewall.htz.v1".to_string()));
     }
 }

@@ -1,9 +1,7 @@
 use crate::steps::StepWorld;
 use cucumber::{given, then, when};
 use serde_json::{json, Value as JsonValue};
-use stacker::models::agent_protocol::{
-    routing, RetryPolicy, StepCommand, StepResultMsg, StepStatus,
-};
+use stacker::models::agent_protocol::{routing, RetryPolicy, StepCommand, StepResultMsg};
 use stacker::services::resilience_engine::{CircuitBreakerConfig, InMemoryCircuitBreaker};
 use stacker::services::step_executor;
 use std::time::Duration;
@@ -269,7 +267,7 @@ async fn then_cb_allows(world: &mut StepWorld) {
 }
 
 #[when(expr = "I wait {int} seconds for recovery")]
-async fn when_wait_recovery(world: &mut StepWorld, seconds: u64) {
+async fn when_wait_recovery(_world: &mut StepWorld, seconds: u64) {
     tokio::time::sleep(Duration::from_secs(seconds)).await;
 }
 

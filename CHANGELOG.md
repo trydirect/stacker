@@ -4,7 +4,56 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Onboarding setup helpers
+
+- Added `stacker config setup ai` to enable and update `ai.*` settings from the
+  CLI, including Ollama-friendly `--provider`, `--endpoint`, `--model`,
+  `--timeout`, and repeatable `--task` options.
+- Cloud/server deploys now bootstrap missing `.env` files from adjacent
+  `.env.example` files when compose or `stacker.yml` references them, using
+  restrictive local permissions where supported.
+- Cloud deploy `--key` and `--key-id` overrides are resolved through the active
+  logged-in Stacker API before prompt selection, and non-interactive shells now
+  receive actionable cloud credential guidance instead of hanging.
+- Deploy validation now prints concise private registry credential guidance when
+  images may require authentication and no registry auth is resolved.
+- `stacker config validate` now points users to `stacker config fix` when it
+  finds empty structural path fields.
+- Cloud/server deploys now skip post-deploy server IP polling and local backup
+  key installation after terminal paused/error statuses, avoiding repeated
+  "server IP not yet assigned" retries after a failed installer run.
+- Hetzner cloud deploys now normalize user-facing location aliases such as
+  `nbg1` to installer-compatible datacenter values such as `nbg1-dc3` before
+  publishing install-service payloads.
+- `stacker config setup cloud` now suggests Hetzner `cx23` by default instead
+  of older `cpx*` examples.
+- Remote config bundles now keep compose `env_file` and bind-mount references
+  project-relative so Docker Compose sees copied files under
+  `/home/trydirect/project`.
+- Cloud/server deploy output now lists config-bundle file mappings and rejects
+  absolute config-bundle destinations before sending a deploy request.
+- Deploy-time config files are now mirrored into the installer runtime-file
+  contract so non-compose files such as `.env` are materialized before Docker
+  Compose starts.
+
 ## [0.2.8] — 2026-05-15
+### Added — Configuration inventory, diff, check, and promotion planning
+
+- Added `stacker config inventory --env <name>` to list effective configuration
+  keys by app/service target and source without printing secret values.
+- Added `stacker config diff --from <env> --to <env>` to compare local
+  environment/profile inventories and report missing, target-only, and changed
+  keys.
+- Added optional `config_contract` support in `stacker.yml` and
+  `stacker config check --env <name> --strict` to fail when required keys are
+  missing from an environment.
+- Added `stacker config contract suggest --env <name>` to generate a
+  reviewable `config_contract` snippet from the current inventory.
+- Added `--remote` support for `config inventory`, `config diff`, and
+  `config check`, enriching target inventories with remote service secret
+  metadata without fetching plaintext Vault values.
+- Added `stacker config promote --from <env> --to <env>` to generate safe
+  target placeholders for missing keys; secret values are not copied.
 
 ### Added — App-only deploy environment selection
 
@@ -13,6 +62,58 @@ All notable changes to this project will be documented in this file.
 - `stacker agent deploy-app` and `stacker secrets push` now accept
   `--env <environment>` / `--environment <environment>` for one-off environment
   selection during app-only updates.
+
+### Fixed — App-local compose env files for deploy-app
+
+- `stacker agent deploy-app <app>` now reads
+  `<app>/docker/<env>/compose.yml` when that app-local compose file exists and
+  merges that app's service definition into the full project-level compose,
+  instead of replacing the remote stack compose with a single-service file.
+- App-local deploys now bundle only the target app-local config files while
+  using the project-level compose as topology, so missing env/config files for
+  unrelated services no longer block `deploy-app <app>`.
+- App-local `env_file` references are uploaded in the deploy-app config bundle,
+  and Vault-rendered service secrets for the same target are merged into the
+  matching remote `.env` file before the Status agent writes it.
+- Deploy-app command creation now fails if Stacker cannot render the target's
+  runtime env, instead of silently falling back to a stale/raw `.env` that may
+  omit Vault-backed service secrets.
+- `stacker agent deploy-app` and `stacker secrets push` now use the same
+  server-side deploy-app enrichment path when enqueueing agent commands, so
+  app-local `.env` files receive Vault-rendered service secrets during direct
+  agent pushes as well as command-create flows.
+- Missing config-bundle file errors now include the resolved path instead of a
+  bare `No such file or directory` message.
+- If an app-local `.env` exists but the selected compose service has no
+  `env_file` entry, the CLI prints a warning explaining that Docker Compose will
+  not inject local or remote-rendered env values into that container.
+
+### Added — Canonical runtime environment rendering
+
+- Remote runtime environment files now use the canonical host path
+  `/home/trydirect/project/.env`; generated compose files reference it as
+  `env_file: .env`.
+- `stacker config show --resolved` prints the local env source path, canonical
+  remote env path, compose env reference, config hash/version metadata, and
+  contributing layers without printing secret values.
+- Runtime env rendering now has deterministic precedence and hashing, rejects
+  reserved `STACKER_*`, `DOCKER_*`, `VAULT_*`, and `AGENT_*` keys, and provides
+  drift checks that require `--force` before overwriting changed remote env
+  content.
+
+### Fixed — Reuse private registry auth for agent-managed pulls
+
+- Deploy-time `deploy.registry` credentials are now stored in trusted Stacker
+  secret storage and reused for later Status-managed pulls such as
+  `stacker agent deploy-app`.
+- The Status agent now performs private-image pulls with a temporary
+  `DOCKER_CONFIG` auth context and cleans it up immediately after the pull,
+  instead of relying on host Docker login state.
+- When no stored registry auth exists, pull behavior remains backward
+  compatible: anonymous pull is attempted first and cached local images can
+  still allow the redeploy to complete with warnings.
+
+## [0.2.8] — 2026-05-12
 
 ### Added — Remote service/app target secrets
 

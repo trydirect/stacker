@@ -1,0 +1,45 @@
+{
+  "agent": {
+    "capabilities": [],
+    "features": {
+      "backup": false,
+      "compose": false,
+      "kata_runtime": false,
+      "pipes": false,
+      "proxy_credentials_vault": false
+    },
+    "online": false,
+    "status": "offline"
+  },
+  "apps": [
+    {
+      "code": "upload",
+      "config_hash": "hash-upload-v4",
+      "config_version": 4,
+      "deployment_id": 77,
+      "enabled": true,
+      "image": "optimum/syncopia-upload:latest",
+      "needs_vault_sync": true,
+      "vault_sync_version": 3
+    }
+  ],
+  "deployment": {
+    "created_at": "2026-05-14T09:00:00Z",
+    "deployment_hash": "deployment_120254c6-598e-47a1-83ca-690840edd906",
+    "id": 77,
+    "project_id": 12,
+    "runtime": "runc",
+    "status": "degraded",
+    "updated_at": "2026-05-14T09:05:00Z",
+    "user_id": "user_123"
+  },
+  "drift": {
+    "config_sync_pending": true
+  },
+  "runtime": {
+    "compose_env_file": ".env",
+    "compose_file": "/home/trydirect/project/docker-compose.yml",
+    "env_file": "/home/trydirect/project/.env"
+  },
+  "schema_version": "v1alpha1"
+}

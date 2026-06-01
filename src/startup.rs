@@ -293,7 +293,10 @@ pub async fn run(
                     .service(
                         web::scope("/v1/deployments")
                             .service(routes::deployment::capabilities_handler)
+                            .service(routes::deployment::events_handler)
                             .service(routes::deployment::list_handler)
+                            .service(routes::deployment::plan_handler)
+                            .service(routes::deployment::state_handler)
                             .service(routes::deployment::status_by_hash_handler)
                             .service(routes::deployment::status_handler)
                             .service(routes::deployment::status_by_project_handler)

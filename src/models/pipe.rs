@@ -113,7 +113,9 @@ pub struct PipeInstance {
     pub id: Uuid,
     pub template_id: Option<Uuid>,
     pub deployment_hash: Option<String>,
+    pub source_adapter: Option<JsonValue>,
     pub source_container: String,
+    pub target_adapter: Option<JsonValue>,
     pub target_container: Option<String>,
     pub target_url: Option<String>,
     pub field_mapping_override: Option<JsonValue>,
@@ -134,7 +136,9 @@ impl PipeInstance {
             id: Uuid::new_v4(),
             template_id: None,
             deployment_hash: Some(deployment_hash),
+            source_adapter: None,
             source_container,
+            target_adapter: None,
             target_container: None,
             target_url: None,
             field_mapping_override: None,
@@ -156,7 +160,9 @@ impl PipeInstance {
             id: Uuid::new_v4(),
             template_id: None,
             deployment_hash: None,
+            source_adapter: None,
             source_container,
+            target_adapter: None,
             target_container: None,
             target_url: None,
             field_mapping_override: None,
@@ -179,6 +185,16 @@ impl PipeInstance {
 
     pub fn with_target_container(mut self, container: String) -> Self {
         self.target_container = Some(container);
+        self
+    }
+
+    pub fn with_source_adapter(mut self, adapter: JsonValue) -> Self {
+        self.source_adapter = Some(adapter);
+        self
+    }
+
+    pub fn with_target_adapter(mut self, adapter: JsonValue) -> Self {
+        self.target_adapter = Some(adapter);
         self
     }
 
@@ -384,6 +400,8 @@ mod tests {
         assert_eq!(instance.status, "draft");
         assert!(!instance.is_local);
         assert!(instance.template_id.is_none());
+        assert!(instance.source_adapter.is_none());
+        assert!(instance.target_adapter.is_none());
         assert!(instance.target_container.is_none());
         assert!(instance.target_url.is_none());
         assert_eq!(instance.trigger_count, 0);
@@ -411,12 +429,16 @@ mod tests {
             "user789".to_string(),
         )
         .with_template(template_id)
+        .with_source_adapter(json!({"code": "imap"}))
+        .with_target_adapter(json!({"code": "smtp"}))
         .with_target_container("mailchimp_1".to_string())
         .with_target_url("https://external.api/hook".to_string())
         .with_field_mapping_override(json!({"email": "$.custom_email"}))
         .with_config_override(json!({"timeout": 30}));
 
         assert_eq!(instance.template_id, Some(template_id));
+        assert_eq!(instance.source_adapter, Some(json!({"code": "imap"})));
+        assert_eq!(instance.target_adapter, Some(json!({"code": "smtp"})));
         assert_eq!(instance.target_container, Some("mailchimp_1".to_string()));
         assert_eq!(
             instance.target_url,
@@ -443,6 +465,8 @@ mod tests {
             deserialized.deployment_hash,
             Some("deploy_test".to_string())
         );
+        assert!(deserialized.source_adapter.is_none());
+        assert!(deserialized.target_adapter.is_none());
         assert_eq!(deserialized.source_container, "container_a");
         assert_eq!(deserialized.status, "draft");
     }

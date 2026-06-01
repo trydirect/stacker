@@ -351,68 +351,30 @@
   <section class="section examples" id="examples">
     <div class="container">
       <div class="section__header" data-animate="fade-up">
-        <span class="section__label">Examples</span>
-        <h2 class="section__title">Real commands.<br><span class="gradient-text">Real operator output.</span></h2>
-        <p class="section__desc">Examples from the current CLI, including AI guidance for bare-metal servers and remote operations on live deployments.</p>
+        <span class="section__label">Prompt Examples</span>
+        <h2 class="section__title">Paste-ready prompts.<br><span class="gradient-text">Website ideas you can ship.</span></h2>
+        <p class="section__desc">Use these examples with <code>stacker ai ask</code> when you want Stacker to scaffold a site, adapt a template, and prepare deployment to Hetzner or your own server.</p>
       </div>
       <div class="examples__grid">
         <article class="example-card" data-animate="fade-up" data-delay="0">
-          <div class="example-card__label">Real AI example</div>
-          <h3 class="example-card__title">Ask how to connect a metal bare server</h3>
-          <pre class="example-card__output"><code>❯ ./stacker ai ask "how do I connect my metal bare server"
-To connect your metal bare server using the provided `stacker.yml` configuration, you need to update the `deploy.server` section with the necessary details. Here is an example of how to configure it:
-
-```yaml
-deploy:
-  target: server
-  compose_file: null
-  cloud: null
-  server:
-    host: your_server_ip_or_hostname
-    user: root
-    port: 22
-    ssh_key: ~/.ssh/id_rsa
-```
-
-Replace `your_server_ip_or_hostname` with the actual IP address or hostname of your metal bare server.
-
-After updating the `deploy.server` section, you can deploy to your server using:
-
-```sh
-stacker deploy --target server
-```
-
-Make sure that your SSH key is correctly set up and that the user has the necessary permissions on the server.</code></pre>
+          <div class="example-card__label">Next.js starter</div>
+          <h3 class="example-card__title">Reggae fan site from a template link</h3>
+          <pre class="example-card__output"><code>❯ stacker ai ask "Create a website dedicated to reggae using https://example.com/reggae as the design template. The site should be built with Next.js. Start with just two pages: home page and contact us page. Deploy it to Hetzner Cloud using Stacker CLI."</code></pre>
         </article>
         <article class="example-card" data-animate="fade-up" data-delay="100">
-          <div class="example-card__label">New in v0.2.8</div>
-          <h3 class="example-card__title">Open ports and keep your database private</h3>
-          <pre class="example-card__output"><code>❯ stacker agent configure-firewall \
-    --public-ports 80/tcp,443/tcp \
-    --private-ports 5432/tcp:10.0.0.0/8
-▸ Checking deployment and agent capabilities...
-▸ Applying iptables rules on target server...
-✓ Opened 80/tcp and 443/tcp to the public internet
-✓ Restricted 5432/tcp to 10.0.0.0/8
-✓ Firewall rules persisted for future reboots</code></pre>
+          <div class="example-card__label">Marketing site</div>
+          <h3 class="example-card__title">Launch a product landing page with blog support</h3>
+          <pre class="example-card__output"><code>❯ stacker ai ask "Build a modern SaaS landing page using https://example.com/saas-launch as the visual template. Use Next.js with a homepage, pricing page, blog index, and contact form. Add PostgreSQL for newsletter signups and deploy the stack to Hetzner with Stacker."</code></pre>
         </article>
         <article class="example-card" data-animate="fade-up" data-delay="200">
-          <div class="example-card__label">Agent compose essentials</div>
-          <h3 class="example-card__title">Mount the host paths agent operations need</h3>
-          <pre class="example-card__output"><code>agent:
-  image: trydirect/status:unstable
-  container_name: statuspanel_agent
-  volumes:
-    # Agent needs Docker socket for container monitoring and logs
-    - /var/run/docker.sock:/var/run/docker.sock
-    # Mount docker CLI from host for deploy_app/remove_app commands
-    - /usr/bin/docker:/usr/bin/docker:ro
-    - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
-    # Mount host paths for compose, config files, and managed installs
-    - /home/trydirect:/home/trydirect
-    - /opt:/opt
-  env_file:
-    - .env</code></pre>
+          <div class="example-card__label">Portfolio</div>
+          <h3 class="example-card__title">Create a studio website with CMS</h3>
+          <pre class="example-card__output"><code>❯ stacker ai ask "Create a portfolio website for an interior design studio based on https://example.com/studio-portfolio. Use Next.js, include home, projects, about, and contact pages, and add a lightweight admin CMS for editing project entries. Prepare the deployment for Hetzner Cloud with Stacker CLI."</code></pre>
+        </article>
+        <article class="example-card" data-animate="fade-up" data-delay="300">
+          <div class="example-card__label">Docs + community</div>
+          <h3 class="example-card__title">Ship a docs-driven open source site</h3>
+          <pre class="example-card__output"><code>❯ stacker ai ask "Create a documentation website for an open source CLI using https://example.com/docs-template as the template reference. Use Next.js and add home, docs, changelog, and contact pages. Include search-ready content structure and deploy it to Hetzner using Stacker."</code></pre>
         </article>
       </div>
     </div>

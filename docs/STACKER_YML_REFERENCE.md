@@ -143,7 +143,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 
 ai:
@@ -532,7 +532,7 @@ Cloud infrastructure provisioning settings. Stacker uses Terraform/Ansible under
 
 | Value | Provider | Example Regions | Example Sizes |
 |-------|----------|----------------|---------------|
-| `hetzner` | Hetzner Cloud | `fsn1`, `nbg1`, `hel1` | `cpx21`, `cpx31`, `cpx41` |
+| `hetzner` | Hetzner Cloud | `fsn1`, `nbg1`, `hel1` | `cx23`, `cx33`, `cx43` |
 | `digitalocean` | DigitalOcean | `nyc1`, `sfo3`, `ams3` | `s-1vcpu-1gb`, `s-2vcpu-4gb` |
 | `aws` | Amazon Web Services | `us-east-1`, `eu-west-1` | `t3.micro`, `t3.small` |
 | `linode` | Linode (Akamai) | `us-east`, `eu-west` | `g6-nanode-1`, `g6-standard-2` |
@@ -544,7 +544,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 ```
 
@@ -610,7 +610,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
   registry:
     username: "${DOCKER_USERNAME}"
     password: "${DOCKER_PASSWORD}"
@@ -698,6 +698,10 @@ Enable the Stacker status panel — a web UI showing container health, resource 
 monitoring:
   status_panel: true
 ```
+
+If you install the agent later with `stacker agent install`, the CLI does **not** modify local
+`stacker.yml` by default. Pass `--persist-config` to also write
+`monitoring.status_panel: true` back into the local config file.
 
 ### `monitoring.healthcheck`
 
@@ -811,9 +815,11 @@ other services in the remote `docker-compose.yml` intact without requiring
 env/config files referenced only by unrelated project-level services. A
 service-local file such as `<app>/docker/prod/.env` is uploaded to the remote
 config bundle, and Vault-rendered service secrets for that app are appended to
-that same remote `.env` before the Status agent writes it. If Stacker cannot
-render the target runtime env, command creation fails instead of deploying a
-raw app-local `.env` without the remote secrets.
+that same remote `.env` before the Status agent writes it. When the same target
+is updated again, Stacker refreshes the existing `# stacker-render ...` block
+instead of duplicating prior rendered secret sections. If Stacker cannot render
+the target runtime env, command creation fails instead of deploying a raw
+app-local `.env` without the remote secrets.
 
 The rendered runtime env is built from these layers, lowest to highest:
 
@@ -1004,6 +1010,7 @@ Configuration issues:
 | `stacker config validate` | Validate `stacker.yml` |
 | `stacker config show` | Display resolved configuration |
 | `stacker config fix` | Interactively fix missing required config fields |
+| `stacker config setup ai` | Configure `ai.*` settings without hand-editing YAML |
 | `stacker env` | Show or switch the active deploy environment/profile |
 | `stacker login` | Authenticate with TryDirect |
 | `stacker ai ask` | Ask the AI assistant a question |
@@ -1045,6 +1052,7 @@ Configuration issues:
 - `stacker.yml` — project configuration
 - `.stacker/Dockerfile` — generated Dockerfile (skipped if `app.image` or `app.dockerfile` is set)
 - `.stacker/docker-compose.yml` — generated compose definition (skipped if `deploy.compose_file` is set)
+- `.stacker/scenarios/qwen2.5-code/website-deploy/state.json` — saved only when the qwen website scenario bootstrap is accepted
 
 ```bash
 # Init
@@ -1066,6 +1074,12 @@ stacker init --with-ai --ai-provider anthropic --ai-model claude-sonnet-4-202505
 # ANTHROPIC_API_KEY    — Anthropic API key (used when provider is anthropic)
 STACKER_AI_TIMEOUT=900 stacker init --with-ai  # 15 min timeout for slow models
 ```
+
+If the project is a simple HTML or Next.js website and the Ollama model is
+`qwen2.5-code` or `qwen2.5-coder`, Stacker can offer a website deployment
+scenario immediately after `stacker init --with-ai`. That bootstrap reads the
+generated config first, asks only for missing deploy inputs, and stores the
+scenario state under `.stacker/scenarios/qwen2.5-code/website-deploy/`.
 
 ### `stacker deploy` flags
 
@@ -1130,6 +1144,12 @@ Status agent; it does not create, update, or reveal secret values. Use
 environment/profile for later `stacker agent deploy-app` and
 `stacker secrets push` commands.
 
+MCP config inspection uses the same classification model. `get_app_env_vars`
+retains the legacy redacted object response but also emits
+`environment_entries[]`, where Vault-backed keys are marked with
+`secure=true` and `source="vault"` even if the variable name itself would not
+match older secret-name heuristics.
+
 ### Other commands
 
 ```bash
@@ -1153,10 +1173,13 @@ stacker destroy --confirm --volumes    # Also remove volumes
 stacker config validate                # Check stacker.yml
 stacker config validate --file prod.yml
 stacker config show                    # Display resolved config
+stacker config setup ai --provider ollama --endpoint http://localhost:11434 --model llama3 --task dockerfile --task troubleshoot
 
 # AI
 stacker ai ask "How can I optimise this Dockerfile?"
 stacker ai ask "Why is my container crashing?" --context ./logs.txt
+stacker ai ask "continue" --scenario website-deploy --step image-publish
+stacker ai --scenario website-deploy --step runtime-ops
 
 # Proxy
 stacker proxy add example.com --upstream http://app:3000 --ssl auto
@@ -1169,6 +1192,7 @@ stacker update --channel beta          # Check beta channel
 # Config
 stacker config fix                     # Interactively fix missing fields
 stacker config fix --file prod.yml     # Fix a specific config file
+stacker config setup ai                # Configure ai.* interactively
 ```
 
 ### `stacker ssh-key` — SSH Key Management
@@ -1269,7 +1293,9 @@ stacker agent remove-app --app my-app             # Remove container
 stacker agent remove-app --app my-app --remove-volumes --remove-images
 
 # Reverse proxy
-# The agent resolves Nginx Proxy Manager credentials from Vault using STACKER_SERVER_ID.
+# Managed Status Panel + Nginx Proxy Manager deploys auto-seed default Vault credentials.
+# Update or repair those credentials with:
+# stacker secrets set npm_credentials --scope server --server-id <server-id> --body-file ./npm_credentials.json
 stacker agent configure-proxy --app my-app --domain app.example.com --ssl
 stacker agent configure-proxy --app my-app --domain app.local --no-ssl
 
@@ -1277,6 +1303,10 @@ stacker agent configure-proxy --app my-app --domain app.local --no-ssl
 stacker agent history                             # Recent command history
 stacker agent exec --command-type health          # Raw command
 stacker agent exec --command-type stacker.exec --params '{"container":"app","command":"ls -la"}'
+
+# Install Status Panel on an existing deployed server
+stacker agent install                             # Remote install only; leaves local stacker.yml unchanged
+stacker agent install --persist-config            # Also write monitoring.status_panel=true to local stacker.yml
 
 # Target a specific deployment
 stacker agent status --deployment abc123def
@@ -1489,7 +1519,7 @@ deploy:
   cloud:
     provider: hetzner
     region: fsn1
-    size: cpx21
+    size: cx23
     ssh_key: ~/.ssh/id_ed25519
 ```
 

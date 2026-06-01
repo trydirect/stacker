@@ -142,12 +142,12 @@ async fn when_add_edge(world: &mut StepWorld, from: String, to: String) {
     let from_id = world
         .stored_ids
         .get(&format!("dag_step:{}", from))
-        .expect(&format!("No step '{}'", from))
+        .unwrap_or_else(|| panic!("No step '{}'", from))
         .clone();
     let to_id = world
         .stored_ids
         .get(&format!("dag_step:{}", to))
-        .expect(&format!("No step '{}'", to))
+        .unwrap_or_else(|| panic!("No step '{}'", to))
         .clone();
 
     let body = json!({ "from_step_id": from_id, "to_step_id": to_id });
@@ -248,7 +248,7 @@ async fn when_add_all_step_types(world: &mut StepWorld) {
     ];
 
     let mut created = 0;
-    for (_i, step_type) in types.iter().enumerate() {
+    for step_type in types.iter() {
         let body = json!({
             "name": step_type,
             "step_type": step_type,

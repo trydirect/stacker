@@ -76,11 +76,19 @@ pub fn update_message(pb: &ProgressBar, msg: &str) {
 /// Return a status icon for a deployment status string.
 pub fn status_icon(status: &str) -> &'static str {
     match status {
+        // Deployment statuses
         "completed" | "confirmed" => "✓",
         "failed" | "error" | "cancelled" => "✗",
         "in_progress" => "⟳",
         "pending" | "wait_start" => "◷",
         "paused" | "wait_resume" => "⏸",
+        // Agent statuses
+        "online" => "●",
+        "offline" | "disconnected" => "○",
+        // Container states (Docker)
+        "running" => "▶",
+        "exited" | "stopped" | "dead" => "■",
+        "restarting" | "created" => "⟳",
         _ => "?",
     }
 }
@@ -111,6 +119,13 @@ mod tests {
         assert_eq!(status_icon("in_progress"), "⟳");
         assert_eq!(status_icon("pending"), "◷");
         assert_eq!(status_icon("paused"), "⏸");
+        // Agent statuses
+        assert_eq!(status_icon("online"), "●");
+        assert_eq!(status_icon("offline"), "○");
+        // Container states
+        assert_eq!(status_icon("running"), "▶");
+        assert_eq!(status_icon("exited"), "■");
+        assert_eq!(status_icon("restarting"), "⟳");
         assert_eq!(status_icon("unknown_status"), "?");
     }
 }

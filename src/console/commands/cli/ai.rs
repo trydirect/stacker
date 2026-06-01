@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::ai_client::{
     all_write_mode_tools, create_provider, AiProvider, AiResponse, ChatMessage, ToolCall, ToolDef,
 };
+use crate::cli::ai_scenarios::{load_scenario_prompt_context, ScenarioSelection};
 use crate::cli::config_parser::{AiConfig, AiProviderType, StackerConfig};
 use crate::cli::error::CliError;
 use crate::cli::service_catalog::{catalog_summary_for_ai, ServiceCatalog};
@@ -102,8 +103,8 @@ Use it to answer user questions with concrete YAML examples.
   stacker logs [--service S] [--follow] [--tail N]\n\
   stacker destroy --confirm [--volumes]\n\
   stacker config validate | show | fix | example\n\
-  stacker ai ask \"question\" [--context file]\n\
-  stacker proxy add DOMAIN --upstream URL --ssl auto|off\n\
+  stacker ai ask \"question\" [--context file] [--scenario website-deploy] [--step STEP]\n\
+  stacker proxy add DOMAIN --upstream URL --ssl[=auto|off]\n\
   stacker proxy detect\n\
   stacker ssh-key generate --server-id N [--save-to PATH]\n\
   stacker ssh-key show --server-id N [--json]\n\
@@ -348,6 +349,25 @@ pub fn build_ai_prompt(question: &str, context_content: Option<&str>) -> String 
     }
 }
 
+pub fn build_system_prompt_base(
+    project_dir: &Path,
+    ai_config: &AiConfig,
+    scenario: Option<&ScenarioSelection>,
+    include_catalog: bool,
+) -> Result<String, CliError> {
+    let mut sections = vec![STACKER_SCHEMA_SYSTEM_PROMPT.to_string()];
+    if include_catalog {
+        sections.push(catalog_summary_for_ai());
+    }
+
+    if let Some(selection) = scenario {
+        sections
+            .push(load_scenario_prompt_context(project_dir, ai_config, selection)?.rendered_prompt);
+    }
+
+    Ok(sections.join("\n\n"))
+}
+
 fn build_default_project_context(project_dir: &Path) -> Option<String> {
     let mut blocks: Vec<String> = Vec::new();
 
@@ -394,6 +414,15 @@ pub fn run_ai_ask(
     context: Option<&str>,
     provider: &dyn AiProvider,
 ) -> Result<String, CliError> {
+    run_ai_ask_with_system_prompt(question, context, provider, STACKER_SCHEMA_SYSTEM_PROMPT)
+}
+
+pub fn run_ai_ask_with_system_prompt(
+    question: &str,
+    context: Option<&str>,
+    provider: &dyn AiProvider,
+    system_prompt: &str,
+) -> Result<String, CliError> {
     let context_content = match context {
         Some(path) => {
             let p = Path::new(path);
@@ -411,7 +440,7 @@ pub fn run_ai_ask(
     };
 
     let prompt = build_ai_prompt(question, context_content.as_deref());
-    provider.complete(&prompt, STACKER_SCHEMA_SYSTEM_PROMPT)
+    provider.complete(&prompt, system_prompt)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1114,6 +1143,8 @@ pub struct AiAskCommand {
     pub context: Option<String>,
     pub configure: bool,
     pub write: bool,
+    pub scenario: Option<String>,
+    pub step: Option<String>,
 }
 
 impl AiAskCommand {
@@ -1123,6 +1154,8 @@ impl AiAskCommand {
             context,
             configure: false,
             write: false,
+            scenario: None,
+            step: None,
         }
     }
 
@@ -1135,6 +1168,12 @@ impl AiAskCommand {
         self.write = write;
         self
     }
+
+    pub fn with_scenario(mut self, scenario: Option<String>, step: Option<String>) -> Self {
+        self.scenario = scenario;
+        self.step = step;
+        self
+    }
 }
 
 impl CallableTrait for AiAskCommand {
@@ -1145,13 +1184,15 @@ impl CallableTrait for AiAskCommand {
             load_ai_config(DEFAULT_CONFIG_FILE)?
         };
         let provider = create_provider(&ai_config)?;
+        let cwd = std::env::current_dir()?;
+        let scenario_selection = self
+            .scenario
+            .as_ref()
+            .map(|name| ScenarioSelection::new(name.clone(), self.step.clone()));
 
         if self.write {
-            let enriched_prompt = format!(
-                "{}\n\n{}",
-                STACKER_SCHEMA_SYSTEM_PROMPT,
-                catalog_summary_for_ai()
-            );
+            let enriched_prompt =
+                build_system_prompt_base(&cwd, &ai_config, scenario_selection.as_ref(), true)?;
             let response = run_ai_ask_agentic(
                 &self.question,
                 self.context.as_deref(),
@@ -1162,7 +1203,18 @@ impl CallableTrait for AiAskCommand {
                 println!("{}", response);
             }
         } else {
-            let response = run_ai_ask(&self.question, self.context.as_deref(), provider.as_ref())?;
+            let system_prompt = build_system_prompt_base(
+                &cwd,
+                &ai_config,
+                scenario_selection.as_ref(),
+                scenario_selection.is_some(),
+            )?;
+            let response = run_ai_ask_with_system_prompt(
+                &self.question,
+                self.context.as_deref(),
+                provider.as_ref(),
+                &system_prompt,
+            )?;
             println!("{}", response);
         }
         Ok(())
@@ -1198,11 +1250,17 @@ Tips:
 /// but only for `stacker.yml` and files inside `.stacker/`.
 pub struct AiChatCommand {
     pub write: bool,
+    pub scenario: Option<String>,
+    pub step: Option<String>,
 }
 
 impl AiChatCommand {
-    pub fn new(write: bool) -> Self {
-        Self { write }
+    pub fn new(write: bool, scenario: Option<String>, step: Option<String>) -> Self {
+        Self {
+            write,
+            scenario,
+            step,
+        }
     }
 }
 
@@ -1236,13 +1294,15 @@ impl CallableTrait for AiChatCommand {
         // Seed project context into the initial system message
         let cwd = std::env::current_dir()?;
         let project_ctx = build_default_project_context(&cwd);
-        let catalog_ctx = catalog_summary_for_ai();
+        let scenario_selection = self
+            .scenario
+            .as_ref()
+            .map(|name| ScenarioSelection::new(name.clone(), self.step.clone()));
+        let base_system =
+            build_system_prompt_base(&cwd, &ai_config, scenario_selection.as_ref(), true)?;
         let system = match project_ctx {
-            Some(ctx) => format!(
-                "{}\n\n{}\n\n## Current project files\n{}",
-                STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx, ctx
-            ),
-            None => format!("{}\n\n{}", STACKER_SCHEMA_SYSTEM_PROMPT, catalog_ctx),
+            Some(ctx) => format!("{}\n\n## Current project files\n{}", base_system, ctx),
+            None => base_system,
         };
 
         let mut messages: Vec<ChatMessage> = vec![ChatMessage::system(&system)];
@@ -1322,6 +1382,19 @@ impl CallableTrait for AiChatCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::config_parser::AiProviderType;
+
+    fn scenario_ai_config() -> AiConfig {
+        AiConfig {
+            enabled: true,
+            provider: AiProviderType::Ollama,
+            model: Some("qwen2.5-coder:latest".to_string()),
+            api_key: None,
+            endpoint: Some("http://localhost:11434".to_string()),
+            timeout: 300,
+            tasks: vec![],
+        }
+    }
 
     struct MockProvider {
         response: String,
@@ -1392,6 +1465,28 @@ mod tests {
         let provider = MockProvider::new("unreachable");
         let result = run_ai_ask("question", Some("/does/not/exist.txt"), &provider);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_system_prompt_base_includes_scenario_step() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = crate::cli::ai_scenarios::ScenarioState::new("website-deploy", "init-validate");
+        crate::cli::ai_scenarios::save_scenario_state(dir.path(), &state).unwrap();
+
+        let prompt = build_system_prompt_base(
+            dir.path(),
+            &scenario_ai_config(),
+            Some(&ScenarioSelection::new(
+                "website-deploy",
+                Some("init-validate".to_string()),
+            )),
+            true,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Active deployment scenario"));
+        assert!(prompt.contains("init-validate"));
+        assert!(prompt.contains("Validate generated stacker config"));
     }
 
     #[test]

@@ -224,7 +224,7 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
 }
 
 /// Resolve the project name from stacker.yml (same logic as deploy).
-fn resolve_project_name(config: &StackerConfig) -> String {
+pub(crate) fn resolve_project_name(config: &StackerConfig) -> String {
     config
         .project
         .identity
@@ -232,7 +232,7 @@ fn resolve_project_name(config: &StackerConfig) -> String {
         .unwrap_or_else(|| config.name.clone())
 }
 
-fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
+pub(crate) fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
     creds
         .server_url
         .as_deref()
@@ -240,7 +240,7 @@ fn resolve_stacker_base_url(creds: &StoredCredentials) -> String {
         .unwrap_or_else(|| stacker_client::DEFAULT_STACKER_URL.to_string())
 }
 
-fn missing_remote_project_reason(
+pub(crate) fn missing_remote_project_reason(
     project_name: &str,
     base_url: &str,
     deploy_target: DeployTarget,
@@ -491,7 +491,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
 }
 
 /// Detect whether the project is configured for a remote (cloud/server) deployment.
-fn is_remote_deployment(project_dir: &Path) -> bool {
+pub(crate) fn is_remote_deployment(project_dir: &Path) -> bool {
     if let Ok(Some(lock)) = crate::cli::deployment_lock::DeploymentLock::load(project_dir) {
         if lock.deployment_id.is_some() || lock.target != "local" {
             return true;

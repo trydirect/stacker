@@ -156,6 +156,7 @@ impl ServiceCatalog {
             "mq" | "rabbit" | "rabbitmq" => "rabbitmq".to_string(),
             "npm" | "nginx-proxy-manager" => "nginx_proxy_manager".to_string(),
             "pma" | "phpmyadmin" => "phpmyadmin".to_string(),
+            "mail" | "mailer" | "smtp" => "smtp".to_string(),
             "mh" | "mailhog" => "mailhog".to_string(),
             "rc" | "rocketchat" | "rocket.chat" | "rocket-chat" => "rocketchat".to_string(),
             "mm" | "mattermost" => "mattermost".to_string(),
@@ -468,6 +469,28 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
             related: vec!["mysql".into()],
         },
         CatalogEntry {
+            code: "smtp".into(),
+            name: "SMTP Test Server".into(),
+            category: "mail".into(),
+            description: "Attachable SMTP companion app for local delivery and relay testing"
+                .into(),
+            service: ServiceDefinition {
+                name: "smtp".into(),
+                image: "trydirect/smtp".into(),
+                ports: vec!["1025:25".into()],
+                environment: HashMap::from([
+                    (
+                        "RELAY_NETWORKS".into(),
+                        ":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16".into(),
+                    ),
+                    ("PORT".into(), "25".into()),
+                ]),
+                volumes: vec!["smtp_data:/data".into()],
+                depends_on: vec![],
+            },
+            related: vec![],
+        },
+        CatalogEntry {
             code: "mailhog".into(),
             name: "MailHog".into(),
             category: "devtool".into(),
@@ -557,7 +580,7 @@ pub fn catalog_summary_for_ai() -> String {
         ));
     }
     lines.push(String::new());
-    lines.push("Common aliases: wp→wordpress, pg→postgres, my→mysql, mongo→mongodb, es→elasticsearch, mq→rabbitmq, pma→phpmyadmin, mh→mailhog".to_string());
+    lines.push("Common aliases: wp→wordpress, pg→postgres, my→mysql, mongo→mongodb, es→elasticsearch, mq→rabbitmq, pma→phpmyadmin, smtp→smtp, mail→smtp, mh→mailhog".to_string());
     lines.join("\n")
 }
 
@@ -593,6 +616,13 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_alias_smtp_companion() {
+        assert_eq!(ServiceCatalog::resolve_alias("smtp"), "smtp");
+        assert_eq!(ServiceCatalog::resolve_alias("mail"), "smtp");
+        assert_eq!(ServiceCatalog::resolve_alias("mailer"), "smtp");
+    }
+
+    #[test]
     fn test_hardcoded_catalog_not_empty() {
         let catalog = build_hardcoded_catalog();
         assert!(
@@ -612,6 +642,29 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_hardcoded_smtp_companion() {
+        let cat = ServiceCatalog::offline();
+        let entry = cat.lookup_hardcoded("smtp").expect("smtp service exists");
+
+        assert_eq!(entry.category, "mail");
+        assert_eq!(entry.service.name, "smtp");
+        assert_eq!(entry.service.image, "trydirect/smtp");
+        assert!(entry.service.ports.contains(&"1025:25".to_string()));
+        assert_eq!(
+            entry.service.environment.get("PORT").map(String::as_str),
+            Some("25")
+        );
+        assert_eq!(
+            entry
+                .service
+                .environment
+                .get("RELAY_NETWORKS")
+                .map(String::as_str),
+            Some(":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16")
+        );
+    }
+
+    #[test]
     fn test_lookup_hardcoded_unknown() {
         let cat = ServiceCatalog::offline();
         assert!(cat.lookup_hardcoded("nonexistent_service").is_none());
@@ -623,6 +676,7 @@ mod tests {
         assert!(summary.contains("postgres"));
         assert!(summary.contains("wordpress"));
         assert!(summary.contains("redis"));
+        assert!(summary.contains("smtp"));
         assert!(summary.contains("add_service"));
     }
 }

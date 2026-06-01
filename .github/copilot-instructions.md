@@ -135,3 +135,11 @@ Unit tests (lib) use `--test-threads=1` (see Makefile) because many share global
 ### CLI commands
 
 `stacker-cli` commands are implemented in `src/cli/`. `console` commands are in `src/console/commands/`. Both use `clap` with `#[derive(Parser, Subcommand)]`. Interactive prompts use `dialoguer`; progress bars use `indicatif`.
+
+### Service deployment scope
+
+`stacker service deploy <name>` is project-scoped by default for services declared in `stacker.yml`. Normal custom services must update `/home/trydirect/project/docker-compose.yml` and must not create `/home/trydirect/<service>/docker-compose.yml` unless the user explicitly chooses standalone mode, such as a future `--standalone` or `--scope standalone` flag.
+
+Only platform-managed services live outside the project directory by default. Current examples are Status Panel (`/home/trydirect/statuspanel`) and Nginx Proxy Manager (`/home/trydirect/nginx_proxy_manager`). Add regression tests for any service/proxy deploy change that could duplicate a project-scoped service as a standalone compose project.
+
+Stacker-managed compose services use stable runtime labels with the `my.stacker.*` prefix: `my.stacker.project_id`, `my.stacker.target`, `my.stacker.scope`, `my.stacker.service`, and `my.stacker.dns`. Keep logical service codes and Docker DNS names separate; for Nginx Proxy Manager use `my.stacker.service=nginx_proxy_manager` and `my.stacker.dns=nginx-proxy-manager`.

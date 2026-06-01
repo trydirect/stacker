@@ -9,8 +9,13 @@
 //! All endpoints require `Authorization: Bearer <token>` from `stacker login`.
 
 use crate::cli::config_parser::DeployTarget;
+use crate::cli::debug::cli_debug_enabled;
 use crate::cli::error::CliError;
 use crate::handoff::{DeploymentHandoffPayload, DeploymentHandoffResolveRequest};
+use crate::services::{
+    DeployPlan, DeployPlanOperation, DeploymentEventFeed, DeploymentState, TypedErrorEnvelope,
+};
+use pipe_adapter_sdk::PipeAdapterReference;
 use serde::{Deserialize, Serialize};
 
 /// Default Stacker server base URL (distinct from the User Service auth URL).
@@ -37,6 +42,40 @@ struct ApiResponse<T> {
     pub list: Option<Vec<T>>,
     pub id: Option<i32>,
     pub meta: Option<serde_json::Value>,
+}
+
+fn parse_typed_error_response(body: &str) -> Option<TypedErrorEnvelope> {
+    serde_json::from_str(body).ok()
+}
+
+fn stacker_api_failure(action: &str, status: u16, body: &str) -> String {
+    stacker_api_failure_with_message(
+        "Stacker server request failed",
+        action,
+        status,
+        body,
+        cli_debug_enabled(),
+    )
+}
+
+fn stacker_api_failure_with_debug(action: &str, status: u16, body: &str, debug: bool) -> String {
+    stacker_api_failure_with_message("Stacker server request failed", action, status, body, debug)
+}
+
+fn stacker_api_failure_with_message(
+    summary: &str,
+    action: &str,
+    status: u16,
+    body: &str,
+    debug: bool,
+) -> String {
+    if debug {
+        format!("Stacker server {action} failed ({status}): {body}")
+    } else {
+        format!(
+            "{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details."
+        )
+    }
 }
 
 /// Project as returned by `/project` endpoints
@@ -277,7 +316,11 @@ pub struct PipeInstanceInfo {
     #[serde(default)]
     pub template_id: Option<String>,
     pub deployment_hash: String,
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     pub source_container: String,
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     #[serde(default)]
     pub target_container: Option<String>,
     #[serde(default)]
@@ -335,7 +378,7 @@ pub struct PipeReplayResponse {
 }
 
 /// Request body for creating a pipe template
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePipeTemplateApiRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -354,11 +397,15 @@ pub struct CreatePipeTemplateApiRequest {
 }
 
 /// Request body for creating a pipe instance
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePipeInstanceApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_adapter: Option<PipeAdapterReference>,
     pub source_container: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_adapter: Option<PipeAdapterReference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_container: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -497,7 +544,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Stacker handoff resolve failed ({}): {}", status, body),
+                reason: stacker_api_failure_with_message(
+                    "Stacker handoff resolve failed",
+                    "POST /api/v1/handoff/resolve",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -526,7 +579,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!("Stacker server GET /project failed ({}): {}", status, body),
+                reason: stacker_api_failure("GET /project", status, &body),
             });
         }
 
@@ -573,11 +626,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /project/{}/apps failed ({}): {}",
-                    project_id, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /project/{project_id}/apps"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -613,9 +670,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target,
-                reason: format!(
-                    "Stacker server POST /project/{}/apps failed ({}): {}",
-                    project_id, status, body
+                reason: stacker_api_failure(
+                    &format!("POST /project/{project_id}/apps"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -630,6 +688,52 @@ impl StackerClient {
             target: self.target,
             reason: "Stacker server did not return a project app".to_string(),
         })
+    }
+
+    /// Delete one project app target by exact code.
+    pub async fn delete_project_app(
+        &self,
+        project_id: i32,
+        app_code: &str,
+        deployment_hash: Option<&str>,
+    ) -> Result<(), CliError> {
+        let suffix = if let Some(hash) = deployment_hash.filter(|value| !value.trim().is_empty()) {
+            format!(
+                "/{}/apps/{}?deployment_hash={}",
+                project_id,
+                app_code,
+                urlencoding::encode(hash)
+            )
+        } else {
+            format!("/{}/apps/{}", project_id, app_code)
+        };
+
+        let resp = self
+            .send_project_request(
+                reqwest::Method::DELETE,
+                &suffix,
+                None,
+                "DELETE /project/{id}/apps/{code}",
+            )
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("DELETE /project/{project_id}/apps/{app_code}"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        Ok(())
     }
 
     // ── Deployments ───────────────────────────────────
@@ -660,10 +764,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Stacker server GET /api/v1/deployments failed ({}): {}",
-                    status, body
-                ),
+                reason: stacker_api_failure("GET /api/v1/deployments", status, &body),
             });
         }
 
@@ -728,7 +829,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!("Stacker server POST /project failed ({}): {}", status, body),
+                reason: stacker_api_failure("POST /project", status, &body),
             });
         }
 
@@ -764,10 +865,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server PUT /project/{} failed ({}): {}",
-                    project_id, status, body
-                ),
+                reason: stacker_api_failure(&format!("PUT /project/{project_id}"), status, &body),
             });
         }
 
@@ -804,7 +902,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Stacker server GET /cloud failed ({}): {}", status, body),
+                reason: stacker_api_failure("GET /cloud", status, &body),
             });
         }
 
@@ -859,10 +957,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Stacker server GET /cloud/{} failed ({}): {}",
-                    cloud_id, status, body
-                ),
+                reason: stacker_api_failure(&format!("GET /cloud/{cloud_id}"), status, &body),
             });
         }
 
@@ -957,10 +1052,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Stacker server PUT /cloud/{} failed ({}): {}",
-                    id, status, body
-                ),
+                reason: stacker_api_failure(&format!("PUT /cloud/{id}"), status, &body),
             });
         }
 
@@ -1033,7 +1125,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Stacker server POST /cloud failed ({}): {}", status, body),
+                reason: stacker_api_failure("POST /cloud", status, &body),
             });
         }
 
@@ -1070,7 +1162,7 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!("Stacker server GET /server failed ({}): {}", status, body),
+                reason: stacker_api_failure("GET /server", status, &body),
             });
         }
 
@@ -1119,9 +1211,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /project/{}/apps/{}/secrets/{} failed ({}): {}",
-                    project_id, app_code, name, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /project/{project_id}/apps/{app_code}/secrets/{name}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1154,9 +1247,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /project/{}/apps/{}/secrets failed ({}): {}",
-                    project_id, app_code, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /project/{project_id}/apps/{app_code}/secrets"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1192,9 +1286,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server PUT /project/{}/apps/{}/secrets/{} failed ({}): {}",
-                    project_id, app_code, name, status, body
+                reason: stacker_api_failure(
+                    &format!("PUT /project/{project_id}/apps/{app_code}/secrets/{name}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1231,9 +1326,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server DELETE /project/{}/apps/{}/secrets/{} failed ({}): {}",
-                    project_id, app_code, name, status, body
+                reason: stacker_api_failure(
+                    &format!("DELETE /project/{project_id}/apps/{app_code}/secrets/{name}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1264,9 +1360,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /server/{}/secrets/{} failed ({}): {}",
-                    server_id, name, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /server/{server_id}/secrets/{name}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1298,9 +1395,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /server/{}/secrets failed ({}): {}",
-                    server_id, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /server/{server_id}/secrets"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1335,9 +1433,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server PUT /server/{}/secrets/{} failed ({}): {}",
-                    server_id, name, status, body
+                reason: stacker_api_failure(
+                    &format!("PUT /server/{server_id}/secrets/{name}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1369,9 +1468,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server DELETE /server/{}/secrets/{} failed ({}): {}",
-                    server_id, name, status, body
+                reason: stacker_api_failure(
+                    &format!("DELETE /server/{server_id}/secrets/{name}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1400,9 +1500,12 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "SSH key generation failed for server {} ({}): {}",
-                    server_id, status, body
+                reason: stacker_api_failure_with_message(
+                    &format!("SSH key generation failed for server {server_id}"),
+                    &format!("POST /server/{server_id}/ssh-key/generate"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
                 ),
             });
         }
@@ -1438,9 +1541,12 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "Failed to fetch SSH public key for server {} ({}): {}",
-                    server_id, status, body
+                reason: stacker_api_failure_with_message(
+                    &format!("Failed to fetch SSH public key for server {server_id}"),
+                    &format!("GET /server/{server_id}/ssh-key/public"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
                 ),
             });
         }
@@ -1492,9 +1598,12 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target,
-                reason: format!(
-                    "Failed to authorize SSH public key for server {} ({}): {}",
-                    server_id, status, body
+                reason: stacker_api_failure_with_message(
+                    &format!("Failed to authorize SSH public key for server {server_id}"),
+                    &format!("POST /server/{server_id}/ssh-key/authorize-public-key"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
                 ),
             });
         }
@@ -1534,9 +1643,12 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target,
-                reason: format!(
-                    "Failed to configure cloud firewall for server {} ({}): {}",
-                    server_id, status, body
+                reason: stacker_api_failure_with_message(
+                    &format!("Failed to configure cloud firewall for server {server_id}"),
+                    &format!("POST /server/{server_id}/cloud-firewall"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
                 ),
             });
         }
@@ -1583,9 +1695,12 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "SSH key upload failed for server {} ({}): {}",
-                    server_id, status, body
+                reason: stacker_api_failure_with_message(
+                    &format!("SSH key upload failed for server {server_id}"),
+                    &format!("POST /server/{server_id}/ssh-key/upload"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
                 ),
             });
         }
@@ -1638,7 +1753,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Marketplace listing failed ({}): {}", status, body),
+                reason: stacker_api_failure_with_message(
+                    "Marketplace listing failed",
+                    "GET /marketplace",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -1677,7 +1798,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Marketplace template fetch failed ({}): {}", status, body),
+                reason: stacker_api_failure_with_message(
+                    "Marketplace template fetch failed",
+                    &format!("GET /marketplace/{slug}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -1717,7 +1844,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!("Stacker server deploy failed ({}): {}", status, body),
+                reason: stacker_api_failure_with_message(
+                    "Stacker server deploy failed",
+                    &format!("POST /project{suffix}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -1748,9 +1881,18 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!("Stacker server rollback failed ({}): {}", status, body),
+                reason: stacker_api_failure_with_message(
+                    "Stacker server rollback failed",
+                    &format!("POST /project/{project_id}/rollback"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -1791,14 +1933,183 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /api/v1/deployments/{} failed ({}): {}",
-                    deployment_id, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/deployments/{deployment_id}"),
+                    status,
+                    &body,
                 ),
             });
         }
 
         let api: ApiResponse<DeploymentStatusInfo> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    /// Fetch canonical deployment state by deployment hash.
+    /// Returns `GET /api/v1/deployments/{deployment_hash}/state`.
+    pub async fn get_deployment_state_by_hash(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<Option<DeploymentState>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/state",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/deployments/{deployment_hash}/state"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentState> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    /// Fetch structured deployment events by deployment hash.
+    pub async fn get_deployment_events_by_hash(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<Option<DeploymentEventFeed>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/events",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/deployments/{deployment_hash}/events"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeploymentEventFeed> =
+            resp.json().await.map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Invalid response from Stacker server: {}", e),
+            })?;
+
+        Ok(api.item)
+    }
+
+    /// Fetch a read-only deployment plan by deployment hash.
+    pub async fn get_deployment_plan_by_hash(
+        &self,
+        deployment_hash: &str,
+        operation: DeployPlanOperation,
+        target: &str,
+        app_code: Option<&str>,
+        rollback_target: Option<&str>,
+        expected_fingerprint: Option<&str>,
+    ) -> Result<Option<DeployPlan>, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/plan",
+            self.base_url, deployment_hash
+        );
+        let mut query = vec![
+            (
+                "operation".to_string(),
+                serde_json::to_string(&operation)
+                    .unwrap()
+                    .trim_matches('"')
+                    .to_string(),
+            ),
+            ("target".to_string(), target.to_string()),
+        ];
+        if let Some(app_code) = app_code.filter(|value| !value.trim().is_empty()) {
+            query.push(("appCode".to_string(), app_code.to_string()));
+        }
+        if let Some(rollback_target) = rollback_target.filter(|value| !value.trim().is_empty()) {
+            query.push(("rollbackTarget".to_string(), rollback_target.to_string()));
+        }
+        if let Some(fingerprint) = expected_fingerprint.filter(|value| !value.trim().is_empty()) {
+            query.push(("expectedFingerprint".to_string(), fingerprint.to_string()));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .query(&query)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: format!("Stacker server unreachable: {}", e),
+            })?;
+
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if let Some(error) = parse_typed_error_response(&body) {
+                return Err(error.into());
+            }
+            return Err(CliError::DeployFailed {
+                target: self.target.clone(),
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/deployments/{deployment_hash}/plan"),
+                    status,
+                    &body,
+                ),
+            });
+        }
+
+        let api: ApiResponse<DeployPlan> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: self.target.clone(),
                 reason: format!("Invalid response from Stacker server: {}", e),
@@ -1837,9 +2148,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: self.target.clone(),
-                reason: format!(
-                    "Stacker server GET /api/v1/deployments/project/{} failed ({}): {}",
-                    project_id, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/deployments/project/{project_id}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1882,9 +2194,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "GET /api/v1/deployments/hash/{} failed ({}): {}",
-                    hash, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/deployments/hash/{hash}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -1930,7 +2243,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!("Force-complete failed ({}): {}", status, body),
+                reason: stacker_api_failure_with_message(
+                    "Force-complete failed",
+                    &format!("POST /api/v1/deployments/{deployment_id}/force-complete"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -1973,7 +2292,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::AgentCommandFailed {
                 command_id: String::new(),
-                error: format!("Enqueue failed ({}): {}", status, body),
+                error: stacker_api_failure_with_message(
+                    "Enqueue failed",
+                    "POST /api/v1/agent/commands/enqueue",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -2026,7 +2351,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::AgentCommandFailed {
                 command_id: command_id.to_string(),
-                error: format!("Status check failed ({}): {}", status, body),
+                error: stacker_api_failure_with_message(
+                    "Status check failed",
+                    &format!("GET /api/v1/commands/{deployment_hash}/{command_id}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -2120,7 +2451,13 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::AgentCommandFailed {
                 command_id: String::new(),
-                error: format!("Snapshot failed ({}): {}", status, body),
+                error: stacker_api_failure_with_message(
+                    "Snapshot failed",
+                    &format!("GET /api/v1/agent/deployments/{deployment_hash}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
             });
         }
 
@@ -2156,9 +2493,10 @@ impl StackerClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
-                reason: format!(
-                    "GET /api/v1/agent/project/{} failed ({}): {}",
-                    project_id, status, body
+                reason: stacker_api_failure(
+                    &format!("GET /api/v1/agent/project/{project_id}"),
+                    status,
+                    &body,
                 ),
             });
         }
@@ -2190,6 +2528,53 @@ impl StackerClient {
         Ok((json, hash))
     }
 
+    /// Fetch deployment agent capabilities.
+    ///
+    /// `GET /api/v1/deployments/{deployment_hash}/capabilities`
+    pub async fn deployment_capabilities(
+        &self,
+        deployment_hash: &str,
+    ) -> Result<DeploymentCapabilitiesInfo, CliError> {
+        let url = format!(
+            "{}/api/v1/deployments/{}/capabilities",
+            self.base_url, deployment_hash
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::ConfigValidation(format!(
+                    "Failed to fetch deployment capabilities: {}",
+                    e
+                ))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Capabilities lookup failed",
+                    &format!("GET /api/v1/deployments/{deployment_hash}/capabilities"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        let api: ApiResponse<DeploymentCapabilitiesInfo> = resp.json().await.map_err(|e| {
+            CliError::ConfigValidation(format!("Invalid deployment capabilities response: {}", e))
+        })?;
+
+        api.item.ok_or_else(|| {
+            CliError::ConfigValidation("Empty deployment capabilities response".to_string())
+        })
+    }
+
     // ── Pipe management ─────────────────────────────
 
     /// List pipe instances for a deployment.
@@ -2214,10 +2599,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "List pipes failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "List pipes failed",
+                    &format!("GET /api/v1/pipes/instances/{deployment_hash}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeInstanceInfo> = resp.json().await.map_err(|e| {
@@ -2245,10 +2635,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "List local pipes failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "List local pipes failed",
+                    "GET /api/v1/pipes/instances/local",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeInstanceInfo> = resp.json().await.map_err(|e| {
@@ -2283,10 +2678,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Get pipe failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Get pipe failed",
+                    &format!("GET /api/v1/pipes/instances/detail/{instance_id}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeInstanceInfo> = resp
@@ -2319,10 +2719,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Create pipe template failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Create pipe template failed",
+                    "POST /api/v1/pipes/templates",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeTemplateInfo> = resp
@@ -2356,10 +2761,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Create pipe instance failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Create pipe instance failed",
+                    "POST /api/v1/pipes/instances",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeInstanceInfo> = resp
@@ -2398,10 +2808,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status_code = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Update pipe status failed ({}): {}",
-                status_code, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Update pipe status failed",
+                    &format!("PUT /api/v1/pipes/instances/{instance_id}/status"),
+                    status_code,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeInstanceInfo> = resp
@@ -2445,10 +2860,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "List templates failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "List templates failed",
+                    "GET /api/v1/pipes/templates",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeTemplateInfo> = resp.json().await.map_err(|e| {
@@ -2484,10 +2904,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "List executions failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "List executions failed",
+                    &format!("GET /api/v1/pipes/instances/{instance_id}/executions"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeExecutionInfo> = resp.json().await.map_err(|e| {
@@ -2520,10 +2945,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Get execution failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Get execution failed",
+                    &format!("GET /api/v1/pipes/executions/{execution_id}"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeExecutionInfo> = resp.json().await.map_err(|e| {
@@ -2557,10 +2987,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Replay failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Replay failed",
+                    &format!("POST /api/v1/pipes/executions/{execution_id}/replay"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeReplayResponse> = resp
@@ -2599,10 +3034,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(format!(
-                "Deploy failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Deploy failed",
+                    &format!("POST /api/v1/pipes/instances/{instance_id}/deploy"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<PipeInstanceInfo> = resp
@@ -2632,10 +3072,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::MarketplaceFailed(format!(
-                "GET /api/templates/mine failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Marketplace submissions fetch failed",
+                    "GET /api/templates/mine",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<MarketplaceTemplateInfo> = resp.json().await.map_err(|e| {
@@ -2664,10 +3109,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::MarketplaceFailed(format!(
-                "GET /api/templates/{}/reviews failed ({}): {}",
-                template_id, status, body
-            )));
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Marketplace reviews fetch failed",
+                    &format!("GET /api/templates/{template_id}/reviews"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<MarketplaceReviewInfo> = resp.json().await.map_err(|e| {
@@ -2695,10 +3145,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::MarketplaceFailed(format!(
-                "Create template failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Create template failed",
+                    "POST /api/templates",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         let api: ApiResponse<MarketplaceTemplateInfo> = resp
@@ -2726,10 +3181,15 @@ impl StackerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::MarketplaceFailed(format!(
-                "Submit failed ({}): {}",
-                status, body
-            )));
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Submit failed",
+                    &format!("POST /api/templates/{template_id}/submit"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         Ok(())
@@ -2818,6 +3278,32 @@ pub struct AgentCommandInfo {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeploymentCapabilityFeatures {
+    #[serde(default)]
+    pub kata_runtime: bool,
+    #[serde(default)]
+    pub compose: bool,
+    #[serde(default)]
+    pub backup: bool,
+    #[serde(default)]
+    pub pipes: bool,
+    #[serde(default)]
+    pub proxy_credentials_vault: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeploymentCapabilitiesInfo {
+    #[serde(default)]
+    pub deployment_hash: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub features: DeploymentCapabilityFeatures,
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Helper: build deploy form from stacker.yml config
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2867,13 +3353,14 @@ fn parse_docker_image(image: &str) -> (Option<String>, String, Option<String>) {
     }
 }
 
-/// Parse a port mapping string like "8080:80", "8080:80/tcp", or "3000"
+/// Parse a port mapping string like "8080:80", "127.0.0.1:8080:80", or "3000"
 /// into (host_port, container_port) tuple.
 fn parse_port_mapping(port_str: &str) -> (String, String) {
     // Remove protocol suffix like "/tcp", "/udp"
     let port_no_proto = port_str.split('/').next().unwrap_or(port_str);
-    if let Some((host, container)) = port_no_proto.split_once(':') {
-        (host.to_string(), container.to_string())
+    if let Some((host_part, container)) = port_no_proto.rsplit_once(':') {
+        let host_port = host_part.rsplit(':').next().unwrap_or(host_part);
+        (host_port.to_string(), container.to_string())
     } else {
         (port_no_proto.to_string(), port_no_proto.to_string())
     }
@@ -2961,13 +3448,8 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     app
 }
 
-fn is_nginx_proxy_manager_service(svc: &ServiceDefinition) -> bool {
-    let service_name = svc.name.to_ascii_lowercase().replace('-', "_");
-    let image = svc.image.to_ascii_lowercase();
-
-    service_name == "nginx_proxy_manager"
-        || service_name == "npm"
-        || image.contains("nginx-proxy-manager")
+fn is_platform_managed_service(svc: &ServiceDefinition) -> bool {
+    crate::project_app::is_platform_managed_app_identity(&svc.name, Some(&svc.image))
 }
 
 /// Convert the `app` section of stacker.yml into the Stacker server's app JSON
@@ -3103,17 +3585,11 @@ pub fn build_project_body(config: &StackerConfig) -> serde_json::Value {
         web_apps.push(main_app);
     }
 
-    let proxy_is_managed = matches!(
-        config.proxy.proxy_type,
-        crate::cli::config_parser::ProxyType::Nginx
-            | crate::cli::config_parser::ProxyType::NginxProxyManager
-    );
-
-    // Include additional services as service targets. Managed proxy services
-    // are installed via extended_features, not as project apps, to avoid
-    // duplicate NPM containers.
+    // Include additional services as service targets. Platform-managed apps
+    // are installed by their own roles and directories, not by the project
+    // compose, to avoid duplicate containers and host-port conflicts.
     for svc in &config.services {
-        if proxy_is_managed && is_nginx_proxy_manager_service(svc) {
+        if is_platform_managed_service(svc) {
             continue;
         }
         service_apps.push(service_to_app_json(svc, &network_ids));
@@ -3231,6 +3707,22 @@ pub fn generate_server_name(project_name: &str) -> String {
     };
 
     format!("{}-{}", truncated, suffix)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeployFormOptions {
+    pub include_managed_proxy: bool,
+}
+
+pub fn build_deploy_form_with_options(
+    config: &StackerConfig,
+    options: DeployFormOptions,
+) -> serde_json::Value {
+    let mut form = build_deploy_form(config);
+    if !options.include_managed_proxy {
+        remove_extended_feature(&mut form, "nginx_proxy_manager");
+    }
+    form
 }
 
 pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
@@ -3369,6 +3861,24 @@ pub fn build_server_deploy_form(
     server_name: &str,
     force_status_panel: bool,
 ) -> serde_json::Value {
+    build_server_deploy_form_with_options(
+        config,
+        server_cfg,
+        server_name,
+        force_status_panel,
+        DeployFormOptions {
+            include_managed_proxy: true,
+        },
+    )
+}
+
+pub fn build_server_deploy_form_with_options(
+    config: &StackerConfig,
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    server_name: &str,
+    force_status_panel: bool,
+    options: DeployFormOptions,
+) -> serde_json::Value {
     let project_name = config
         .project
         .identity
@@ -3405,22 +3915,24 @@ pub fn build_server_deploy_form(
         }
     }
 
-    match config.proxy.proxy_type {
-        crate::cli::config_parser::ProxyType::Nginx
-        | crate::cli::config_parser::ProxyType::NginxProxyManager => {
-            if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
-                let features = stack_obj
-                    .entry("extended_features")
-                    .or_insert_with(|| serde_json::json!([]));
-                if let Some(arr) = features.as_array_mut() {
-                    let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
-                    if !arr.contains(&npm) {
-                        arr.push(npm);
+    if options.include_managed_proxy {
+        match config.proxy.proxy_type {
+            crate::cli::config_parser::ProxyType::Nginx
+            | crate::cli::config_parser::ProxyType::NginxProxyManager => {
+                if let Some(stack_obj) = form.get_mut("stack").and_then(|v| v.as_object_mut()) {
+                    let features = stack_obj
+                        .entry("extended_features")
+                        .or_insert_with(|| serde_json::json!([]));
+                    if let Some(arr) = features.as_array_mut() {
+                        let npm = serde_json::Value::String("nginx_proxy_manager".to_string());
+                        if !arr.contains(&npm) {
+                            arr.push(npm);
+                        }
                     }
                 }
             }
+            _ => {}
         }
-        _ => {}
     }
 
     if config.monitoring.status_panel || force_status_panel {
@@ -3463,11 +3975,55 @@ pub fn build_server_deploy_form(
     form
 }
 
+fn remove_extended_feature(form: &mut serde_json::Value, code: &str) {
+    let Some(features) = form
+        .get_mut("stack")
+        .and_then(|stack| stack.get_mut("extended_features"))
+        .and_then(|features| features.as_array_mut())
+    else {
+        return;
+    };
+
+    features.retain(|feature| feature.as_str() != Some(code));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn stacker_api_failure_hides_endpoint_and_body_without_debug() {
+        let message = stacker_api_failure_with_debug(
+            "GET /cloud",
+            400,
+            r#"{"message":"401 Unauthorized"}"#,
+            false,
+        );
+
+        assert!(message.contains("Stacker server request failed (400)"));
+        assert!(!message.contains("GET /cloud"));
+        assert!(!message.contains("401 Unauthorized"));
+        assert!(!message.contains(r#"{"message""#));
+        assert!(message.contains("DEBUG=true"));
+        assert!(message.contains("RUST_LOG=debug"));
+    }
+
+    #[test]
+    fn stacker_api_failure_includes_endpoint_and_body_with_debug() {
+        let message = stacker_api_failure_with_debug(
+            "GET /cloud",
+            400,
+            r#"{"message":"401 Unauthorized"}"#,
+            true,
+        );
+
+        assert_eq!(
+            message,
+            r#"Stacker server GET /cloud failed (400): {"message":"401 Unauthorized"}"#
+        );
+    }
 
     #[test]
     fn test_build_deploy_form_defaults() {
@@ -3778,6 +4334,83 @@ mod tests {
     }
 
     #[test]
+    fn pipe_instance_request_serializes_adapter_references() {
+        let request = CreatePipeInstanceApiRequest {
+            deployment_hash: Some("dep-123".into()),
+            source_adapter: Some(
+                PipeAdapterReference::new("imap")
+                    .with_config(serde_json::json!({ "mailbox": "INBOX" })),
+            ),
+            source_container: "status-panel-web".into(),
+            target_adapter: Some(
+                PipeAdapterReference::new("smtp")
+                    .with_config(serde_json::json!({ "host": "smtp.example.com" })),
+            ),
+            target_container: None,
+            target_url: Some("smtp://mail.example.com:587".into()),
+            template_id: Some("tpl-123".into()),
+            field_mapping_override: Some(serde_json::json!({ "subject": "$.subject" })),
+            config_override: Some(serde_json::json!({ "timeout_secs": 30 })),
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["source_adapter"]["code"], "imap");
+        assert_eq!(value["target_adapter"]["code"], "smtp");
+        assert_eq!(value["source_adapter"]["config"]["mailbox"], "INBOX");
+        assert_eq!(
+            value["target_adapter"]["config"]["host"],
+            "smtp.example.com"
+        );
+    }
+
+    #[test]
+    fn pipe_instance_info_deserializes_adapter_references() {
+        let value = serde_json::json!({
+            "id": "pipe-123",
+            "template_id": "tpl-123",
+            "deployment_hash": "dep-123",
+            "source_adapter": {
+                "code": "imap",
+                "role": "source",
+                "config": { "mailbox": "INBOX" }
+            },
+            "source_container": "status-panel-web",
+            "target_adapter": {
+                "code": "smtp",
+                "role": "target",
+                "config": { "host": "smtp.example.com" }
+            },
+            "target_container": "smtp",
+            "target_url": null,
+            "field_mapping_override": { "subject": "$.subject" },
+            "config_override": { "timeout_secs": 30 },
+            "status": "draft",
+            "last_triggered_at": null,
+            "trigger_count": 0,
+            "error_count": 0,
+            "created_by": "user-123",
+            "created_at": "2026-05-21T00:00:00Z",
+            "updated_at": "2026-05-21T00:00:00Z"
+        });
+
+        let info: PipeInstanceInfo = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            info.source_adapter
+                .as_ref()
+                .map(|adapter| adapter.code.as_str()),
+            Some("imap")
+        );
+        assert_eq!(
+            info.target_adapter
+                .as_ref()
+                .map(|adapter| adapter.code.as_str()),
+            Some("smtp")
+        );
+        assert_eq!(info.source_container, "status-panel-web");
+        assert_eq!(info.target_container.as_deref(), Some("smtp"));
+    }
+
+    #[test]
     fn test_build_project_body_skips_declared_npm_service_when_proxy_is_managed() {
         let npm_service = ServiceDefinition {
             name: "nginx_proxy_manager".to_string(),
@@ -3819,6 +4452,79 @@ mod tests {
             .filter_map(|app| app["code"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(codes, vec!["redis"]);
+    }
+
+    #[test]
+    fn test_build_project_body_skips_platform_managed_services_even_without_proxy() {
+        let npm_service = ServiceDefinition {
+            name: "nginx_proxy_manager".to_string(),
+            image: "jc21/nginx-proxy-manager:latest".to_string(),
+            ports: vec![
+                "80:80".to_string(),
+                "443:443".to_string(),
+                "81:81".to_string(),
+            ],
+            environment: std::collections::HashMap::new(),
+            volumes: vec!["npm_data:/data".to_string()],
+            depends_on: vec![],
+        };
+        let statuspanel_service = ServiceDefinition {
+            name: "statuspanel".to_string(),
+            image: "ghcr.io/trydirect/statuspanel:latest".to_string(),
+            ports: vec!["5000:5000".to_string()],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let smtp_service = ServiceDefinition {
+            name: "smtp".to_string(),
+            image: "trydirect/smtp:latest".to_string(),
+            ports: vec!["127.0.0.1:1025:25".to_string()],
+            environment: std::collections::HashMap::new(),
+            volumes: vec![],
+            depends_on: vec![],
+        };
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .add_service(npm_service)
+            .add_service(statuspanel_service)
+            .add_service(smtp_service)
+            .proxy(crate::cli::config_parser::ProxyConfig {
+                proxy_type: crate::cli::config_parser::ProxyType::None,
+                auto_detect: false,
+                domains: vec![],
+                config: None,
+            })
+            .build()
+            .unwrap();
+
+        let body = build_project_body(&config);
+        let service = body["custom"]["service"].as_array().unwrap();
+        let codes = service
+            .iter()
+            .filter_map(|app| app["code"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, vec!["smtp"]);
+    }
+
+    #[test]
+    fn test_parse_port_mapping_accepts_host_ip_bindings() {
+        assert_eq!(
+            parse_port_mapping("127.0.0.1:1025:25"),
+            ("1025".to_string(), "25".to_string())
+        );
+        assert_eq!(
+            parse_port_mapping("127.0.0.1:1025:25/tcp"),
+            ("1025".to_string(), "25".to_string())
+        );
+        assert_eq!(
+            parse_port_mapping("3000:3000"),
+            ("3000".to_string(), "3000".to_string())
+        );
+        assert_eq!(
+            parse_port_mapping("8080"),
+            ("8080".to_string(), "8080".to_string())
+        );
     }
 
     #[test]

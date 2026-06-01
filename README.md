@@ -55,6 +55,22 @@ stacker init --with-ai --ai-provider anthropic
 
 If the AI provider is unreachable, Stacker falls back to template-based generation automatically.
 
+When the project looks like a simple HTML or Next.js website and the configured
+Ollama model is `qwen2.5-code` or `qwen2.5-coder`, `stacker init --with-ai`
+can also bootstrap a website deployment scenario. The bootstrap seeds values
+from the generated `stacker.yml`, asks only for the missing deploy inputs, and
+saves scenario state under `.stacker/scenarios/qwen2.5-code/website-deploy/`
+for later continuation with `stacker ai`.
+
+### AI deployment workflows
+
+For the canonical AI/MCP deployment flow — inspect state, explain topology or
+env provenance, preview a plan, apply it safely, and recover with events or
+rollback — see [AI deployment workflows](docs/AI_DEPLOYMENT_WORKFLOWS.md).
+
+For the qwen-specific website scenario flow, including `--scenario` and `--step`
+continuation, see the same guide.
+
 ---
 
 ## `stacker.yml` example
@@ -150,6 +166,7 @@ The end-user tool. No server required for local deploys.
 | `stacker config show` | Show resolved configuration |
 | `stacker config example` | Print a full commented reference |
 | `stacker config setup cloud` | Guided cloud deployment setup |
+| `stacker config setup ai` | Configure AI provider, endpoint, model, and tasks |
 | `stacker ai ask "question"` | Ask the AI about your stack |
 | `stacker proxy add` | Add a reverse-proxy domain entry |
 | `stacker proxy detect` | Auto-detect existing reverse-proxy containers |
@@ -168,7 +185,7 @@ The end-user tool. No server required for local deploys.
 | `stacker agent restart <app>` | Restart a container via the agent |
 | `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime; `--env <name>` selects the deploy environment/profile |
 | `stacker agent remove-app` | Remove an app container (with optional volume/image cleanup) |
-| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved on the agent from Vault) |
+| `stacker agent configure-proxy` | Configure Nginx Proxy Manager via the agent; use `--no-ssl` for plain HTTP hosts (credentials are resolved from Vault and are auto-seeded for managed Status Panel + NPM deploys) |
 | `stacker agent configure-firewall` | Configure guest OS firewall rules via the Status Panel agent; use `stacker cloud firewall` for provider firewalls |
 | `stacker agent history` | Show recent command execution history |
 | `stacker agent exec` | Execute a raw agent command with JSON parameters |
@@ -252,6 +269,10 @@ stacker secrets push --service uploader --env prod
 - Service-scoped secrets are merged only into the matching rendered service/app env at deploy time.
 - `stacker secrets push --service <target>` applies stored service secrets to the remote runtime env without changing secret values. Use `--env <name>` for a one-off environment selection, or `stacker env <name>` to persist the active environment/profile for future app-only updates. Use `--force` only when the remote env drift check reports an out-of-band change.
 - Remote `get` and `list` do **not** return plaintext values in v1.
+- MCP env inspection now exposes explicit secure metadata for Vault-backed
+  variables: `get_app_env_vars` keeps the redacted
+  `environment_variables` object for compatibility and also returns
+  `environment_entries[]` with `secure`, `redacted`, and `source` fields.
 
 Remote deploys render runtime env into one canonical host file:
 `/home/trydirect/project/.env`. Generated compose uses `env_file: .env`, so the
@@ -270,7 +291,9 @@ file before sending it to the agent. This prevents app-only updates from
 replacing the remote stack compose with a single-service compose file. Any
 app-local `.env` referenced by that compose file is uploaded in the config
 bundle, and Stacker appends the Vault-rendered service secrets for the same
-target to that file before the agent writes it on the server.
+target to that file before the agent writes it on the server. Repeated app-only
+updates replace the prior `# stacker-render ...` block in that file instead of
+stacking duplicate rendered secret sections.
 
 ### Marketplace workflow (for stack developers)
 

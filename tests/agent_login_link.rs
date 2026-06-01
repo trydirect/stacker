@@ -43,7 +43,7 @@ async fn test_agent_login_returns_deployments() {
     });
 
     let resp = client
-        .post(&format!("{}/api/v1/agent/login", &app.address))
+        .post(format!("{}/api/v1/agent/login", &app.address))
         .json(&login_payload)
         .send()
         .await
@@ -76,7 +76,7 @@ async fn test_agent_login_accessible_without_auth() {
     });
 
     let resp = client
-        .post(&format!("{}/api/v1/agent/login", &app.address))
+        .post(format!("{}/api/v1/agent/login", &app.address))
         .json(&login_payload)
         .send()
         .await
@@ -118,7 +118,7 @@ async fn test_agent_link_rejects_invalid_token() {
     });
 
     let resp = client
-        .post(&format!("{}/api/v1/agent/link", &app.address))
+        .post(format!("{}/api/v1/agent/link", &app.address))
         .json(&link_payload)
         .send()
         .await
@@ -155,7 +155,7 @@ async fn test_agent_link_accessible_without_auth() {
     });
 
     let resp = client
-        .post(&format!("{}/api/v1/agent/link", &app.address))
+        .post(format!("{}/api/v1/agent/link", &app.address))
         .json(&link_payload)
         .send()
         .await
@@ -221,7 +221,7 @@ async fn test_agent_link_rejects_non_owner() {
     });
 
     let resp = client
-        .post(&format!("{}/api/v1/agent/link", &app.address))
+        .post(format!("{}/api/v1/agent/link", &app.address))
         .json(&link_payload)
         .send()
         .await

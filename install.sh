@@ -105,6 +105,38 @@ download_and_install() {
     fi
 
     ok "Installed stacker v${version} to ${INSTALL_DIR}/${BINARY_NAME}"
+
+    write_user_config
+}
+
+# ── Write user config ────────────────────────────────
+
+write_user_config() {
+    local config_dir config_file
+
+    config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/stacker"
+    config_file="${config_dir}/config.yml"
+
+    mkdir -p "$config_dir"
+
+    if [ -f "$config_file" ]; then
+        info "User config already exists at ${config_file} — skipping"
+        return
+    fi
+
+    cat > "$config_file" <<'EOF'
+# Stacker CLI user configuration
+# Priority: CLI flag > environment variable > this file > built-in default
+
+auth_url: https://try.direct/server/user
+server_url: https://try.direct/stacker
+
+login:
+  browser: true
+  provider: gc   # gc = Google, gh = GitHub
+EOF
+
+    ok "Wrote default config to ${config_file}"
 }
 
 # ── Verify install ───────────────────────────────────

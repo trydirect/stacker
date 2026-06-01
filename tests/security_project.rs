@@ -2,7 +2,6 @@ mod common;
 
 /// IDOR security tests for /project endpoints.
 /// Verify that User B cannot list, read, update, or delete User A's projects.
-
 #[tokio::test]
 async fn test_list_projects_only_returns_own() {
     let Some(app) = common::spawn_app_two_users().await else {
@@ -18,7 +17,7 @@ async fn test_list_projects_only_returns_own() {
 
     // User A lists → sees exactly 2
     let resp = client
-        .get(&format!("{}/project", &app.address))
+        .get(format!("{}/project", &app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -30,7 +29,7 @@ async fn test_list_projects_only_returns_own() {
 
     // User B lists → sees exactly 1
     let resp = client
-        .get(&format!("{}/project", &app.address))
+        .get(format!("{}/project", &app.address))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -52,7 +51,7 @@ async fn test_get_project_rejects_other_user() {
 
     // User B tries to GET User A's project → 404
     let resp = client
-        .get(&format!("{}/project/{}", &app.address, project_id))
+        .get(format!("{}/project/{}", &app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -75,7 +74,7 @@ async fn test_update_project_rejects_other_user() {
 
     // User B tries to PUT User A's project → 400 (bad_request = IDOR guard)
     let resp = client
-        .put(&format!("{}/project/{}", &app.address, project_id))
+        .put(format!("{}/project/{}", &app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .header("Content-Type", "application/json")
         .body(r#"{"custom_stack_code":"hijacked","commonDomain":"test.com","dockerhub_user":"x","dockerhub_password":"x","apps":[]}"#)
@@ -100,7 +99,7 @@ async fn test_delete_project_rejects_other_user() {
 
     // User B tries to DELETE User A's project → 400 (bad_request = IDOR guard)
     let resp = client
-        .delete(&format!("{}/project/{}", &app.address, project_id))
+        .delete(format!("{}/project/{}", &app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -123,7 +122,7 @@ async fn test_owner_can_access_own_project() {
 
     // User A GETs own project → 200
     let resp = client
-        .get(&format!("{}/project/{}", &app.address, project_id))
+        .get(format!("{}/project/{}", &app.address, project_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await

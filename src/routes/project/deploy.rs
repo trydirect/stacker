@@ -19,6 +19,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+const MANAGED_NGINX_PROXY_MANAGER_FEATURE: &str = "nginx_proxy_manager";
+const STATUS_PANEL_FEATURE: &str = "statuspanel";
+const STATUS_PANEL_CONNECTION_MODE: &str = "status_panel";
+const STATUS_PANEL_NPM_CREDENTIALS_SECRET: &str = "npm_credentials";
+const DEFAULT_STATUS_PANEL_NPM_HOST: &str = "http://nginx-proxy-manager:81";
+const DEFAULT_STATUS_PANEL_NPM_EMAIL: &str = "admin@example.com";
+const DEFAULT_STATUS_PANEL_NPM_PASSWORD: &str = "changeme";
+const DEFAULT_STATUS_PANEL_NPM_AUTH_MODE: &str = "email_password";
+
 fn parse_template_requirements(
     template: &models::StackTemplate,
 ) -> Result<models::InfrastructureRequirements, String> {
@@ -476,6 +485,98 @@ fn build_rollback_deploy_form(template_stack_code: String) -> forms::project::De
     }
 }
 
+fn deploy_features_contain(features: Option<&Vec<serde_json::Value>>, expected: &str) -> bool {
+    features.is_some_and(|items| {
+        items.iter().any(|feature| {
+            feature
+                .as_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+        })
+    })
+}
+
+fn deploy_uses_managed_nginx_proxy_manager(form: &forms::project::Deploy) -> bool {
+    deploy_features_contain(
+        form.stack.extended_features.as_ref(),
+        MANAGED_NGINX_PROXY_MANAGER_FEATURE,
+    )
+}
+
+fn deploy_uses_status_panel_agent(form: &forms::project::Deploy) -> bool {
+    form.server.connection_mode.as_deref() == Some(STATUS_PANEL_CONNECTION_MODE)
+        || deploy_features_contain(
+            form.stack.integrated_features.as_ref(),
+            STATUS_PANEL_FEATURE,
+        )
+}
+
+fn should_seed_default_status_panel_npm_credentials(form: &forms::project::Deploy) -> bool {
+    deploy_uses_managed_nginx_proxy_manager(form) && deploy_uses_status_panel_agent(form)
+}
+
+fn default_status_panel_npm_credentials() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "host": DEFAULT_STATUS_PANEL_NPM_HOST,
+        "email": DEFAULT_STATUS_PANEL_NPM_EMAIL,
+        "password": DEFAULT_STATUS_PANEL_NPM_PASSWORD,
+        "auth_mode": DEFAULT_STATUS_PANEL_NPM_AUTH_MODE
+    })
+}
+
+async fn ensure_default_status_panel_npm_credentials(
+    user: &models::User,
+    form: &forms::project::Deploy,
+    pg_pool: &PgPool,
+    settings: &Settings,
+    server: &models::Server,
+) -> Result<bool, String> {
+    if !should_seed_default_status_panel_npm_credentials(form) {
+        return Ok(false);
+    }
+
+    if db::remote_secret::fetch_server_secret(
+        pg_pool,
+        &user.id,
+        server.id,
+        STATUS_PANEL_NPM_CREDENTIALS_SECRET,
+    )
+    .await?
+    .is_some()
+    {
+        return Ok(false);
+    }
+
+    let vault = services::VaultService::from_settings(&settings.vault)
+        .map_err(|error| error.to_string())?;
+    let vault_path = vault.status_panel_npm_credentials_path(server.id);
+    let default_credentials = default_status_panel_npm_credentials();
+
+    vault
+        .store_structured_secret_value(&vault_path, &default_credentials)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    db::remote_secret::upsert_server_secret(
+        pg_pool,
+        &user.id,
+        server.id,
+        STATUS_PANEL_NPM_CREDENTIALS_SECRET,
+        &vault_path,
+        &user.id,
+        "synced",
+    )
+    .await?;
+
+    tracing::info!(
+        "Seeded default Nginx Proxy Manager credentials for server {} at {}",
+        server.id,
+        vault_path
+    );
+
+    Ok(true)
+}
+
 fn is_non_empty_json(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Null => false,
@@ -822,6 +923,85 @@ fn compose_content_from_config_files(
     Ok(None)
 }
 
+fn runtime_config_files_from_deploy_config_files(
+    config_files: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let files = config_files
+        .as_array()
+        .ok_or_else(|| "config_files must be an array".to_string())?;
+    let mut runtime_files = Vec::new();
+
+    for file in files {
+        let file_name = file
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                file.get("destination_path")
+                    .and_then(|value| value.as_str())
+                    .and_then(basename_from_path)
+            });
+
+        if file_name.is_some_and(crate::project_app::is_compose_filename) {
+            continue;
+        }
+
+        let path = file
+            .get("destination_path")
+            .or_else(|| file.get("path"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "config file is missing destination_path".to_string())?;
+        let content = file
+            .get("content")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| format!("config file '{}' is missing string content", path))?;
+
+        let mut runtime_file = serde_json::json!({
+            "path": path,
+            "content": content,
+        });
+        if let Some(mode) = file
+            .get("file_mode")
+            .or_else(|| file.get("mode"))
+            .and_then(|value| value.as_str())
+        {
+            runtime_file["mode"] = serde_json::json!(mode);
+        }
+        runtime_files.push(runtime_file);
+    }
+
+    Ok(serde_json::Value::Array(runtime_files))
+}
+
+fn merge_marketplace_config_files(target: &mut serde_json::Value, generated: &serde_json::Value) {
+    let Some(generated_files) = generated.as_array().filter(|files| !files.is_empty()) else {
+        return;
+    };
+
+    let custom = ensure_custom_object(target);
+    let existing = custom
+        .entry("marketplace_config_files".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    if !existing.is_array() {
+        *existing = serde_json::json!([]);
+    }
+
+    let existing_files = existing
+        .as_array_mut()
+        .expect("marketplace_config_files should be normalized to an array");
+    for generated_file in generated_files {
+        let generated_path = generated_file.get("path").and_then(|value| value.as_str());
+        if let Some(path) = generated_path {
+            existing_files
+                .retain(|file| file.get("path").and_then(|value| value.as_str()) != Some(path));
+        }
+        existing_files.push(generated_file.clone());
+    }
+}
+
 fn apply_deploy_bundle(
     project: &mut models::Project,
     form: &forms::project::Deploy,
@@ -845,6 +1025,9 @@ fn apply_deploy_bundle(
         Some(config_files) => {
             upsert_root_field(&mut project.metadata, "config_files", config_files);
             upsert_root_field(&mut project.request_json, "config_files", config_files);
+            let runtime_config_files = runtime_config_files_from_deploy_config_files(config_files)?;
+            merge_marketplace_config_files(&mut project.metadata, &runtime_config_files);
+            merge_marketplace_config_files(&mut project.request_json, &runtime_config_files);
             compose_content_from_config_files(config_files)?
         }
         None => None,
@@ -1272,6 +1455,16 @@ pub async fn item(
         .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
+    ensure_default_status_panel_npm_credentials(
+        user.as_ref(),
+        &form,
+        pg_pool.get_ref(),
+        sets.get_ref(),
+        &server,
+    )
+    .await
+    .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
     if let Some(template) = marketplace_template.as_ref() {
         let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
@@ -1509,6 +1702,16 @@ pub async fn saved_item(
         .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
+    ensure_default_status_panel_npm_credentials(
+        user.as_ref(),
+        &form,
+        pg_pool.get_ref(),
+        sets.get_ref(),
+        &server,
+    )
+    .await
+    .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+
     if let Some(template) = marketplace_template.as_ref() {
         let requirements = parse_template_requirements(template)
             .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
@@ -1677,10 +1880,11 @@ pub async fn rollback(
 mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
-        find_matching_hetzner_server, hetzner_server_ip, preserve_marketplace_runtime_artifacts,
-        resolve_provided_ssh_keypair, sync_runtime_artifact_bundle, validate_min_cpu_requirement,
-        validate_min_disk_requirement, validate_min_ram_requirement, HetznerIpv4, HetznerPublicNet,
-        HetznerServer,
+        default_status_panel_npm_credentials, find_matching_hetzner_server, hetzner_server_ip,
+        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
+        should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
+        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
+        HetznerIpv4, HetznerPublicNet, HetznerServer,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
@@ -1735,6 +1939,47 @@ mod tests {
                 ipv4: Some(HetznerIpv4 { ip: ip.to_string() }),
             }),
         }
+    }
+
+    #[test]
+    fn status_panel_managed_proxy_deploy_seeds_default_npm_credentials() {
+        let form = forms::project::Deploy {
+            stack: forms::project::Stack {
+                extended_features: Some(vec![json!("nginx_proxy_manager")]),
+                ..Default::default()
+            },
+            server: forms::ServerForm {
+                connection_mode: Some("status_panel".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(should_seed_default_status_panel_npm_credentials(&form));
+    }
+
+    #[test]
+    fn deploy_without_status_panel_does_not_seed_default_npm_credentials() {
+        let form = forms::project::Deploy {
+            stack: forms::project::Stack {
+                extended_features: Some(vec![json!("nginx_proxy_manager")]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!should_seed_default_status_panel_npm_credentials(&form));
+    }
+
+    #[test]
+    fn default_status_panel_npm_credentials_match_cli_status_defaults() {
+        let credentials = default_status_panel_npm_credentials();
+
+        assert_eq!(credentials["schema_version"], 1);
+        assert_eq!(credentials["host"], "http://nginx-proxy-manager:81");
+        assert_eq!(credentials["email"], "admin@example.com");
+        assert_eq!(credentials["password"], "changeme");
+        assert_eq!(credentials["auth_mode"], "email_password");
     }
 
     #[test]
@@ -1917,7 +2162,8 @@ mod tests {
                 {
                     "name": ".env",
                     "content": "WEBSITE_IMAGE=syncopiaapp/website:latest\n",
-                    "destination_path": "/opt/stacker/deployments/prod/files/.env"
+                    "destination_path": ".env",
+                    "file_mode": "0644"
                 }
             ])),
             config_bundle: Some(json!({
@@ -1925,7 +2171,7 @@ mod tests {
                     "environment": "prod",
                     "config_files": [
                         {
-                            "destination_path": "/opt/stacker/deployments/prod/files/.env"
+                            "destination_path": ".env"
                         }
                     ]
                 }
@@ -1951,7 +2197,19 @@ mod tests {
         assert_eq!(
             project.request_json["custom"]["deployment_artifacts"]["config_bundle"]["config_files"]
                 [0]["destination_path"],
-            json!("/opt/stacker/deployments/prod/files/.env")
+            json!(".env")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["path"],
+            json!(".env")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["content"],
+            json!("WEBSITE_IMAGE=syncopiaapp/website:latest\n")
+        );
+        assert_eq!(
+            project.metadata["custom"]["marketplace_config_files"][0]["mode"],
+            json!("0644")
         );
     }
 

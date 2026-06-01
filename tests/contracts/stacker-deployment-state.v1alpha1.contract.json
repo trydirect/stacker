@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "stacker-deployment-state-v1alpha1",
+  "description": "Canonical read-only deployment state contract for AI, CLI, API, and MCP consumers.",
+  "_owner": "stacker",
+  "_consumers": ["stacker", "status", "mcp", "ai-clients"],
+  "endpoint": {
+    "method": "GET",
+    "path": "/api/v1/deployments/{deployment_hash}/state",
+    "auth": "OAuth Bearer (deployment owner only)"
+  },
+  "response": {
+    "type": "object",
+    "required": [
+      "schemaVersion",
+      "project",
+      "deployment",
+      "agent",
+      "runtime",
+      "apps",
+      "drift"
+    ],
+    "properties": {
+      "schemaVersion": {
+        "type": "string",
+        "enum": ["v1alpha1"]
+      },
+      "project": {
+        "type": "object",
+        "required": ["id", "identity", "name"],
+        "properties": {
+          "id": { "type": "integer" },
+          "identity": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      },
+      "deployment": {
+        "type": "object",
+        "required": ["id", "deploymentHash", "status", "runtime"],
+        "properties": {
+          "id": { "type": "integer" },
+          "deploymentHash": { "type": "string" },
+          "status": { "type": "string" },
+          "runtime": { "type": "string" }
+        }
+      },
+      "agent": {
+        "type": "object",
+        "required": ["status", "capabilities", "features"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "type": "string" },
+          "version": { "type": "string" },
+          "lastHeartbeat": { "type": "string", "format": "date-time" },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "features": {
+            "type": "object",
+            "required": [
+              "compose",
+              "kataRuntime",
+              "backup",
+              "pipes",
+              "proxyCredentialsVault"
+            ],
+            "properties": {
+              "compose": { "type": "boolean" },
+              "kataRuntime": { "type": "boolean" },
+              "backup": { "type": "boolean" },
+              "pipes": { "type": "boolean" },
+              "proxyCredentialsVault": { "type": "boolean" }
+            }
+          }
+        }
+      },
+      "runtime": {
+        "type": "object",
+        "required": ["composePath", "envPath"],
+        "properties": {
+          "composePath": { "type": "string" },
+          "envPath": { "type": "string" }
+        }
+      },
+      "apps": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "code",
+            "name",
+            "enabled",
+            "configVersion",
+            "vaultSyncVersion"
+          ],
+          "properties": {
+            "code": { "type": "string" },
+            "name": { "type": "string" },
+            "enabled": { "type": "boolean" },
+            "configVersion": { "type": "integer" },
+            "vaultSyncVersion": { "type": "integer" },
+            "configHash": { "type": "string" }
+          }
+        }
+      },
+      "drift": {
+        "type": "object",
+        "required": ["hasDrift", "summary"],
+        "properties": {
+          "hasDrift": { "type": "boolean" },
+          "summary": { "type": "string" }
+        }
+      },
+      "lastCommand": {
+        "type": "object",
+        "required": ["type", "status"],
+        "properties": {
+          "type": { "type": "string" },
+          "status": { "type": "string" },
+          "finishedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "_notes": [
+    "Secret values must never appear in this payload.",
+    "Paths and hashes are allowed; environment key/value pairs are not.",
+    "Consumers should tolerate missing optional objects such as lastCommand."
+  ]
+}

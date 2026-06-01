@@ -50,13 +50,14 @@ fn validate_non_empty(v: &Option<String>) -> Result<(), serde_valid::validation:
 impl TryInto<dctypes::Port> for &Port {
     type Error = String;
     fn try_into(self) -> Result<dctypes::Port, Self::Error> {
-        let cp = self
+        let normalized = normalize_port_mapping(self);
+
+        let cp = normalized
             .container_port
-            .clone()
             .parse::<u16>()
             .map_err(|_err| "Could not parse container port".to_string())?;
 
-        let hp = match self.host_port.clone() {
+        let hp = match normalized.host_port {
             Some(hp) => {
                 if hp.is_empty() {
                     None
@@ -77,11 +78,49 @@ impl TryInto<dctypes::Port> for &Port {
 
         Ok(dctypes::Port {
             target: cp,
-            host_ip: None,
+            host_ip: normalized.host_ip,
             published: hp,
-            protocol: None,
+            protocol: self.protocol.clone(),
             mode: None,
         })
+    }
+}
+
+struct NormalizedPortMapping {
+    host_ip: Option<String>,
+    host_port: Option<String>,
+    container_port: String,
+}
+
+fn normalize_port_mapping(port: &Port) -> NormalizedPortMapping {
+    let container_no_proto = port
+        .container_port
+        .split('/')
+        .next()
+        .unwrap_or(port.container_port.as_str());
+
+    if let Some((host_part, container_port)) = container_no_proto.rsplit_once(':') {
+        let (host_ip, host_port) = match host_part.rsplit_once(':') {
+            Some((ip, published)) => (Some(ip.to_string()), Some(published.to_string())),
+            None => match port.host_port.as_deref() {
+                Some(host) if host.parse::<u16>().is_err() => {
+                    (Some(host.to_string()), Some(host_part.to_string()))
+                }
+                _ => (None, Some(host_part.to_string())),
+            },
+        };
+
+        return NormalizedPortMapping {
+            host_ip,
+            host_port,
+            container_port: container_port.to_string(),
+        };
+    }
+
+    NormalizedPortMapping {
+        host_ip: None,
+        host_port: port.host_port.clone(),
+        container_port: container_no_proto.to_string(),
     }
 }
 
@@ -124,6 +163,47 @@ mod tests {
         assert!(result.is_ok());
         let dc_port = result.unwrap();
         assert_eq!(dc_port.target, 80);
+    }
+
+    #[test]
+    fn test_port_try_into_accepts_host_ip_mapping_in_container_port() {
+        let port = Port {
+            host_port: Some("127.0.0.1".to_string()),
+            container_port: "1025:25".to_string(),
+            protocol: Some("tcp".to_string()),
+        };
+
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+
+        assert!(result.is_ok());
+        let dc_port = result.unwrap();
+        assert_eq!(dc_port.target, 25);
+        assert_eq!(dc_port.host_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            dc_port.published,
+            Some(dctypes::PublishedPort::Single(1025))
+        );
+        assert_eq!(dc_port.protocol.as_deref(), Some("tcp"));
+    }
+
+    #[test]
+    fn test_port_try_into_accepts_full_compose_mapping_in_container_port() {
+        let port = Port {
+            host_port: None,
+            container_port: "127.0.0.1:1025:25/tcp".to_string(),
+            protocol: None,
+        };
+
+        let result: Result<dctypes::Port, String> = (&port).try_into();
+
+        assert!(result.is_ok());
+        let dc_port = result.unwrap();
+        assert_eq!(dc_port.target, 25);
+        assert_eq!(dc_port.host_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            dc_port.published,
+            Some(dctypes::PublishedPort::Single(1025))
+        );
     }
 
     #[test]

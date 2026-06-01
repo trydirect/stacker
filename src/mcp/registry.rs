@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use super::protocol::{Tool, ToolContent};
 use crate::mcp::tools::{
+    ActivatePipeTool,
     AddAppToDeploymentTool,
     AddCloudTool,
     AdminApproveTemplateTool,
@@ -22,6 +23,7 @@ use crate::mcp::tools::{
     AdminListTemplateVersionsTool,
     AdminRejectTemplateTool,
     AdminValidateTemplateSecurityTool,
+    ApplyDeploymentPlanTool,
     ApplyVaultConfigTool,
     CancelDeploymentTool,
     CloneProjectTool,
@@ -31,8 +33,11 @@ use crate::mcp::tools::{
     // Agent Control tools
     ConfigureProxyAgentTool,
     ConfigureProxyTool,
+    CreatePipeInstanceTool,
+    CreatePipeTemplateTool,
     CreateProjectAppTool,
     CreateProjectTool,
+    DeactivatePipeTool,
     DeleteAppEnvVarTool,
     DeleteCloudTool,
     DeleteProjectTool,
@@ -45,6 +50,10 @@ use crate::mcp::tools::{
     DiscoverStackServicesTool,
     EscalateToSupportTool,
     // Agent Control tools
+    ExecuteAgentCommandTool,
+    ExplainEnvTool,
+    ExplainTopologyTool,
+    GetAgentCommandHistoryTool,
     GetAgentStatusTool,
     GetAnsibleRoleDefaultsTool,
     GetAppConfigTool,
@@ -54,13 +63,18 @@ use crate::mcp::tools::{
     GetContainerExecTool,
     GetContainerHealthTool,
     GetContainerLogsTool,
+    GetDeploymentEventsTool,
+    GetDeploymentPlanTool,
     GetDeploymentResourcesTool,
+    GetDeploymentStateTool,
     GetDeploymentStatusTool,
     GetDockerComposeYamlTool,
     GetErrorSummaryTool,
     GetInstallationDetailsTool,
     GetLiveChatInfoTool,
     GetNotificationsTool,
+    GetPipeHistoryTool,
+    GetPipeTool,
     GetProjectTool,
     GetRemoteServiceSecretTool,
     GetRoleDetailsTool,
@@ -79,6 +93,8 @@ use crate::mcp::tools::{
     ListContainersTool,
     ListFirewallRulesTool,
     ListInstallationsTool,
+    ListPipeTemplatesTool,
+    ListPipesTool,
     ListProjectAppsTool,
     ListProjectsTool,
     ListProxiesTool,
@@ -93,6 +109,8 @@ use crate::mcp::tools::{
     RecommendStackServicesTool,
     RemoveAppTool,
     RenderAnsibleTemplateTool,
+    ReplayPipeExecutionTool,
+    RequestServerSnapshotTool,
     RestartContainerTool,
     SearchApplicationsTool,
     SearchMarketplaceTemplatesTool,
@@ -104,6 +122,7 @@ use crate::mcp::tools::{
     // Phase 5: Container Operations tools
     StopContainerTool,
     SuggestResourcesTool,
+    TriggerPipeTool,
     TriggerRedeployTool,
     UpdateAppDomainTool,
     UpdateAppPortsTool,
@@ -134,8 +153,10 @@ const MFA_REQUIRED_TOOLS: &[&str] = &[
     "create_project_app",
     "start_deployment",
     "cancel_deployment",
+    "apply_deployment_plan",
     "add_cloud",
     "delete_cloud",
+    "request_server_snapshot",
     "delete_project",
     "clone_project",
     "mark_notification_read",
@@ -167,6 +188,13 @@ const MFA_REQUIRED_TOOLS: &[&str] = &[
     "configure_proxy_agent",
     "configure_firewall",
     "configure_firewall_from_role",
+    "execute_agent_command",
+    "create_pipe_template",
+    "create_pipe_instance",
+    "replay_pipe_execution",
+    "activate_pipe",
+    "deactivate_pipe",
+    "trigger_pipe",
 ];
 
 /// Trait for tool handlers
@@ -204,6 +232,12 @@ impl ToolRegistry {
 
         // Phase 3: Deployment tools
         registry.register("get_deployment_status", Box::new(GetDeploymentStatusTool));
+        registry.register("get_deployment_state", Box::new(GetDeploymentStateTool));
+        registry.register("get_deployment_plan", Box::new(GetDeploymentPlanTool));
+        registry.register("get_deployment_events", Box::new(GetDeploymentEventsTool));
+        registry.register("apply_deployment_plan", Box::new(ApplyDeploymentPlanTool));
+        registry.register("explain_env", Box::new(ExplainEnvTool));
+        registry.register("explain_topology", Box::new(ExplainTopologyTool));
         registry.register("start_deployment", Box::new(StartDeploymentTool));
         registry.register("cancel_deployment", Box::new(CancelDeploymentTool));
 
@@ -218,6 +252,10 @@ impl ToolRegistry {
             Box::new(ListCloudServerSizesTool),
         );
         registry.register("list_cloud_images", Box::new(ListCloudImagesTool));
+        registry.register(
+            "request_server_snapshot",
+            Box::new(RequestServerSnapshotTool),
+        );
 
         // Phase 3: Project management
         registry.register("delete_project", Box::new(DeleteProjectTool));
@@ -328,6 +366,18 @@ impl ToolRegistry {
             Box::new(DeleteRemoteServiceSecretTool),
         );
 
+        // Pipe tools
+        registry.register("list_pipes", Box::new(ListPipesTool));
+        registry.register("get_pipe", Box::new(GetPipeTool));
+        registry.register("list_pipe_templates", Box::new(ListPipeTemplatesTool));
+        registry.register("create_pipe_template", Box::new(CreatePipeTemplateTool));
+        registry.register("create_pipe_instance", Box::new(CreatePipeInstanceTool));
+        registry.register("get_pipe_history", Box::new(GetPipeHistoryTool));
+        registry.register("replay_pipe_execution", Box::new(ReplayPipeExecutionTool));
+        registry.register("activate_pipe", Box::new(ActivatePipeTool));
+        registry.register("deactivate_pipe", Box::new(DeactivatePipeTool));
+        registry.register("trigger_pipe", Box::new(TriggerPipeTool));
+
         // Phase 7: Advanced Monitoring & Troubleshooting tools
         registry.register(
             "get_docker_compose_yaml",
@@ -378,6 +428,11 @@ impl ToolRegistry {
         registry.register("remove_app", Box::new(RemoveAppTool));
         registry.register("configure_proxy_agent", Box::new(ConfigureProxyAgentTool));
         registry.register("get_agent_status", Box::new(GetAgentStatusTool));
+        registry.register(
+            "get_agent_command_history",
+            Box::new(GetAgentCommandHistoryTool),
+        );
+        registry.register("execute_agent_command", Box::new(ExecuteAgentCommandTool));
 
         // Firewall (iptables) management tools
         registry.register("configure_firewall", Box::new(ConfigureFirewallTool));
@@ -518,10 +573,30 @@ mod tests {
             .expect("deploy app should require policy");
         assert!(deploy_policy.requires_mfa);
 
+        let apply_plan_policy = registry
+            .access_policy("apply_deployment_plan")
+            .expect("deployment plan apply should require policy");
+        assert!(apply_plan_policy.requires_mfa);
+
         let admin_validate_policy = registry
             .access_policy("admin_validate_template_security")
             .expect("admin security validation should require policy");
         assert!(admin_validate_policy.requires_mfa);
+
+        let exec_policy = registry
+            .access_policy("execute_agent_command")
+            .expect("raw agent exec should require policy");
+        assert!(exec_policy.requires_mfa);
+
+        let activate_policy = registry
+            .access_policy("activate_pipe")
+            .expect("pipe activation should require policy");
+        assert!(activate_policy.requires_mfa);
+
+        let replay_policy = registry
+            .access_policy("replay_pipe_execution")
+            .expect("pipe replay should require policy");
+        assert!(replay_policy.requires_mfa);
     }
 
     #[test]
@@ -539,6 +614,21 @@ mod tests {
             .expect("get tool should require policy");
         assert_eq!(get_policy.object, "/mcp/tools/get_remote_service_secret");
         assert!(!get_policy.requires_mfa);
+
+        let history_policy = registry
+            .access_policy("get_agent_command_history")
+            .expect("history tool should require policy");
+        assert_eq!(
+            history_policy.object,
+            "/mcp/tools/get_agent_command_history"
+        );
+        assert!(!history_policy.requires_mfa);
+
+        let list_pipes_policy = registry
+            .access_policy("list_pipes")
+            .expect("pipe list should require policy");
+        assert_eq!(list_pipes_policy.object, "/mcp/tools/list_pipes");
+        assert!(!list_pipes_policy.requires_mfa);
     }
 
     #[test]

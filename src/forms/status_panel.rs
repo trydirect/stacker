@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use pipe_adapter_sdk::PipeAdapterReference;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -581,10 +582,14 @@ pub fn validate_command_parameters(
             if params.pipe_instance_id.trim().is_empty() {
                 return Err("activate_pipe: pipe_instance_id is required".to_string());
             }
-            // Validate target: at least one of target_container or target_url
-            if params.target_container.is_none() && params.target_url.is_none() {
+            // Validate target: at least one of target_container, target_url, or target_adapter
+            if params.target_container.is_none()
+                && params.target_url.is_none()
+                && params.target_adapter.is_none()
+            {
                 return Err(
-                    "activate_pipe: either target_container or target_url is required".to_string(),
+                    "activate_pipe: either target_container, target_url, or target_adapter is required"
+                        .to_string(),
                 );
             }
             // Validate trigger_type
@@ -870,7 +875,11 @@ pub fn validate_command_result(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn default_probe_protocols() -> Vec<String> {
-    vec!["openapi".to_string(), "rest".to_string()]
+    vec![
+        "openapi".to_string(),
+        "html_forms".to_string(),
+        "rest".to_string(),
+    ]
 }
 
 fn default_probe_timeout() -> u32 {
@@ -919,6 +928,21 @@ pub struct ProbeOperation {
     /// Sample response captured during probing (when capture_samples=true)
     #[serde(default)]
     pub sample_response: Option<serde_json::Value>,
+}
+
+/// Metadata about an attempted probe run or probe target.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProbeAttempt {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub container: Option<String>,
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub outcome: String,
 }
 
 /// A discovered HTML form
@@ -990,11 +1014,17 @@ pub struct ProbeEndpointsCommandReport {
     pub app_code: String,
     pub protocols_detected: Vec<String>,
     #[serde(default)]
+    pub protocols_requested: Vec<String>,
+    #[serde(default)]
     pub containers: Vec<ProbeContainer>,
     pub endpoints: Vec<ProbeEndpoint>,
     #[serde(default)]
     pub resources: Vec<ProbeResource>,
     pub forms: Vec<ProbeForm>,
+    #[serde(default)]
+    pub probe_attempts: Vec<ProbeAttempt>,
+    #[serde(default)]
+    pub target_kind: Option<String>,
     pub probed_at: String,
 }
 
@@ -1007,6 +1037,9 @@ pub struct ProbeEndpointsCommandReport {
 pub struct ActivatePipeCommandRequest {
     /// UUID of the pipe instance to activate
     pub pipe_instance_id: String,
+    /// Optional typed source adapter reference for connector-style transports
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     /// Source container name
     #[serde(default)]
     pub source_container: Option<String>,
@@ -1034,6 +1067,9 @@ pub struct ActivatePipeCommandRequest {
     /// Target external URL (for external pipes)
     #[serde(default)]
     pub target_url: Option<String>,
+    /// Optional typed target adapter reference for connector-style transports
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     /// Target endpoint path
     #[serde(default = "default_pipe_target_endpoint")]
     pub target_endpoint: String,
@@ -1088,6 +1124,9 @@ pub struct TriggerPipeCommandRequest {
     /// Optional input data to feed into the pipe (overrides source fetch)
     #[serde(default)]
     pub input_data: Option<serde_json::Value>,
+    /// Optional typed source adapter reference for connector-style transports
+    #[serde(default)]
+    pub source_adapter: Option<PipeAdapterReference>,
     /// Optional source container override
     #[serde(default)]
     pub source_container: Option<String>,
@@ -1100,6 +1139,9 @@ pub struct TriggerPipeCommandRequest {
     /// Optional external target override
     #[serde(default)]
     pub target_url: Option<String>,
+    /// Optional typed target adapter reference for connector-style transports
+    #[serde(default)]
+    pub target_adapter: Option<PipeAdapterReference>,
     /// Optional internal target override
     #[serde(default)]
     pub target_container: Option<String>,
@@ -1202,11 +1244,17 @@ mod tests {
             "activate_pipe.rabbitmq.command.json" => include_str!(
                 "../../tests/fixtures/pipe-contract/activate_pipe.rabbitmq.command.json"
             ),
+            "activate_pipe.adapter.command.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/activate_pipe.adapter.command.json"
+            ),
             "deactivate_pipe.command.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/deactivate_pipe.command.json")
             }
             "trigger_pipe.manual.command.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.manual.command.json")
+            }
+            "trigger_pipe.adapter.command.json" => {
+                include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.adapter.command.json")
             }
             "trigger_pipe.replay.command.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.command.json")
@@ -1226,6 +1274,9 @@ mod tests {
             "trigger_pipe.replay.report.json" => {
                 include_str!("../../tests/fixtures/pipe-contract/trigger_pipe.replay.report.json")
             }
+            "trigger_pipe.smtp_adapter.report.json" => include_str!(
+                "../../tests/fixtures/pipe-contract/trigger_pipe.smtp_adapter.report.json"
+            ),
             "npm_credentials.v1_email_password.json" => {
                 include_str!("../../tests/fixtures/npm_credentials/v1_email_password.json")
             }
@@ -1427,8 +1478,12 @@ mod tests {
         .expect("probe_endpoints params must be present");
 
         assert_eq!(params["app_code"], "crm");
-        assert_eq!(params["protocols"], json!(["openapi", "rest"]));
+        assert_eq!(
+            params["protocols"],
+            json!(["openapi", "html_forms", "rest"])
+        );
         assert_eq!(params["probe_timeout"], 5);
+        assert_eq!(params["capture_samples"], false);
     }
 
     #[test]
@@ -1554,6 +1609,44 @@ mod tests {
         .expect("valid result should pass");
 
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn probe_endpoints_result_accepts_metadata_fields() {
+        let result = validate_command_result(
+            "probe_endpoints",
+            "hash_a",
+            &Some(json!({
+                "type": "probe_endpoints",
+                "deployment_hash": "hash_a",
+                "app_code": "crm",
+                "protocols_detected": ["html_forms"],
+                "protocols_requested": ["html_forms"],
+                "endpoints": [],
+                "resources": [],
+                "forms": [{
+                    "id": "contact",
+                    "action": "/contact",
+                    "method": "POST",
+                    "fields": ["name", "email"]
+                }],
+                "probe_attempts": [{
+                    "scope": "remote_app",
+                    "selector": "crm",
+                    "container": "crm-web",
+                    "protocols": ["html_forms"],
+                    "outcome": "detected"
+                }],
+                "target_kind": "html_form",
+                "probed_at": "2026-03-20T12:00:00Z"
+            })),
+        )
+        .expect("valid metadata result should pass")
+        .expect("result payload should be present");
+
+        assert_eq!(result["protocols_requested"], json!(["html_forms"]));
+        assert_eq!(result["probe_attempts"][0]["scope"], "remote_app");
+        assert_eq!(result["target_kind"], "html_form");
     }
 
     // ── check_connections ────────────────────────────────────────────
@@ -1758,6 +1851,29 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_accepts_adapter_references() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "source_adapter": {
+                    "code": "imap",
+                    "role": "source",
+                    "config": { "mailbox": "INBOX" }
+                },
+                "target_adapter": {
+                    "code": "smtp",
+                    "role": "target",
+                    "config": { "host": "smtp" }
+                },
+                "target_url": "https://bridge.internal/pipes/contact",
+                "trigger_type": "webhook"
+            })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn activate_pipe_accepts_shared_webhook_fixture() {
         let result = validate_command_parameters(
             "activate_pipe",
@@ -1776,10 +1892,39 @@ mod tests {
     }
 
     #[test]
+    fn activate_pipe_accepts_shared_adapter_fixture() {
+        let result = validate_command_parameters(
+            "activate_pipe",
+            &Some(fixture("activate_pipe.adapter.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn trigger_pipe_requires_instance_id() {
         let err =
             validate_command_parameters("trigger_pipe", &Some(json!({ "pipe_instance_id": "" })));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn trigger_pipe_accepts_adapter_references() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(json!({
+                "pipe_instance_id": "abc-123",
+                "source_adapter": {
+                    "code": "pop3",
+                    "role": "source"
+                },
+                "target_adapter": {
+                    "code": "smtp",
+                    "role": "target"
+                },
+                "trigger_type": "manual"
+            })),
+        );
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1798,6 +1943,15 @@ mod tests {
         let result = validate_command_parameters(
             "trigger_pipe",
             &Some(fixture("trigger_pipe.manual.command.json")),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn trigger_pipe_accepts_shared_adapter_fixture() {
+        let result = validate_command_parameters(
+            "trigger_pipe",
+            &Some(fixture("trigger_pipe.adapter.command.json")),
         );
         assert!(result.is_ok());
     }
@@ -2124,6 +2278,20 @@ mod tests {
         let payload = result.unwrap().unwrap();
         assert_eq!(payload["trigger_type"], "replay");
         assert_eq!(payload["lifecycle"]["trigger_count"], 2);
+    }
+
+    #[test]
+    fn trigger_pipe_smtp_adapter_result_accepts_shared_fixture() {
+        let result = validate_command_result(
+            "trigger_pipe",
+            "dep-123",
+            &Some(fixture("trigger_pipe.smtp_adapter.report.json")),
+        );
+        assert!(result.is_ok());
+        let payload = result.expect("fixture should validate").expect("payload");
+        assert_eq!(payload["target_response"]["transport"], "smtp");
+        assert_eq!(payload["target_response"]["adapter"], "smtp");
+        assert_eq!(payload["target_response"]["delivered"], true);
     }
 
     #[test]

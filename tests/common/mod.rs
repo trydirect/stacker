@@ -1,3 +1,9 @@
+#![allow(
+    dead_code,
+    clippy::field_reassign_with_default,
+    clippy::let_underscore_future
+)]
+
 use actix_web::{get, web, App, HttpServer, Responder};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use stacker::configuration::{get_configuration, DatabaseSettings, Settings};

@@ -9,6 +9,73 @@ use async_trait::async_trait;
 /// Real implementation that publishes deployment requests through RabbitMQ
 pub struct InstallServiceClient;
 
+fn normalize_server_region_for_installer(provider: &str, server: &mut crate::forms::ServerForm) {
+    if !matches!(provider, "htz" | "hetzner") {
+        return;
+    }
+
+    let Some(region) = server.region.as_deref() else {
+        return;
+    };
+
+    let location = match region {
+        "nbg1-dc3" => "nbg1",
+        "fsn1-dc14" => "fsn1",
+        "hel1-dc2" => "hel1",
+        "ash-dc1" => "ash",
+        "hil-dc1" => "hil",
+        _ => return,
+    };
+
+    server.region = Some(location.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_server_region_for_installer;
+    use crate::forms::ServerForm;
+
+    #[test]
+    fn preserves_hetzner_location_for_installer() {
+        let mut server = ServerForm {
+            region: Some("nbg1".to_string()),
+            server: Some("cpx21".to_string()),
+            os: Some("docker-ce".to_string()),
+            ..Default::default()
+        };
+
+        normalize_server_region_for_installer("htz", &mut server);
+
+        assert_eq!(server.region.as_deref(), Some("nbg1"));
+        assert_eq!(server.server.as_deref(), Some("cpx21"));
+        assert_eq!(server.os.as_deref(), Some("docker-ce"));
+    }
+
+    #[test]
+    fn normalizes_hetzner_datacenter_to_location_for_installer() {
+        let mut server = ServerForm {
+            region: Some("fsn1-dc14".to_string()),
+            ..Default::default()
+        };
+
+        normalize_server_region_for_installer("htz", &mut server);
+
+        assert_eq!(server.region.as_deref(), Some("fsn1"));
+    }
+
+    #[test]
+    fn leaves_non_hetzner_regions_unchanged() {
+        let mut server = ServerForm {
+            region: Some("fra1".to_string()),
+            ..Default::default()
+        };
+
+        normalize_server_region_for_installer("do", &mut server);
+
+        assert_eq!(server.region.as_deref(), Some("fra1"));
+    }
+}
+
 #[async_trait]
 impl InstallServiceConnector for InstallServiceClient {
     async fn deploy(
@@ -44,6 +111,7 @@ impl InstallServiceConnector for InstallServiceClient {
         payload.server = Some(server.into());
         // Inject newly-generated public key so Install Service can append it to authorized_keys
         if let Some(ref mut srv) = payload.server {
+            normalize_server_region_for_installer(&cloud_creds.provider, srv);
             if srv.public_key.is_none() {
                 srv.public_key = server_public_key;
             }

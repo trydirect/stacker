@@ -5,7 +5,6 @@ use sqlx::Row;
 
 /// User A creates a client. User B tries to update/enable/disable → rejected (400).
 /// Verifies cross-user data isolation on client endpoints.
-
 async fn insert_client(pool: &sqlx::PgPool, user_id: &str) -> i32 {
     let rec = sqlx::query(
         "INSERT INTO client (user_id, secret, created_at, updated_at) \

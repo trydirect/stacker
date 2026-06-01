@@ -1257,3 +1257,10 @@ To verify `is_official` and `is_verified_publisher` status for each image:
 - [ ] Start with `stacker-vendor-payouts`, `stacker-template-requirements`, and `stacker-duplicate-slug-409`.
 - [ ] Follow with `stacker-agent-alerts`, `stacker-review-notifications`, and `stacker-rollback` once the marketplace data contract is stable.
 - [ ] Treat `stacker-team-projects` and `stacker-pipe-execution` as multi-sprint workstreams with cross-project coordination.
+
+
+## MCP safe troubleshooting snapshots
+
+- Added `request_server_snapshot` MCP tool for Hetzner-first pre-remediation snapshots.
+- Snapshot creation requires explicit `confirm_snapshot=true` because it is a provider write operation.
+- Follow-up: add a shared risk guard to destructive MCP tools (`get_container_exec`, `restart_container`, `stop_container`, `remove_app`, force `deploy_app`, proxy/firewall writes) so they can require a recent `snapshot_id`/provider action before execution.

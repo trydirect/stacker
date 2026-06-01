@@ -4,6 +4,10 @@ version = "0.2.8"
 edition = "2021"
 default-run= "server"
 
+[workspace]
+members = ["crates/pipe-adapter-sdk", "crates/pipe-adapter-mail"]
+resolver = "2"
+
 [lib]
 path="src/lib.rs"
 
@@ -93,6 +97,8 @@ tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 tonic = { version = "0.11", features = ["tls"] }
 prost = "0.12"
 prost-types = "0.12"
+pipe-adapter-mail = { path = "crates/pipe-adapter-mail" }
+pipe-adapter-sdk = { path = "crates/pipe-adapter-sdk" }
 
 [dependencies.sqlx]
 version = "0.8.2"

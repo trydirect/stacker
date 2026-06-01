@@ -15,7 +15,7 @@ async fn middleware_client_works() {
     let client = reqwest::Client::new(); // client
 
     let response = client
-        .get(&format!("{}/health_check", &app.address))
+        .get(format!("{}/health_check", &app.address))
         .send()
         .await
         .expect("Failed to execute request.");

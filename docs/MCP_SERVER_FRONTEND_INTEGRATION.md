@@ -54,6 +54,10 @@ secret tools mirror the CLI/API target model:
 Remote secret reads are metadata-only; plaintext values are written to Vault but
 never returned to MCP clients.
 
+`get_remote_service_secret` and `list_remote_service_secrets` now include
+`secure: true` in their metadata payloads because Vault-backed service secrets
+are explicitly classified as secure inputs, not merely inferred by name.
+
 Every MCP tool call is checked against Casbin before its handler executes. Clients
 must have a `CALL` policy for `/mcp/tools/<tool_name>`. Marketplace admin tools
 are granted only to `group_admin`; regular project, deployment, cloud,
@@ -68,6 +72,64 @@ write operations. They also require:
 - A verified 2FA/MFA marker from the authenticated user profile or access token
   (`mfa_verified`, `two_factor_verified`, `amr` containing `totp`, `otp`,
   `webauthn`, etc.).
+
+## Canonical deployment AI workflow
+
+For deployment troubleshooting and safe automation, frontend clients should
+prefer the newer structured deployment tools over older summary payloads:
+
+- `get_deployment_state` for canonical deployment state.
+- `explain_topology` and `explain_env` for path and env provenance reasoning.
+- `get_deployment_plan` for preview plus stale-plan fingerprint generation.
+- `apply_deployment_plan` for confirmed deploy-app and rollback execution.
+- `get_deployment_events` for progress, failure, and remediation signals.
+
+### Compatibility and safety rules
+
+1. Do not depend on `get_deployment_status` returning the raw internal
+   deployment row. Use `get_deployment_state`, `get_deployment_plan`, and
+   `get_deployment_events` when the client needs stable machine-readable fields.
+2. Add `apply_deployment_plan` to the frontend confirmation-required tool list.
+   The tool requires:
+   - `confirm=true`
+   - `expected_fingerprint` from the immediately preceding preview
+   - a step-up/MFA-capable user session
+3. MCP tool failures are returned as successful JSON-RPC envelopes with
+   `result.isError=true` and a typed error JSON string in
+   `result.content[0].text`. Frontends should parse and surface that typed error
+   envelope instead of collapsing it into generic text.
+4. Server-side MCP intentionally supports `deploy_app` and `rollback_deploy`
+   applies only. Full `deploy` apply still requires local CLI workspace context
+   and is rejected with a typed `invalid_request` error.
+
+See [AI deployment workflows](AI_DEPLOYMENT_WORKFLOWS.md) for the documented
+tool sequence and evaluation fixture reference.
+
+## Environment inspection contract
+
+`get_app_env_vars` now returns two complementary shapes:
+
+- `environment_variables` — the legacy redacted key/value object for existing
+  clients.
+- `environment_entries` — the canonical per-variable list for newer clients.
+
+Each `environment_entries` item contains:
+
+- `name`
+- `value`
+- `secure`
+- `redacted`
+- `source` (`project` or `vault`)
+
+Frontend clients should prefer `environment_entries` when they need to
+distinguish between:
+
+- a value redacted because it is explicitly Vault-backed (`secure=true`)
+- a value redacted by legacy heuristic name matching
+- a regular project-defined env value
+
+This allows names such as `MYSECURE_PASSPHRASE` to remain safely redacted even
+when the key name itself would not match an older secret heuristic.
 
 ## Technology Stack
 

@@ -99,6 +99,15 @@ enum StackerCommands {
         /// Stacker API base URL (or set STACKER_URL)
         #[arg(long = "server-url", visible_alias = "api-url")]
         server_url: Option<String>,
+        /// Authenticate via browser OAuth2 flow (opens a sign-in URL)
+        #[arg(long)]
+        browser: bool,
+        /// OAuth provider code for browser login: gc (Google), gh (GitHub), … (default: gc)
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// Log in with username/password instead of browser OAuth (skips browser flow)
+        #[arg(short = 'u', long, value_name = "EMAIL")]
+        user: Option<String>,
     },
     /// Show the saved login and current project's recorded deploy identity
     Whoami {},
@@ -135,6 +144,9 @@ enum StackerCommands {
         /// Project name on the Stacker server
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
+        /// Deployment environment/profile to use
+        #[arg(long = "env", visible_alias = "environment", value_name = "NAME")]
+        environment: Option<String>,
         /// Name of saved cloud credential to reuse
         #[arg(long, value_name = "KEY_NAME")]
         key: Option<String>,
@@ -257,6 +269,26 @@ enum StackerConfigSetupCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Configure AI defaults in stacker.yml
+    Ai {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// AI provider: openai, anthropic, ollama, custom
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// AI endpoint, e.g. http://localhost:11434 for Ollama
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// AI model name, e.g. llama3.1
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+        /// AI request timeout in seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        /// AI task name. Repeat or use comma-separated values.
+        #[arg(long = "task", value_name = "TASK")]
+        tasks: Vec<String>,
+    },
     /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
     RemotePayload {
         #[arg(long, value_name = "FILE")]
@@ -290,8 +322,14 @@ enum StackerProxyCommands {
         domain: String,
         #[arg(long)]
         upstream: Option<String>,
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         ssl: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Detect existing reverse-proxy containers
     Detect {
@@ -365,12 +403,18 @@ fn get_command(
                 domain,
                 auth_url,
                 server_url,
+                browser,
+                provider,
+                user,
             } => Ok(Box::new(
                 stacker::console::commands::cli::login::LoginCommand::new(
                     org,
                     domain,
                     auth_url,
                     server_url,
+                    browser,
+                    provider,
+                    user,
                 ),
             )),
             StackerCommands::Whoami {} => Ok(Box::new(
@@ -396,6 +440,7 @@ fn get_command(
                 dry_run,
                 force_rebuild,
                 project,
+                environment,
                 key,
                 key_id,
                 server,
@@ -407,6 +452,7 @@ fn get_command(
                     force_rebuild,
                 )
                 .with_remote_overrides(project, key, server)
+                .with_environment(environment)
                 .with_key_id(key_id),
             )),
             StackerCommands::Connect { handoff } => Ok(Box::new(
@@ -454,6 +500,18 @@ fn get_command(
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
                     )),
+                    StackerConfigSetupCommands::Ai {
+                        file,
+                        provider,
+                        endpoint,
+                        model,
+                        timeout,
+                        tasks,
+                    } => Ok(Box::new(
+                        stacker::console::commands::cli::config::ConfigSetupAiCommand::new(
+                            file, provider, endpoint, model, timeout, tasks,
+                        ),
+                    )),
                     StackerConfigSetupCommands::RemotePayload { file, out } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(file, out),
                     )),
@@ -461,7 +519,7 @@ fn get_command(
             },
             StackerCommands::Ai { command: ai_cmd, write } => match ai_cmd {
                 None => Ok(Box::new(
-                    stacker::console::commands::cli::ai::AiChatCommand::new(write),
+                    stacker::console::commands::cli::ai::AiChatCommand::new(write, None, None),
                 )),
                 Some(StackerAiCommands::Ask {
                     question,
@@ -481,9 +539,12 @@ fn get_command(
                     domain,
                     upstream,
                     ssl,
+                    force,
+                    json,
+                    deployment,
                 } => Ok(Box::new(
                     stacker::console::commands::cli::proxy::ProxyAddCommand::new(
-                        domain, upstream, ssl,
+                        domain, upstream, ssl, force, json, deployment,
                     ),
                 )),
                 StackerProxyCommands::Detect { json, deployment } => Ok(Box::new(

@@ -12,6 +12,7 @@ pub mod vault;
 pub use agent_capabilities::*;
 pub use agent_client::*;
 pub use db_pools::*;
+pub use env_path::*;
 pub use json::*;
 pub use mq_manager::*;
 pub use ssh_client::*;
@@ -22,6 +23,7 @@ pub mod dockerhub;
 pub mod env_path;
 pub mod fs;
 pub(crate) mod ip;
+pub mod stacker_labels;
 
 pub use dockerhub::*;
 

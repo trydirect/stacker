@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::services::TypedErrorEnvelope;
+
 /// JSON-RPC 2.0 Request structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -147,6 +149,15 @@ impl CallToolResponse {
     pub fn error(text: String) -> Self {
         Self {
             content: vec![ToolContent::Text { text }],
+            is_error: Some(true),
+        }
+    }
+
+    pub fn typed_error(error: TypedErrorEnvelope) -> Self {
+        Self {
+            content: vec![ToolContent::Text {
+                text: error.to_pretty_json(),
+            }],
             is_error: Some(true),
         }
     }

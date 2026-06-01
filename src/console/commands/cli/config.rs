@@ -1,15 +1,30 @@
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cli::cloud_env;
-use crate::cli::config_parser::{
-    CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig, StackerConfig,
+use crate::cli::config_check::{check_inventory, load_check, ConfigCheckItem, ConfigCheckResult};
+use crate::cli::config_contract::{suggest_contract_yaml, ContractSuggestOptions};
+use crate::cli::config_diff::{diff_inventories, load_diff, ConfigDiff, DiffItem};
+use crate::cli::config_inventory::{
+    load_inventory, merge_remote_secret_names, ConfigInventory, InventoryOptions,
 };
+use crate::cli::config_parser::{
+    AiProviderType, CloudConfig, CloudOrchestrator, CloudProvider, DeployTarget, ServerConfig,
+    StackerConfig,
+};
+use crate::cli::config_promote::{
+    load_promotion_plan, promotion_plan_from_diff, ConfigPromotionPlan,
+};
+use crate::cli::debug::cli_debug_enabled;
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
+use crate::cli::runtime::CliRuntime;
+use crate::cli::stacker_client::ProjectAppInfo;
 use crate::console::commands::cli::init::full_config_reference_example;
 use crate::console::commands::CallableTrait;
 use crate::helpers::env_path::{compose_env_file_reference, remote_runtime_env_path};
+use crate::services::runtime_env_contract_response;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -199,6 +214,15 @@ fn parse_cloud_provider(s: &str) -> Result<CloudProvider, CliError> {
     })
 }
 
+fn parse_ai_provider(s: &str) -> Result<AiProviderType, CliError> {
+    let json = format!("\"{}\"", s.trim().to_lowercase());
+    serde_json::from_str::<AiProviderType>(&json).map_err(|_| {
+        CliError::ConfigValidation(
+            "Invalid AI provider. Use: openai, anthropic, ollama, custom".to_string(),
+        )
+    })
+}
+
 fn default_region_for_provider(provider: CloudProvider) -> &'static str {
     match provider {
         CloudProvider::Hetzner => "nbg1",
@@ -212,7 +236,7 @@ fn default_region_for_provider(provider: CloudProvider) -> &'static str {
 
 fn default_size_for_provider(provider: CloudProvider) -> &'static str {
     match provider {
-        CloudProvider::Hetzner => "cpx11",
+        CloudProvider::Hetzner => "cx23",
         CloudProvider::Digitalocean => "s-1vcpu-2gb",
         CloudProvider::Aws => "t3.small",
         CloudProvider::Linode => "g6-standard-2",
@@ -484,6 +508,132 @@ fn apply_cloud_settings(
     });
 }
 
+pub struct AiSetupOptions<'a> {
+    pub provider: Option<&'a str>,
+    pub endpoint: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub timeout: Option<u64>,
+    pub tasks: &'a [String],
+}
+
+pub fn run_setup_ai(
+    config_path: &str,
+    options: AiSetupOptions<'_>,
+) -> Result<Vec<String>, CliError> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Err(CliError::ConfigNotFound {
+            path: PathBuf::from(config_path),
+        });
+    }
+
+    let mut config = StackerConfig::from_file_raw(path)?;
+    let interactive = options.provider.is_none()
+        && options.endpoint.is_none()
+        && options.model.is_none()
+        && options.timeout.is_none()
+        && options.tasks.is_empty();
+
+    let provider = if let Some(provider) = options.provider {
+        parse_ai_provider(provider)?
+    } else if interactive {
+        parse_ai_provider(&prompt_with_default(
+            "AI provider (openai|anthropic|ollama|custom)",
+            &config.ai.provider.to_string(),
+        )?)?
+    } else {
+        AiProviderType::Ollama
+    };
+
+    let endpoint = if let Some(endpoint) = options.endpoint {
+        Some(endpoint.trim().to_string()).filter(|value| !value.is_empty())
+    } else if interactive {
+        let default = config
+            .ai
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+        Some(prompt_with_default("AI endpoint", &default)?).filter(|value| !value.trim().is_empty())
+    } else {
+        config.ai.endpoint.clone()
+    };
+
+    let model = if let Some(model) = options.model {
+        Some(model.trim().to_string()).filter(|value| !value.is_empty())
+    } else if interactive {
+        let default = config
+            .ai
+            .model
+            .clone()
+            .unwrap_or_else(|| "llama3.1".to_string());
+        Some(prompt_with_default("AI model", &default)?).filter(|value| !value.trim().is_empty())
+    } else {
+        config.ai.model.clone()
+    };
+
+    let timeout = if let Some(timeout) = options.timeout {
+        timeout
+    } else if interactive {
+        prompt_with_default("AI timeout seconds", &config.ai.timeout.to_string())?
+            .parse::<u64>()
+            .unwrap_or(config.ai.timeout)
+    } else if config.ai.timeout == 0 {
+        300
+    } else {
+        config.ai.timeout
+    };
+
+    let tasks = if !options.tasks.is_empty() {
+        options
+            .tasks
+            .iter()
+            .flat_map(|task| task.split(','))
+            .map(str::trim)
+            .filter(|task| !task.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    } else if interactive {
+        let default = if config.ai.tasks.is_empty() {
+            "dockerfile,compose,troubleshoot".to_string()
+        } else {
+            config.ai.tasks.join(",")
+        };
+        prompt_with_default("AI tasks (comma-separated)", &default)?
+            .split(',')
+            .map(str::trim)
+            .filter(|task| !task.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    } else if config.ai.tasks.is_empty() {
+        vec![
+            "dockerfile".to_string(),
+            "compose".to_string(),
+            "troubleshoot".to_string(),
+        ]
+    } else {
+        config.ai.tasks.clone()
+    };
+
+    config.ai.enabled = true;
+    config.ai.provider = provider;
+    config.ai.endpoint = endpoint;
+    config.ai.model = model;
+    config.ai.timeout = timeout;
+    config.ai.tasks = tasks;
+
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(config_path, &backup_path)?;
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, yaml)?;
+
+    Ok(vec![
+        "Enabled ai configuration".to_string(),
+        format!("Set ai.provider={}", config.ai.provider),
+        format!("Backup written to {}", backup_path),
+    ])
+}
+
 pub fn run_setup_cloud_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
     let path = Path::new(config_path);
     if !path.exists() {
@@ -643,7 +793,7 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     .cloud
                     .as_ref()
                     .and_then(|c| c.size.clone())
-                    .unwrap_or_else(|| "cpx11".to_string());
+                    .unwrap_or_else(|| default_size_for_provider(provider).to_string());
                 let size = prompt_with_default("Cloud size", &size_default)?;
 
                 let ssh_key = config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone());
@@ -766,7 +916,19 @@ pub fn run_validate(config_path: &str) -> Result<Vec<String>, CliError> {
     }
 
     let mut messages = match load_raw_path_issues(path) {
-        Ok(issues) => issues.iter().map(render_raw_path_issue).collect::<Vec<_>>(),
+        Ok(issues) => {
+            let mut rendered = issues.iter().map(render_raw_path_issue).collect::<Vec<_>>();
+            if issues
+                .iter()
+                .any(|issue| matches!(issue.kind, RawPathIssueKind::Empty))
+            {
+                rendered.push(
+                    "Run `stacker config fix` to remove empty structural path fields safely."
+                        .to_string(),
+                );
+            }
+            rendered
+        }
         Err(_) => Vec::new(),
     };
 
@@ -807,12 +969,27 @@ pub fn run_show_resolved(config_path: &str) -> Result<String, CliError> {
         .or_else(|| config.env_file.clone())
         .map(|env_file| resolve_display_path(config_dir, &env_file))
         .unwrap_or_else(|| "<none>".to_string());
+    let runtime_env_contract = runtime_env_contract_response();
+    let layers = runtime_env_contract
+        .layers
+        .iter()
+        .map(|layer| {
+            format!(
+                "    - name: {}\n      precedence: {}\n      applies_when: {}\n      description: {}",
+                layer.name, layer.precedence, layer.applies_when, layer.description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     Ok(format!(
-        "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  layers:\n    - base\n    - server (requires inherit_server_secrets: true)\n    - service\n    - compose_environment\n",
+        "resolved_config:\n  local_env_file: {}\n  remote_runtime_env_file: {}\n  compose_env_file: {}\n  config_version: local\n  config_hash: unavailable_until_deploy\n  runtime_env_contract_version: {}\n  runtime_env_contract_order: {}\n  layers:\n{}\n",
         local_env_file,
         remote_runtime_env_path(),
-        compose_env_file_reference()
+        compose_env_file_reference(),
+        runtime_env_contract.version,
+        runtime_env_contract.order,
+        layers
     ))
 }
 
@@ -863,6 +1040,69 @@ pub struct ConfigShowCommand {
     pub resolved: bool,
 }
 
+/// `stacker config inventory --env <name> [--service <target>] [--json]`
+///
+/// Displays a redacted, comparable configuration key inventory.
+pub struct ConfigInventoryCommand {
+    pub file: Option<String>,
+    pub environment: String,
+    pub service: Option<String>,
+    pub json: bool,
+    pub show_values: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config diff --from <env> --to <env> [--service <target>] [--json]`
+///
+/// Compares redacted local configuration inventories across environments.
+pub struct ConfigDiffCommand {
+    pub file: Option<String>,
+    pub from: String,
+    pub to: String,
+    pub service: Option<String>,
+    pub json: bool,
+    pub strict: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config check --env <name> [--service <target>] [--json] [--strict]`
+///
+/// Checks an environment against optional `config_contract` requirements.
+pub struct ConfigCheckCommand {
+    pub file: Option<String>,
+    pub environment: String,
+    pub service: Option<String>,
+    pub json: bool,
+    pub strict: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config promote --from <env> --to <env> [--service <target>]`
+///
+/// Generates safe target placeholders for keys missing from the target environment.
+pub struct ConfigPromoteCommand {
+    pub file: Option<String>,
+    pub from: String,
+    pub to: String,
+    pub service: Option<String>,
+    pub keys: Vec<String>,
+    pub json: bool,
+    pub remote: bool,
+    pub project: Option<String>,
+}
+
+/// `stacker config contract suggest --env <name> [--service <target>]`
+///
+/// Generates a reviewable `config_contract` YAML snippet from inventory.
+pub struct ConfigContractSuggestCommand {
+    pub file: Option<String>,
+    pub environment: String,
+    pub service: Option<String>,
+}
+
 /// `stacker config fix [--file stacker.yml] [--interactive]`
 ///
 /// Interactively repairs common missing required fields in stacker.yml.
@@ -876,6 +1116,61 @@ pub struct ConfigFixCommand {
 /// Interactive cloud setup wizard that writes deploy.target/deploy.cloud.
 pub struct ConfigSetupCloudCommand {
     pub file: Option<String>,
+}
+
+/// `stacker config setup ai [--file stacker.yml]`
+///
+/// Guided AI setup wizard that writes ai.* without replacing unrelated config.
+pub struct ConfigSetupAiCommand {
+    pub file: Option<String>,
+    pub provider: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub timeout: Option<u64>,
+    pub tasks: Vec<String>,
+}
+
+impl ConfigSetupAiCommand {
+    pub fn new(
+        file: Option<String>,
+        provider: Option<String>,
+        endpoint: Option<String>,
+        model: Option<String>,
+        timeout: Option<u64>,
+        tasks: Vec<String>,
+    ) -> Self {
+        Self {
+            file,
+            provider,
+            endpoint,
+            model,
+            timeout,
+            tasks,
+        }
+    }
+}
+
+impl CallableTrait for ConfigSetupAiCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let applied = run_setup_ai(
+            &path,
+            AiSetupOptions {
+                provider: self.provider.as_deref(),
+                endpoint: self.endpoint.as_deref(),
+                model: self.model.as_deref(),
+                timeout: self.timeout,
+                tasks: &self.tasks,
+            },
+        )?;
+
+        eprintln!("✓ Updated {}", path);
+        for item in applied {
+            eprintln!("  - {}", item);
+        }
+        eprintln!("Run: stacker config validate");
+        Ok(())
+    }
 }
 
 impl ConfigSetupCloudCommand {
@@ -975,6 +1270,535 @@ impl CallableTrait for ConfigShowCommand {
         };
         println!("{}", output);
         Ok(())
+    }
+}
+
+impl ConfigInventoryCommand {
+    pub fn new(
+        file: Option<String>,
+        environment: String,
+        service: Option<String>,
+        json: bool,
+        show_values: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            environment,
+            service,
+            json,
+            show_values,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigInventoryCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let mut inventory = load_inventory(
+            Path::new(&path),
+            &InventoryOptions {
+                environment: self.environment.clone(),
+                service: self.service.clone(),
+                show_values: self.show_values,
+            },
+        )?;
+        if self.remote {
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut inventory,
+            )?;
+        }
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&inventory)?);
+            return Ok(());
+        }
+
+        for warning in &inventory.warnings {
+            eprintln!("⚠ {warning}");
+        }
+        print!("{}", format_inventory_table(&inventory));
+
+        Ok(())
+    }
+}
+
+fn format_inventory_table(inventory: &ConfigInventory) -> String {
+    let mut rows = vec![[
+        "Target".to_string(),
+        "Key".to_string(),
+        "Source".to_string(),
+        "Present".to_string(),
+        "Secret".to_string(),
+        "Value".to_string(),
+    ]];
+
+    for target in &inventory.targets {
+        for key in &target.keys {
+            let value = if key.secret {
+                "[REDACTED]".to_string()
+            } else if key.present {
+                key.value_preview
+                    .clone()
+                    .unwrap_or_else(|| "[HIDDEN]".to_string())
+            } else {
+                "[MISSING]".to_string()
+            };
+
+            rows.push([
+                target.target_code.clone(),
+                key.key.clone(),
+                key.source.clone(),
+                key.present.to_string(),
+                key.secret.to_string(),
+                value,
+            ]);
+        }
+    }
+
+    let mut widths = [0usize; 5];
+    for row in &rows {
+        for index in 0..widths.len() {
+            widths[index] = widths[index].max(row[index].len());
+        }
+    }
+
+    let mut output = String::new();
+    for row in rows {
+        output.push_str(&format!(
+            "{:<target_width$}  {:<key_width$}  {:<source_width$}  {:<present_width$}  {:<secret_width$}  {}\n",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            target_width = widths[0],
+            key_width = widths[1],
+            source_width = widths[2],
+            present_width = widths[3],
+            secret_width = widths[4],
+        ));
+    }
+
+    output
+}
+
+impl ConfigDiffCommand {
+    pub fn new(
+        file: Option<String>,
+        from: String,
+        to: String,
+        service: Option<String>,
+        json: bool,
+        strict: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            from,
+            to,
+            service,
+            json,
+            strict,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigDiffCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let diff = if self.remote {
+            let from_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.from.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            let mut to_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.to.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut to_inventory,
+            )?;
+            diff_inventories(from_inventory, to_inventory, self.service.clone())
+        } else {
+            load_diff(Path::new(&path), &self.from, &self.to, self.service.clone())?
+        };
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&diff)?);
+        } else {
+            print_config_diff(&diff);
+        }
+
+        if self.strict && diff.has_differences() {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "configuration differs between {} and {}",
+                self.from, self.to
+            ))));
+        }
+
+        Ok(())
+    }
+}
+
+impl ConfigCheckCommand {
+    pub fn new(
+        file: Option<String>,
+        environment: String,
+        service: Option<String>,
+        json: bool,
+        strict: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            environment,
+            service,
+            json,
+            strict,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigCheckCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let result = if self.remote {
+            let config = StackerConfig::from_file(Path::new(&path))?;
+            let mut inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.environment.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut inventory,
+            )?;
+            check_inventory(config, inventory, self.service.clone())
+        } else {
+            load_check(Path::new(&path), &self.environment, self.service.clone())?
+        };
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            print_config_check(&result);
+        }
+
+        if self.strict && result.has_required_failures() {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "required configuration missing for {}",
+                self.environment
+            ))));
+        }
+
+        Ok(())
+    }
+}
+
+impl ConfigPromoteCommand {
+    pub fn new(
+        file: Option<String>,
+        from: String,
+        to: String,
+        service: Option<String>,
+        keys: Vec<String>,
+        json: bool,
+        remote: bool,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            file,
+            from,
+            to,
+            service,
+            keys,
+            json,
+            remote,
+            project,
+        }
+    }
+}
+
+impl CallableTrait for ConfigPromoteCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let plan = if self.remote {
+            let from_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.from.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            let mut to_inventory = load_inventory(
+                Path::new(&path),
+                &InventoryOptions {
+                    environment: self.to.clone(),
+                    service: self.service.clone(),
+                    show_values: false,
+                },
+            )?;
+            enrich_remote_service_secret_metadata(
+                Path::new(&path),
+                self.project.as_deref(),
+                &mut to_inventory,
+            )?;
+            let diff = diff_inventories(from_inventory, to_inventory, self.service.clone());
+            promotion_plan_from_diff(diff, self.keys.clone())
+        } else {
+            load_promotion_plan(
+                Path::new(&path),
+                &self.from,
+                &self.to,
+                self.service.clone(),
+                self.keys.clone(),
+            )?
+        };
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            print_promotion_plan(&plan);
+        }
+
+        Ok(())
+    }
+}
+
+fn print_promotion_plan(plan: &ConfigPromotionPlan) {
+    for warning in &plan.warnings {
+        eprintln!("⚠ {warning}");
+    }
+
+    if plan.is_empty() {
+        println!(
+            "No missing keys to promote from {} to {}.",
+            plan.from_environment, plan.to_environment
+        );
+        return;
+    }
+
+    println!(
+        "Promotion placeholders from {} to {}:",
+        plan.from_environment, plan.to_environment
+    );
+    let mut current_target = "";
+    for item in &plan.items {
+        if current_target != item.target {
+            current_target = &item.target;
+            println!();
+            println!("# {}", item.target);
+        }
+        let secret_marker = if item.secret { " # secret" } else { "" };
+        println!("{}{}", item.placeholder, secret_marker);
+    }
+    println!();
+    println!("Review these placeholders and fill target values manually; plaintext is not copied.");
+}
+
+fn enrich_remote_service_secret_metadata(
+    config_path: &Path,
+    explicit_project: Option<&str>,
+    inventory: &mut ConfigInventory,
+) -> Result<(), CliError> {
+    let project_ref = resolve_remote_project_reference(config_path, explicit_project)?;
+    let ctx = CliRuntime::new("config remote metadata")?;
+    let project = ctx
+        .block_on(ctx.client.find_project(&project_ref))?
+        .ok_or_else(|| {
+            CliError::ConfigValidation(format!("Project '{}' was not found", project_ref))
+        })?;
+    let registered_apps = ctx.block_on(ctx.client.list_project_apps(project.id))?;
+    let target_codes = registered_remote_target_codes(inventory, &registered_apps);
+
+    for target_code in target_codes {
+        match ctx.block_on(ctx.client.list_service_secrets(project.id, &target_code)) {
+            Ok(secrets) => {
+                merge_remote_secret_names(
+                    inventory,
+                    &target_code,
+                    secrets.into_iter().map(|secret| secret.name),
+                );
+            }
+            Err(error) => inventory.warnings.push(remote_metadata_warning(
+                &target_code,
+                &error,
+                cli_debug_enabled(),
+            )),
+        }
+    }
+
+    Ok(())
+}
+
+fn remote_metadata_warning(target_code: &str, error: &CliError, debug: bool) -> String {
+    if debug {
+        return format!("Remote secret metadata unavailable for {target_code}: {error}");
+    }
+
+    format!(
+        "Remote secret metadata unavailable for {target_code}; rerun with DEBUG=true for details."
+    )
+}
+
+fn registered_remote_target_codes(
+    inventory: &ConfigInventory,
+    registered_apps: &[ProjectAppInfo],
+) -> Vec<String> {
+    let registered_codes = registered_apps
+        .iter()
+        .map(|app| app.code.as_str())
+        .collect::<BTreeSet<_>>();
+
+    inventory
+        .targets
+        .iter()
+        .filter_map(|target| {
+            registered_codes
+                .contains(target.target_code.as_str())
+                .then(|| target.target_code.clone())
+        })
+        .collect()
+}
+
+fn resolve_remote_project_reference(
+    config_path: &Path,
+    explicit_project: Option<&str>,
+) -> Result<String, CliError> {
+    if let Some(project) = explicit_project
+        .map(str::trim)
+        .filter(|project| !project.is_empty())
+    {
+        return Ok(project.to_string());
+    }
+
+    let config = StackerConfig::from_file_raw(config_path)?;
+    config
+        .project
+        .identity
+        .map(|project| project.trim().to_string())
+        .filter(|project| !project.is_empty())
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Remote config metadata requires --project, or set project.identity in stacker.yml."
+                    .to_string(),
+            )
+        })
+}
+
+impl ConfigContractSuggestCommand {
+    pub fn new(file: Option<String>, environment: String, service: Option<String>) -> Self {
+        Self {
+            file,
+            environment,
+            service,
+        }
+    }
+}
+
+impl CallableTrait for ConfigContractSuggestCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_config_path(&self.file);
+        let output = suggest_contract_yaml(
+            Path::new(&path),
+            &ContractSuggestOptions {
+                environment: self.environment.clone(),
+                service: self.service.clone(),
+            },
+        )?;
+        println!("{}", output.trim_end());
+        Ok(())
+    }
+}
+
+fn print_config_check(result: &ConfigCheckResult) {
+    for warning in &result.warnings {
+        eprintln!("⚠ {warning}");
+    }
+
+    print_check_items("Missing required:", &result.missing_required);
+    print_check_items("Missing optional:", &result.missing_optional);
+
+    if !result.has_required_failures() && result.missing_optional.is_empty() {
+        println!(
+            "Configuration contract satisfied for {}.",
+            result.environment
+        );
+    }
+}
+
+fn print_check_items(title: &str, items: &[ConfigCheckItem]) {
+    if items.is_empty() {
+        return;
+    }
+
+    println!("{title}");
+    for item in items {
+        let secret_marker = if item.secret { " [secret]" } else { "" };
+        println!("  {}:{}{}", item.target, item.key, secret_marker);
+    }
+}
+
+fn print_config_diff(diff: &ConfigDiff) {
+    for warning in &diff.warnings {
+        eprintln!("⚠ {warning}");
+    }
+
+    print_diff_items(
+        &format!("Missing in {}:", diff.to_environment),
+        &diff.missing_in_to,
+    );
+    print_diff_items(
+        &format!("Only in {}:", diff.to_environment),
+        &diff.only_in_to,
+    );
+    print_diff_items("Different values:", &diff.different);
+
+    if !diff.has_differences() {
+        println!(
+            "No configuration differences found between {} and {}.",
+            diff.from_environment, diff.to_environment
+        );
+    }
+}
+
+fn print_diff_items(title: &str, items: &[DiffItem]) {
+    if items.is_empty() {
+        return;
+    }
+
+    println!("{title}");
+    for item in items {
+        let secret_marker = if item.secret { " [secret]" } else { "" };
+        println!("  {}:{}{}", item.target, item.key, secret_marker);
     }
 }
 
@@ -1173,6 +1997,9 @@ app:
         assert!(issues
             .iter()
             .any(|issue| issue.contains("quoted path string")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("stacker config fix")));
     }
 
     #[test]
@@ -1199,6 +2026,115 @@ app:
     fn test_resolve_config_path_override() {
         let resolved = resolve_config_path(&Some("custom.yml".to_string()));
         assert_eq!(resolved, "custom.yml");
+    }
+
+    #[test]
+    fn test_inventory_table_aligns_columns() {
+        let inventory = ConfigInventory {
+            environment: "local".to_string(),
+            warnings: Vec::new(),
+            targets: vec![crate::cli::config_inventory::TargetConfigInventory {
+                target_code: "coolify".to_string(),
+                keys: vec![
+                    crate::cli::config_inventory::ConfigKeyInventory {
+                        key: "APP_ENV".to_string(),
+                        source: "compose environment".to_string(),
+                        present: true,
+                        secret: false,
+                        value_hash: None,
+                        value_preview: Some("${APP_ENV:-production}".to_string()),
+                    },
+                    crate::cli::config_inventory::ConfigKeyInventory {
+                        key: "PHP_FPM_PM_MAX_SPARE_SERVERS".to_string(),
+                        source: "compose environment".to_string(),
+                        present: true,
+                        secret: false,
+                        value_hash: None,
+                        value_preview: Some("${PHP_FPM_PM_MAX_SPARE_SERVERS:-10}".to_string()),
+                    },
+                    crate::cli::config_inventory::ConfigKeyInventory {
+                        key: "DB_PASSWORD".to_string(),
+                        source: "compose env_file".to_string(),
+                        present: true,
+                        secret: true,
+                        value_hash: None,
+                        value_preview: None,
+                    },
+                ],
+            }],
+        };
+
+        let table = format_inventory_table(&inventory);
+
+        assert!(table.starts_with("Target   Key                           Source"));
+        assert!(table.contains("coolify  APP_ENV                       compose environment"));
+        assert!(table.contains("coolify  DB_PASSWORD                   compose env_file"));
+        assert!(table.contains("[REDACTED]"));
+        assert!(!table.contains('\t'));
+    }
+
+    #[test]
+    fn test_registered_remote_target_codes_skip_local_only_services() {
+        let inventory = ConfigInventory {
+            environment: "production".to_string(),
+            warnings: Vec::new(),
+            targets: vec![
+                crate::cli::config_inventory::TargetConfigInventory {
+                    target_code: "coolify".to_string(),
+                    keys: Vec::new(),
+                },
+                crate::cli::config_inventory::TargetConfigInventory {
+                    target_code: "postgres".to_string(),
+                    keys: Vec::new(),
+                },
+                crate::cli::config_inventory::TargetConfigInventory {
+                    target_code: "redis".to_string(),
+                    keys: Vec::new(),
+                },
+            ],
+        };
+        let registered_apps = vec![ProjectAppInfo {
+            id: 1,
+            project_id: 229,
+            code: "coolify".to_string(),
+            name: "Coolify".to_string(),
+            image: "coollabsio/coolify:latest".to_string(),
+            enabled: true,
+            deploy_order: None,
+            parent_app_code: None,
+        }];
+
+        let codes = registered_remote_target_codes(&inventory, &registered_apps);
+
+        assert_eq!(codes, vec!["coolify"]);
+    }
+
+    #[test]
+    fn test_remote_metadata_warning_hides_api_details_without_debug() {
+        let error = CliError::DeployFailed {
+            target: DeployTarget::Cloud,
+            reason: "Stacker server GET /project/229/apps/postgres/secrets failed (404): {\"message\":\"App not found\"}".to_string(),
+        };
+
+        let warning = remote_metadata_warning("postgres", &error, false);
+
+        assert!(warning.contains("postgres"));
+        assert!(warning.contains("DEBUG=true"));
+        assert!(!warning.contains("GET /project"));
+        assert!(!warning.contains("App not found"));
+    }
+
+    #[test]
+    fn test_remote_metadata_warning_shows_api_details_with_debug() {
+        let error = CliError::DeployFailed {
+            target: DeployTarget::Cloud,
+            reason: "Stacker server GET /project/229/apps/postgres/secrets failed (404): {\"message\":\"App not found\"}".to_string(),
+        };
+
+        let warning = remote_metadata_warning("postgres", &error, true);
+
+        assert!(warning.contains("GET /project/229/apps/postgres/secrets"));
+        assert!(warning.contains("App not found"));
     }
 
     #[test]
@@ -1341,5 +2277,47 @@ app:
             msg.contains("quoted path string"),
             "unexpected message: {msg}"
         );
+    }
+
+    #[test]
+    fn test_run_setup_ai_configures_ollama_without_removing_existing_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = write_config(
+            dir.path(),
+            r#"
+name: ai-app
+app:
+  type: static
+deploy:
+  target: local
+env:
+  KEEP_ME: "true"
+"#,
+        );
+
+        let applied = run_setup_ai(
+            &config_path,
+            AiSetupOptions {
+                provider: Some("ollama"),
+                endpoint: Some("http://localhost:11434"),
+                model: Some("llama3.1"),
+                timeout: Some(120),
+                tasks: &["dockerfile,compose".to_string()],
+            },
+        )
+        .unwrap();
+
+        assert!(applied.iter().any(|item| item.contains("ai.provider")));
+        let updated = StackerConfig::from_file(Path::new(&config_path)).unwrap();
+        assert!(updated.ai.enabled);
+        assert_eq!(updated.ai.provider, AiProviderType::Ollama);
+        assert_eq!(
+            updated.ai.endpoint.as_deref(),
+            Some("http://localhost:11434")
+        );
+        assert_eq!(updated.ai.model.as_deref(), Some("llama3.1"));
+        assert_eq!(updated.ai.timeout, 120);
+        assert_eq!(updated.ai.tasks, vec!["dockerfile", "compose"]);
+        assert_eq!(updated.env.get("KEEP_ME").map(String::as_str), Some("true"));
     }
 }

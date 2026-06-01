@@ -1,0 +1,30 @@
+{
+  "title": "stacker-deploy-plan-v1alpha1",
+  "_owner": "stacker",
+  "version": "v1alpha1",
+  "response": {
+    "type": "object",
+    "required": [
+      "schemaVersion",
+      "deploymentHash",
+      "operation",
+      "target",
+      "fingerprint",
+      "scope",
+      "hasChanges",
+      "actions",
+      "reasoning"
+    ],
+    "properties": {
+      "schemaVersion": { "type": "string", "const": "v1alpha1" },
+      "deploymentHash": { "type": "string" },
+      "operation": { "type": "string" },
+      "target": { "type": "string" },
+      "fingerprint": { "type": "string" },
+      "scope": { "type": "object" },
+      "hasChanges": { "type": "boolean" },
+      "actions": { "type": "array" },
+      "reasoning": { "type": "array" }
+    }
+  }
+}

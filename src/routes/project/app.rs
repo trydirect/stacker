@@ -16,7 +16,9 @@
 use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models::{self, Project};
-use crate::services::ProjectAppService;
+use crate::services::{
+    runtime_env_contract_response, ProjectAppService, RuntimeEnvContractResponse,
+};
 use actix_web::{delete, get, post, put, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -94,6 +96,7 @@ pub struct AppConfigResponse {
     pub project_id: i32,
     pub app_code: String,
     pub environment: Value,
+    pub runtime_env_contract: RuntimeEnvContractResponse,
     pub ports: Value,
     pub volumes: Value,
     pub domain: Option<String>,
@@ -444,6 +447,7 @@ pub async fn get_app_config(
         project_id,
         app_code: code,
         environment: env,
+        runtime_env_contract: runtime_env_contract_response(),
         ports: app.ports.clone().unwrap_or(json!([])),
         volumes: app.volumes.clone().unwrap_or(json!([])),
         domain: app.domain.clone(),
@@ -499,6 +503,7 @@ pub async fn get_env_vars(
         "project_id": project_id,
         "app_code": code,
         "variables": env,
+        "runtime_env_contract": runtime_env_contract_response(),
         "count": env.as_object().map(|o| o.len()).unwrap_or(0),
         "note": "Sensitive values (passwords, tokens, keys) are redacted"
     });

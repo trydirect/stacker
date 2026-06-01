@@ -62,12 +62,9 @@ async fn creator_vendor_profile_status_returns_default_profile_when_missing() {
 
     assert_eq!(template_id, body["item"]["template_id"]);
     assert_eq!("test_user_id", body["item"]["creator_user_id"]);
-    assert_eq!(
-        false,
-        body["item"]["payout_ready"]
-            .as_bool()
-            .expect("payout_ready should be bool")
-    );
+    assert!(!body["item"]["payout_ready"]
+        .as_bool()
+        .expect("payout_ready should be bool"));
 
     let vendor_profile = &body["item"]["vendor_profile"];
     assert_eq!("unverified", vendor_profile["verification_status"]);

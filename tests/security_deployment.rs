@@ -104,6 +104,59 @@ async fn test_get_deployment_by_hash_rejects_other_user() {
     );
 }
 
+#[tokio::test]
+async fn test_get_deployment_state_by_hash_rejects_other_user() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let (_pid, _did, hash) = seed_deployment(&app.db_pool, common::USER_A_ID).await;
+
+    let resp = client
+        .get(format!("{}/api/v1/deployments/{}/state", app.address, hash))
+        .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "User B must not access User A's deployment state by hash"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["schemaVersion"].as_str().unwrap(), "v1alpha1");
+    assert_eq!(body["code"].as_str().unwrap(), "deployment_not_found");
+    assert_eq!(body["remediationClass"].as_str().unwrap(), "state");
+}
+
+#[tokio::test]
+async fn test_get_deployment_events_by_hash_rejects_other_user() {
+    let Some(app) = common::spawn_app_two_users().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let (_pid, _did, hash) = seed_deployment(&app.db_pool, common::USER_A_ID).await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/v1/deployments/{}/events",
+            app.address, hash
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["schemaVersion"].as_str().unwrap(), "v1alpha1");
+    assert_eq!(body["code"].as_str().unwrap(), "deployment_not_found");
+    assert_eq!(body["remediationClass"].as_str().unwrap(), "state");
+}
+
 // ── Get by project ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -162,4 +215,20 @@ async fn test_owner_can_access_own_deployment() {
         .await
         .expect("request failed");
     assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = client
+        .get(format!("{}/api/v1/deployments/{}/state", app.address, hash))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["item"]["schemaVersion"].as_str().unwrap(), "v1alpha1");
+    assert_eq!(
+        body["item"]["deployment"]["deploymentHash"]
+            .as_str()
+            .unwrap(),
+        hash
+    );
 }

@@ -9,6 +9,7 @@ use crate::project_app::{
     store_configs_to_vault_from_params, store_registry_auth_command_to_vault,
     upsert_app_config_for_deploy, REGISTRY_AUTH_VAULT_KEY,
 };
+use crate::services::env_model::reconcile_env_file_content;
 use crate::services::{AppConfig, ConfigRenderer, ProjectAppService, VaultService};
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
@@ -382,7 +383,7 @@ fn extract_registry_auth_from_params(
 /// Enrich deploy_app command parameters with compose_content and config_files from Vault
 /// Falls back to fetching templates from Install Service if not in Vault
 /// If compose_content is already provided in the request, keep it as-is
-async fn enrich_deploy_app_with_compose(
+pub(crate) async fn enrich_deploy_app_with_compose(
     deployment_hash: &str,
     params: Option<serde_json::Value>,
     vault_settings: &crate::configuration::VaultSettings,
@@ -726,7 +727,7 @@ fn merge_rendered_env_into_app_env_files(
             .get("content")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let merged_content = append_rendered_env(existing_content, rendered_env_content);
+        let merged_content = reconcile_env_file_content(existing_content, rendered_env_content);
 
         if let Some(obj) = config_file.as_object_mut() {
             obj.insert("content".to_string(), json!(merged_content));
@@ -755,15 +756,6 @@ fn is_app_env_config_file(
     }
 
     destination_path.contains(&format!("/{app_code}/docker/"))
-}
-
-fn append_rendered_env(existing_content: &str, rendered_env_content: &str) -> String {
-    let existing_content = existing_content.trim_end();
-    if existing_content.is_empty() {
-        return rendered_env_content.to_string();
-    }
-
-    format!("{existing_content}\n\n{rendered_env_content}")
 }
 
 fn compose_env_file_destinations_for_app(compose_content: &str, app_code: &str) -> HashSet<String> {
@@ -1328,6 +1320,64 @@ services:
         );
         assert_eq!(config_files[0]["content_type"], "text/plain");
         assert_eq!(config_files[0]["file_mode"], "0644");
+    }
+
+    #[test]
+    fn merge_rendered_env_replaces_previous_rendered_block() {
+        let mut config_files = vec![json!({
+            "content": "RUST_LOG=debug\n\n# stacker-render version=1 hash=old generated_at=now inputs=service\nOLD_SECRET=outdated\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+        })];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(
+                r#"
+services:
+  device-api:
+    env_file: /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+"#,
+            ),
+            "device-api",
+            "# stacker-render version=2 hash=new generated_at=now inputs=service\nNEW_SECRET=fresh\n",
+        );
+
+        assert_eq!(merged, 1);
+        let env_content = config_files[0]["content"].as_str().expect("content");
+        assert_eq!(
+            env_content,
+            "RUST_LOG=debug\n\n# stacker-render version=2 hash=new generated_at=now inputs=service\nNEW_SECRET=fresh\n"
+        );
+        assert!(!env_content.contains("OLD_SECRET=outdated"));
+    }
+
+    #[test]
+    fn merge_rendered_env_removes_authored_key_overridden_by_rendered_block() {
+        let mut config_files = vec![json!({
+            "content": "RUST_LOG=debug\nS3_BUCKET=local\n",
+            "destination_path": "/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"
+        })];
+
+        let merged = merge_rendered_env_into_app_env_files(
+            &mut config_files,
+            Some(
+                r#"
+services:
+  device-api:
+    env_file: /opt/stacker/deployments/prod/files/device-api/docker/prod/.env
+"#,
+            ),
+            "device-api",
+            "# stacker-render version=2 hash=new generated_at=now inputs=service\nS3_BUCKET=remote\n",
+        );
+
+        assert_eq!(merged, 1);
+        let env_content = config_files[0]["content"].as_str().expect("content");
+        assert_eq!(
+            env_content,
+            "RUST_LOG=debug\n\n# stacker-render version=2 hash=new generated_at=now inputs=service\nS3_BUCKET=remote\n"
+        );
+        assert!(!env_content.contains("S3_BUCKET=local"));
     }
 
     #[test]

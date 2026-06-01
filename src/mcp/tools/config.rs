@@ -9,12 +9,14 @@
 //! Configuration changes are staged and applied on next deployment/restart.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeSet, HashSet};
 
 use crate::db;
 use crate::mcp::protocol::{Tool, ToolContent};
 use crate::mcp::registry::{ToolContext, ToolHandler};
-use serde::Deserialize;
+use crate::services::env_model::normalize_json_env;
+use serde::{Deserialize, Serialize};
 
 /// Get environment variables for an app in a project
 pub struct GetAppEnvVarsTool;
@@ -52,16 +54,26 @@ impl ToolHandler for GetAppEnvVarsTool {
         .ok_or_else(|| format!("App '{}' not found in project", params.app_code))?;
 
         // Parse environment variables from app config
-        // Redact sensitive values for AI safety
         let env_vars = app.environment.clone().unwrap_or_default();
-        let redacted_env = redact_sensitive_env_vars(&env_vars);
+        let secure_keys = load_remote_secret_names(
+            &context.pg_pool,
+            &context.user.id,
+            params.project_id,
+            &params.app_code,
+        )
+        .await?;
+        let redacted_env = redact_sensitive_env_vars_with_secure_keys(&env_vars, &secure_keys);
+        let env_entries = build_env_var_entries(&env_vars, &secure_keys);
+        let secure_count = env_entries.iter().filter(|entry| entry.secure).count();
 
         let result = json!({
             "project_id": params.project_id,
             "app_code": params.app_code,
             "environment_variables": redacted_env,
+            "environment_entries": env_entries,
             "count": redacted_env.as_object().map(|o| o.len()).unwrap_or(0),
-            "note": "Sensitive values (passwords, tokens, keys) are redacted for security."
+            "secure_count": secure_count,
+            "note": "Sensitive values are redacted for security. Vault-backed variables are marked with secure=true."
         });
 
         tracing::info!(
@@ -660,11 +672,91 @@ impl ToolHandler for UpdateAppDomainTool {
 
 // Helper functions
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AppEnvVarEntry {
+    name: String,
+    value: String,
+    secure: bool,
+    redacted: bool,
+    source: String,
+}
+
+async fn load_remote_secret_names(
+    pool: &sqlx::PgPool,
+    user_id: &str,
+    project_id: i32,
+    app_code: &str,
+) -> Result<HashSet<String>, String> {
+    db::remote_secret::list_service_secrets(pool, user_id, project_id, app_code)
+        .await
+        .map(|secrets| secrets.into_iter().map(|secret| secret.name).collect())
+        .map_err(|error| format!("Failed to load remote service secrets: {}", error))
+}
+
 /// Redact sensitive environment variable values
 fn redact_sensitive_env_vars(env: &Value) -> Value {
+    redact_sensitive_env_vars_with_secure_keys(env, &HashSet::new())
+}
+
+fn redact_sensitive_env_vars_with_secure_keys(env: &Value, secure_keys: &HashSet<String>) -> Value {
+    let mut normalized = normalize_environment_object(env);
+    for key in secure_keys {
+        normalized.insert(key.clone(), json!("[REDACTED]"));
+    }
+
+    let redacted = normalized
+        .into_iter()
+        .map(|(key, value)| {
+            if should_redact_env_var(&key, secure_keys) {
+                (key, json!("[REDACTED]"))
+            } else {
+                (key, value)
+            }
+        })
+        .collect();
+
+    Value::Object(redacted)
+}
+
+fn build_env_var_entries(env: &Value, secure_keys: &HashSet<String>) -> Vec<AppEnvVarEntry> {
+    let normalized = normalize_environment_object(env);
+    let mut keys: BTreeSet<String> = normalized.keys().cloned().collect();
+    keys.extend(secure_keys.iter().cloned());
+
+    keys.into_iter()
+        .map(|name| {
+            let secure = secure_keys.contains(&name);
+            let redacted = should_redact_env_var(&name, secure_keys);
+            let value = if redacted {
+                "[REDACTED]".to_string()
+            } else {
+                stringify_env_value(normalized.get(&name))
+            };
+
+            AppEnvVarEntry {
+                name,
+                value,
+                secure,
+                redacted,
+                source: if secure {
+                    "vault".to_string()
+                } else {
+                    "project".to_string()
+                },
+            }
+        })
+        .collect()
+}
+
+fn should_redact_env_var(name: &str, secure_keys: &HashSet<String>) -> bool {
+    secure_keys.contains(name) || is_sensitive_env_var_name(name)
+}
+
+fn is_sensitive_env_var_name(name: &str) -> bool {
     const SENSITIVE_PATTERNS: &[&str] = &[
         "password",
         "passwd",
+        "username",
         "secret",
         "token",
         "key",
@@ -680,25 +772,24 @@ fn redact_sensitive_env_vars(env: &Value) -> Value {
         "refresh_token",
     ];
 
-    if let Some(obj) = env.as_object() {
-        let redacted: serde_json::Map<String, Value> = obj
-            .iter()
-            .map(|(k, v)| {
-                let key_lower = k.to_lowercase();
-                let is_sensitive = SENSITIVE_PATTERNS
-                    .iter()
-                    .any(|pattern| key_lower.contains(pattern));
+    let key_lower = name.to_lowercase();
+    SENSITIVE_PATTERNS
+        .iter()
+        .any(|pattern| key_lower.contains(pattern))
+}
 
-                if is_sensitive {
-                    (k.clone(), json!("[REDACTED]"))
-                } else {
-                    (k.clone(), v.clone())
-                }
-            })
-            .collect();
-        Value::Object(redacted)
-    } else {
-        env.clone()
+fn normalize_environment_object(env: &Value) -> Map<String, Value> {
+    normalize_json_env(env)
+        .into_iter()
+        .map(|(key, value)| (key, Value::String(value)))
+        .collect()
+}
+
+fn stringify_env_value(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
     }
 }
 
@@ -1185,6 +1276,9 @@ mod tests {
             "DATABASE_URL": "postgres://localhost",
             "DB_PASSWORD": "secret123",
             "API_KEY": "key-abc-123",
+            "REGISTRY_USERNAME": "registry-user",
+            "VAULT_TOKEN": "vault-token-value",
+            "INTERNAL_SERVICES_ACCESS_KEY": "internal-access-key",
             "LOG_LEVEL": "debug",
             "PORT": "8080"
         });
@@ -1195,7 +1289,60 @@ mod tests {
         assert_eq!(obj.get("DATABASE_URL").unwrap(), "postgres://localhost");
         assert_eq!(obj.get("DB_PASSWORD").unwrap(), "[REDACTED]");
         assert_eq!(obj.get("API_KEY").unwrap(), "[REDACTED]");
+        assert_eq!(obj.get("REGISTRY_USERNAME").unwrap(), "[REDACTED]");
+        assert_eq!(obj.get("VAULT_TOKEN").unwrap(), "[REDACTED]");
+        assert_eq!(
+            obj.get("INTERNAL_SERVICES_ACCESS_KEY").unwrap(),
+            "[REDACTED]"
+        );
         assert_eq!(obj.get("LOG_LEVEL").unwrap(), "debug");
         assert_eq!(obj.get("PORT").unwrap(), "8080");
+    }
+
+    #[test]
+    fn test_redact_secure_vault_vars_even_without_sensitive_name() {
+        let env = json!({
+            "LOG_LEVEL": "debug"
+        });
+        let secure_keys = HashSet::from([String::from("MYSECURE_PASSPHRASE")]);
+
+        let redacted = redact_sensitive_env_vars_with_secure_keys(&env, &secure_keys);
+        let obj = redacted.as_object().unwrap();
+
+        assert_eq!(obj.get("LOG_LEVEL").unwrap(), "debug");
+        assert_eq!(obj.get("MYSECURE_PASSPHRASE").unwrap(), "[REDACTED]");
+    }
+
+    #[test]
+    fn test_build_env_var_entries_marks_vault_vars_secure() {
+        let env = json!({
+            "LOG_LEVEL": "debug",
+            "MYSECURE_TOKEN": "ignored-local"
+        });
+        let secure_keys = HashSet::from([String::from("MYSECURE_PASSPHRASE")]);
+
+        let entries = build_env_var_entries(&env, &secure_keys);
+
+        assert!(entries.contains(&AppEnvVarEntry {
+            name: "LOG_LEVEL".to_string(),
+            value: "debug".to_string(),
+            secure: false,
+            redacted: false,
+            source: "project".to_string(),
+        }));
+        assert!(entries.contains(&AppEnvVarEntry {
+            name: "MYSECURE_PASSPHRASE".to_string(),
+            value: "[REDACTED]".to_string(),
+            secure: true,
+            redacted: true,
+            source: "vault".to_string(),
+        }));
+        assert!(entries.contains(&AppEnvVarEntry {
+            name: "MYSECURE_TOKEN".to_string(),
+            value: "[REDACTED]".to_string(),
+            secure: false,
+            redacted: true,
+            source: "project".to_string(),
+        }));
     }
 }

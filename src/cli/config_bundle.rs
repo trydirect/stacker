@@ -120,6 +120,7 @@ pub fn build_config_bundle(
         })
         .collect();
     files.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    validate_relative_destinations(&files)?;
 
     let manifest = ConfigBundleManifest {
         version: 1,
@@ -331,7 +332,7 @@ fn collect_reference(
 
 fn collect_file<'a>(
     project_root: &Path,
-    environment: &str,
+    _environment: &str,
     path: PathBuf,
     collected: &'a mut BTreeMap<PathBuf, CollectedFile>,
 ) -> Result<&'a CollectedFile, CliError> {
@@ -350,6 +351,7 @@ fn collect_file<'a>(
             display_project_path(project_root, &canonical)
         )));
     }
+
     if !canonical.is_file() {
         return Err(validation_error(format!(
             "config bundle path is not a file: {}",
@@ -359,10 +361,7 @@ fn collect_file<'a>(
 
     if !collected.contains_key(&canonical) {
         let source_path = display_project_path(project_root, &canonical);
-        let destination_path = format!(
-            "/opt/stacker/deployments/{environment}/files/{}",
-            source_path.replace('\\', "/")
-        );
+        let destination_path = source_path.replace('\\', "/");
         collected.insert(
             canonical.clone(),
             CollectedFile {
@@ -383,6 +382,19 @@ fn collect_file<'a>(
     Ok(collected
         .get(&canonical)
         .expect("collected file was inserted"))
+}
+
+fn validate_relative_destinations(files: &[ConfigBundleFile]) -> Result<(), CliError> {
+    for file in files {
+        if Path::new(&file.destination_path).is_absolute() {
+            return Err(validation_error(format!(
+                "config bundle destination must be project-relative: {} -> {}",
+                file.source_path, file.destination_path
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn write_archive<'a>(
@@ -575,9 +587,8 @@ services:
         assert!(sources.contains(&"docker/production/nginx.conf"));
 
         let remote_compose = std::fs::read_to_string(&artifacts.remote_compose_path).unwrap();
-        assert!(remote_compose
-            .contains("/opt/stacker/deployments/production/files/docker/production/.env"));
-        assert!(remote_compose.contains("/opt/stacker/deployments/production/files/docker/production/nginx.conf:/etc/nginx/nginx.conf:ro"));
+        assert!(remote_compose.contains("docker/production/.env"));
+        assert!(remote_compose.contains("docker/production/nginx.conf:/etc/nginx/nginx.conf:ro"));
 
         let names: Vec<&str> = artifacts
             .config_files
@@ -598,6 +609,57 @@ services:
             })
             .expect("selected env file should also be uploaded as compose root .env");
         assert_eq!(root_env["content"], "RUST_LOG=warning\n");
+    }
+
+    #[test]
+    fn build_config_bundle_keeps_root_compose_env_file_project_relative() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".env"), "APP_ENV=production\n").unwrap();
+        std::fs::write(
+            dir.path().join("docker-compose.yml"),
+            r#"
+services:
+  web:
+    image: nginx:latest
+    env_file:
+      - .env
+"#,
+        )
+        .unwrap();
+
+        let artifacts = build_config_bundle(
+            dir.path(),
+            "production",
+            &dir.path().join("docker-compose.yml"),
+            None,
+        )
+        .expect("bundle should be built");
+
+        let remote_compose = std::fs::read_to_string(&artifacts.remote_compose_path).unwrap();
+        assert!(remote_compose.contains(".env"));
+        assert!(!remote_compose.contains("/opt/stacker/deployments"));
+
+        assert!(artifacts.config_files.iter().any(|file| {
+            file.get("destination_path")
+                .and_then(|value| value.as_str())
+                == Some(".env")
+        }));
+    }
+
+    #[test]
+    fn validate_relative_destinations_rejects_absolute_paths() {
+        let err = validate_relative_destinations(&[ConfigBundleFile {
+            source_path: ".env".to_string(),
+            destination_path: "/opt/stacker/deployments/production/files/.env".to_string(),
+            mode: "0644".to_string(),
+            size: 12,
+            sha256: "abc".to_string(),
+        }])
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("config bundle destination must be project-relative"));
     }
 
     #[test]
@@ -672,18 +734,14 @@ services:
             files: vec![
                 ConfigBundleFile {
                     source_path: "docker/production/.env".to_string(),
-                    destination_path:
-                        "/opt/stacker/deployments/production/files/docker/production/.env"
-                            .to_string(),
+                    destination_path: "docker/production/.env".to_string(),
                     mode: "0644".to_string(),
                     size: 12,
                     sha256: "abc".to_string(),
                 },
                 ConfigBundleFile {
                     source_path: "docker/production/nginx.conf".to_string(),
-                    destination_path:
-                        "/opt/stacker/deployments/production/files/docker/production/nginx.conf"
-                            .to_string(),
+                    destination_path: "docker/production/nginx.conf".to_string(),
                     mode: "0644".to_string(),
                     size: 10,
                     sha256: "def".to_string(),

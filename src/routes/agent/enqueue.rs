@@ -6,12 +6,14 @@ use crate::helpers::{
     NPM_CREDENTIAL_SOURCE_KEY,
 };
 use crate::models::{Command, CommandPriority, User};
-use crate::routes::legacy_installations::resolve_owned_deployment_by_hash;
+use crate::routes::command::enrich_deploy_app_with_compose;
+use crate::routes::legacy_installations::{resolve_owned_deployment_by_hash, OwnedDeployment};
 use actix_web::{post, web, Responder, Result};
 use serde::Deserialize;
 use std::sync::Arc;
 
 const CONFIGURE_PROXY_CAPABILITY_MODE_ENV: &str = "STACKER_CONFIGURE_PROXY_CAPABILITY_MODE";
+const PIPE_COMMAND_TYPES: &[&str] = &["activate_pipe", "deactivate_pipe", "trigger_pipe"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConfigureProxyCapabilityMode {
@@ -38,6 +40,10 @@ impl ConfigureProxyCapabilityMode {
 
 fn configure_proxy_requires_vault_capability(capabilities: &[String]) -> bool {
     has_capability_value(capabilities, NPM_CREDENTIAL_SOURCE_KEY, "vault")
+}
+
+fn command_requires_pipes_capability(command_type: &str) -> bool {
+    PIPE_COMMAND_TYPES.contains(&command_type)
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,20 +74,24 @@ pub async fn enqueue_handler(
         return Err(JsonResponse::<()>::build().bad_request("command_type is required"));
     }
 
-    resolve_owned_deployment_by_hash(
+    let owned_deployment = resolve_owned_deployment_by_hash(
         agent_pool.as_ref(),
         settings.get_ref(),
         user.as_ref(),
         &payload.deployment_hash,
     )
     .await?;
+    let project_id = project_id_from_owned_deployment(&owned_deployment);
 
     // Validate parameters
     let validated_parameters =
         status_panel::validate_command_parameters(&payload.command_type, &payload.parameters)
             .map_err(|err| JsonResponse::<()>::build().bad_request(err))?;
 
+    let requires_pipes_capability = command_requires_pipes_capability(&payload.command_type);
+
     let agent = if payload.command_type == "configure_proxy"
+        || requires_pipes_capability
         || validated_parameters
             .as_ref()
             .and_then(|params| params.get("runtime"))
@@ -115,6 +125,19 @@ pub async fn enqueue_handler(
         }
     }
 
+    if requires_pipes_capability {
+        let capabilities = agent
+            .as_ref()
+            .map(|agent| extract_capabilities(agent.capabilities.clone()))
+            .unwrap_or_default();
+
+        if !has_capability(&capabilities, "pipes") {
+            return Err(JsonResponse::<()>::build().bad_request(
+                "Agent does not support pipe commands. Check agent capabilities at GET /deployments/{hash}/capabilities"
+            ));
+        }
+    }
+
     if payload.command_type == "configure_proxy" {
         let capabilities = agent
             .as_ref()
@@ -138,6 +161,27 @@ pub async fn enqueue_handler(
             }
         }
     }
+
+    let final_parameters = if payload.command_type == "deploy_app" {
+        enrich_deploy_app_with_compose(
+            &payload.deployment_hash,
+            validated_parameters,
+            &settings.vault,
+            agent_pool.as_ref(),
+            project_id,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                deployment_hash = %payload.deployment_hash,
+                error = %error,
+                "Failed to enrich deploy_app command before enqueue"
+            );
+            JsonResponse::<()>::build().internal_server_error(error)
+        })?
+    } else {
+        validated_parameters
+    };
 
     // Generate command ID
     let command_id = format!("cmd_{}", uuid::Uuid::new_v4());
@@ -164,7 +208,7 @@ pub async fn enqueue_handler(
     )
     .with_priority(priority.clone());
 
-    if let Some(params) = &validated_parameters {
+    if let Some(params) = &final_parameters {
         command = command.with_parameters(params.clone());
     }
 
@@ -194,7 +238,7 @@ pub async fn enqueue_handler(
     })?;
 
     // Extract runtime for tracing
-    let runtime = validated_parameters
+    let runtime = final_parameters
         .as_ref()
         .and_then(|p| p.get("runtime"))
         .and_then(|v| v.as_str())
@@ -211,6 +255,13 @@ pub async fn enqueue_handler(
     Ok(JsonResponse::build()
         .set_item(Some(saved))
         .created("Command enqueued"))
+}
+
+fn project_id_from_owned_deployment(deployment: &OwnedDeployment) -> Option<i32> {
+    match deployment {
+        OwnedDeployment::Native(deployment) => Some(deployment.project_id),
+        OwnedDeployment::Legacy(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -241,5 +292,30 @@ mod tests {
         assert!(!configure_proxy_requires_vault_capability(&[
             "status_panel".to_string()
         ]));
+    }
+
+    #[test]
+    fn pipe_commands_require_pipe_capability() {
+        assert!(command_requires_pipes_capability("activate_pipe"));
+        assert!(command_requires_pipes_capability("deactivate_pipe"));
+        assert!(command_requires_pipes_capability("trigger_pipe"));
+        assert!(!command_requires_pipes_capability("restart"));
+    }
+
+    #[test]
+    fn native_owned_deployment_exposes_project_id_for_deploy_app_enrichment() {
+        let deployment = crate::models::Deployment::new(
+            65,
+            Some("user-1".to_string()),
+            "deployment_test".to_string(),
+            "active".to_string(),
+            "runc".to_string(),
+            serde_json::json!({}),
+        );
+
+        assert_eq!(
+            project_id_from_owned_deployment(&OwnedDeployment::Native(deployment)),
+            Some(65)
+        );
     }
 }

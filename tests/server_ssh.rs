@@ -56,7 +56,7 @@ async fn test_get_public_key_vault_path_null_returns_400() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!(
+        .get(format!(
             "{}/server/{}/ssh-key/public",
             &app.address, server_id
         ))
@@ -106,7 +106,7 @@ async fn test_get_public_key_vault_returns_404_propagates_as_404() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!(
+        .get(format!(
             "{}/server/{}/ssh-key/public",
             &app.address, server_id
         ))
@@ -143,7 +143,7 @@ async fn test_get_public_key_no_active_key_returns_404() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!(
+        .get(format!(
             "{}/server/{}/ssh-key/public",
             &app.address, server_id
         ))
@@ -185,7 +185,7 @@ async fn test_get_public_key_success() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(&format!(
+        .get(format!(
             "{}/server/{}/ssh-key/public",
             &app.address, server_id
         ))
@@ -228,7 +228,7 @@ async fn test_generate_key_vault_down_returns_private_key_inline() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/generate",
             &app.address, server_id
         ))
@@ -290,7 +290,7 @@ async fn test_generate_key_success_stores_in_vault_no_private_key_exposed() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/generate",
             &app.address, server_id
         ))
@@ -347,7 +347,7 @@ async fn test_generate_key_already_active_returns_400() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/generate",
             &app.address, server_id
         ))
@@ -391,7 +391,7 @@ async fn test_delete_key_clears_vault_and_db() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(&format!("{}/server/{}/ssh-key", &app.address, server_id))
+        .delete(format!("{}/server/{}/ssh-key", &app.address, server_id))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -424,7 +424,7 @@ async fn test_delete_key_none_returns_400() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(&format!("{}/server/{}/ssh-key", &app.address, server_id))
+        .delete(format!("{}/server/{}/ssh-key", &app.address, server_id))
         .header("Authorization", "Bearer test-token")
         .send()
         .await
@@ -456,7 +456,7 @@ async fn test_authorize_public_key_invalid_public_key_returns_400_before_vault()
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
             &app.address, server_id
         ))
@@ -486,7 +486,7 @@ async fn test_authorize_public_key_vault_path_null_returns_400_before_vault() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
             &app.address, server_id
         ))
@@ -522,7 +522,7 @@ async fn test_authorize_public_key_missing_server_ip_returns_400_before_vault() 
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
             &app.address, server_id
         ))
@@ -565,7 +565,7 @@ async fn test_authorize_public_key_vault_read_failure_does_not_leak_private_key(
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&format!(
+        .post(format!(
             "{}/server/{}/ssh-key/authorize-public-key",
             &app.address, server_id
         ))
@@ -604,9 +604,9 @@ async fn test_ssh_key_endpoints_require_auth() {
 
     for (verb, path) in endpoints {
         let req = match *verb {
-            "GET" => client.get(&format!("{}{}", &app.address, path)),
-            "POST" => client.post(&format!("{}{}", &app.address, path)),
-            "DELETE" => client.delete(&format!("{}{}", &app.address, path)),
+            "GET" => client.get(format!("{}{}", &app.address, path)),
+            "POST" => client.post(format!("{}{}", &app.address, path)),
+            "DELETE" => client.delete(format!("{}{}", &app.address, path)),
             _ => unreachable!(),
         };
         let resp = req.send().await.expect("request failed");

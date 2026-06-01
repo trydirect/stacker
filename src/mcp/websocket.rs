@@ -15,6 +15,7 @@ use super::protocol::{
 };
 use super::registry::{ToolContext, ToolRegistry};
 use super::session::McpSession;
+use crate::services::TypedErrorEnvelope;
 
 /// WebSocket heartbeat interval
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -179,7 +180,9 @@ impl McpWebSocket {
                     .await
                 {
                     tracing::warn!(tool = %call_req.name, error = %err, "MCP tool authorization failed");
-                    let response = CallToolResponse::error(format!("Error: {}", err));
+                    let response = CallToolResponse::typed_error(
+                        TypedErrorEnvelope::from_mcp_error_message(&err),
+                    );
                     return JsonRpcResponse::success(
                         req.id,
                         serde_json::to_value(response).unwrap(),
@@ -209,7 +212,9 @@ impl McpWebSocket {
                     }
                     Err(e) => {
                         tracing::error!("Tool execution failed: {}", e);
-                        let response = CallToolResponse::error(format!("Error: {}", e));
+                        let response = CallToolResponse::typed_error(
+                            TypedErrorEnvelope::from_mcp_error_message(&e),
+                        );
                         JsonRpcResponse::success(req.id, serde_json::to_value(response).unwrap())
                     }
                 }

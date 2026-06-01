@@ -1,0 +1,42 @@
+{
+  "template_request": {
+    "name": "status-panel-web-to-smtp",
+    "description": "POST /contact → SEND adapter:smtp",
+    "source_app_type": "status-panel-web",
+    "source_endpoint": {
+      "path": "/contact",
+      "method": "POST"
+    },
+    "target_app_type": "smtp",
+    "target_endpoint": {
+      "mode": "adapter",
+      "adapter": "smtp",
+      "display_name": "SMTP target"
+    },
+    "field_mapping": {
+      "from_email": "$.email",
+      "subject": "$.subject",
+      "body_text": "$.message"
+    },
+    "config": {
+      "retry_count": 3
+    },
+    "is_public": false
+  },
+  "instance_request": {
+    "deployment_hash": "dep-20260522",
+    "source_container": "status-panel-web",
+    "target_adapter": {
+      "code": "smtp",
+      "role": "target",
+      "config": {
+        "host": "smtp",
+        "port": 1025,
+        "from": "info@stacker.my",
+        "to": ["info@optimum-web.com"],
+        "tls": false
+      }
+    },
+    "template_id": "tpl-remote-smtp"
+  }
+}

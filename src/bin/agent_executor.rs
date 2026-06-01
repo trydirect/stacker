@@ -19,9 +19,7 @@ use tokio::signal;
 use tokio::sync::Notify;
 use tracing::{error, info};
 
-use stacker::models::agent_protocol::{
-    routing, RetryPolicy, StepCommand, StepResultMsg, StepStatus,
-};
+use stacker::models::agent_protocol::{routing, StepCommand, StepResultMsg, StepStatus};
 use stacker::services::resilience_engine::{
     execute_with_resilience, CircuitBreakerConfig, InMemoryCircuitBreaker,
 };
@@ -227,7 +225,7 @@ async fn process_step(
     );
 
     // Execute with resilience (retry + backoff + circuit breaker)
-    let retry_policy = cmd.retry_policy.clone().unwrap_or(RetryPolicy::default());
+    let retry_policy = cmd.retry_policy.clone().unwrap_or_default();
 
     let mut cb = circuit_breaker.lock().await;
     let result = execute_with_resilience(

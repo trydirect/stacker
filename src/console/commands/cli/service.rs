@@ -6,15 +6,23 @@
 //!
 //! `stacker service list [--online]` shows available service templates.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::cli::compose_service_sync::{
+    sync_configured_compose_services, ComposeServiceSyncResult,
+};
 use crate::cli::config_parser::{ServiceDefinition, StackerConfig};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::service_catalog::ServiceCatalog;
+use crate::cli::service_import::{
+    import_plan_from_compose_file, parse_renames, ComposeImportRequest, ServiceImportPlan,
+    ServiceImportReview,
+};
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
 use dialoguer::{Confirm, FuzzySelect};
+use serde::Serialize;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -129,6 +137,11 @@ impl CallableTrait for ServiceAddCommand {
         let backup_path = format!("{}.bak", config_path);
         std::fs::copy(config_path, &backup_path)?;
         std::fs::write(config_path, &yaml)?;
+        let compose_sync = sync_configured_compose_services(
+            &project_dir_for_config(path),
+            &config,
+            std::slice::from_ref(&entry.service.name),
+        )?;
 
         println!("✓ Added '{}' to {}", entry.name, config_path);
         println!("  Image:  {}", entry.service.image);
@@ -167,6 +180,281 @@ impl CallableTrait for ServiceAddCommand {
         }
 
         eprintln!("  Backup saved to {}", backup_path);
+        print_compose_sync_result(&compose_sync);
+
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// service deploy
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker service deploy <name> [--deployment <hash>]`
+///
+/// Validates that the named service exists in `stacker.yml`, then delegates to
+/// the lower-level agent app deployment command using the service name as the
+/// remote app code.
+pub struct ServiceDeployCommand {
+    pub name: String,
+    pub force: bool,
+    pub runtime: String,
+    pub json: bool,
+    pub deployment: Option<String>,
+    pub environment: Option<String>,
+    pub plan: bool,
+    pub apply_plan: Option<String>,
+}
+
+impl ServiceDeployCommand {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: String,
+        force: bool,
+        runtime: String,
+        json: bool,
+        deployment: Option<String>,
+        environment: Option<String>,
+        plan: bool,
+        apply_plan: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            force,
+            runtime,
+            json,
+            deployment,
+            environment,
+            plan,
+            apply_plan,
+        }
+    }
+}
+
+impl CallableTrait for ServiceDeployCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = DEFAULT_CONFIG_FILE;
+        let path = Path::new(config_path);
+
+        if !path.exists() {
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: path.to_path_buf(),
+            }));
+        }
+
+        let config = StackerConfig::from_file_raw(path)?;
+        if !config
+            .services
+            .iter()
+            .any(|service| service.name == self.name)
+        {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "Service '{}' was not found in {}. Add or import it first, then run `stacker service deploy {}`.",
+                self.name, config_path, self.name
+            ))));
+        }
+
+        let compose_sync = sync_configured_compose_services(
+            &project_dir_for_config(path),
+            &config,
+            std::slice::from_ref(&self.name),
+        )?;
+        print_compose_sync_result(&compose_sync);
+
+        let environment = self.environment.clone().or_else(|| {
+            if config.selected_environment(None).is_none() && config.deploy.compose_file.is_some() {
+                eprintln!(
+                    "  No deploy environment configured; using 'production' to build the service compose payload."
+                );
+                Some("production".to_string())
+            } else {
+                None
+            }
+        });
+
+        let command = crate::console::commands::cli::agent::AgentDeployAppCommand::new(
+            self.name.clone(),
+            None,
+            self.force,
+            self.runtime.clone(),
+            self.json,
+            self.deployment.clone(),
+            environment,
+        )
+        .with_plan(self.plan)
+        .with_apply_plan(self.apply_plan.clone());
+
+        command.call()
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// service import
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `stacker service import <name> --from-compose <path> [--service <compose-service>]`
+///
+/// Parses a local Docker Compose file, prints a safety review, and appends
+/// selected image-backed services to `stacker.yml` only after confirmation.
+pub struct ServiceImportCommand {
+    pub name: String,
+    pub from_compose: Option<PathBuf>,
+    pub from_github: Option<String>,
+    pub from_url: Option<String>,
+    pub service: Option<String>,
+    pub renames: Vec<String>,
+    pub file: Option<String>,
+    pub review: bool,
+    pub yes: bool,
+    pub json: bool,
+}
+
+impl ServiceImportCommand {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: String,
+        from_compose: Option<PathBuf>,
+        from_github: Option<String>,
+        from_url: Option<String>,
+        service: Option<String>,
+        renames: Vec<String>,
+        file: Option<String>,
+        review: bool,
+        yes: bool,
+        json: bool,
+    ) -> Self {
+        Self {
+            name,
+            from_compose,
+            from_github,
+            from_url,
+            service,
+            renames,
+            file,
+            review,
+            yes,
+            json,
+        }
+    }
+}
+
+impl CallableTrait for ServiceImportCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = self.file.as_deref().unwrap_or(DEFAULT_CONFIG_FILE);
+        let path = Path::new(config_path);
+
+        if self.from_github.is_some() || self.from_url.is_some() {
+            return Err(Box::new(CliError::ConfigValidation(
+                "Remote custom service import is planned but not implemented yet. Download or inspect the Compose file yourself, then run `stacker service import <name> --from-compose <path> --review`."
+                    .to_string(),
+            )));
+        }
+
+        let compose_path = self.from_compose.as_ref().ok_or_else(|| {
+            CliError::ConfigValidation(
+                "Specify a local Compose file with --from-compose <path>. Remote GitHub/URL import is not fetched by default."
+                    .to_string(),
+            )
+        })?;
+
+        if !path.exists() {
+            return Err(Box::new(CliError::ConfigNotFound {
+                path: path.to_path_buf(),
+            }));
+        }
+
+        let renames = parse_renames(&self.renames)?;
+        let request = ComposeImportRequest {
+            import_name: self.name.clone(),
+            selected_service: self.service.clone(),
+            renames,
+        };
+        let plan = import_plan_from_compose_file(compose_path, &request)?;
+        let config = StackerConfig::from_file_raw(path)?;
+        validate_no_duplicate_services(&config, &plan)?;
+
+        if self.json && self.review {
+            let output = ServiceImportCommandOutput {
+                status: "review",
+                config_file: config_path.to_string(),
+                backup_file: None,
+                review: &plan.review,
+                imported_services: plan
+                    .services
+                    .iter()
+                    .map(|service| service.name.clone())
+                    .collect(),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else if !self.json {
+            print_import_plan(&plan);
+        }
+
+        if self.review {
+            return Ok(());
+        }
+
+        if !self.yes {
+            let confirmed = Confirm::new()
+                .with_prompt(format!(
+                    "Import {} service(s) into {}?",
+                    plan.services.len(),
+                    config_path
+                ))
+                .default(false)
+                .interact()
+                .map_err(|e| {
+                    CliError::ConfigValidation(format!(
+                        "Prompt failed: {e}. Re-run with --review to inspect only, or --yes to import non-interactively."
+                    ))
+                })?;
+
+            if !confirmed {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        let backup_path = import_services_into_config(path, config, &plan)?;
+        let updated_config = StackerConfig::from_file_raw(path)?;
+        let imported_service_names: Vec<String> = plan
+            .services
+            .iter()
+            .map(|service| service.name.clone())
+            .collect();
+        let compose_sync = sync_configured_compose_services(
+            &project_dir_for_config(path),
+            &updated_config,
+            &imported_service_names,
+        )?;
+
+        if self.json {
+            let output = ServiceImportCommandOutput {
+                status: "imported",
+                config_file: config_path.to_string(),
+                backup_file: Some(backup_path.clone()),
+                review: &plan.review,
+                imported_services: updated_config
+                    .services
+                    .iter()
+                    .filter(|service| {
+                        plan.services
+                            .iter()
+                            .any(|imported| imported.name == service.name)
+                    })
+                    .map(|service| service.name.clone())
+                    .collect(),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!(
+                "✓ Imported {} service(s) into {}",
+                plan.services.len(),
+                config_path
+            );
+            eprintln!("  Backup saved to {}", backup_path);
+            print_compose_sync_result(&compose_sync);
+        }
 
         Ok(())
     }
@@ -220,7 +508,7 @@ impl CallableTrait for ServiceListCommand {
         }
 
         println!("Usage: stacker service add <name>");
-        println!("Aliases: wp, pg, my, mongo, es, mq, pma, mh");
+        println!("Aliases: wp, pg, my, mongo, es, mq, pma, smtp, mail, mh");
 
         if self.online {
             eprintln!();
@@ -333,6 +621,125 @@ impl CallableTrait for ServiceRemoveCommand {
 
 // ── Helpers ──────────────────────────────────────────
 
+#[derive(Serialize)]
+struct ServiceImportCommandOutput<'a> {
+    status: &'static str,
+    config_file: String,
+    backup_file: Option<String>,
+    review: &'a ServiceImportReview,
+    imported_services: Vec<String>,
+}
+
+fn validate_no_duplicate_services(
+    config: &StackerConfig,
+    plan: &ServiceImportPlan,
+) -> Result<(), CliError> {
+    for imported in &plan.services {
+        if config.services.iter().any(|svc| svc.name == imported.name) {
+            return Err(CliError::ConfigValidation(format!(
+                "Service '{}' already exists in stacker.yml. Use --rename old=new or choose a different import name.",
+                imported.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn import_services_into_config(
+    path: &Path,
+    mut config: StackerConfig,
+    plan: &ServiceImportPlan,
+) -> Result<String, Box<dyn std::error::Error>> {
+    for service in &plan.services {
+        config.services.push(service.clone());
+    }
+
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|e| CliError::ConfigValidation(format!("Failed to serialize config: {}", e)))?;
+
+    let config_path = path.to_string_lossy().to_string();
+    let backup_path = format!("{}.bak", config_path);
+    std::fs::copy(path, &backup_path)?;
+    std::fs::write(path, &yaml)?;
+    Ok(backup_path)
+}
+
+fn print_import_plan(plan: &ServiceImportPlan) {
+    let review = &plan.review;
+    println!("Custom service import review: {}", review.import_name);
+    println!();
+
+    for service in &review.services {
+        println!("  Service: {} (from {})", service.name, service.source_name);
+        println!("    Image: {}", service.image);
+        if !service.ports.is_empty() {
+            println!("    Ports: {}", service.ports.join(", "));
+        }
+        if !service.environment_keys.is_empty() {
+            println!("    Env keys: {}", service.environment_keys.join(", "));
+        }
+        if !service.volumes.is_empty() {
+            println!("    Volumes: {}", service.volumes.join(", "));
+        }
+        if !service.depends_on.is_empty() {
+            println!("    Depends on: {}", service.depends_on.join(", "));
+        }
+        if !service.unsupported_fields.is_empty() {
+            println!(
+                "    Unsupported Compose fields: {}",
+                service.unsupported_fields.join(", ")
+            );
+        }
+    }
+
+    if !review.risks.is_empty() {
+        println!();
+        println!("  Risks to review:");
+        for risk in &review.risks {
+            println!("    - [{}] {}: {}", risk.service, risk.kind, risk.detail);
+        }
+    }
+
+    if !review.guidance.is_empty() {
+        println!();
+        println!("  Guidance:");
+        for item in &review.guidance {
+            println!("    - {}", item);
+        }
+    }
+
+    if let Ok(yaml) = serde_yaml::to_string(&plan.services) {
+        println!();
+        println!("  stacker.yml services to append:");
+        for line in yaml.lines() {
+            println!("    {}", line);
+        }
+    }
+}
+
+fn project_dir_for_config(path: &Path) -> PathBuf {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn print_compose_sync_result(result: &ComposeServiceSyncResult) {
+    if result.updated_services.is_empty() {
+        return;
+    }
+    if let Some(path) = result.compose_path.as_ref() {
+        eprintln!(
+            "  Updated compose file {} with service(s): {}",
+            path.display(),
+            result.updated_services.join(", ")
+        );
+    }
+    if let Some(path) = result.backup_path.as_ref() {
+        eprintln!("  Compose backup saved to {}", path.display());
+    }
+}
+
 /// Try to build a `StackerClient` from stored credentials (best-effort).
 fn try_build_online_catalog() -> Option<StackerClient> {
     let cred_manager = CredentialsManager::with_default_store();
@@ -356,6 +763,156 @@ fn category_icon(category: &str) -> &str {
         "storage" => "💾",
         "mail" => "✉",
         _ => "📦",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_config(dir: &TempDir, body: &str) -> PathBuf {
+        let path = dir.path().join("stacker.yml");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn write_compose(dir: &TempDir, body: &str) -> PathBuf {
+        let path = dir.path().join("compose.yml");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn import_command(
+        config_path: &Path,
+        compose_path: &Path,
+        review: bool,
+        yes: bool,
+    ) -> ServiceImportCommand {
+        ServiceImportCommand::new(
+            "smtp".to_string(),
+            Some(compose_path.to_path_buf()),
+            None,
+            None,
+            Some("mailserver".to_string()),
+            Vec::new(),
+            Some(config_path.to_string_lossy().to_string()),
+            review,
+            yes,
+            false,
+        )
+    }
+
+    #[test]
+    fn service_import_review_only_does_not_write_config_or_backup() {
+        let dir = TempDir::new().unwrap();
+        let config_path = write_config(
+            &dir,
+            r#"
+name: test-app
+app:
+  type: static
+services: []
+"#,
+        );
+        let compose_path = write_compose(
+            &dir,
+            r#"
+services:
+  mailserver:
+    image: docker.io/mailserver/docker-mailserver:latest
+    environment:
+      ACCOUNT_PASSWORD: literal-secret
+"#,
+        );
+        let original = std::fs::read_to_string(&config_path).unwrap();
+
+        import_command(&config_path, &compose_path, true, false)
+            .call()
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), original);
+        assert!(!Path::new(&format!("{}.bak", config_path.to_string_lossy())).exists());
+    }
+
+    #[test]
+    fn service_import_prevents_duplicate_service_names() {
+        let dir = TempDir::new().unwrap();
+        let config_path = write_config(
+            &dir,
+            r#"
+name: test-app
+app:
+  type: static
+services:
+  - name: smtp
+    image: trydirect/smtp
+"#,
+        );
+        let compose_path = write_compose(
+            &dir,
+            r#"
+services:
+  mailserver:
+    image: docker.io/mailserver/docker-mailserver:latest
+"#,
+        );
+
+        let err = import_command(&config_path, &compose_path, false, true)
+            .call()
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn service_import_writes_backup_and_preserves_secret_placeholders() {
+        let dir = TempDir::new().unwrap();
+        let config_path = write_config(
+            &dir,
+            r#"
+name: test-app
+app:
+  type: static
+services: []
+"#,
+        );
+        let compose_path = write_compose(
+            &dir,
+            r#"
+services:
+  mailserver:
+    image: docker.io/mailserver/docker-mailserver:latest
+    ports:
+      - "25:25"
+    environment:
+      ACCOUNT_PASSWORD: literal-secret
+      POSTMASTER_ADDRESS: postmaster@example.com
+    volumes:
+      - maildata:/var/mail
+"#,
+        );
+
+        import_command(&config_path, &compose_path, false, true)
+            .call()
+            .unwrap();
+
+        let backup_path = format!("{}.bak", config_path.to_string_lossy());
+        assert!(Path::new(&backup_path).exists());
+        let config = StackerConfig::from_file_raw(&config_path).unwrap();
+        let service = config
+            .services
+            .iter()
+            .find(|service| service.name == "smtp")
+            .unwrap();
+        assert_eq!(service.ports, vec!["25:25"]);
+        assert_eq!(
+            service.environment.get("ACCOUNT_PASSWORD").unwrap(),
+            "${ACCOUNT_PASSWORD}"
+        );
+        assert_eq!(
+            service.environment.get("POSTMASTER_ADDRESS").unwrap(),
+            "postmaster@example.com"
+        );
     }
 }
 

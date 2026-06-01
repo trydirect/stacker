@@ -2,7 +2,6 @@ mod common;
 
 /// IDOR security tests for /server endpoints.
 /// Verify that User B cannot list, read, or delete User A's servers.
-
 #[tokio::test]
 async fn test_list_servers_only_returns_own() {
     let Some(app) = common::spawn_app_two_users().await else {
@@ -25,7 +24,7 @@ async fn test_list_servers_only_returns_own() {
 
     // User A lists → sees exactly 2
     let resp = client
-        .get(&format!("{}/server", &app.address))
+        .get(format!("{}/server", &app.address))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await
@@ -37,7 +36,7 @@ async fn test_list_servers_only_returns_own() {
 
     // User B lists → sees exactly 1
     let resp = client
-        .get(&format!("{}/server", &app.address))
+        .get(format!("{}/server", &app.address))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -62,7 +61,7 @@ async fn test_get_server_rejects_other_user() {
 
     // User B tries to GET User A's server → 404
     let resp = client
-        .get(&format!("{}/server/{}", &app.address, server_id))
+        .get(format!("{}/server/{}", &app.address, server_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -88,7 +87,7 @@ async fn test_get_server_by_project_rejects_other_user() {
 
     // User B tries to GET servers by User A's project → 404
     let resp = client
-        .get(&format!("{}/server/project/{}", &app.address, proj_a))
+        .get(format!("{}/server/project/{}", &app.address, proj_a))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -114,7 +113,7 @@ async fn test_delete_server_rejects_other_user() {
 
     // User B tries to DELETE User A's server → 400 (bad_request = IDOR guard)
     let resp = client
-        .delete(&format!("{}/server/{}", &app.address, server_id))
+        .delete(format!("{}/server/{}", &app.address, server_id))
         .header("Authorization", format!("Bearer {}", common::USER_B_TOKEN))
         .send()
         .await
@@ -140,7 +139,7 @@ async fn test_owner_can_access_own_server() {
 
     // User A GETs own server → 200
     let resp = client
-        .get(&format!("{}/server/{}", &app.address, server_id))
+        .get(format!("{}/server/{}", &app.address, server_id))
         .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
         .send()
         .await

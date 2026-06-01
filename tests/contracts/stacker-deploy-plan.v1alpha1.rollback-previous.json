@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "v1alpha1",
+  "deploymentHash": "deployment_state_online",
+  "operation": "rollback_deploy",
+  "target": "cloud",
+  "fingerprint": "plan-rollback-previous",
+  "scope": {
+    "mode": "deployment",
+    "selectedApps": ["device-api", "upload"]
+  },
+  "hasChanges": true,
+  "actions": [
+    {
+      "kind": "rollback_deploy",
+      "target": "deployment",
+      "reason": "rollback preview targets marketplace template version 1.1.0"
+    }
+  ],
+  "reasoning": [
+    "rollback preview resolved requested target 'previous' to template version 1.1.0",
+    "current deployment template version is 1.2.0"
+  ],
+  "rollback": {
+    "requestedTarget": "previous",
+    "currentVersion": "1.2.0",
+    "resolvedVersion": "1.1.0"
+  }
+}

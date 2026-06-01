@@ -245,22 +245,24 @@ pub async fn insert_instance(
     sqlx::query_as::<_, PipeInstance>(
         r#"
         INSERT INTO pipe_instances (
-            id, template_id, deployment_hash, source_container, target_container,
-            target_url, field_mapping_override, config_override, status,
-            last_triggered_at, trigger_count, error_count, is_local, created_by,
-            created_at, updated_at
+            id, template_id, deployment_hash, source_adapter, source_container, target_adapter,
+            target_container, target_url, field_mapping_override, config_override, status,
+            last_triggered_at, trigger_count, error_count, is_local, created_by, created_at,
+            updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-        RETURNING id, template_id, deployment_hash, source_container, target_container,
-                  target_url, field_mapping_override, config_override, status,
-                  last_triggered_at, trigger_count, error_count, is_local, created_by,
-                  created_at, updated_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        RETURNING id, template_id, deployment_hash, source_adapter, source_container,
+                  target_adapter, target_container, target_url, field_mapping_override,
+                  config_override, status, last_triggered_at, trigger_count, error_count,
+                  is_local, created_by, created_at, updated_at
         "#,
     )
     .bind(instance.id)
     .bind(instance.template_id)
     .bind(&instance.deployment_hash)
+    .bind(&instance.source_adapter)
     .bind(&instance.source_container)
+    .bind(&instance.target_adapter)
     .bind(&instance.target_container)
     .bind(&instance.target_url)
     .bind(&instance.field_mapping_override)
@@ -288,10 +290,10 @@ pub async fn get_instance(pool: &PgPool, id: &Uuid) -> Result<Option<PipeInstanc
     let query_span = tracing::info_span!("Fetching pipe instance by ID");
     sqlx::query_as::<_, PipeInstance>(
         r#"
-        SELECT id, template_id, deployment_hash, source_container, target_container,
-               target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, is_local, created_by,
-               created_at, updated_at
+        SELECT id, template_id, deployment_hash, source_adapter, source_container,
+               target_adapter, target_container, target_url, field_mapping_override,
+               config_override, status, last_triggered_at, trigger_count, error_count,
+               is_local, created_by, created_at, updated_at
         FROM pipe_instances
         WHERE id = $1
         "#,
@@ -315,10 +317,10 @@ pub async fn list_instances(
     let query_span = tracing::info_span!("Listing pipe instances for deployment");
     sqlx::query_as::<_, PipeInstance>(
         r#"
-        SELECT id, template_id, deployment_hash, source_container, target_container,
-               target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, is_local, created_by,
-               created_at, updated_at
+        SELECT id, template_id, deployment_hash, source_adapter, source_container,
+               target_adapter, target_container, target_url, field_mapping_override,
+               config_override, status, last_triggered_at, trigger_count, error_count,
+               is_local, created_by, created_at, updated_at
         FROM pipe_instances
         WHERE deployment_hash = $1
         ORDER BY created_at DESC
@@ -343,10 +345,10 @@ pub async fn list_local_instances_by_user(
     let query_span = tracing::info_span!("Listing local pipe instances");
     sqlx::query_as::<_, PipeInstance>(
         r#"
-        SELECT id, template_id, deployment_hash, source_container, target_container,
-               target_url, field_mapping_override, config_override, status,
-               last_triggered_at, trigger_count, error_count, is_local, created_by,
-               created_at, updated_at
+        SELECT id, template_id, deployment_hash, source_adapter, source_container,
+               target_adapter, target_container, target_url, field_mapping_override,
+               config_override, status, last_triggered_at, trigger_count, error_count,
+               is_local, created_by, created_at, updated_at
         FROM pipe_instances
         WHERE is_local = true AND created_by = $1
         ORDER BY created_at DESC
@@ -375,10 +377,10 @@ pub async fn update_instance_status(
         UPDATE pipe_instances
         SET status = $2, updated_at = NOW()
         WHERE id = $1
-        RETURNING id, template_id, deployment_hash, source_container, target_container,
-                  target_url, field_mapping_override, config_override, status,
-                  last_triggered_at, trigger_count, error_count, is_local, created_by,
-                  created_at, updated_at
+        RETURNING id, template_id, deployment_hash, source_adapter, source_container,
+                  target_adapter, target_container, target_url, field_mapping_override,
+                  config_override, status, last_triggered_at, trigger_count, error_count,
+                  is_local, created_by, created_at, updated_at
         "#,
     )
     .bind(id)

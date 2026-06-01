@@ -283,6 +283,7 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliE
     validate_domain(&domain.domain)?;
     validate_upstream(&domain.upstream)?;
     let mut block = String::new();
+    let proxy_pass = proxy_pass_target(&domain.upstream);
 
     block.push_str("server {\n");
 
@@ -320,7 +321,7 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliE
 
             block.push_str("\n");
             block.push_str("    location / {\n");
-            block.push_str(&format!("        proxy_pass http://{};\n", domain.upstream));
+            block.push_str(&format!("        proxy_pass {};\n", proxy_pass));
             block.push_str("        proxy_set_header Host $host;\n");
             block.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
             block
@@ -334,7 +335,7 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliE
             block.push_str(&format!("    server_name {};\n", domain.domain));
             block.push_str("\n");
             block.push_str("    location / {\n");
-            block.push_str(&format!("        proxy_pass http://{};\n", domain.upstream));
+            block.push_str(&format!("        proxy_pass {};\n", proxy_pass));
             block.push_str("        proxy_set_header Host $host;\n");
             block.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
             block
@@ -346,6 +347,14 @@ pub fn generate_nginx_server_block(domain: &DomainConfig) -> Result<String, CliE
     }
 
     Ok(block)
+}
+
+fn proxy_pass_target(upstream: &str) -> String {
+    if upstream.starts_with("http://") || upstream.starts_with("https://") {
+        upstream.to_string()
+    } else {
+        format!("http://{}", upstream)
+    }
 }
 
 /// Generate nginx configs for all domains in a proxy config.
@@ -542,6 +551,18 @@ mod tests {
         assert!(block.contains("proxy_pass http://app:8080;"));
         assert!(!block.contains("ssl"));
         assert!(!block.contains("443"));
+    }
+
+    #[test]
+    fn test_generate_nginx_server_block_keeps_upstream_scheme() {
+        let domain = DomainConfig {
+            domain: "app.local".to_string(),
+            ssl: SslMode::Off,
+            upstream: "http://app:8080".to_string(),
+        };
+        let block = generate_nginx_server_block(&domain).unwrap();
+        assert!(block.contains("proxy_pass http://app:8080;"));
+        assert!(!block.contains("proxy_pass http://http://app:8080;"));
     }
 
     #[test]

@@ -1,0 +1,30 @@
+{
+  "pipe_instance_id": "pipe-adapter-1",
+  "source_adapter": {
+    "code": "imap",
+    "role": "source",
+    "config": {
+      "host": "imap.example.com",
+      "port": 993,
+      "mailbox": "INBOX",
+      "username": "alerts@example.com",
+      "password": "example-password"
+    }
+  },
+  "target_adapter": {
+    "code": "smtp",
+    "role": "target",
+    "config": {
+      "host": "smtp.example.com",
+      "port": 587,
+      "username": "mailer@example.com",
+      "password": "example-password",
+      "from": "alerts@example.com"
+    }
+  },
+  "field_mapping": {
+    "subject": "$.subject",
+    "body.text": "$.body.text"
+  },
+  "trigger_type": "poll"
+}

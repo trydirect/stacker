@@ -1,12 +1,19 @@
 mod common;
 
+use actix_web::web;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use stacker::configuration::get_configuration;
 use stacker::db;
+use stacker::mcp::protocol::ToolContent;
+use stacker::mcp::tools::{
+    GetAppConfigTool, GetAppEnvVarsTool, GetRemoteServiceSecretTool, SetAppEnvVarTool,
+};
+use stacker::mcp::{ToolContext, ToolHandler};
 use stacker::models::ProjectApp;
-use stacker::services::{ConfigRenderer, VaultService};
-use wiremock::matchers::{method, path_regex};
+use stacker::services::{runtime_env_contract_response, ConfigRenderer, VaultService};
+use std::sync::Arc;
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 struct TwoUserVaultApp {
@@ -57,6 +64,39 @@ fn server_secret_path_regex(user_id: &str, server_id: i32, name: &str) -> String
     )
 }
 
+fn status_panel_npm_credentials_path(server_id: i32) -> String {
+    format!(
+        "/v1/secret/debug/status_panel/hosts/{}/npm_credentials",
+        server_id
+    )
+}
+
+fn tool_context(pool: &sqlx::PgPool) -> ToolContext {
+    ToolContext {
+        user: Arc::new(stacker::models::User {
+            id: common::USER_A_ID.to_string(),
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+            email: common::USER_A_EMAIL.to_string(),
+            role: "group_user".to_string(),
+            email_confirmed: true,
+            mfa_verified: true,
+            access_token: None,
+        }),
+        pg_pool: pool.clone(),
+        settings: web::Data::new(stacker::configuration::Settings::default()),
+    }
+}
+
+fn tool_text_json(content: ToolContent) -> Value {
+    match content {
+        ToolContent::Text { text } => {
+            serde_json::from_str(&text).expect("tool response should be valid json")
+        }
+        ToolContent::Image { .. } => panic!("expected text tool response"),
+    }
+}
+
 #[tokio::test]
 async fn test_service_secret_crud_returns_metadata_only_and_uses_vault_v1() {
     let Some(app) = common::spawn_app_with_vault().await else {
@@ -103,6 +143,7 @@ async fn test_service_secret_crud_returns_metadata_only_and_uses_vault_v1() {
     assert_eq!(put_body["item"]["scope"], "service");
     assert_eq!(put_body["item"]["app_code"], project_app.code);
     assert_eq!(put_body["item"]["source"], "vault");
+    assert_eq!(put_body["item"]["secure"], true);
     assert!(put_body["item"].get("value").is_none());
 
     let get_response = client
@@ -118,6 +159,7 @@ async fn test_service_secret_crud_returns_metadata_only_and_uses_vault_v1() {
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_body: Value = get_response.json().await.unwrap();
     assert_eq!(get_body["item"]["name"], secret_name);
+    assert_eq!(get_body["item"]["secure"], true);
     assert!(get_body["item"].get("value").is_none());
 
     let list_response = client
@@ -134,6 +176,7 @@ async fn test_service_secret_crud_returns_metadata_only_and_uses_vault_v1() {
     let list_body: Value = list_response.json().await.unwrap();
     assert_eq!(list_body["list"].as_array().unwrap().len(), 1);
     assert_eq!(list_body["list"][0]["name"], secret_name);
+    assert_eq!(list_body["list"][0]["secure"], true);
     assert!(list_body["list"][0].get("value").is_none());
 
     let delete_response = client
@@ -279,6 +322,110 @@ async fn test_server_secret_crud_returns_metadata_only_and_uses_vault_v1() {
     assert!(requests
         .iter()
         .all(|request| !request.url.path().contains("/metadata/")));
+}
+
+#[tokio::test]
+async fn test_server_npm_credentials_use_status_panel_host_path() {
+    let mut configuration = get_configuration().expect("Failed to get configuration");
+    let vault_server = MockServer::start().await;
+
+    configuration.vault.address = vault_server.uri();
+    configuration.vault.token = "test-vault-token".to_string();
+    configuration.vault.api_prefix = "v1".to_string();
+    configuration.vault.agent_path_prefix = "secret/debug/status_panel".to_string();
+    configuration.vault.ssh_key_path_prefix = Some("users".to_string());
+    configuration.connectors.install_service =
+        Some(stacker::connectors::InstallServiceConfig { enabled: false });
+
+    let Some(app) = common::spawn_app_with_test_auth_configuration(configuration).await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let server_id =
+        common::create_test_server(&app.db_pool, common::USER_A_ID, project_id, "none", None).await;
+
+    Mock::given(method("POST"))
+        .and(path(status_panel_npm_credentials_path(server_id)))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&vault_server)
+        .await;
+
+    Mock::given(method("DELETE"))
+        .and(path(status_panel_npm_credentials_path(server_id)))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&vault_server)
+        .await;
+
+    let payload = json!({
+        "schema_version": 1,
+        "host": "http://nginx-proxy-manager:81",
+        "email": "admin@example.com",
+        "password": "secret",
+        "auth_mode": "email_password"
+    });
+
+    let client = reqwest::Client::new();
+    let put_response = client
+        .put(format!(
+            "{}/server/{}/secrets/npm_credentials",
+            app.address, server_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .json(&json!({ "value": payload.to_string() }))
+        .send()
+        .await
+        .expect("server npm_credentials PUT failed");
+
+    assert_eq!(put_response.status(), StatusCode::OK);
+    let put_body: Value = put_response.json().await.unwrap();
+    assert_eq!(put_body["item"]["name"], "npm_credentials");
+    assert_eq!(put_body["item"]["scope"], "server");
+    assert_eq!(put_body["item"]["server_id"], server_id);
+    assert_eq!(put_body["item"]["source"], "vault");
+    assert!(put_body["item"].get("value").is_none());
+
+    let get_response = client
+        .get(format!(
+            "{}/server/{}/secrets/npm_credentials",
+            app.address, server_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("server npm_credentials GET failed");
+
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_body: Value = get_response.json().await.unwrap();
+    assert_eq!(get_body["item"]["name"], "npm_credentials");
+
+    let delete_response = client
+        .delete(format!(
+            "{}/server/{}/secrets/npm_credentials",
+            app.address, server_id
+        ))
+        .header("Authorization", format!("Bearer {}", common::USER_A_TOKEN))
+        .send()
+        .await
+        .expect("server npm_credentials DELETE failed");
+
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let requests = vault_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method.to_string(), "POST");
+    assert_eq!(
+        requests[0].url.path(),
+        status_panel_npm_credentials_path(server_id)
+    );
+    let request_body: Value =
+        serde_json::from_slice(&requests[0].body).expect("npm_credentials body should be json");
+    assert_eq!(request_body, json!({ "data": payload }));
+    assert_eq!(requests[1].method.to_string(), "DELETE");
+    assert_eq!(
+        requests[1].url.path(),
+        status_panel_npm_credentials_path(server_id)
+    );
 }
 
 #[tokio::test]
@@ -564,6 +711,10 @@ async fn test_get_env_vars_includes_remote_secret_placeholders() {
         .expect("response body should be valid json");
     assert_eq!(body["item"]["variables"]["VISIBLE_KEY"], "plain-value");
     assert_eq!(body["item"]["variables"]["S3_SECRET"], "[REDACTED]");
+    assert_eq!(
+        body["item"]["runtime_env_contract"],
+        serde_json::to_value(runtime_env_contract_response()).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -619,6 +770,10 @@ async fn test_get_app_redacts_plain_and_remote_secret_values() {
     assert_eq!(body["item"]["environment"]["VISIBLE_KEY"], "plain-value");
     assert_eq!(body["item"]["environment"]["LOCAL_PASSWORD"], "[REDACTED]");
     assert_eq!(body["item"]["environment"]["S3_SECRET"], "[REDACTED]");
+    assert_eq!(
+        body["item"]["runtime_env_contract"],
+        serde_json::to_value(runtime_env_contract_response()).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -723,4 +878,230 @@ async fn test_update_env_vars_rejects_remote_secret_name_collision() {
         .expect("update env vars failed");
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_mcp_get_app_env_vars_redacts_remote_service_secret_values() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let mut project_app = create_test_project_app(&app.db_pool, project_id, "web").await;
+    project_app.environment = Some(json!({
+        "VISIBLE_KEY": "plain-value",
+        "LOCAL_PASSWORD": "db-secret"
+    }));
+    db::project_app::update(&app.db_pool, &project_app)
+        .await
+        .expect("project app update failed");
+
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_SECRET",
+        common::USER_A_ID,
+        project_id,
+        project_app.code
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &project_app.code,
+        "S3_SECRET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    let context = tool_context(&app.db_pool);
+    let result = GetAppEnvVarsTool
+        .execute(
+            json!({
+                "project_id": project_id,
+                "app_code": project_app.code
+            }),
+            &context,
+        )
+        .await
+        .expect("mcp get_app_env_vars should succeed");
+
+    let body = tool_text_json(result);
+    assert_eq!(body["environment_variables"]["VISIBLE_KEY"], "plain-value");
+    assert_eq!(
+        body["environment_variables"]["LOCAL_PASSWORD"],
+        "[REDACTED]"
+    );
+    assert_eq!(body["environment_variables"]["S3_SECRET"], "[REDACTED]");
+    assert_eq!(body["count"], 3);
+    assert_eq!(
+        body["runtime_env_contract"],
+        serde_json::to_value(runtime_env_contract_response()).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_get_app_config_redacts_remote_service_secret_values() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let mut project_app = create_test_project_app(&app.db_pool, project_id, "web").await;
+    project_app.environment = Some(json!({
+        "VISIBLE_KEY": "plain-value",
+        "LOCAL_PASSWORD": "db-secret"
+    }));
+    db::project_app::update(&app.db_pool, &project_app)
+        .await
+        .expect("project app update failed");
+
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_SECRET",
+        common::USER_A_ID,
+        project_id,
+        project_app.code
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &project_app.code,
+        "S3_SECRET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    let context = tool_context(&app.db_pool);
+    let result = GetAppConfigTool
+        .execute(
+            json!({
+                "project_id": project_id,
+                "app_code": project_app.code
+            }),
+            &context,
+        )
+        .await
+        .expect("mcp get_app_config should succeed");
+
+    let body = tool_text_json(result);
+    assert_eq!(body["environment_variables"]["VISIBLE_KEY"], "plain-value");
+    assert_eq!(
+        body["environment_variables"]["LOCAL_PASSWORD"],
+        "[REDACTED]"
+    );
+    assert_eq!(body["environment_variables"]["S3_SECRET"], "[REDACTED]");
+    assert_eq!(
+        body["runtime_env_contract"],
+        serde_json::to_value(runtime_env_contract_response()).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_set_app_env_var_rejects_remote_secret_name_collision() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let mut project_app = create_test_project_app(&app.db_pool, project_id, "web").await;
+    project_app.environment = Some(json!({
+        "VISIBLE_KEY": "plain-value"
+    }));
+    db::project_app::update(&app.db_pool, &project_app)
+        .await
+        .expect("project app update failed");
+
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_SECRET",
+        common::USER_A_ID,
+        project_id,
+        project_app.code
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &project_app.code,
+        "S3_SECRET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    let context = tool_context(&app.db_pool);
+    let error = SetAppEnvVarTool
+        .execute(
+            json!({
+                "project_id": project_id,
+                "app_code": project_app.code,
+                "name": "S3_SECRET",
+                "value": "plain-value"
+            }),
+            &context,
+        )
+        .await
+        .expect_err("mcp set_app_env_var should reject remote secret collision");
+
+    assert!(error.contains("managed as a remote service secret"));
+
+    let updated = db::project_app::fetch_by_project_and_code(&app.db_pool, project_id, "web")
+        .await
+        .expect("app fetch failed")
+        .expect("app should exist");
+    let environment = updated.environment.expect("app environment should exist");
+    assert_eq!(environment["VISIBLE_KEY"], "plain-value");
+    assert!(environment.get("S3_SECRET").is_none());
+}
+
+#[tokio::test]
+async fn test_mcp_get_remote_service_secret_marks_metadata_secure() {
+    let Some(app) = common::spawn_app_with_vault().await else {
+        return;
+    };
+
+    let project_id = common::create_test_project(&app.db_pool, common::USER_A_ID).await;
+    let project_app = create_test_project_app(&app.db_pool, project_id, "web").await;
+    let vault_path = format!(
+        "agent/users/{}/projects/{}/apps/{}/secrets/S3_SECRET",
+        common::USER_A_ID,
+        project_id,
+        project_app.code
+    );
+    db::remote_secret::upsert_service_secret(
+        &app.db_pool,
+        common::USER_A_ID,
+        project_id,
+        &project_app.code,
+        "S3_SECRET",
+        &vault_path,
+        common::USER_A_ID,
+        "synced",
+    )
+    .await
+    .expect("service secret metadata insert failed");
+
+    let context = tool_context(&app.db_pool);
+    let result = GetRemoteServiceSecretTool
+        .execute(
+            json!({
+                "project_id": project_id,
+                "target_code": project_app.code,
+                "name": "S3_SECRET"
+            }),
+            &context,
+        )
+        .await
+        .expect("mcp get_remote_service_secret should succeed");
+
+    let body = tool_text_json(result);
+    assert_eq!(body["secret"]["name"], "S3_SECRET");
+    assert_eq!(body["secret"]["source"], "vault");
+    assert_eq!(body["secret"]["secure"], true);
 }

@@ -9,10 +9,12 @@
 //! The CLI never connects to the agent directly. All communication is mediated
 //! by the Stacker server.
 
-use crate::cli::config_bundle::build_config_bundle;
+use crate::cli::config_bundle::{build_config_bundle, ConfigBundleArtifacts};
 use crate::cli::config_parser::StackerConfig;
+use crate::cli::debug::cli_debug_enabled;
 use crate::cli::error::CliError;
 use crate::cli::fmt;
+use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::install_runner::resolve_docker_registry_credentials;
 use crate::cli::progress;
 use crate::cli::runtime::CliRuntime;
@@ -36,7 +38,7 @@ const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 /// 1. Explicit `--deployment` flag value
 /// 2. `stacker.yml` project name → API project lookup → active agent hash (most reliable)
 /// 3. `.stacker/deployment.lock` → `deployment_id` → API lookup for hash (fallback)
-fn resolve_deployment_hash(
+pub(crate) fn resolve_deployment_hash(
     explicit: &Option<String>,
     ctx: &CliRuntime,
 ) -> Result<String, CliError> {
@@ -94,7 +96,7 @@ fn resolve_deployment_hash(
     ))
 }
 
-fn resolve_registry_auth_for_agent_deploy(
+pub(crate) fn resolve_registry_auth_for_agent_deploy(
     project_dir: &Path,
 ) -> Option<crate::forms::status_panel::RegistryAuthCommandRequest> {
     let config_path = project_dir.join("stacker.yml");
@@ -185,9 +187,33 @@ fn json_error_message(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn sanitize_npm_credentials_message(raw_message: String, code: Option<&str>) -> String {
+    // Fall back to substring match when the error arrives as a pre-formatted string
+    // with no structured "code" field (the server embeds the code inline).
+    if code == Some("npm_credentials_invalid") || raw_message.contains("npm_credentials_invalid") {
+        let user_msg = "NPM credentials are invalid or missing. \
+                        Update them with:\n  \
+                        stacker secrets set npm_credentials --scope server \
+                        --body-file ./npm_credentials.json"
+            .to_string();
+        if cli_debug_enabled() {
+            format!("{}\n  [debug] {}", user_msg, raw_message)
+        } else {
+            user_msg
+        }
+    } else {
+        raw_message
+    }
+}
+
 fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
     if let Some(error) = info.error.as_ref() {
-        return json_error_message(error).or_else(|| Some(fmt::pretty_json(error)));
+        let raw = json_error_message(error).unwrap_or_else(|| fmt::pretty_json(error));
+        let code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .or_else(|| error.get("error_code").and_then(|v| v.as_str()));
+        return Some(sanitize_npm_credentials_message(raw, code));
     }
 
     let result = info.result.as_ref()?;
@@ -200,12 +226,54 @@ fn agent_command_error_message(info: &AgentCommandInfo) -> Option<String> {
         return None;
     }
 
-    let mut message = json_error_message(result)
+    let raw_message = json_error_message(result)
         .unwrap_or_else(|| "Agent command reported an application error".to_string());
-    if let Some(code) = result.get("error_code").and_then(|value| value.as_str()) {
-        message = format!("{} ({})", message, code);
+
+    // "code" is already embedded into raw_message by format_error_message.
+    // "error_code" is a separate field not yet appended — handled below.
+    let inline_code = result.get("code").and_then(|v| v.as_str());
+    let extra_code = result.get("error_code").and_then(|v| v.as_str());
+
+    let mut message = sanitize_npm_credentials_message(raw_message, inline_code.or(extra_code));
+
+    // Append extra_code (the "error_code" field) if present — it is NOT yet in the message.
+    if let Some(code) = extra_code {
+        // Skip appending if sanitize_npm_credentials_message already replaced the whole message.
+        if inline_code != Some("npm_credentials_invalid") {
+            message = format!("{} ({})", message, code);
+            if code == "npm_create_failed" {
+                message = format!(
+                    "{}\n\n{}",
+                    message,
+                    npm_create_failed_guidance(Some(result))
+                );
+            }
+        }
     }
     Some(message)
+}
+
+fn npm_create_failed_guidance(result: Option<&serde_json::Value>) -> String {
+    let domain = result
+        .and_then(|value| value.get("domain_names"))
+        .and_then(|value| value.as_array())
+        .and_then(|domains| domains.first())
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            result
+                .and_then(|value| value.get("domain"))
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("<domain>");
+
+    format!(
+        "Route diagnostics:\n\
+         - Nginx Proxy Manager may have created the host despite returning an error; check for an existing host for {domain} and retry configure-proxy to adopt it.\n\
+         - Verify DNS A/AAAA records for {domain} point at this server before requesting Let's Encrypt.\n\
+         - Ensure cloud firewall ports are open: stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp\n\
+         - Check for a duplicate NPM proxy host using the same domain.\n\
+         - SSL is off by default; add --ssl only once DNS is confirmed and ports 80/443 are open."
+    )
 }
 
 async fn execute_agent_command(
@@ -264,7 +332,7 @@ async fn execute_agent_command(
     }
 }
 
-fn run_agent_command(
+pub(crate) fn run_agent_command(
     ctx: &CliRuntime,
     request: &AgentEnqueueRequest,
     spinner_msg: &str,
@@ -369,6 +437,93 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
 
     if let Some(error) = agent_command_error_message(info) {
         eprintln!("\nError: {}", error);
+    }
+}
+
+fn print_health_result(info: &AgentCommandInfo) {
+    if let Some(ref result) = info.result {
+        let result_type = result.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        // "all_health": list of all containers
+        if result_type == "all_health" {
+            let overall = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            println!("Overall: {} {}", progress::status_icon(overall), overall);
+            println!();
+            if let Some(containers) = result.get("containers").and_then(|v| v.as_array()) {
+                println!("{:<28} {:<10} {}", "CONTAINER", "STATE", "STATUS");
+                for c in containers {
+                    let name = c.get("container_name").and_then(|v| v.as_str()).unwrap_or("-");
+                    let state = c.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+                    let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+                    println!(
+                        "{:<28} {} {:<8} {}",
+                        fmt::truncate(name, 26),
+                        progress::status_icon(state),
+                        state,
+                        status,
+                    );
+                }
+            }
+            return;
+        }
+
+        // Single-container health
+        if result_type == "health" {
+            let state = result.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+            let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            let app = result.get("app_code").and_then(|v| v.as_str()).unwrap_or("-");
+            println!(
+                "{}: {} {} ({})",
+                app,
+                progress::status_icon(state),
+                state,
+                status
+            );
+            if let Some(metrics) = result.get("metrics") {
+                println!("{}", fmt::pretty_json(metrics));
+            }
+            return;
+        }
+
+        // Fallback
+        println!("{}", fmt::pretty_json(result));
+    }
+
+    if let Some(error) = agent_command_error_message(info) {
+        eprintln!("Error: {}", error);
+    }
+}
+
+fn print_all_container_health(containers: &[serde_json::Value]) {
+    if containers.is_empty() {
+        println!("No containers found.");
+        return;
+    }
+
+    let all_running = containers.iter().all(|c| {
+        let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+        state == "running"
+    });
+    let overall = if all_running { "running" } else { "degraded" };
+    println!("Overall: {} {}", progress::status_icon(overall), overall);
+    println!();
+
+    println!("{:<28} {:<12} {:<8} {:<8} {}", "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE");
+    for c in containers {
+        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+        let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+        let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let cpu = c.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let mem = c.get("mem_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        println!(
+            "{:<28} {} {:<10} {:<8.1} {:<8.1} {}",
+            fmt::truncate(name, 26),
+            progress::status_icon(state),
+            state,
+            cpu,
+            mem,
+            fmt::truncate(image, 30),
+        );
     }
 }
 
@@ -498,8 +653,21 @@ impl CallableTrait for AgentHealthCommand {
         let ctx = CliRuntime::new("agent health")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        // No specific app requested → list all containers with health metrics.
+        // This avoids sending app_code="all" to older agents that don't handle it.
+        if self.app_code.is_none() && !self.include_system {
+            let containers = fetch_live_containers(&ctx, &hash)?
+                .unwrap_or_default();
+            if self.json {
+                println!("{}", serde_json::to_string_pretty(&containers)?);
+            } else {
+                print_all_container_health(&containers);
+            }
+            return Ok(());
+        }
+
         let params = crate::forms::status_panel::HealthCommandRequest {
-            app_code: self.app_code.clone().unwrap_or_else(|| "all".to_string()),
+            app_code: self.app_code.clone().unwrap_or_default(),
             container: None,
             include_metrics: true,
             include_system: self.include_system,
@@ -510,7 +678,11 @@ impl CallableTrait for AgentHealthCommand {
             .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
 
         let info = run_agent_command(&ctx, &request, "Checking health", DEFAULT_TIMEOUT_SECS)?;
-        print_command_result(&info, self.json);
+        if self.json {
+            print_command_result(&info, true);
+        } else {
+            print_health_result(&info);
+        }
         Ok(())
     }
 }
@@ -631,6 +803,8 @@ pub struct AgentDeployAppCommand {
     pub json: bool,
     pub deployment: Option<String>,
     pub environment: Option<String>,
+    pub plan: bool,
+    pub apply_plan: Option<String>,
 }
 
 impl AgentDeployAppCommand {
@@ -651,15 +825,68 @@ impl AgentDeployAppCommand {
             json,
             deployment,
             environment,
+            plan: false,
+            apply_plan: None,
         }
+    }
+
+    pub fn with_plan(mut self, plan: bool) -> Self {
+        self.plan = plan;
+        self
+    }
+
+    pub fn with_apply_plan(mut self, apply_plan: Option<String>) -> Self {
+        self.apply_plan = apply_plan;
+        self
     }
 }
 
 impl CallableTrait for AgentDeployAppCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("agent deploy-app")?;
-        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
+
+        if self.plan {
+            return crate::console::commands::cli::deployment::run_remote_deployment_plan(
+                Some(&hash),
+                crate::services::DeployPlanOperation::DeployApp,
+                Some(&self.app_code),
+                None,
+                None,
+            );
+        }
+
+        if let Some(fingerprint) = self.apply_plan.as_deref() {
+            let project_dir = std::env::current_dir().map_err(CliError::Io)?;
+            let config_path = project_dir.join("stacker.yml");
+            let config = StackerConfig::from_file(&config_path)?
+                .with_resolved_deploy_target(None)
+                .map_err(|e| CliError::ConfigValidation(format!("Invalid stacker.yml: {}", e)))?;
+            let base_url =
+                crate::console::commands::cli::status::resolve_stacker_base_url(&ctx.creds);
+            let validated_plan = ctx.block_on(async {
+                crate::console::commands::cli::deployment::fetch_remote_deployment_plan(
+                    &config,
+                    &base_url,
+                    &ctx.client,
+                    Some(&hash),
+                    crate::services::DeployPlanOperation::DeployApp,
+                    Some(&self.app_code),
+                    None,
+                    Some(fingerprint),
+                )
+                .await
+            })?;
+            if !validated_plan.has_changes {
+                println!(
+                    "Plan already satisfied for {}. Nothing to apply.",
+                    validated_plan.deployment_hash
+                );
+                return Ok(());
+            }
+        }
+
+        let project_dir = std::env::current_dir().map_err(CliError::Io)?;
 
         check_active_connections(&ctx, &hash, self.force_recreate)?;
         let local_config = local_config_files_for_agent_deploy(
@@ -774,12 +1001,19 @@ fn local_config_files_for_agent_deploy(
     }
 
     let bundle = if compose_path == configured_compose_path.as_path() {
-        build_config_bundle(
+        let mut bundle = build_config_bundle(
             project_dir,
             &environment,
             &configured_compose_path,
             config.env_file.as_deref(),
-        )?
+        )?;
+        if materialize_stacker_service_in_bundle(&mut bundle, &config, app_code)? {
+            result.notices.push(format!(
+                "Materialized service '{}' from stacker.yml into the remote compose payload.",
+                app_code
+            ));
+        }
+        bundle
     } else {
         let app_bundle = build_config_bundle(project_dir, &environment, compose_path, None)?;
         let project_compose = std::fs::read_to_string(&configured_compose_path).map_err(|err| {
@@ -801,6 +1035,20 @@ fn local_config_files_for_agent_deploy(
     if result.compose_content.is_none() {
         result.compose_content = Some(bundle_compose_content(&bundle)?);
     }
+    if let Some(compose_content) = result.compose_content.take() {
+        let lock = crate::cli::deployment_lock::DeploymentLock::load_active(project_dir)?;
+        let target_label = active_target
+            .clone()
+            .or_else(|| lock.as_ref().map(|lock| lock.target.clone()));
+        let project_id_label = lock
+            .and_then(|lock| lock.project_id)
+            .map(|project_id| project_id.to_string());
+        result.compose_content = Some(annotate_project_compose_with_stacker_labels(
+            &compose_content,
+            target_label.as_deref(),
+            project_id_label.as_deref(),
+        )?);
+    }
 
     let deploy_config_files: Vec<_> = bundle
         .config_files
@@ -808,7 +1056,7 @@ fn local_config_files_for_agent_deploy(
         .filter(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path == ".env" || path.starts_with("/opt/stacker/deployments/"))
+                .map(|path| path != "docker-compose.yml")
                 .unwrap_or(false)
         })
         .collect();
@@ -832,6 +1080,51 @@ fn bundle_compose_content(
         })
 }
 
+fn materialize_stacker_service_in_bundle(
+    bundle: &mut ConfigBundleArtifacts,
+    config: &StackerConfig,
+    app_code: &str,
+) -> Result<bool, CliError> {
+    let compose = bundle_compose_content(bundle)?;
+    let updated = merge_stacker_config_service(&compose, config, app_code)?;
+    if updated == compose {
+        return Ok(false);
+    }
+
+    std::fs::write(&bundle.remote_compose_path, &updated)?;
+    if let Some(file) = bundle.config_files.iter_mut().find(|file| {
+        file.get("destination_path").and_then(|path| path.as_str()) == Some("docker-compose.yml")
+    }) {
+        file["content"] = serde_json::Value::String(updated);
+    }
+    Ok(true)
+}
+
+fn merge_stacker_config_service(
+    project_compose: &str,
+    config: &StackerConfig,
+    app_code: &str,
+) -> Result<String, CliError> {
+    let project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
+    let service_exists = project_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|services| services.contains_key(serde_yaml::Value::String(app_code.to_string())))
+        .unwrap_or(false);
+    if service_exists
+        || !config
+            .services
+            .iter()
+            .any(|service| service.name == app_code)
+    {
+        return Ok(project_compose.to_string());
+    }
+
+    let generated_compose = ComposeDefinition::try_from(config)?.render();
+    merge_compose_service(project_compose, &generated_compose, app_code)
+}
+
 fn merge_compose_service(
     project_compose: &str,
     app_compose: &str,
@@ -840,7 +1133,7 @@ fn merge_compose_service(
     let mut project_doc: serde_yaml::Value = serde_yaml::from_str(project_compose)?;
     let app_doc: serde_yaml::Value = serde_yaml::from_str(app_compose)?;
 
-    let app_service = app_doc
+    let mut app_service = app_doc
         .as_mapping()
         .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
         .and_then(serde_yaml::Value::as_mapping)
@@ -851,6 +1144,8 @@ fn merge_compose_service(
                 "app-local compose does not define service '{app_code}'"
             ))
         })?;
+    let should_merge_networks = !project_service_networks(&project_doc).is_empty();
+    align_service_networks_with_project(&mut app_service, &project_doc);
 
     let project_services = project_doc
         .as_mapping_mut()
@@ -861,11 +1156,170 @@ fn merge_compose_service(
         })?;
     project_services.insert(serde_yaml::Value::String(app_code.to_string()), app_service);
 
-    merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+    if should_merge_networks {
+        merge_compose_top_level_mapping(&mut project_doc, &app_doc, "networks");
+    }
     merge_compose_top_level_mapping(&mut project_doc, &app_doc, "volumes");
 
     serde_yaml::to_string(&project_doc)
         .map_err(|err| CliError::ConfigValidation(format!("failed to merge compose: {err}")))
+}
+
+fn annotate_project_compose_with_stacker_labels(
+    compose_content: &str,
+    target: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<String, CliError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_content)?;
+    let services = doc
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .ok_or_else(|| CliError::ConfigValidation("compose does not define services".into()))?;
+
+    for (service_name, service) in services {
+        let Some(service_name) = service_name.as_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(service_map) = service.as_mapping_mut() else {
+            continue;
+        };
+        let labels_key = serde_yaml::Value::String("labels".to_string());
+        let mut labels = service_map
+            .remove(&labels_key)
+            .map(compose_labels_to_mapping)
+            .unwrap_or_default();
+
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::SCOPE,
+            crate::helpers::stacker_labels::SCOPE_PROJECT,
+        );
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::SERVICE,
+            &service_name,
+        );
+        insert_compose_label(
+            &mut labels,
+            crate::helpers::stacker_labels::DNS,
+            &service_name,
+        );
+        if let Some(target) = target.filter(|value| !value.trim().is_empty()) {
+            insert_compose_label(&mut labels, crate::helpers::stacker_labels::TARGET, target);
+        }
+        if let Some(project_id) = project_id.filter(|value| !value.trim().is_empty()) {
+            insert_compose_label(
+                &mut labels,
+                crate::helpers::stacker_labels::PROJECT_ID,
+                project_id,
+            );
+        }
+
+        service_map.insert(labels_key, serde_yaml::Value::Mapping(labels));
+    }
+
+    serde_yaml::to_string(&doc)
+        .map_err(|err| CliError::ConfigValidation(format!("failed to annotate compose: {err}")))
+}
+
+fn compose_labels_to_mapping(value: serde_yaml::Value) -> serde_yaml::Mapping {
+    match value {
+        serde_yaml::Value::Mapping(mapping) => mapping,
+        serde_yaml::Value::Sequence(items) => items
+            .into_iter()
+            .filter_map(|item| {
+                let label = item.as_str()?;
+                let (key, value) = label.split_once('=')?;
+                Some((
+                    serde_yaml::Value::String(key.to_string()),
+                    serde_yaml::Value::String(value.to_string()),
+                ))
+            })
+            .collect(),
+        _ => serde_yaml::Mapping::new(),
+    }
+}
+
+fn insert_compose_label(labels: &mut serde_yaml::Mapping, key: &str, value: &str) {
+    labels.insert(
+        serde_yaml::Value::String(key.to_string()),
+        serde_yaml::Value::String(value.to_string()),
+    );
+}
+
+fn align_service_networks_with_project(
+    app_service: &mut serde_yaml::Value,
+    project_doc: &serde_yaml::Value,
+) {
+    let project_networks = project_service_networks(project_doc);
+    let Some(service_map) = app_service.as_mapping_mut() else {
+        return;
+    };
+    let networks_key = serde_yaml::Value::String("networks".to_string());
+    if project_networks.is_empty() {
+        service_map.remove(&networks_key);
+        return;
+    }
+
+    service_map.insert(
+        networks_key,
+        serde_yaml::Value::Sequence(
+            project_networks
+                .into_iter()
+                .map(serde_yaml::Value::String)
+                .collect(),
+        ),
+    );
+}
+
+fn project_service_networks(project_doc: &serde_yaml::Value) -> Vec<String> {
+    let Some(project_services) = project_doc
+        .as_mapping()
+        .and_then(|root| root.get(serde_yaml::Value::String("services".to_string())))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Vec::new();
+    };
+
+    let mut networks = Vec::new();
+    for service in project_services.values() {
+        let Some(networks_value) = service
+            .as_mapping()
+            .and_then(|service| service.get(serde_yaml::Value::String("networks".to_string())))
+        else {
+            continue;
+        };
+        collect_network_names(networks_value, &mut networks);
+    }
+    networks
+}
+
+fn collect_network_names(value: &serde_yaml::Value, networks: &mut Vec<String>) {
+    match value {
+        serde_yaml::Value::String(name) => push_unique_network(networks, name),
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                if let Some(name) = item.as_str() {
+                    push_unique_network(networks, name);
+                }
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for key in map.keys() {
+                if let Some(name) = key.as_str() {
+                    push_unique_network(networks, name);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_unique_network(networks: &mut Vec<String>, name: &str) {
+    if !networks.iter().any(|existing| existing == name) {
+        networks.push(name.to_string());
+    }
 }
 
 fn merge_compose_top_level_mapping(
@@ -1217,22 +1671,24 @@ impl CallableTrait for AgentStatusCommand {
                     .unwrap_or("unknown");
                 let version = item
                     .get("agent")
-                    .and_then(|a| a.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
+                    .and_then(|agent| agent_display_version(agent, None));
                 let n_apps = item
                     .get("apps")
                     .and_then(|v| v.as_array())
                     .map(|a| a.len())
                     .unwrap_or(0);
+                let version_label = version
+                    .as_deref()
+                    .map(agent_version_label)
+                    .unwrap_or_default();
 
                 progress::finish_success(
                     &pb,
                     &format!(
-                        "Agent status fetched — {} {} · v{} · {} app(s)",
+                        "Agent status fetched — {} {}{} · {} app(s)",
                         progress::status_icon(agent_status),
                         agent_status,
-                        version,
+                        version_label,
                         n_apps,
                     ),
                 );
@@ -1308,7 +1764,7 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
         return;
     }
 
-    println!("{:<24} {:<12} {:<30}", "CONTAINER", "STATE", "IMAGE");
+    println!("{:<24} {:<12} {:<22} {:<30}", "CONTAINER", "STATE", "PORTS", "IMAGE");
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c
@@ -1317,11 +1773,23 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
             .and_then(|v| v.as_str())
             .unwrap_or("-");
         let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let ports = c
+            .get("ports")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "-".to_string());
         println!(
-            "{:<24} {} {:<10} {:<30}",
+            "{:<24} {} {:<10} {:<22} {:<30}",
             fmt::truncate(name, 22),
             progress::status_icon(state),
             state,
+            fmt::truncate(&ports, 20),
             fmt::truncate(image, 28),
         );
     }
@@ -1346,6 +1814,87 @@ fn is_stale_platform_project_container(container: &serde_json::Value) -> bool {
             .any(|code| normalized_name.contains(code))
 }
 
+fn agent_display_version(
+    agent: &serde_json::Value,
+    live_containers: Option<&Vec<serde_json::Value>>,
+) -> Option<String> {
+    agent
+        .get("system_info")
+        .and_then(agent_version_from_system_info)
+        .or_else(|| {
+            agent
+                .get("version")
+                .and_then(|value| value.as_str())
+                .and_then(non_placeholder_agent_version)
+        })
+        .or_else(|| {
+            live_containers.and_then(|containers| agent_version_from_live_containers(containers))
+        })
+}
+
+fn agent_version_from_system_info(system_info: &serde_json::Value) -> Option<String> {
+    [
+        "agent_version",
+        "agentVersion",
+        "status_panel_agent_version",
+        "statusPanelAgentVersion",
+        "dashboard_version",
+        "dashboardVersion",
+        "version",
+    ]
+    .iter()
+    .find_map(|key| {
+        system_info
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .and_then(non_placeholder_agent_version)
+    })
+}
+
+fn agent_version_from_live_containers(containers: &[serde_json::Value]) -> Option<String> {
+    containers.iter().find_map(|container| {
+        let name = container.get("name").and_then(|value| value.as_str())?;
+        let normalized_name = crate::project_app::normalize_app_code(name);
+        if !normalized_name.contains("statuspanel_agent")
+            && !normalized_name.contains("status_panel_agent")
+        {
+            return None;
+        }
+
+        container
+            .get("image")
+            .and_then(|value| value.as_str())
+            .and_then(image_tag)
+            .and_then(non_placeholder_agent_version)
+    })
+}
+
+fn image_tag(image: &str) -> Option<&str> {
+    let image_without_digest = image.split('@').next().unwrap_or(image);
+    image_without_digest
+        .rsplit_once(':')
+        .map(|(_, tag)| tag)
+        .filter(|tag| !tag.contains('/'))
+}
+
+fn non_placeholder_agent_version(version: &str) -> Option<String> {
+    let version = version.trim().trim_start_matches('v');
+    if version.is_empty()
+        || matches!(
+            version.to_ascii_lowercase().as_str(),
+            "1.0.0" | "latest" | "main" | "stable" | "unknown"
+        )
+    {
+        return None;
+    }
+
+    Some(version.to_string())
+}
+
+fn agent_version_label(version: &str) -> String {
+    format!(" · v{}", version.trim().trim_start_matches('v'))
+}
+
 /// Pretty-print a snapshot summary for human consumption.
 fn print_snapshot_summary(
     snap: &serde_json::Value,
@@ -1359,17 +1908,20 @@ fn print_snapshot_summary(
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let version = agent.get("version").and_then(|v| v.as_str()).unwrap_or("-");
+        let version_label = agent_display_version(agent, live_containers)
+            .as_deref()
+            .map(agent_version_label)
+            .unwrap_or_default();
         let heartbeat = agent
             .get("last_heartbeat")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
 
         println!(
-            "Agent:     {} {}  (v{})",
+            "Agent:     {} {}{}",
             progress::status_icon(status),
             status,
-            version
+            version_label
         );
         println!("Heartbeat: {}", heartbeat);
     } else {
@@ -1670,7 +2222,7 @@ impl CallableTrait for AgentHistoryCommand {
 
 // ── Install (deploy Status Panel to existing server) ─
 
-/// `stacker agent install [--file <path>] [--json]`
+/// `stacker agent install [--file <path>] [--persist-config] [--json]`
 ///
 /// Deploys the Status Panel agent to an existing server that was previously
 /// deployed without it. Reads the project identity from stacker.yml, finds
@@ -1678,12 +2230,17 @@ impl CallableTrait for AgentHistoryCommand {
 /// a deploy with only the statuspanel feature enabled.
 pub struct AgentInstallCommand {
     pub file: Option<String>,
+    pub persist_config: bool,
     pub json: bool,
 }
 
 impl AgentInstallCommand {
-    pub fn new(file: Option<String>, json: bool) -> Self {
-        Self { file, json }
+    pub fn new(file: Option<String>, persist_config: bool, json: bool) -> Self {
+        Self {
+            file,
+            persist_config,
+            json,
+        }
     }
 }
 
@@ -1712,6 +2269,94 @@ fn fallback_server_config_for_agent_install(
         ssh_key: None,
         port,
     })
+}
+
+const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY: &str = "status_panel_only";
+const AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE: &str = "true";
+const AGENT_INSTALL_MODE_KEY: &str = "statuspanel_install_mode";
+const AGENT_INSTALL_MODE_VALUE: &str = "status_only";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentInstallConfigPersistence {
+    config_path: PathBuf,
+    backup_path: PathBuf,
+    changed: bool,
+}
+
+fn persist_agent_install_config(
+    config_path: &Path,
+) -> Result<AgentInstallConfigPersistence, CliError> {
+    let mut config = crate::cli::config_parser::StackerConfig::from_file_raw(config_path)?;
+    let changed = !config.monitoring.status_panel;
+    let backup_path = PathBuf::from(format!("{}.bak", config_path.display()));
+
+    if changed {
+        config.monitoring.status_panel = true;
+        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+            CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
+        })?;
+        std::fs::copy(config_path, &backup_path)?;
+        std::fs::write(config_path, yaml)?;
+    }
+
+    Ok(AgentInstallConfigPersistence {
+        config_path: config_path.to_path_buf(),
+        backup_path,
+        changed,
+    })
+}
+
+fn persist_agent_install_config_if_requested(
+    config_path: &Path,
+    persist_config: bool,
+) -> Result<Option<AgentInstallConfigPersistence>, CliError> {
+    if !persist_config {
+        return Ok(None);
+    }
+
+    persist_agent_install_config(config_path).map(Some)
+}
+
+fn print_agent_install_config_persistence(result: &AgentInstallConfigPersistence) {
+    if result.changed {
+        eprintln!(
+            "✓ Updated monitoring.status_panel=true in {}",
+            result.config_path.display()
+        );
+        eprintln!("  Backup written to {}", result.backup_path.display());
+    } else {
+        eprintln!(
+            "✓ monitoring.status_panel already enabled in {}",
+            result.config_path.display()
+        );
+    }
+}
+
+fn add_agent_install_scope_contract(deploy_form: &mut serde_json::Value) {
+    if let Some(root) = deploy_form.as_object_mut() {
+        root.entry(AGENT_INSTALL_MODE_KEY.to_string())
+            .or_insert_with(|| serde_json::Value::String(AGENT_INSTALL_MODE_VALUE.to_string()));
+    }
+
+    let Some(vars) = deploy_form
+        .get_mut("stack")
+        .and_then(|value| value.get_mut("vars"))
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    if vars.iter().any(|value| {
+        value.get("key").and_then(|key| key.as_str())
+            == Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY)
+    }) {
+        return;
+    }
+
+    vars.push(serde_json::json!({
+        "key": AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY,
+        "value": AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE,
+    }));
 }
 
 fn build_agent_install_deploy_request(
@@ -1786,6 +2431,7 @@ fn build_agent_install_deploy_request(
             }
         }
 
+        add_agent_install_scope_contract(&mut deploy_form);
         return Ok((None, deploy_form));
     }
 
@@ -1797,7 +2443,7 @@ fn build_agent_install_deploy_request(
         )
     })?;
 
-    let deploy_form = serde_json::json!({
+    let mut deploy_form = serde_json::json!({
         "cloud": {
             "provider": server.cloud.clone().unwrap_or_else(|| "htz".to_string()),
             "save_token": true,
@@ -1826,6 +2472,7 @@ fn build_agent_install_deploy_request(
         },
     });
 
+    add_agent_install_scope_contract(&mut deploy_form);
     Ok((Some(cloud_id), deploy_form))
 }
 
@@ -1897,6 +2544,8 @@ impl CallableTrait for AgentInstallCommand {
         match result {
             Ok(resp) => {
                 progress::finish_success(&pb, "Status Panel agent installation triggered");
+                let persistence =
+                    persist_agent_install_config_if_requested(&config_path, self.persist_config)?;
 
                 if self.json {
                     println!(
@@ -1916,6 +2565,13 @@ impl CallableTrait for AgentInstallCommand {
                     println!();
                     println!("The Status Panel agent will be installed on the server.");
                     println!("Once ready, use `stacker agent status` to verify connectivity.");
+                    if let Some(persistence) = persistence.as_ref() {
+                        print_agent_install_config_persistence(persistence);
+                    } else {
+                        println!(
+                            "Local stacker.yml unchanged. Re-run with --persist-config to set monitoring.status_panel=true locally."
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -1937,6 +2593,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn label_value<'a>(labels: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+        labels
+            .get(serde_yaml::Value::String(key.to_string()))
+            .and_then(serde_yaml::Value::as_str)
+    }
+
     fn sample_server_info() -> crate::cli::stacker_client::ServerInfo {
         crate::cli::stacker_client::ServerInfo {
             id: 7,
@@ -1957,6 +2619,19 @@ mod tests {
             connection_mode: "ssh".to_string(),
             key_status: "uploaded".to_string(),
         }
+    }
+
+    fn stack_var_value<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        deploy_form["stack"]["vars"]
+            .as_array()?
+            .iter()
+            .find(|value| value.get("key").and_then(|item| item.as_str()) == Some(key))
+            .and_then(|value| value.get("value"))
+            .and_then(|value| value.as_str())
+    }
+
+    fn top_level_str<'a>(deploy_form: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        deploy_form.get(key).and_then(|value| value.as_str())
     }
 
     #[test]
@@ -2132,6 +2807,92 @@ environments:
     }
 
     #[test]
+    fn local_config_files_materializes_stacker_yml_service_into_project_compose() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docker/prod")).expect("project compose dir");
+        std::fs::write(
+            root.join("docker/prod/compose.yml"),
+            r#"
+services:
+  status-panel-web:
+    image: trydirect/status-panel-web:latest
+"#,
+        )
+        .expect("project compose");
+        std::fs::write(
+            root.join("stacker.yml"),
+            r#"
+name: status-panel
+project:
+  identity: status-panel
+app:
+  image: trydirect/status-panel-web:latest
+deploy:
+  target: server
+  environment: prod
+environments:
+  prod:
+    compose_file: docker/prod/compose.yml
+services:
+  - name: smtp
+    image: trydirect/smtp
+    ports:
+      - "1025:25"
+    environment:
+      PORT: "25"
+      RELAY_NETWORKS: ":127.0.0.0/8:10.0.0.0/8:172.16.0.0/12:192.168.0.0/16"
+    volumes:
+      - smtp_data:/data
+"#,
+        )
+        .expect("stacker config");
+
+        let config = local_config_files_for_agent_deploy(root, "smtp", None).unwrap();
+
+        let compose = config.compose_content.expect("compose content");
+        assert!(compose.contains("status-panel-web:"));
+        assert!(compose.contains("smtp:"));
+        assert!(compose.contains("image: trydirect/smtp"));
+        assert!(compose.contains("1025:25"));
+        assert!(compose.contains("RELAY_NETWORKS"));
+        assert!(compose.contains("smtp_data:"));
+        assert!(compose.contains("my.stacker.scope: project"));
+        assert!(compose.contains("my.stacker.service: smtp"));
+        assert!(compose.contains("my.stacker.dns: smtp"));
+        assert!(!compose.contains("app-network"));
+    }
+
+    #[test]
+    fn annotate_project_compose_adds_stable_stacker_labels() {
+        let compose = r#"
+services:
+  smtp:
+    image: trydirect/smtp
+    labels:
+      - existing=value
+"#;
+
+        let annotated =
+            annotate_project_compose_with_stacker_labels(compose, Some("cloud"), Some("123"))
+                .unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&annotated).unwrap();
+        let labels = doc
+            .get("services")
+            .and_then(|services| services.get("smtp"))
+            .and_then(|service| service.get("labels"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .unwrap();
+
+        assert_eq!(label_value(labels, "existing"), Some("value"));
+        assert_eq!(label_value(labels, "my.stacker.project_id"), Some("123"));
+        assert_eq!(label_value(labels, "my.stacker.target"), Some("cloud"));
+        assert_eq!(label_value(labels, "my.stacker.scope"), Some("project"));
+        assert_eq!(label_value(labels, "my.stacker.service"), Some("smtp"));
+        assert_eq!(label_value(labels, "my.stacker.dns"), Some("smtp"));
+    }
+
+    #[test]
     fn local_config_files_merges_app_local_service_into_project_compose() {
         let dir = TempDir::new().expect("temp dir");
         let root = dir.path();
@@ -2173,13 +2934,13 @@ environments:
         assert!(compose.contains("syncopia/device-api:prod"));
         assert!(compose.contains("postgres:17-alpine"));
         assert!(!compose.contains("syncopia/device-api:latest"));
-        assert!(compose.contains("/opt/stacker/deployments/prod/files/device-api/docker/prod/.env"));
+        assert!(compose.contains("device-api/docker/prod/.env"));
         assert!(config.notices.is_empty());
         let config_files = config.config_files.expect("config files");
         assert!(config_files.iter().any(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .map(|path| path == "device-api/docker/prod/.env")
                 .unwrap_or(false)
         }));
     }
@@ -2230,7 +2991,7 @@ environments:
         assert!(config_files.iter().any(|file| {
             file.get("destination_path")
                 .and_then(|path| path.as_str())
-                .map(|path| path.ends_with("/device-api/docker/prod/.env"))
+                .map(|path| path == "device-api/docker/prod/.env")
                 .unwrap_or(false)
         }));
         assert!(!config_files.iter().any(|file| {
@@ -2276,6 +3037,47 @@ environments:
         let snap = serde_json::json!({});
         // Should not panic
         print_snapshot_summary(&snap, None);
+    }
+
+    #[test]
+    fn agent_display_version_suppresses_placeholder_version() {
+        let agent = serde_json::json!({
+            "version": "1.0.0",
+            "status": "online"
+        });
+
+        assert_eq!(agent_display_version(&agent, None), None);
+    }
+
+    #[test]
+    fn agent_display_version_prefers_system_info_version() {
+        let agent = serde_json::json!({
+            "version": "1.0.0",
+            "system_info": {
+                "agent_version": "0.2.8"
+            }
+        });
+
+        assert_eq!(
+            agent_display_version(&agent, None),
+            Some("0.2.8".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_display_version_can_use_status_agent_container_tag() {
+        let agent = serde_json::json!({
+            "version": "1.0.0"
+        });
+        let containers = vec![serde_json::json!({
+            "name": "statuspanel-agent",
+            "image": "ghcr.io/trydirect/statuspanel-agent:0.3.1"
+        })];
+
+        assert_eq!(
+            agent_display_version(&agent, Some(&containers)),
+            Some("0.3.1".to_string())
+        );
     }
 
     #[test]
@@ -2339,6 +3141,14 @@ environments:
             .as_array()
             .expect("integrated_features array")
             .contains(&serde_json::Value::String("statuspanel".to_string())));
+        assert_eq!(
+            stack_var_value(&deploy_form, AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY),
+            Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE)
+        );
+        assert_eq!(
+            top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
+            Some(AGENT_INSTALL_MODE_VALUE)
+        );
     }
 
     #[test]
@@ -2364,6 +3174,116 @@ environments:
         assert_eq!(deploy_form["cloud"]["provider"], "htz");
         assert_eq!(deploy_form["server"]["server_id"], 7);
         assert_eq!(deploy_form["server"]["connection_mode"], "status_panel");
+        assert_eq!(
+            stack_var_value(&deploy_form, AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_KEY),
+            Some(AGENT_INSTALL_STATUS_PANEL_ONLY_VAR_VALUE)
+        );
+        assert_eq!(
+            top_level_str(&deploy_form, AGENT_INSTALL_MODE_KEY),
+            Some(AGENT_INSTALL_MODE_VALUE)
+        );
+    }
+
+    #[test]
+    fn persist_agent_install_config_enables_status_panel_monitoring() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\napp:\n  image: ${APP_IMAGE}\nmonitoring:\n  status_panel: false\n",
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let written = std::fs::read_to_string(&config_path).expect("written config");
+        assert!(written.contains("${APP_IMAGE}"));
+
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn persist_agent_install_config_if_requested_skips_local_write_by_default() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        let original =
+            "name: demo\napp:\n  image: ${APP_IMAGE}\nmonitoring:\n  status_panel: false\n";
+        std::fs::write(&config_path, original).expect("stacker config");
+
+        let result =
+            persist_agent_install_config_if_requested(&config_path, false).expect("skip persist");
+
+        assert!(result.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("config should remain unchanged"),
+            original
+        );
+        assert!(!dir.path().join("stacker.yml.bak").exists());
+    }
+
+    #[test]
+    fn persist_agent_install_config_is_noop_when_status_panel_monitoring_enabled() {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            "name: demo\nmonitoring:\n  status_panel: true\n",
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(!result.changed);
+        assert!(!result.backup_path.exists());
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn given_stacker_agent_install_when_config_is_persisted_then_stacker_yml_reflects_status_panel()
+    {
+        let dir = TempDir::new().expect("temp dir");
+        let config_path = dir.path().join("stacker.yml");
+        std::fs::write(
+            &config_path,
+            r#"
+name: web
+proxy:
+  type: nginx-proxy-manager
+  domains:
+    - domain: status.stacker.my
+      ssl: auto
+      upstream: status-panel-web:3000
+monitoring:
+  status_panel: false
+  healthcheck: null
+  metrics: null
+"#,
+        )
+        .expect("stacker config");
+
+        let result = persist_agent_install_config(&config_path).expect("persist config");
+
+        assert!(result.changed);
+        assert!(result.backup_path.exists());
+
+        let config =
+            crate::cli::config_parser::StackerConfig::from_file_raw(&config_path).expect("config");
+        assert!(config.monitoring.status_panel);
+        assert_eq!(
+            config
+                .proxy
+                .domains
+                .first()
+                .map(|domain| domain.domain.as_str()),
+            Some("status.stacker.my")
+        );
     }
 
     #[test]
@@ -2458,6 +3378,193 @@ environments:
                     .to_string()
             )
         );
+    }
+
+    // Shared lock so env-var tests don't race each other.
+    fn npm_creds_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn npm_creds_invalid_info_via_result(vault_path: &str) -> AgentCommandInfo {
+        AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "code": "npm_credentials_invalid",
+                "message": format!("NPM credentials in Vault are invalid at {}", vault_path),
+                "details": vault_path,
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn npm_creds_invalid_info_via_error(vault_path: &str) -> AgentCommandInfo {
+        AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "failed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: None,
+            error: Some(serde_json::json!({
+                "code": "npm_credentials_invalid",
+                "message": format!("NPM credentials in Vault are invalid at {}", vault_path),
+                "details": vault_path,
+            })),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_via_result_field() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        let message = agent_command_error_message(&npm_creds_invalid_info_via_result(vault_path))
+            .expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear in user-facing output: {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_via_error_field() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        let message = agent_command_error_message(&npm_creds_invalid_info_via_error(vault_path))
+            .expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear in user-facing output (error field path): {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_sanitizes_vault_path_when_error_is_preformatted_string() {
+        let _guard = npm_creds_env_lock();
+        std::env::remove_var("STACKER_DEBUG");
+        std::env::remove_var("DEBUG");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        // Simulate the server sending a pre-formatted string (no structured "code" field)
+        let info = AgentCommandInfo {
+            command_id: "cmd_npm_creds".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "failed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: None,
+            error: Some(serde_json::Value::String(format!(
+                "NPM credentials in Vault are invalid at {vault_path} (npm_credentials_invalid): {vault_path}"
+            ))),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+
+        assert!(
+            !message.contains(vault_path),
+            "Vault path must not appear when error is a pre-formatted string: {message}"
+        );
+        assert!(
+            message.contains("stacker secrets set npm_credentials"),
+            "Message should include the remediation command: {message}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_exposes_vault_path_in_debug_mode_for_npm_credentials_invalid() {
+        let _guard = npm_creds_env_lock();
+        std::env::set_var("STACKER_DEBUG", "1");
+
+        let vault_path = "secret/base/status_panel/hosts/86/npm_credentials";
+        // Test both paths in debug mode
+        let msg_via_result =
+            agent_command_error_message(&npm_creds_invalid_info_via_result(vault_path));
+        let msg_via_error =
+            agent_command_error_message(&npm_creds_invalid_info_via_error(vault_path));
+        std::env::remove_var("STACKER_DEBUG");
+
+        let msg_via_result = msg_via_result.expect("error message (result path)");
+        assert!(
+            msg_via_result.contains(vault_path),
+            "Vault path should appear in debug output (result path): {msg_via_result}"
+        );
+        assert!(
+            msg_via_result.contains("stacker secrets set npm_credentials"),
+            "Debug output should still include the remediation command: {msg_via_result}"
+        );
+
+        let msg_via_error = msg_via_error.expect("error message (error field path)");
+        assert!(
+            msg_via_error.contains(vault_path),
+            "Vault path should appear in debug output (error field path): {msg_via_error}"
+        );
+        assert!(
+            msg_via_error.contains("stacker secrets set npm_credentials"),
+            "Debug output should still include the remediation command: {msg_via_error}"
+        );
+    }
+
+    #[test]
+    fn agent_command_error_message_adds_proxy_route_diagnostics_for_npm_create_failed() {
+        let info = AgentCommandInfo {
+            command_id: "cmd_proxy".to_string(),
+            deployment_hash: "dep".to_string(),
+            command_type: "configure_proxy".to_string(),
+            status: "completed".to_string(),
+            priority: "normal".to_string(),
+            parameters: None,
+            result: Some(serde_json::json!({
+                "status": "error",
+                "error_code": "npm_create_failed",
+                "message": "Failed to create proxy host: 500 Internal Server Error - Internal Error",
+                "domain_names": ["status.stacker.my"],
+                "forward_port": 3000
+            })),
+            error: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let message = agent_command_error_message(&info).expect("error message");
+
+        assert!(message.contains("npm_create_failed"));
+        assert!(message.contains("Route diagnostics"));
+        assert!(message.contains("status.stacker.my"));
+        assert!(message.contains(
+            "stacker cloud firewall add --server-id <server-id> --public-ports 80/tcp,443/tcp"
+        ));
+        assert!(message.contains("--ssl"));
     }
 
     #[test]

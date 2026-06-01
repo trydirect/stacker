@@ -9,6 +9,8 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+const STATUS_PANEL_NPM_CREDENTIALS_SECRET: &str = "npm_credentials";
+
 async fn fetch_owned_server(
     pool: &PgPool,
     user: &models::User,
@@ -31,6 +33,23 @@ fn build_vault(
 ) -> Result<VaultService, actix_web::Error> {
     VaultService::from_settings(&settings.vault)
         .map_err(|error| JsonResponse::internal_server_error(error.to_string()))
+}
+
+fn uses_status_panel_npm_credentials_contract(name: &str) -> bool {
+    name == STATUS_PANEL_NPM_CREDENTIALS_SECRET
+}
+
+fn server_secret_vault_path(
+    vault: &VaultService,
+    user_id: &str,
+    server_id: i32,
+    name: &str,
+) -> String {
+    if uses_status_panel_npm_credentials_contract(name) {
+        vault.status_panel_npm_credentials_path(server_id)
+    } else {
+        vault.server_secret_path(user_id, server_id, name)
+    }
 }
 
 #[tracing::instrument(name = "List server secrets", skip_all)]
@@ -95,11 +114,29 @@ pub async fn upsert(
         .map_err(|e| JsonResponse::bad_request(e.to_string()))?;
 
     let vault = build_vault(settings.get_ref())?;
-    let vault_path = vault.server_secret_path(&user.id, server_id, &name);
-    vault
-        .store_secret_value(&vault_path, &body.value)
-        .await
-        .map_err(|error| JsonResponse::internal_server_error(error.to_string()))?;
+    let vault_path = server_secret_vault_path(&vault, &user.id, server_id, &name);
+    if uses_status_panel_npm_credentials_contract(&name) {
+        let parsed = serde_json::from_str::<serde_json::Value>(&body.value).map_err(|error| {
+            JsonResponse::bad_request(format!(
+                "npm_credentials body must be valid JSON: {}",
+                error
+            ))
+        })?;
+        if !parsed.is_object() {
+            return Err(JsonResponse::bad_request(
+                "npm_credentials body must be a JSON object".to_string(),
+            ));
+        }
+        vault
+            .store_structured_secret_value(&vault_path, &parsed)
+            .await
+            .map_err(|error| JsonResponse::internal_server_error(error.to_string()))?;
+    } else {
+        vault
+            .store_secret_value(&vault_path, &body.value)
+            .await
+            .map_err(|error| JsonResponse::internal_server_error(error.to_string()))?;
+    }
 
     let secret = db::remote_secret::upsert_server_secret(
         pg_pool.get_ref(),

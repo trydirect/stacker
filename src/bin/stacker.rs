@@ -67,6 +67,15 @@ enum StackerCommands {
         /// Stacker API base URL (or set STACKER_URL)
         #[arg(long = "server-url", visible_alias = "api-url")]
         server_url: Option<String>,
+        /// Authenticate via browser OAuth2 flow (opens a sign-in URL)
+        #[arg(long)]
+        browser: bool,
+        /// OAuth provider code for browser login: gc (Google), gh (GitHub), … (default: gc)
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// Log in with username/password instead of browser OAuth (skips browser flow)
+        #[arg(short = 'u', long, value_name = "EMAIL")]
+        user: Option<String>,
     },
     /// Show the saved login and current project's recorded deploy identity
     Whoami {},
@@ -99,6 +108,11 @@ enum StackerCommands {
     },
     /// Build & deploy the stack
     Deploy {
+        /// Service name for surgical single-service deploy (e.g. `stacker deploy stacker-website`).
+        /// Reads local docker-compose.yml, injects the service into the remote compose, and
+        /// starts only that container — other running services are not touched.
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
         /// Deployment target: local, cloud, server
         #[arg(long, value_name = "TARGET")]
         target: Option<String>,
@@ -141,6 +155,12 @@ enum StackerCommands {
         /// Container runtime: "runc" (default) or "kata" for hardware-isolated containers
         #[arg(long, value_name = "RUNTIME", default_value = "runc")]
         runtime: String,
+        /// Print a read-only deployment plan instead of applying changes
+        #[arg(long)]
+        plan: bool,
+        /// Revalidate and apply a previously generated deployment plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
     },
     /// Attach this directory to an existing deployment from the dashboard
     Connect {
@@ -192,6 +212,16 @@ enum StackerCommands {
         /// Watch for changes (refresh periodically)
         #[arg(long)]
         watch: bool,
+    },
+    /// Deployment inspection commands
+    Deployment {
+        #[command(subcommand)]
+        command: DeploymentCommands,
+    },
+    /// Explain path and topology decisions
+    Explain {
+        #[command(subcommand)]
+        command: ExplainCommands,
     },
     /// Tear down the deployed stack
     Destroy {
@@ -536,6 +566,64 @@ enum ServiceCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Import custom services from a local Docker Compose file after a safety review
+    Import {
+        /// Target custom service name for a single selected service
+        name: String,
+        /// Local Docker Compose file to review and import
+        #[arg(long, value_name = "PATH")]
+        from_compose: Option<std::path::PathBuf>,
+        /// Planned future source; currently returns a safe not-yet-implemented error
+        #[arg(long, value_name = "OWNER/REPO")]
+        from_github: Option<String>,
+        /// Planned future source; currently returns a safe not-yet-implemented error
+        #[arg(long, value_name = "URL")]
+        from_url: Option<String>,
+        /// Compose service name to import. Omit to import all image-backed services.
+        #[arg(long, value_name = "COMPOSE_SERVICE")]
+        service: Option<String>,
+        /// Rename imported services as old=new. Repeat for multiple services.
+        #[arg(long, value_name = "OLD=NEW")]
+        rename: Vec<String>,
+        /// Path to stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Review only; do not write stacker.yml
+        #[arg(long)]
+        review: bool,
+        /// Skip confirmation prompt and write after review
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Output structured JSON with secret-like environment values redacted
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deploy/update a configured service through the remote app deploy path
+    Deploy {
+        /// Service name from stacker.yml to deploy
+        name: String,
+        /// Force recreate the remote container
+        #[arg(long)]
+        force: bool,
+        /// Container runtime: "runc" (default) or "kata"
+        #[arg(long, default_value = "runc")]
+        runtime: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+        /// Deploy environment/profile, e.g. local, dev, prod
+        #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
+        environment: Option<String>,
+        /// Print a read-only deploy-app plan instead of applying changes
+        #[arg(long)]
+        plan: bool,
+        /// Revalidate and apply a previously generated deploy-app plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
+    },
     /// Remove a service from stacker.yml
     Remove {
         /// Service name to remove
@@ -549,6 +637,64 @@ enum ServiceCommands {
         /// Also query the marketplace API for online templates
         #[arg(long)]
         online: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeploymentCommands {
+    /// Show canonical deployment state
+    State {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Override deployment hash instead of using stacker.yml
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Show structured deployment events
+    Events {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Override deployment hash instead of using stacker.yml
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// Preview or apply a deployment rollback
+    Rollback {
+        /// Roll back to `previous` or a specific marketplace template version
+        #[arg(long, value_name = "TARGET")]
+        to: String,
+        /// Print a read-only rollback plan instead of applying it
+        #[arg(long, conflicts_with = "apply_plan")]
+        plan: bool,
+        /// Revalidate and apply a previously generated rollback plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
+        /// Override deployment hash instead of using stacker.yml
+        #[arg(long)]
+        deployment: Option<String>,
+        /// Confirm rollback apply
+        #[arg(long, short = 'y')]
+        confirm: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ExplainCommands {
+    /// Explain env provenance for an app or service
+    Env {
+        /// App code or service name
+        app: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain compose/env topology for the current target
+    Topology {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -601,6 +747,26 @@ enum ConfigSetupCommands {
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
     },
+    /// Configure AI defaults in stacker.yml
+    Ai {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// AI provider: openai, anthropic, ollama, custom
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// AI endpoint, e.g. http://localhost:11434 for Ollama
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// AI model name, e.g. llama3.1
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+        /// AI request timeout in seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        /// AI task name. Repeat or use comma-separated values.
+        #[arg(long = "task", value_name = "TASK")]
+        tasks: Vec<String>,
+    },
     /// Advanced/debug: generate remote orchestrator payload and wire stacker.yml
     RemotePayload {
         #[arg(long, value_name = "FILE")]
@@ -623,7 +789,10 @@ enum SecretsCommands {
   Use the target code listed by `stacker secrets apps` for --service.\n\
 \n\
   Remote server secret from stdin:\n\
-    cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42")]
+    cat token.txt | stacker secrets set NPM_TOKEN --scope server --server-id 42\n\
+\n\
+  Status Panel Nginx Proxy Manager credentials from a JSON file:\n\
+    stacker secrets set npm_credentials --scope server --server-id 42 --body-file ./npm_credentials.json")]
     Set {
         /// Local mode: KEY=VALUE. Remote mode: secret name.
         input: String,
@@ -898,7 +1067,7 @@ enum PipeCommands {
         /// Narrow the remote app scan to a specific container
         #[arg(long, requires = "app")]
         container: Option<String>,
-        /// Protocols to probe (default: openapi,rest)
+        /// Protocols to probe (default: openapi,html_forms,rest)
         #[arg(long, value_delimiter = ',')]
         protocols: Vec<String>,
         /// Capture sample responses from discovered endpoints
@@ -1093,6 +1262,12 @@ enum AgentCommands {
         /// Deploy environment/profile, e.g. local, dev, prod
         #[arg(long = "env", alias = "environment", value_name = "ENVIRONMENT")]
         environment: Option<String>,
+        /// Print a read-only deploy-app plan instead of applying changes
+        #[arg(long)]
+        plan: bool,
+        /// Revalidate and apply a previously generated deploy-app plan fingerprint
+        #[arg(long, value_name = "FINGERPRINT", conflicts_with = "plan")]
+        apply_plan: Option<String>,
     },
     /// Remove an app container from the remote deployment
     #[command(name = "remove-app")]
@@ -1157,10 +1332,10 @@ enum AgentCommands {
         /// Port to forward to
         #[arg(long)]
         port: u16,
-        /// Enable SSL/Let's Encrypt certificate issuance
-        #[arg(long, default_value_t = true)]
+        /// Enable SSL/Let's Encrypt certificate issuance (default: off; use --ssl to enable)
+        #[arg(long, default_value_t = false)]
         ssl: bool,
-        /// Disable SSL/Let's Encrypt and create a plain HTTP proxy host
+        /// Disable SSL/Let's Encrypt (no-op; SSL is off by default)
         #[arg(long = "no-ssl")]
         no_ssl: bool,
         /// Action: create, update, delete
@@ -1222,6 +1397,9 @@ enum AgentCommands {
         /// Path to stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
         file: Option<String>,
+        /// Persist monitoring.status_panel=true back to the local stacker.yml
+        #[arg(long)]
+        persist_config: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1262,6 +1440,12 @@ struct AiArgs {
     /// Requires a tool-capable model (Ollama: llama3.1/qwen2.5-coder, OpenAI: any).
     #[arg(long)]
     write: bool,
+    /// Activate a built-in AI scenario such as `website-deploy`.
+    #[arg(long, global = true)]
+    scenario: Option<String>,
+    /// Select the active scenario step such as `init-validate` or `cloud-deploy`.
+    #[arg(long, global = true)]
+    step: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1534,8 +1718,11 @@ fn get_command(
             domain,
             auth_url,
             server_url,
+            browser,
+            provider,
+            user,
         } => Box::new(stacker::console::commands::cli::login::LoginCommand::new(
-            org, domain, auth_url, server_url,
+            org, domain, auth_url, server_url, browser, provider, user,
         )),
         StackerCommands::Whoami {} => {
             Box::new(stacker::console::commands::cli::whoami::WhoamiCommand::new())
@@ -1565,6 +1752,7 @@ fn get_command(
             )
         }
         StackerCommands::Deploy {
+            service,
             target,
             environment,
             file,
@@ -1579,6 +1767,8 @@ fn get_command(
             lock,
             force_new,
             runtime,
+            plan,
+            apply_plan,
         } => Box::new(
             stacker::console::commands::cli::deploy::DeployCommand::new(
                 target,
@@ -1586,13 +1776,16 @@ fn get_command(
                 dry_run,
                 force_rebuild,
             )
+            .with_service(service)
             .with_environment(environment)
             .with_remote_overrides(project, key, server)
             .with_key_id(key_id)
             .with_watch(watch, no_watch)
             .with_lock(lock)
             .with_force_new(force_new)
-            .with_runtime(runtime),
+            .with_runtime(runtime)
+            .with_plan(plan)
+            .with_apply_plan(apply_plan),
         ),
         StackerCommands::Connect { handoff } => {
             Box::new(stacker::console::commands::cli::connect::ConnectCommand::new(handoff))
@@ -1608,6 +1801,37 @@ fn get_command(
         StackerCommands::Status { json, watch } => Box::new(
             stacker::console::commands::cli::status::StatusCommand::new(json, watch),
         ),
+        StackerCommands::Deployment { command } => match command {
+            DeploymentCommands::State { json, deployment } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentStateCommand::new(
+                    json, deployment,
+                ),
+            ),
+            DeploymentCommands::Events { json, deployment } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentEventsCommand::new(
+                    json, deployment,
+                ),
+            ),
+            DeploymentCommands::Rollback {
+                to,
+                plan,
+                apply_plan,
+                deployment,
+                confirm,
+            } => Box::new(
+                stacker::console::commands::cli::deployment::DeploymentRollbackCommand::new(
+                    to, plan, apply_plan, confirm, deployment,
+                ),
+            ),
+        },
+        StackerCommands::Explain { command } => match command {
+            ExplainCommands::Env { app, json } => Box::new(
+                stacker::console::commands::cli::explain::ExplainEnvCommand::new(app, json),
+            ),
+            ExplainCommands::Topology { json } => Box::new(
+                stacker::console::commands::cli::explain::ExplainTopologyCommand::new(json),
+            ),
+        },
         StackerCommands::Destroy { volumes, confirm } => Box::new(
             stacker::console::commands::cli::destroy::DestroyCommand::new(volumes, confirm),
         ),
@@ -1637,6 +1861,18 @@ fn get_command(
                 ConfigSetupCommands::Cloud { file } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
                 ),
+                ConfigSetupCommands::Ai {
+                    file,
+                    provider,
+                    endpoint,
+                    model,
+                    timeout,
+                    tasks,
+                } => Box::new(
+                    stacker::console::commands::cli::config::ConfigSetupAiCommand::new(
+                        file, provider, endpoint, model, timeout, tasks,
+                    ),
+                ),
                 ConfigSetupCommands::RemotePayload { file, out } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupRemotePayloadCommand::new(
                         file, out,
@@ -1647,6 +1883,8 @@ fn get_command(
         StackerCommands::Ai(ai_args) => match ai_args.command {
             None => Box::new(stacker::console::commands::cli::ai::AiChatCommand::new(
                 ai_args.write,
+                ai_args.scenario,
+                ai_args.step,
             )),
             Some(AiCommands::Ask {
                 question,
@@ -1656,6 +1894,7 @@ fn get_command(
             }) => Box::new(
                 stacker::console::commands::cli::ai::AiAskCommand::new(question, context)
                     .with_configure(configure)
+                    .with_scenario(ai_args.scenario, ai_args.step)
                     .with_write(ai_args.write || write),
             ),
         },
@@ -1665,7 +1904,9 @@ fn get_command(
                 upstream,
                 ssl,
             } => Box::new(
-                stacker::console::commands::cli::proxy::ProxyAddCommand::new(domain, upstream, ssl),
+                stacker::console::commands::cli::proxy::ProxyAddCommand::new(
+                    domain, upstream, ssl, false, false, None,
+                ),
             ),
             ProxyCommands::Detect { json, deployment } => Box::new(
                 stacker::console::commands::cli::proxy::ProxyDetectCommand::new(json, deployment),
@@ -1728,6 +1969,52 @@ fn get_command(
         StackerCommands::Service { command: svc_cmd } => match svc_cmd {
             ServiceCommands::Add { name, file } => Box::new(
                 stacker::console::commands::cli::service::ServiceAddCommand::new(name, file),
+            ),
+            ServiceCommands::Import {
+                name,
+                from_compose,
+                from_github,
+                from_url,
+                service,
+                rename,
+                file,
+                review,
+                yes,
+                json,
+            } => Box::new(
+                stacker::console::commands::cli::service::ServiceImportCommand::new(
+                    name,
+                    from_compose,
+                    from_github,
+                    from_url,
+                    service,
+                    rename,
+                    file,
+                    review,
+                    yes,
+                    json,
+                ),
+            ),
+            ServiceCommands::Deploy {
+                name,
+                force,
+                runtime,
+                json,
+                deployment,
+                environment,
+                plan,
+                apply_plan,
+            } => Box::new(
+                stacker::console::commands::cli::service::ServiceDeployCommand::new(
+                    name,
+                    force,
+                    runtime,
+                    json,
+                    deployment,
+                    environment,
+                    plan,
+                    apply_plan,
+                ),
             ),
             ServiceCommands::Remove { name, file } => Box::new(
                 stacker::console::commands::cli::service::ServiceRemoveCommand::new(name, file),
@@ -2046,15 +2333,21 @@ fn get_command(
                     json,
                     deployment,
                     environment,
-                } => Box::new(agent::AgentDeployAppCommand::new(
-                    app,
-                    image,
-                    force,
-                    runtime,
-                    json,
-                    deployment,
-                    environment,
-                )),
+                    plan,
+                    apply_plan,
+                } => Box::new(
+                    agent::AgentDeployAppCommand::new(
+                        app,
+                        image,
+                        force,
+                        runtime,
+                        json,
+                        deployment,
+                        environment,
+                    )
+                    .with_plan(plan)
+                    .with_apply_plan(apply_plan),
+                ),
                 AgentCommands::RemoveApp {
                     app,
                     volumes,
@@ -2133,9 +2426,11 @@ fn get_command(
                     json,
                     deployment,
                 )),
-                AgentCommands::Install { file, json } => {
-                    Box::new(agent::AgentInstallCommand::new(file, json))
-                }
+                AgentCommands::Install {
+                    file,
+                    persist_config,
+                    json,
+                } => Box::new(agent::AgentInstallCommand::new(file, persist_config, json)),
             }
         }
         StackerCommands::Cloud { command } => match command {
@@ -2301,6 +2596,50 @@ mod tests {
         match cli.command.unwrap() {
             StackerCommands::Whoami {} => {}
             _ => panic!("expected whoami command"),
+        }
+    }
+
+    #[test]
+    fn test_ai_ask_parses_scenario_flags() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "ai",
+            "ask",
+            "continue",
+            "--scenario",
+            "website-deploy",
+            "--step",
+            "cloud-deploy",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Ai(ai_args) => {
+                assert_eq!(ai_args.scenario.as_deref(), Some("website-deploy"));
+                assert_eq!(ai_args.step.as_deref(), Some("cloud-deploy"));
+            }
+            _ => panic!("expected ai command"),
+        }
+    }
+
+    #[test]
+    fn test_ai_chat_parses_scenario_flags() {
+        let cli = Cli::try_parse_from([
+            "stacker",
+            "ai",
+            "--scenario",
+            "website-deploy",
+            "--step",
+            "init-validate",
+        ])
+        .unwrap();
+
+        match cli.command.unwrap() {
+            StackerCommands::Ai(ai_args) => {
+                assert_eq!(ai_args.scenario.as_deref(), Some("website-deploy"));
+                assert_eq!(ai_args.step.as_deref(), Some("init-validate"));
+            }
+            _ => panic!("expected ai command"),
         }
     }
 

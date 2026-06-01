@@ -43,6 +43,7 @@ pub mod app_service_catalog;
 pub mod config;
 pub mod dockerhub_service;
 pub mod errors;
+pub mod hetzner;
 pub mod install_service;
 pub mod user_service;
 
@@ -53,6 +54,9 @@ pub use config::{
     ConnectorConfig, EventsConfig, InstallServiceConfig, PaymentServiceConfig, UserServiceConfig,
 };
 pub use errors::ConnectorError;
+pub use hetzner::{
+    HetznerCloudClient, HetznerCloudConnector, HetznerSnapshot, HetznerSnapshotTarget,
+};
 pub use install_service::{InstallServiceClient, InstallServiceConnector};
 pub use user_service::{
     CategoryInfo, DeploymentValidationError, DeploymentValidator, MarketplaceWebhookPayload,
