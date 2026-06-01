@@ -1896,11 +1896,15 @@ fn agent_version_label(version: &str) -> String {
 }
 
 /// Pretty-print a snapshot summary for human consumption.
+// Width that covers the widest table (containers: 24+1+12+1+22+1+30 = 91 cols).
+const STATUS_SEP_WIDTH: usize = 92;
+
+/// Pretty-print a snapshot summary for human consumption.
 fn print_snapshot_summary(
     snap: &serde_json::Value,
     live_containers: Option<&Vec<serde_json::Value>>,
 ) {
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Agent info
     if let Some(agent) = snap.get("agent") {
@@ -1928,7 +1932,7 @@ fn print_snapshot_summary(
         println!("Agent:     not registered");
     }
 
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     if let Some(apps) = snap.get("apps").and_then(|v| v.as_array()) {
         print_apps_summary(apps);
@@ -1936,7 +1940,7 @@ fn print_snapshot_summary(
         println!("Apps:       none");
     }
 
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Containers
     if let Some(containers) = live_containers {
@@ -1945,7 +1949,7 @@ fn print_snapshot_summary(
         print_containers_summary(containers);
     }
 
-    println!("{}", fmt::separator(60));
+    println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Recent commands
     if let Some(commands) = snap.get("commands").and_then(|v| v.as_array()) {
