@@ -245,26 +245,32 @@ fn run_remote_logs(
     let app_codes: Vec<String> = if let Some(svc) = service {
         vec![svc.to_string()]
     } else {
-        // Fetch snapshot to discover all running containers
-        let pb = progress::spinner("Discovering containers");
-        match ctx.block_on(ctx.client.agent_snapshot(&hash)) {
-            Ok(snap) => {
-                progress::finish_success(&pb, "Containers discovered");
-                snap.get("containers")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            Err(e) => {
-                progress::finish_error(&pb, &format!("Could not discover containers: {}", e));
-                return Err(Box::new(e));
-            }
+        // Discover running containers via a live list_containers command.
+        let params = crate::forms::status_panel::ListContainersCommandRequest {
+            include_health: false,
+            include_logs: false,
+            log_lines: 0,
+        };
+        let request = AgentEnqueueRequest::new(&hash, "list_containers")
+            .with_parameters(&params)
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+        let info = run_remote_agent_command(&ctx, &request, "Discovering containers", REMOTE_TIMEOUT_SECS)?;
+        if info.status != "completed" {
+            let (summary, tip) = no_containers_messages(&hash);
+            eprintln!("{}", summary);
+            eprintln!("{}", tip);
+            return Ok(());
         }
+        info.result
+            .as_ref()
+            .and_then(|r| r.get("containers").and_then(|v| v.as_array()))
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     };
 
     if app_codes.is_empty() {
@@ -395,20 +401,20 @@ fn print_logs_result(app_code: &str, info: &AgentCommandInfo, multi: bool) {
     }
 
     if let Some(ref result) = info.result {
-        // Try to extract log lines from the result JSON
-        if let Some(logs) = result.get("logs").and_then(|v| v.as_str()) {
-            print!("{}", logs);
-        } else if let Some(lines) = result.get("lines").and_then(|v| v.as_array()) {
-            for line in lines {
-                if let Some(s) = line.as_str() {
-                    println!("{}", s);
+        if let Some(lines) = result.get("lines").and_then(|v| v.as_array()) {
+            if lines.is_empty() {
+                println!("(no log output)");
+            } else {
+                for line in lines {
+                    let msg = line
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    println!("{}", msg);
                 }
             }
-        } else if let Some(output) = result.get("output").and_then(|v| v.as_str()) {
-            print!("{}", output);
         } else {
-            // Fallback: pretty-print the whole result
-            println!("{}", fmt::pretty_json(result));
+            println!("(no log output)");
         }
     } else {
         println!("(no log output)");

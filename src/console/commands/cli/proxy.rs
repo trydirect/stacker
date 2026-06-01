@@ -8,7 +8,8 @@ use crate::cli::proxy_manager::{
     DockerCliRuntime, ProxyDetection,
 };
 use crate::cli::runtime::CliRuntime;
-use crate::console::commands::cli::agent::AgentConfigureProxyCommand;
+use crate::cli::stacker_client::AgentEnqueueRequest;
+use crate::console::commands::cli::agent::{run_agent_command, AgentConfigureProxyCommand};
 use crate::console::commands::CallableTrait;
 use std::path::{Path, PathBuf};
 
@@ -430,8 +431,26 @@ impl CallableTrait for ProxyDetectCommand {
             let ctx = CliRuntime::new("proxy detect")?;
             let hash = resolve_deployment_hash_for_proxy(&self.deployment, &ctx)?;
 
-            let snapshot = ctx.block_on(ctx.client.agent_snapshot(&hash))?;
-            let detection = detect_proxy_from_snapshot(&snapshot);
+            // Use a live list_containers command — the snapshot's containers
+            // field is not populated for cloud deployments.
+            const DETECT_TIMEOUT: u64 = 30;
+            let params = crate::forms::status_panel::ListContainersCommandRequest {
+                include_health: true,
+                include_logs: false,
+                log_lines: 0,
+            };
+            let request = AgentEnqueueRequest::new(&hash, "list_containers")
+                .with_parameters(&params)
+                .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
+            let info = run_agent_command(&ctx, &request, "Scanning containers", DETECT_TIMEOUT)?;
+            let containers = info
+                .result
+                .as_ref()
+                .and_then(|r| r.get("containers").and_then(|v| v.as_array()))
+                .cloned()
+                .unwrap_or_default();
+            let fake_snapshot = serde_json::json!({ "containers": containers });
+            let detection = detect_proxy_from_snapshot(&fake_snapshot);
             print_detection(&detection, self.json);
         } else {
             let runtime = DockerCliRuntime;

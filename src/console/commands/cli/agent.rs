@@ -440,6 +440,93 @@ fn print_command_result(info: &AgentCommandInfo, json: bool) {
     }
 }
 
+fn print_health_result(info: &AgentCommandInfo) {
+    if let Some(ref result) = info.result {
+        let result_type = result.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        // "all_health": list of all containers
+        if result_type == "all_health" {
+            let overall = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            println!("Overall: {} {}", progress::status_icon(overall), overall);
+            println!();
+            if let Some(containers) = result.get("containers").and_then(|v| v.as_array()) {
+                println!("{:<28} {:<10} {}", "CONTAINER", "STATE", "STATUS");
+                for c in containers {
+                    let name = c.get("container_name").and_then(|v| v.as_str()).unwrap_or("-");
+                    let state = c.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+                    let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+                    println!(
+                        "{:<28} {} {:<8} {}",
+                        fmt::truncate(name, 26),
+                        progress::status_icon(state),
+                        state,
+                        status,
+                    );
+                }
+            }
+            return;
+        }
+
+        // Single-container health
+        if result_type == "health" {
+            let state = result.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+            let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            let app = result.get("app_code").and_then(|v| v.as_str()).unwrap_or("-");
+            println!(
+                "{}: {} {} ({})",
+                app,
+                progress::status_icon(state),
+                state,
+                status
+            );
+            if let Some(metrics) = result.get("metrics") {
+                println!("{}", fmt::pretty_json(metrics));
+            }
+            return;
+        }
+
+        // Fallback
+        println!("{}", fmt::pretty_json(result));
+    }
+
+    if let Some(error) = agent_command_error_message(info) {
+        eprintln!("Error: {}", error);
+    }
+}
+
+fn print_all_container_health(containers: &[serde_json::Value]) {
+    if containers.is_empty() {
+        println!("No containers found.");
+        return;
+    }
+
+    let all_running = containers.iter().all(|c| {
+        let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+        state == "running"
+    });
+    let overall = if all_running { "running" } else { "degraded" };
+    println!("Overall: {} {}", progress::status_icon(overall), overall);
+    println!();
+
+    println!("{:<28} {:<12} {:<8} {:<8} {}", "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE");
+    for c in containers {
+        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+        let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+        let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let cpu = c.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let mem = c.get("mem_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        println!(
+            "{:<28} {} {:<10} {:<8.1} {:<8.1} {}",
+            fmt::truncate(name, 26),
+            progress::status_icon(state),
+            state,
+            cpu,
+            mem,
+            fmt::truncate(image, 30),
+        );
+    }
+}
+
 /// Pre-flight connection check for risky agent commands.
 ///
 /// Enqueues a `check_connections` command to the agent and, if active HTTP
@@ -566,8 +653,21 @@ impl CallableTrait for AgentHealthCommand {
         let ctx = CliRuntime::new("agent health")?;
         let hash = resolve_deployment_hash(&self.deployment, &ctx)?;
 
+        // No specific app requested → list all containers with health metrics.
+        // This avoids sending app_code="all" to older agents that don't handle it.
+        if self.app_code.is_none() && !self.include_system {
+            let containers = fetch_live_containers(&ctx, &hash)?
+                .unwrap_or_default();
+            if self.json {
+                println!("{}", serde_json::to_string_pretty(&containers)?);
+            } else {
+                print_all_container_health(&containers);
+            }
+            return Ok(());
+        }
+
         let params = crate::forms::status_panel::HealthCommandRequest {
-            app_code: self.app_code.clone().unwrap_or_else(|| "all".to_string()),
+            app_code: self.app_code.clone().unwrap_or_default(),
             container: None,
             include_metrics: true,
             include_system: self.include_system,
@@ -578,7 +678,11 @@ impl CallableTrait for AgentHealthCommand {
             .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
 
         let info = run_agent_command(&ctx, &request, "Checking health", DEFAULT_TIMEOUT_SECS)?;
-        print_command_result(&info, self.json);
+        if self.json {
+            print_command_result(&info, true);
+        } else {
+            print_health_result(&info);
+        }
         Ok(())
     }
 }
@@ -1660,7 +1764,7 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
         return;
     }
 
-    println!("{:<24} {:<12} {:<30}", "CONTAINER", "STATE", "IMAGE");
+    println!("{:<24} {:<12} {:<22} {:<30}", "CONTAINER", "STATE", "PORTS", "IMAGE");
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c
@@ -1669,11 +1773,23 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
             .and_then(|v| v.as_str())
             .unwrap_or("-");
         let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
+        let ports = c
+            .get("ports")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "-".to_string());
         println!(
-            "{:<24} {} {:<10} {:<30}",
+            "{:<24} {} {:<10} {:<22} {:<30}",
             fmt::truncate(name, 22),
             progress::status_icon(state),
             state,
+            fmt::truncate(&ports, 20),
             fmt::truncate(image, 28),
         );
     }
