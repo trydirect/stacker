@@ -170,6 +170,177 @@ pub fn strategy_for(target: &DeployTarget) -> Box<dyn DeployStrategy> {
 // LocalDeploy — docker compose up/down
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Parse the host-port side of a single compose port entry.
+///
+/// Handles both string form (`"127.0.0.1:3000:3000"`, `"3000:3000"`) and
+/// mapping form (`{ published: 3000, target: 3000 }`).
+fn parse_compose_host_port(entry: &serde_yaml::Value) -> Option<String> {
+    match entry {
+        serde_yaml::Value::String(spec) => {
+            let trimmed = spec.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let without_proto = trimmed.split('/').next().unwrap_or(trimmed);
+            let parts: Vec<&str> = without_proto.split(':').collect();
+            if parts.len() < 2 {
+                return None;
+            }
+            let port = parts[parts.len() - 2].trim();
+            if port.is_empty() {
+                None
+            } else {
+                Some(port.to_string())
+            }
+        }
+        serde_yaml::Value::Mapping(m) => {
+            let key = serde_yaml::Value::String("published".to_string());
+            m.get(&key).and_then(|v| match v {
+                serde_yaml::Value::String(s) => Some(s.clone()),
+                serde_yaml::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Return all `(host_port, service_name)` pairs declared in a compose file.
+fn collect_compose_host_port_services(compose_path: &Path) -> Vec<(String, String)> {
+    let raw = match std::fs::read_to_string(compose_path) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+    let doc: serde_yaml::Value = match serde_yaml::from_str(&raw) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    let services = match doc
+        .as_mapping()
+        .and_then(|m| m.get(&serde_yaml::Value::String("services".to_string())))
+        .and_then(|v| v.as_mapping())
+    {
+        Some(s) => s,
+        None => return vec![],
+    };
+
+    let mut result = Vec::new();
+    for (svc_key, svc_val) in services {
+        let svc_name = svc_key.as_str().unwrap_or("<unknown>").to_string();
+        let svc_map = match svc_val.as_mapping() {
+            Some(m) => m,
+            None => continue,
+        };
+        let ports_key = serde_yaml::Value::String("ports".to_string());
+        let ports = match svc_map.get(&ports_key).and_then(|v| v.as_sequence()) {
+            Some(p) => p,
+            None => continue,
+        };
+        for port in ports {
+            if let Some(host_port) = parse_compose_host_port(port) {
+                if !host_port.is_empty() {
+                    result.push((host_port, svc_name.clone()));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Parse `0.0.0.0:3000->3000/tcp` → `"3000"` from `docker ps` port strings.
+fn extract_port_from_docker_ps_entry(spec: &str) -> Option<String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    // e.g. "0.0.0.0:3000->3000/tcp" or ":::3000->3000/tcp" or "3000/tcp"
+    let host_part = if let Some(arrow) = spec.find("->") {
+        &spec[..arrow]
+    } else {
+        return None; // no host binding, container-only port
+    };
+    // host_part is e.g. "0.0.0.0:3000" or ":::3000"
+    host_part
+        .rsplit(':')
+        .next()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+}
+
+/// Ask Docker for the host ports currently bound by THIS compose project's containers.
+///
+/// Uses `docker compose -f <path> ps --format "{{.Ports}}"`.
+/// Returns an empty set if Docker is unavailable or the project has no running containers.
+fn get_own_compose_running_ports(
+    compose_path: &Path,
+    executor: &dyn CommandExecutor,
+) -> std::collections::HashSet<String> {
+    let compose_str = compose_path.to_string_lossy();
+    let out = match executor.execute(
+        "docker",
+        &["compose", "-f", &compose_str, "ps", "--format", "{{.Ports}}"],
+    ) {
+        Ok(o) if o.success() => o,
+        _ => return Default::default(),
+    };
+    let mut ports = std::collections::HashSet::new();
+    for line in out.stdout.lines() {
+        for segment in line.split(',') {
+            if let Some(p) = extract_port_from_docker_ps_entry(segment.trim()) {
+                ports.insert(p);
+            }
+        }
+    }
+    ports
+}
+
+/// Pre-flight check: detect host ports that are already occupied by something
+/// OTHER than the current compose project's own running containers.
+///
+/// Returns a list of human-readable conflict descriptions (empty = no conflicts).
+/// Silently skips any port it cannot inspect so that environments without full
+/// Docker access still work.
+fn check_local_host_port_conflicts(
+    compose_path: &Path,
+    executor: &dyn CommandExecutor,
+) -> Vec<String> {
+    use std::net::TcpListener;
+
+    let port_services = collect_compose_host_port_services(compose_path);
+    if port_services.is_empty() {
+        return vec![];
+    }
+
+    // Find which ports are already bound on the local machine.
+    let occupied: Vec<(String, String)> = port_services
+        .into_iter()
+        .filter(|(port, _)| {
+            let addr = format!("0.0.0.0:{}", port);
+            TcpListener::bind(&addr).is_err()
+        })
+        .collect();
+
+    if occupied.is_empty() {
+        return vec![];
+    }
+
+    // Exclude ports that belong to OUR own currently-running project containers —
+    // docker compose up will stop-and-restart them without a conflict.
+    let own_ports = get_own_compose_running_ports(compose_path, executor);
+
+    occupied
+        .into_iter()
+        .filter(|(port, _)| !own_ports.contains(port))
+        .map(|(port, svc)| {
+            format!(
+                "port {} (service '{}') is already allocated on this host — \
+                 find the owner with: lsof -nP -iTCP:{} -sTCP:LISTEN",
+                port, svc, port
+            )
+        })
+        .collect()
+}
+
 /// Detect which compose invocation is available on this host.
 ///
 /// Returns `("docker", vec!["compose"])` when the Docker Compose plugin is
@@ -214,6 +385,19 @@ impl DeployStrategy for LocalDeploy {
         }
 
         let compose_path = context.compose_path.to_string_lossy().to_string();
+
+        // Pre-flight: catch host port conflicts before docker compose up so the
+        // error is actionable rather than buried in Docker daemon output.
+        let port_conflicts = check_local_host_port_conflicts(&context.compose_path, executor);
+        if !port_conflicts.is_empty() {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Local,
+                reason: format!(
+                    "Host port conflict detected before deploy:\n  • {}\nStop the conflicting process or change the port in stacker.yml, then retry.",
+                    port_conflicts.join("\n  • ")
+                ),
+            });
+        }
 
         let (cmd, base_args) = resolve_compose_cmd(executor);
         let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
@@ -1167,7 +1351,19 @@ async fn fetch_live_containers(
             CliError::ConfigValidation(format!("Invalid list_containers parameters: {}", error))
         })?;
 
-    let completed = client.agent_poll_result(&request, 120, 2).await?;
+    let completed = client
+        .agent_poll_result(&request, 120, 2)
+        .await
+        .map_err(|err| match err {
+            CliError::AgentCommandTimeout {
+                ref last_status,
+                ref deployment_hash,
+                ..
+            } if last_status == "queued" => CliError::AgentNotFound {
+                deployment_hash: deployment_hash.clone(),
+            },
+            other => other,
+        })?;
     if completed.status != "completed" {
         let detail = completed
             .error
@@ -2815,5 +3011,175 @@ mod tests {
         let cmd = InstallContainerCommand::new(None).remove_after(false);
         let args = cmd.build_args();
         assert!(!args.contains(&"--rm".to_string()));
+    }
+
+    // ── Port-conflict preflight helpers ─────────────────
+
+    #[test]
+    fn test_parse_compose_host_port_string_host_container() {
+        let v = serde_yaml::Value::String("3000:3000".to_string());
+        assert_eq!(parse_compose_host_port(&v), Some("3000".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_string_ip_host_container() {
+        let v = serde_yaml::Value::String("127.0.0.1:8080:80".to_string());
+        assert_eq!(parse_compose_host_port(&v), Some("8080".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_mapping() {
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("published".to_string()),
+            serde_yaml::Value::Number(serde_yaml::Number::from(3000u64)),
+        );
+        m.insert(
+            serde_yaml::Value::String("target".to_string()),
+            serde_yaml::Value::Number(serde_yaml::Number::from(3000u64)),
+        );
+        let v = serde_yaml::Value::Mapping(m);
+        assert_eq!(parse_compose_host_port(&v), Some("3000".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_container_only() {
+        // Port without host binding: "3000" → no host port to parse
+        let v = serde_yaml::Value::String("3000".to_string());
+        assert_eq!(parse_compose_host_port(&v), None);
+    }
+
+    #[test]
+    fn test_collect_compose_host_port_services() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+  api:
+    image: myapp
+    ports:
+      - "127.0.0.1:9000:9000"
+"#
+        )
+        .unwrap();
+        let pairs = collect_compose_host_port_services(tmp.path());
+        let ports: Vec<&str> = pairs.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(ports.contains(&"8080"), "expected 8080");
+        assert!(ports.contains(&"9000"), "expected 9000");
+    }
+
+    #[test]
+    fn test_extract_port_from_docker_ps_entry_standard() {
+        assert_eq!(
+            extract_port_from_docker_ps_entry("0.0.0.0:3000->3000/tcp"),
+            Some("3000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_port_from_docker_ps_entry_ipv6() {
+        assert_eq!(
+            extract_port_from_docker_ps_entry(":::8080->8080/tcp"),
+            Some("8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_port_from_docker_ps_entry_container_only() {
+        assert_eq!(extract_port_from_docker_ps_entry("3000/tcp"), None);
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_free_port() {
+        use std::io::Write;
+        // Pick an ephemeral port that should be free
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let free_port = listener.local_addr().unwrap().port();
+        drop(listener); // release it
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+            free_port
+        )
+        .unwrap();
+
+        let executor = MockExecutor::success();
+        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        assert!(
+            conflicts.is_empty(),
+            "expected no conflicts for free port {}: {:?}",
+            free_port,
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_own_container_excluded() {
+        use std::io::Write;
+
+        // Occupy a port to simulate an existing container
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep listener alive — port IS occupied
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+            port
+        )
+        .unwrap();
+
+        // Simulate `docker compose ps` reporting the same port as owned by us
+        let ps_output = format!("0.0.0.0:{}->80/tcp", port);
+        let executor = MockExecutor::success_with_stdout(&ps_output);
+
+        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        drop(listener);
+        assert!(
+            conflicts.is_empty(),
+            "port owned by our own compose project should not be flagged: {:?}",
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_external_conflict() {
+        use std::io::Write;
+
+        // Occupy a port to simulate an external process
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep listener alive — port IS occupied by external
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+            port
+        )
+        .unwrap();
+
+        // Simulate `docker compose ps` returning empty (no own containers on this port)
+        let executor = MockExecutor::success_with_stdout("");
+
+        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        drop(listener);
+        assert!(
+            !conflicts.is_empty(),
+            "external port conflict should be reported"
+        );
+        assert!(
+            conflicts[0].contains(&port.to_string()),
+            "conflict message should mention the port"
+        );
     }
 }

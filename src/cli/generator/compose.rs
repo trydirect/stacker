@@ -106,6 +106,13 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 
         // --- Main app service ---
         let app_service = build_app_service(config);
+        for vol in &app_service.volumes {
+            if let Some(named) = extract_named_volume(vol) {
+                if !named_volumes.contains(&named) {
+                    named_volumes.push(named);
+                }
+            }
+        }
         compose.services.push(app_service);
 
         // --- Additional services (databases, caches, etc.) ---
@@ -734,6 +741,41 @@ mod tests {
                 .map(String::as_str),
             Some("smtp")
         );
+    }
+
+    #[test]
+    fn app_named_volumes_appear_in_top_level_volumes_block() {
+        let config = ConfigBuilder::new()
+            .name("rustfs")
+            .app_type(AppType::Custom)
+            .app_image("rustfs/rustfs:latest")
+            .app_volumes(vec![
+                "rustfs_data:/data".into(),
+                "rustfs_logs:/app/logs".into(),
+                "./local-config:/etc/config:ro".into(), // bind mount — must NOT appear
+            ])
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+
+        assert!(
+            compose.volumes.contains(&"rustfs_data".to_string()),
+            "rustfs_data should be in top-level volumes"
+        );
+        assert!(
+            compose.volumes.contains(&"rustfs_logs".to_string()),
+            "rustfs_logs should be in top-level volumes"
+        );
+        assert!(
+            !compose.volumes.contains(&"./local-config".to_string()),
+            "bind mount should not appear in top-level volumes"
+        );
+
+        let yaml = compose.render();
+        assert!(yaml.contains("volumes:"), "top-level volumes: block must exist");
+        assert!(yaml.contains("  rustfs_data:"), "rustfs_data entry must appear");
+        assert!(yaml.contains("  rustfs_logs:"), "rustfs_logs entry must appear");
     }
 
     #[test]

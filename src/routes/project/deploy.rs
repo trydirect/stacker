@@ -233,6 +233,17 @@ struct HetznerIpv4 {
     ip: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypesResponse {
+    #[serde(default)]
+    server_types: Vec<HetznerServerTypeEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypeEntry {
+    name: String,
+}
+
 fn hetzner_api_base_url() -> String {
     std::env::var("STACKER_HETZNER_API_URL")
         .unwrap_or_else(|_| "https://api.hetzner.cloud/v1".to_string())
@@ -394,6 +405,92 @@ async fn validate_reused_cloud_server(
         "Reused cloud server validation is not implemented for provider '{}'; proceeding with existing behavior",
         cloud.provider
     );
+    Ok(())
+}
+
+async fn validate_hetzner_server_type(
+    cloud: &models::Cloud,
+    server_type: &str,
+    region: Option<&str>,
+) -> Result<(), String> {
+    let server_type = server_type.trim();
+    if server_type.is_empty() || !is_hetzner_provider(&cloud.provider) {
+        return Ok(());
+    }
+
+    let cloud = reveal_cloud_credentials(cloud);
+    let token = match cloud
+        .cloud_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(t) => t.to_string(),
+        None => return Ok(()),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("Could not initialize Hetzner API client: {}", err))?;
+
+    let url = match region {
+        Some(loc) => format!("{}/server_types?location={}", hetzner_api_base_url(), loc),
+        None => format!("{}/server_types", hetzner_api_base_url()),
+    };
+
+    let response = match client.get(&url).bearer_auth(&token).send().await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                "Could not reach Hetzner API to validate server type '{}': {}; proceeding",
+                server_type,
+                err
+            );
+            return Ok(());
+        }
+    };
+
+    if !response.status().is_success() {
+        tracing::warn!(
+            "Hetzner server_types API returned HTTP {}; skipping server type validation",
+            response.status().as_u16()
+        );
+        return Ok(());
+    }
+
+    let body = match response.json::<HetznerServerTypesResponse>().await {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::warn!(
+                "Invalid Hetzner server types response: {}; skipping validation",
+                err
+            );
+            return Ok(());
+        }
+    };
+
+    let available: Vec<&str> = body
+        .server_types
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+
+    if !available
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(server_type))
+    {
+        return Err(format!(
+            "Server type '{}' is not available in Hetzner. Available types: {}",
+            server_type,
+            if available.is_empty() {
+                "none found".to_string()
+            } else {
+                available.join(", ")
+            }
+        ));
+    }
+
     Ok(())
 }
 
@@ -1455,6 +1552,14 @@ pub async fn item(
         .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
+    validate_hetzner_server_type(
+        &cloud_creds,
+        server.server.as_deref().unwrap_or(""),
+        server.region.as_deref(),
+    )
+    .await
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
     ensure_default_status_panel_npm_credentials(
         user.as_ref(),
         &form,
@@ -1701,6 +1806,14 @@ pub async fn saved_item(
     validate_reused_cloud_server(&cloud, &server)
         .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+    validate_hetzner_server_type(
+        &cloud,
+        server.server.as_deref().unwrap_or(""),
+        server.region.as_deref(),
+    )
+    .await
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
     ensure_default_status_panel_npm_credentials(
         user.as_ref(),

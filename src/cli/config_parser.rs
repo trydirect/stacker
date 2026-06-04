@@ -1216,6 +1216,7 @@ pub struct ConfigBuilder {
     app_path: Option<PathBuf>,
     app_image: Option<String>,
     app_dockerfile: Option<PathBuf>,
+    app_volumes: Vec<String>,
     build_args: HashMap<String, String>,
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
@@ -1272,6 +1273,11 @@ impl ConfigBuilder {
 
     pub fn app_dockerfile<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.app_dockerfile = Some(path.into());
+        self
+    }
+
+    pub fn app_volumes(mut self, volumes: Vec<String>) -> Self {
+        self.app_volumes = volumes;
         self
     }
 
@@ -1364,7 +1370,7 @@ impl ConfigBuilder {
                 image: self.app_image,
                 build: build_config,
                 ports: Vec::new(),
-                volumes: Vec::new(),
+                volumes: self.app_volumes,
                 environment: HashMap::new(),
             },
             services: self.services,

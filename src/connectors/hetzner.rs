@@ -32,6 +32,12 @@ pub trait HetznerCloudConnector: Send + Sync {
         target: HetznerSnapshotTarget,
         description: &str,
     ) -> Result<HetznerSnapshot, ConnectorError>;
+
+    async fn list_server_types(
+        &self,
+        token: &str,
+        location: Option<&str>,
+    ) -> Result<Vec<String>, ConnectorError>;
 }
 
 #[derive(Clone)]
@@ -141,6 +147,37 @@ impl HetznerCloudConnector for HetznerCloudClient {
             image_id,
         })
     }
+
+    async fn list_server_types(
+        &self,
+        token: &str,
+        location: Option<&str>,
+    ) -> Result<Vec<String>, ConnectorError> {
+        let url = match location {
+            Some(loc) => format!("{}/server_types?location={}", self.base_url, loc),
+            None => format!("{}/server_types", self.base_url),
+        };
+
+        let response = self
+            .http_client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(ConnectorError::from)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_to_error(status, "Hetzner server types lookup failed"));
+        }
+
+        let body: HetznerServerTypesResponse = response
+            .json()
+            .await
+            .map_err(|err| ConnectorError::InvalidResponse(err.to_string()))?;
+
+        Ok(body.server_types.into_iter().map(|t| t.name).collect())
+    }
 }
 
 fn status_to_error(status: reqwest::StatusCode, message: &str) -> ConnectorError {
@@ -225,6 +262,17 @@ struct HetznerActionResource {
     resource_type: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypesResponse {
+    #[serde(default)]
+    server_types: Vec<HetznerServerType>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServerType {
+    name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +355,45 @@ mod tests {
 
         assert_eq!(snapshot.action_id, 778);
         assert_eq!(snapshot.image_id, None);
+    }
+
+    #[tokio::test]
+    async fn list_server_types_returns_names() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "server_types": [
+                    {"id": 1, "name": "cx22"},
+                    {"id": 2, "name": "cx32"},
+                    {"id": 3, "name": "cx42"}
+                ]
+            })))
+            .mount(&api)
+            .await;
+
+        let client = HetznerCloudClient::new(api.uri()).unwrap();
+        let types = client
+            .list_server_types("test-token", None)
+            .await
+            .unwrap();
+
+        assert_eq!(types, vec!["cx22", "cx32", "cx42"]);
+    }
+
+    #[tokio::test]
+    async fn list_server_types_returns_unauthorized_on_401() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/server_types"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&api)
+            .await;
+
+        let client = HetznerCloudClient::new(api.uri()).unwrap();
+        let result = client.list_server_types("bad-token", None).await;
+
+        assert!(matches!(result, Err(ConnectorError::Unauthorized(_))));
     }
 }
