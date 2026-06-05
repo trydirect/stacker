@@ -6,6 +6,7 @@ use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::local_compose::resolve_local_compose_path;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
+use crate::console::commands::cli::ssh_key::{format_ssh_command, local_backup_private_key_path};
 use crate::console::commands::CallableTrait;
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
@@ -79,6 +80,23 @@ struct StatusContext<'a> {
     live_containers: Option<&'a [serde_json::Value]>,
 }
 
+fn emergency_ssh_command(server: &ServerInfo) -> Option<String> {
+    let ip = server.srv_ip.as_deref()?;
+    let private_key_path = local_backup_private_key_path(server.id);
+    if !private_key_path.exists() {
+        return None;
+    }
+
+    let ssh_user = server.ssh_user.as_deref().unwrap_or("root");
+    let ssh_port = server.ssh_port.unwrap_or(22) as u16;
+    Some(format_ssh_command(
+        &private_key_path,
+        ssh_user,
+        ip,
+        ssh_port,
+    ))
+}
+
 /// Pretty-print a deployment status with optional server/config context.
 fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &StatusContext<'_>) {
     if json {
@@ -120,7 +138,9 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
     if let Some(srv) = ctx.server {
         println!("\n── Server ─────────────────────────────────");
         if let Some(ref name) = srv.name {
-            println!("  Name:            {}", name);
+            println!("  Name:            {} (id={})", name, srv.id);
+        } else {
+            println!("  ID:              {}", srv.id);
         }
         if let Some(ref ip) = srv.srv_ip {
             println!("  IP:              {}", ip);
@@ -137,6 +157,9 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
         }
         if let Some(ref region) = srv.region {
             println!("  Region:          {}", region);
+        }
+        if let Some(command) = emergency_ssh_command(srv) {
+            println!("  Emergency SSH:   {}", command);
         }
     }
 
@@ -216,7 +239,9 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
                 config.deploy.target
             );
             println!("\n── Documentation ──────────────────────────");
-            println!("  https://try.direct/docs");
+            println!(
+                "  https://github.com/trydirect/stacker/blob/main/docs/STACKER_YML_REFERENCE.md"
+            );
         }
     }
 
@@ -555,6 +580,7 @@ impl CallableTrait for StatusCommand {
 mod tests {
     use super::*;
     use crate::cli::deployment_lock::DeploymentLock;
+    use crate::cli::stacker_client::ServerInfo;
     use chrono::{Duration, Utc};
 
     #[test]
@@ -787,6 +813,70 @@ deploy:
         };
 
         assert_eq!(resolve_stacker_base_url(&creds), "https://api.try.direct");
+    }
+
+    #[test]
+    fn test_emergency_ssh_command_uses_local_backup_key_when_present() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path());
+
+        let ssh_dir = temp_home.path().join("stacker/ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let private_key_path = ssh_dir.join("server-92_ed25519");
+        std::fs::write(&private_key_path, "PRIVATE KEY").unwrap();
+
+        let server = ServerInfo {
+            id: 92,
+            user_id: "user".to_string(),
+            project_id: 7,
+            cloud_id: None,
+            cloud: Some("hetzner".to_string()),
+            region: Some("fsn1".to_string()),
+            zone: None,
+            server: Some("cx22".to_string()),
+            os: None,
+            disk_type: None,
+            srv_ip: Some("178.105.133.10".to_string()),
+            ssh_port: Some(22),
+            ssh_user: Some("root".to_string()),
+            name: Some("status-web".to_string()),
+            vault_key_path: None,
+            connection_mode: "ssh".to_string(),
+            key_status: "active".to_string(),
+        };
+
+        let command = emergency_ssh_command(&server).expect("ssh command should be available");
+        assert!(command.contains("server-92_ed25519"));
+        assert!(command.contains("root@178.105.133.10"));
+        assert!(command.contains(" -p 22 "));
+    }
+
+    #[test]
+    fn test_emergency_ssh_command_is_absent_without_local_backup_key() {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path());
+
+        let server = ServerInfo {
+            id: 93,
+            user_id: "user".to_string(),
+            project_id: 7,
+            cloud_id: None,
+            cloud: Some("hetzner".to_string()),
+            region: Some("fsn1".to_string()),
+            zone: None,
+            server: Some("cx22".to_string()),
+            os: None,
+            disk_type: None,
+            srv_ip: Some("178.105.133.11".to_string()),
+            ssh_port: Some(22),
+            ssh_user: Some("root".to_string()),
+            name: Some("status-web".to_string()),
+            vault_key_path: None,
+            connection_mode: "ssh".to_string(),
+            key_status: "active".to_string(),
+        };
+
+        assert!(emergency_ssh_command(&server).is_none());
     }
 
     #[test]
