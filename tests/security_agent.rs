@@ -425,10 +425,10 @@ async fn test_owner_can_enqueue_and_list_commands_for_legacy_installation_hash()
     let user_service = MockServer::start().await;
     let auth_header = format!("Bearer {}", USER_A_TOKEN);
     Mock::given(method("GET"))
-        .and(path("/api/1.0/installations"))
+        .and(path("/v2/installations/"))
         .and(header("authorization", auth_header.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "_items": [{
+            "items": [{
                 "_id": 13830,
                 "stack_code": "openclaw",
                 "status": "completed",
@@ -444,7 +444,7 @@ async fn test_owner_can_enqueue_and_list_commands_for_legacy_installation_hash()
 
     // hydrate_legacy_installation fetches the detail endpoint when _id is set
     Mock::given(method("GET"))
-        .and(path("/api/1.0/installations/13830"))
+        .and(path("/v2/installations/13830"))
         .and(header("authorization", auth_header.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "_id": 13830,

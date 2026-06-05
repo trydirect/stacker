@@ -210,7 +210,7 @@ async fn test_owner_can_mint_handoff_for_legacy_installation() {
     let user_service = MockServer::start().await;
     let auth_header = format!("Bearer {}", USER_A_TOKEN);
     Mock::given(method("GET"))
-        .and(path("/api/1.0/installations/13830"))
+        .and(path("/v2/installations/13830"))
         .and(header("authorization", auth_header.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "_id": 13830,

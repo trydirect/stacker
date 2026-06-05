@@ -418,9 +418,12 @@ impl UserServiceConnector for UserServiceClient {
             template_id = stack_template_id
         );
 
-        // Query /api/1.0/products?external_id={template_id}&product_type=template
+        // GET /v2/product?external_id={template_id}&product_type=template
+        // (strangler-fig replacement for the Eve /api/1.0/products?where={...}
+        // query). external_id is matched server-side as a string. Trailing
+        // slash hits the canonical route directly (avoids a 308 redirect).
         let url = format!(
-            "{}/api/1.0/products?where={{\"external_id\":{},\"product_type\":\"template\"}}",
+            "{}/v2/product/?external_id={}&product_type=template",
             self.base_url, stack_template_id
         );
 
@@ -430,10 +433,11 @@ impl UserServiceConnector for UserServiceClient {
             req = req.header("Authorization", auth);
         }
 
+        // /v2 list envelope: { "items": [...], "count": N }
         #[derive(serde::Deserialize)]
         struct ProductsResponse {
             #[serde(default)]
-            _items: Vec<ProductInfo>,
+            items: Vec<ProductInfo>,
         }
 
         let resp = req.send().instrument(span).await.map_err(|e| {
@@ -446,15 +450,9 @@ impl UserServiceConnector for UserServiceClient {
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
 
-        // Try Eve format first (with _items wrapper)
-        if let Ok(products_resp) = serde_json::from_str::<ProductsResponse>(&text) {
-            Ok(products_resp._items.into_iter().next())
-        } else {
-            // Try direct array format
-            serde_json::from_str::<Vec<ProductInfo>>(&text)
-                .map(|mut items| items.pop())
-                .map_err(|_| ConnectorError::InvalidResponse(text))
-        }
+        let products_resp = serde_json::from_str::<ProductsResponse>(&text)
+            .map_err(|_| ConnectorError::InvalidResponse(text))?;
+        Ok(products_resp.items.into_iter().next())
     }
 
     async fn user_owns_template(
@@ -509,7 +507,9 @@ impl UserServiceConnector for UserServiceClient {
 
     async fn get_categories(&self) -> Result<Vec<CategoryInfo>, ConnectorError> {
         let span = tracing::info_span!("user_service_get_categories");
-        let url = format!("{}/api/1.0/category", self.base_url);
+        // /v2/category (strangler-fig replacement for Eve /api/1.0/category).
+        // Trailing slash hits the canonical route directly (avoids a 308).
+        let url = format!("{}/v2/category/", self.base_url);
 
         let mut attempt = 0;
         loop {
@@ -529,10 +529,10 @@ impl UserServiceConnector for UserServiceClient {
                             .await
                             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
 
-                        // User Service returns {_items: [...]}
+                        // /v2 list envelope: { "items": [...], "count": N }
                         #[derive(Deserialize)]
                         struct CategoriesResponse {
-                            #[serde(rename = "_items")]
+                            #[serde(default)]
                             items: Vec<CategoryInfo>,
                         }
 

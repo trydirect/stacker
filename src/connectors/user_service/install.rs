@@ -44,10 +44,12 @@ pub struct InstallationApp {
     pub port: Option<i32>,
 }
 
-// Wrapper types for Eve-style responses
+// Wrapper for the /v2/installations list envelope: { "items": [...], "count": N }
+// (replaces the legacy Eve { "_items": [...], "_meta": {...} } shape).
 #[derive(Debug, Deserialize)]
 struct InstallationsResponse {
-    _items: Vec<Installation>,
+    #[serde(default)]
+    items: Vec<Installation>,
 }
 
 fn parse_installation_details_payload(
@@ -112,7 +114,11 @@ impl UserServiceClient {
         &self,
         bearer_token: &str,
     ) -> Result<Vec<Installation>, ConnectorError> {
-        let url = format!("{}/api/1.0/installations", self.base_url);
+        // /v2/installations (strangler-fig replacement for Eve
+        // /api/1.0/installations). Same oauth2-client bearer; the user
+        // principal is owner-scoped server-side. Trailing slash hits the
+        // canonical route directly (avoids a 308 redirect).
+        let url = format!("{}/v2/installations/", self.base_url);
 
         let response = self
             .http_client
@@ -131,13 +137,13 @@ impl UserServiceClient {
             )));
         }
 
-        // User Service returns { "_items": [...], "_meta": {...} }
+        // /v2 list envelope: { "items": [...], "count": N }
         let wrapper: InstallationsResponse = response
             .json()
             .await
             .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))?;
 
-        Ok(wrapper._items)
+        Ok(wrapper.items)
     }
 
     /// Get specific installation details
@@ -147,7 +153,7 @@ impl UserServiceClient {
         installation_id: i64,
     ) -> Result<InstallationDetails, ConnectorError> {
         let url = format!(
-            "{}/api/1.0/installations/{}",
+            "{}/v2/installations/{}",
             self.base_url, installation_id
         );
 

@@ -51,7 +51,7 @@ pub trait UserServiceConnector: Send + Sync {
     async fn get_user_profile(&self, user_token: &str) -> Result<UserProfile, ConnectorError>;
 
     /// Get product information for a marketplace template
-    /// Calls GET /api/1.0/products?external_id={template_id}&product_type=template
+    /// Calls GET /v2/product?external_id={template_id}&product_type=template
     async fn get_template_product(
         &self,
         stack_template_id: i32,
@@ -66,6 +66,6 @@ pub trait UserServiceConnector: Send + Sync {
     ) -> Result<bool, ConnectorError>;
 
     /// Get list of categories from User Service
-    /// Calls GET /api/1.0/category and returns available categories
+    /// Calls GET /v2/category and returns available categories
     async fn get_categories(&self) -> Result<Vec<CategoryInfo>, ConnectorError>;
 }

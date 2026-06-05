@@ -267,7 +267,7 @@ async fn test_get_installation_by_hash_uses_lightweight_route() {
 async fn test_get_installation_falls_back_to_legacy_install_route() {
     let mut server = Server::new_async().await;
     let _api_mock = server
-        .mock("GET", "/api/1.0/installations/66")
+        .mock("GET", "/v2/installations/66")
         .match_header("authorization", "Bearer test_token")
         .with_status(404)
         .with_header("content-type", "application/json")
