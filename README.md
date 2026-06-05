@@ -160,7 +160,10 @@ The end-user tool. No server required for local deploys.
 | `stacker status` | Show running containers and health |
 | `stacker logs` | View container logs (`--follow`, `--service`, `--tail`) |
 | `stacker secrets` | Manage local `.env` secrets or remote Vault-backed `service` / `server` secrets |
-| `stacker list deployments` | List deployments on the Stacker server |
+| `stacker list deployments` / `stacker deployments` | List deployments on the Stacker server |
+| `stacker list servers` / `stacker servers` | List saved servers |
+| `stacker list clouds` / `stacker clouds` | List saved cloud credentials |
+| `stacker list ssh-keys` / `stacker ssh-keys` | List per-server SSH key status |
 | `stacker destroy` | Tear down the deployed stack |
 | `stacker config validate` | Validate `stacker.yml` syntax |
 | `stacker config show` | Show resolved configuration |

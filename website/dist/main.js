@@ -3,7 +3,6 @@
 // Stacker Website — TypeScript Interactions
 // Particle system, typing effect, scroll animations, counters
 // ============================================================
-Object.defineProperty(exports, "__esModule", { value: true });
 class ParticleSystem {
     constructor(canvas) {
         this.particles = [];
@@ -195,8 +194,17 @@ class ScrollAnimator {
                 }
             });
         }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+        const vh = window.innerHeight;
         document.querySelectorAll('[data-animate]').forEach((el) => {
-            this.observer.observe(el);
+            const rect = el.getBoundingClientRect();
+            if (rect.top < vh) {
+                // Element is already in the viewport — show it immediately
+                const delay = parseInt(el.dataset.delay || '0', 10);
+                setTimeout(() => el.classList.add('is-visible'), delay);
+            }
+            else {
+                this.observer.observe(el);
+            }
         });
     }
 }

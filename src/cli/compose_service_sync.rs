@@ -69,10 +69,7 @@ fn inject_external_network(
                 }
             }
             None => {
-                svc.insert(
-                    networks_key,
-                    serde_yaml::Value::Sequence(vec![network_val]),
-                );
+                svc.insert(networks_key, serde_yaml::Value::Sequence(vec![network_val]));
                 changed = true;
             }
             _ => {}
@@ -387,7 +384,9 @@ fn push_unique_network(networks: &mut Vec<String>, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::{AppSource, DeployConfig, DomainConfig, ProjectConfig, SslMode};
+    use crate::cli::config_parser::{
+        AppSource, DeployConfig, DomainConfig, ProjectConfig, SslMode,
+    };
     use std::collections::HashMap;
     use tempfile::TempDir;
 

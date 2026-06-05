@@ -258,6 +258,43 @@ enum StackerCommands {
         #[command(subcommand)]
         command: ListCommands,
     },
+    /// List all projects (alias for `stacker list projects`)
+    Projects {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List deployments (alias for `stacker list deployments`)
+    Deployments {
+        /// Filter by project ID
+        #[arg(long)]
+        project: Option<i32>,
+        /// Limit number of results
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all servers (alias for `stacker list servers`)
+    Servers {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List SSH keys (alias for `stacker list ssh-keys`)
+    #[command(name = "ssh-keys")]
+    SshKeys {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List saved cloud credentials (alias for `stacker list clouds`)
+    Clouds {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// SSH key management (generate, show, upload, repair)
     #[command(long_about = "Manage Stacker server SSH keys.\n\n\
 Cloud deploys automatically create a local backup SSH key under the Stacker config directory and authorize it on the deployed server when possible. The `generate` command manages the server-side Vault key; `inject` repairs a server by using an already-working local private key to add the Vault public key.")]
@@ -1935,6 +1972,27 @@ fn get_command(
                 Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
             }
         },
+        StackerCommands::Projects { json } => {
+            Box::new(stacker::console::commands::cli::list::ListProjectsCommand::new(json))
+        }
+        StackerCommands::Deployments {
+            json,
+            project,
+            limit,
+        } => Box::new(
+            stacker::console::commands::cli::list::ListDeploymentsCommand::new(
+                json, project, limit,
+            ),
+        ),
+        StackerCommands::Servers { json } => {
+            Box::new(stacker::console::commands::cli::list::ListServersCommand::new(json))
+        }
+        StackerCommands::SshKeys { json } => {
+            Box::new(stacker::console::commands::cli::list::ListSshKeysCommand::new(json))
+        }
+        StackerCommands::Clouds { json } => {
+            Box::new(stacker::console::commands::cli::list::ListCloudsCommand::new(json))
+        }
         StackerCommands::SshKey { command: ssh_cmd } => match ssh_cmd {
             SshKeyCommands::Generate { server_id, save_to } => Box::new(
                 stacker::console::commands::cli::ssh_key::SshKeyGenerateCommand::new(
@@ -2927,6 +2985,44 @@ mod tests {
             "secrets apps register should parse successfully"
         );
         assert!(sync.is_ok(), "secrets apps sync should parse successfully");
+    }
+
+    #[test]
+    fn test_top_level_servers_alias_parses() {
+        let parsed = Cli::try_parse_from(["stacker", "servers", "--json"]);
+
+        assert!(
+            parsed.is_ok(),
+            "top-level servers alias should parse successfully"
+        );
+    }
+
+    #[test]
+    fn test_top_level_deployments_alias_parses() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "deployments",
+            "--project",
+            "42",
+            "--limit",
+            "10",
+            "--json",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "top-level deployments alias should parse successfully"
+        );
+    }
+
+    #[test]
+    fn test_top_level_ssh_keys_alias_parses() {
+        let parsed = Cli::try_parse_from(["stacker", "ssh-keys", "--json"]);
+
+        assert!(
+            parsed.is_ok(),
+            "top-level ssh-keys alias should parse successfully"
+        );
     }
 
     #[test]

@@ -278,7 +278,14 @@ fn get_own_compose_running_ports(
     let compose_str = compose_path.to_string_lossy();
     let out = match executor.execute(
         "docker",
-        &["compose", "-f", &compose_str, "ps", "--format", "{{.Ports}}"],
+        &[
+            "compose",
+            "-f",
+            &compose_str,
+            "ps",
+            "--format",
+            "{{.Ports}}",
+        ],
     ) {
         Ok(o) if o.success() => o,
         _ => return Default::default(),

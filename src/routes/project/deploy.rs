@@ -470,11 +470,7 @@ async fn validate_hetzner_server_type(
         }
     };
 
-    let available: Vec<&str> = body
-        .server_types
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let available: Vec<&str> = body.server_types.iter().map(|t| t.name.as_str()).collect();
 
     if !available
         .iter()

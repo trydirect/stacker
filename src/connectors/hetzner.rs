@@ -168,7 +168,10 @@ impl HetznerCloudConnector for HetznerCloudClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(status_to_error(status, "Hetzner server types lookup failed"));
+            return Err(status_to_error(
+                status,
+                "Hetzner server types lookup failed",
+            ));
         }
 
         let body: HetznerServerTypesResponse = response
@@ -374,10 +377,7 @@ mod tests {
             .await;
 
         let client = HetznerCloudClient::new(api.uri()).unwrap();
-        let types = client
-            .list_server_types("test-token", None)
-            .await
-            .unwrap();
+        let types = client.list_server_types("test-token", None).await.unwrap();
 
         assert_eq!(types, vec!["cx22", "cx32", "cx42"]);
     }
