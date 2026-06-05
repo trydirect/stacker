@@ -1394,6 +1394,24 @@ enum AgentCommands {
         #[command(subcommand)]
         command: AgentListCommands,
     },
+    /// List apps deployed for the target deployment (alias for `stacker agent list apps`)
+    Apps {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
+    /// List containers running on the target server (alias for `stacker agent list containers`)
+    Containers {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Deployment hash
+        #[arg(long)]
+        deployment: Option<String>,
+    },
     /// Show agent and container status for the deployment
     Status {
         /// Output in JSON format
@@ -2465,6 +2483,12 @@ fn get_command(
                         Box::new(agent::AgentListContainersCommand::new(json, deployment))
                     }
                 },
+                AgentCommands::Apps { json, deployment } => {
+                    Box::new(agent::AgentListAppsCommand::new(json, deployment))
+                }
+                AgentCommands::Containers { json, deployment } => {
+                    Box::new(agent::AgentListContainersCommand::new(json, deployment))
+                }
                 AgentCommands::Status { json, deployment } => {
                     Box::new(agent::AgentStatusCommand::new(json, deployment))
                 }
@@ -3022,6 +3046,37 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "top-level ssh-keys alias should parse successfully"
+        );
+    }
+
+    #[test]
+    fn test_agent_apps_alias_parses() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "agent",
+            "apps",
+            "--deployment",
+            "deployment_demo",
+            "--json",
+        ]);
+
+        assert!(parsed.is_ok(), "agent apps alias should parse successfully");
+    }
+
+    #[test]
+    fn test_agent_containers_alias_parses() {
+        let parsed = Cli::try_parse_from([
+            "stacker",
+            "agent",
+            "containers",
+            "--deployment",
+            "deployment_demo",
+            "--json",
+        ]);
+
+        assert!(
+            parsed.is_ok(),
+            "agent containers alias should parse successfully"
         );
     }
 

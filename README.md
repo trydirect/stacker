@@ -184,6 +184,8 @@ The end-user tool. No server required for local deploys.
 | `stacker service list` | List available service templates (20+ built-in) |
 | `stacker agent health` | Check Status Panel agent connectivity and health |
 | `stacker agent status` | Display agent snapshot — containers, versions, uptime |
+| `stacker agent list apps` / `stacker agent apps` | List apps for the target deployment |
+| `stacker agent list containers` / `stacker agent containers` | List containers on the target server |
 | `stacker agent logs <app>` | Retrieve container logs from the remote agent |
 | `stacker agent restart <app>` | Restart a container via the agent |
 | `stacker agent deploy-app` | Deploy or update an app container on the target server. `--runtime kata\|runc` selects container runtime; `--env <name>` selects the deploy environment/profile |
