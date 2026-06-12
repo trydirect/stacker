@@ -25,6 +25,8 @@ pub async fn get_public_vendor_profile(
         tracing::info_span!("marketplace_get_public_vendor_profile", identifier = %identifier);
     let vendor_rating_sql =
         crate::db::rating::visible_average_subquery_for_creator("mvp.creator_user_id");
+    let vendor_rating_count_sql =
+        crate::db::rating::visible_count_subquery_for_creator("mvp.creator_user_id");
     let query = format!(
         r#"SELECT
             mvp.creator_user_id,
@@ -35,6 +37,8 @@ pub async fn get_public_vendor_profile(
             mvp.website_url,
             mvp.verification_status = 'verified' AS verified,
             {vendor_rating_sql} AS rating,
+            {vendor_rating_count_sql} AS rating_count,
+            5 AS rating_scale,
             COALESCE(mvp.metadata - 'onboarding', '{{}}'::jsonb) AS metadata,
             mvp.created_at
         FROM marketplace_vendor_profile mvp
@@ -60,6 +64,8 @@ pub async fn list_approved_by_creator(
 ) -> Result<Vec<PublicVendorTemplate>, String> {
     let template_rating_sql =
         crate::db::rating::visible_average_subquery_for_obj_id("t.product_id");
+    let template_rating_count_sql =
+        crate::db::rating::visible_count_subquery_for_obj_id("t.product_id");
     let mut base = format!(
         r#"SELECT
             t.id,
@@ -88,7 +94,9 @@ pub async fn list_approved_by_creator(
             t.infrastructure_requirements,
             t.public_ports,
             t.vendor_url,
-            {template_rating_sql} AS rating
+            {template_rating_sql} AS rating,
+            {template_rating_count_sql} AS rating_count,
+            5 AS rating_scale
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved' AND t.creator_user_id = $1"#,

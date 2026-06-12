@@ -56,6 +56,8 @@ async fn public_vendor_profile_returns_vendor_and_approved_templates_by_slug() {
     assert_eq!(true, body["item"]["vendor"]["verified"]);
     assert!(body["item"]["vendor"]["created_at"].is_string());
     assert_eq!(Some(4.0), body["item"]["vendor"]["rating"].as_f64());
+    assert_eq!(3, body["item"]["vendor"]["rating_count"]);
+    assert_eq!(5, body["item"]["vendor"]["rating_scale"]);
 
     let templates = body["item"]["templates"]
         .as_array()
@@ -75,12 +77,16 @@ async fn public_vendor_profile_returns_vendor_and_approved_templates_by_slug() {
         .find(|template| template["slug"] == "wordpress-pro")
         .expect("wordpress template should be present");
     assert_eq!(Some(4.5), wordpress["rating"].as_f64());
+    assert_eq!(2, wordpress["rating_count"]);
+    assert_eq!(5, wordpress["rating_scale"]);
 
     let postgres = templates
         .iter()
         .find(|template| template["slug"] == "postgres-backup")
         .expect("postgres template should be present");
     assert_eq!(Some(3.0), postgres["rating"].as_f64());
+    assert_eq!(1, postgres["rating_count"]);
+    assert_eq!(5, postgres["rating_scale"]);
 }
 
 #[tokio::test]
@@ -184,6 +190,8 @@ async fn public_vendor_profile_returns_empty_template_list_when_vendor_has_no_ap
     assert_eq!("beta-labs", body["item"]["vendor"]["slug"]);
     assert!(body["item"]["vendor"]["created_at"].is_string());
     assert!(body["item"]["vendor"]["rating"].is_null());
+    assert_eq!(0, body["item"]["vendor"]["rating_count"]);
+    assert_eq!(5, body["item"]["vendor"]["rating_scale"]);
     assert_eq!(
         0,
         body["item"]["templates"]

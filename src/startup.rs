@@ -242,10 +242,14 @@ pub async fn run(
                                          crate::routes::marketplace::creator::complete_onboarding_handler,
                                      )
                                      .service(crate::routes::marketplace::creator::my_reviews_handler)
-                                     .service(
-                                         crate::routes::marketplace::creator::vendor_profile_status_handler,
-                                     )
-                                      .service(crate::routes::marketplace::creator::create_handler)
+                                    .service(
+                                        crate::routes::marketplace::creator::vendor_profile_status_handler,
+                                    )
+                                    .service(crate::routes::marketplace::template_rating::summary_handler)
+                                    .service(crate::routes::marketplace::template_rating::my_rating_handler)
+                                    .service(crate::routes::marketplace::template_rating::upsert_handler)
+                                    .service(crate::routes::marketplace::template_rating::delete_handler)
+                                     .service(crate::routes::marketplace::creator::create_handler)
                                       .service(crate::routes::marketplace::creator::update_handler)
                                       .service(
                                           crate::routes::marketplace::creator::presign_asset_upload_handler,

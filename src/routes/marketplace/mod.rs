@@ -3,6 +3,7 @@ pub mod agent;
 pub mod categories;
 pub mod creator;
 pub mod public;
+pub mod template_rating;
 
 pub use admin::{
     approve_handler, list_plans_handler, list_submitted_handler, reject_handler,

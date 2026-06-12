@@ -548,8 +548,9 @@ pub async fn seed_marketplace_template_fixtures_for_vendor(
 pub async fn seed_marketplace_template_ratings_for_vendor(pool: &PgPool, creator_user_id: &str) {
     let ratings_by_slug: std::collections::BTreeMap<&str, &[i32]> =
         std::collections::BTreeMap::from([
-            ("wordpress-pro", &[5, 4][..]),
-            ("postgres-backup", &[3][..]),
+            // Internal rating storage is 0-10; public/template APIs expose 1-5 stars.
+            ("wordpress-pro", &[10, 8][..]),
+            ("postgres-backup", &[6][..]),
         ]);
 
     let templates = sqlx::query(

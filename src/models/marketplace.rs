@@ -156,6 +156,8 @@ pub struct PublicVendorProfile {
     pub website_url: Option<String>,
     pub verified: bool,
     pub rating: Option<f64>,
+    pub rating_count: i64,
+    pub rating_scale: i32,
     pub metadata: serde_json::Value,
     pub created_at: Option<DateTime<Utc>>,
 }
@@ -210,6 +212,27 @@ pub struct PublicVendorTemplate {
     #[sqlx(default)]
     pub update_mode_capabilities: Option<serde_json::Value>,
     pub rating: Option<f64>,
+    pub rating_count: i64,
+    pub rating_scale: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TemplateRatingSummary {
+    pub template_id: Uuid,
+    pub rating: Option<f64>,
+    pub rating_count: i64,
+    pub rating_scale: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MyTemplateRating {
+    pub template_id: Uuid,
+    pub rating_id: i32,
+    pub rating: f64,
+    pub rating_scale: i32,
+    pub comment: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
