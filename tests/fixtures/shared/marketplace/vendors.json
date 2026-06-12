@@ -1,0 +1,35 @@
+[
+  {
+    "creator_user_id": "vendor_acme",
+    "public_slug": "acme-cloud",
+    "display_name": "Acme Cloud",
+    "bio": "Production-ready app stacks for small teams.",
+    "avatar_url": "https://cdn.trydirect.test/vendors/acme/avatar.png",
+    "website_url": "https://acme.example",
+    "verification_status": "verified",
+    "onboarding_status": "completed",
+    "payouts_enabled": true,
+    "payout_provider": "stripe_connect",
+    "payout_account_ref": "acct_acme_fixture",
+    "metadata": {
+      "country": "DE",
+      "support_email": "support@acme.example"
+    }
+  },
+  {
+    "creator_user_id": "vendor_beta",
+    "public_slug": "beta-labs",
+    "display_name": "Beta Labs",
+    "bio": "Experimental templates and developer tools.",
+    "avatar_url": null,
+    "website_url": "https://beta.example",
+    "verification_status": "pending",
+    "onboarding_status": "completed",
+    "payouts_enabled": false,
+    "payout_provider": "stripe_connect",
+    "payout_account_ref": "acct_beta_fixture",
+    "metadata": {
+      "country": "NL"
+    }
+  }
+]

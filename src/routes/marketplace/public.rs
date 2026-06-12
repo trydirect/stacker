@@ -1,6 +1,7 @@
 use crate::configuration::Settings;
 use crate::db;
 use crate::helpers::JsonResponse;
+use crate::models;
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 
@@ -134,6 +135,37 @@ pub struct TemplateListQuery {
     pub category: Option<String>,
     pub tag: Option<String>,
     pub sort: Option<String>, // recent|popular|rating
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VendorPageQuery {
+    pub sort: Option<String>, // recent|popular|rating
+}
+
+#[tracing::instrument(name = "Get public vendor page", skip_all)]
+#[get("/{vendor}")]
+pub async fn vendor_detail_handler(
+    path: web::Path<(String,)>,
+    query: web::Query<VendorPageQuery>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let identifier = path.into_inner().0;
+    let vendor = db::marketplace::get_public_vendor_profile(pg_pool.get_ref(), &identifier)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Vendor not found"))?;
+
+    let templates = db::marketplace::list_approved_by_creator(
+        pg_pool.get_ref(),
+        &vendor.creator_user_id,
+        query.sort.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::build()
+        .set_item(models::PublicVendorPage { vendor, templates })
+        .ok("OK"))
 }
 
 #[derive(Debug, serde::Deserialize)]

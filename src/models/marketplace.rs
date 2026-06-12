@@ -146,6 +146,24 @@ pub struct MarketplaceVendorProfile {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct PublicVendorProfile {
+    pub creator_user_id: String,
+    pub slug: Option<String>,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub website_url: Option<String>,
+    pub verified: bool,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PublicVendorPage {
+    pub vendor: PublicVendorProfile,
+    pub templates: Vec<StackTemplate>,
+}
+
 impl MarketplaceVendorProfile {
     pub fn default_for_creator(creator_user_id: &str) -> Self {
         Self {
