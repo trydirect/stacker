@@ -223,6 +223,10 @@ pub async fn run(
                             .service(crate::routes::agreement::accept_handler),
                     )
                     .service(crate::routes::marketplace::categories::list_handler)
+                    .service(
+                        web::scope("/vendors")
+                            .service(crate::routes::marketplace::public::vendor_detail_handler),
+                    )
                              .service(
                                   web::scope("/templates")
                                       .service(crate::routes::marketplace::public::list_handler)

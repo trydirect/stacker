@@ -1,0 +1,55 @@
+[
+  {
+    "creator_user_id": "vendor_acme",
+    "creator_name": "Acme Cloud",
+    "name": "WordPress Pro",
+    "slug": "wordpress-pro",
+    "status": "approved",
+    "short_description": "Production WordPress stack",
+    "long_description": "A hardened WordPress stack for teams.",
+    "tags": ["wordpress", "cms"],
+    "tech_stack": {
+      "runtime": "php",
+      "database": "mysql"
+    },
+    "vendor_url": "https://acme.example"
+  },
+  {
+    "creator_user_id": "vendor_acme",
+    "creator_name": "Acme Cloud",
+    "name": "Postgres Backup",
+    "slug": "postgres-backup",
+    "status": "approved",
+    "short_description": "Scheduled Postgres backups",
+    "long_description": "Simple backup automation for Postgres.",
+    "tags": ["postgres", "backup"],
+    "tech_stack": {
+      "database": "postgres"
+    },
+    "vendor_url": "https://acme.example"
+  },
+  {
+    "creator_user_id": "vendor_acme",
+    "creator_name": "Acme Cloud",
+    "name": "Draft Internal Template",
+    "slug": "draft-internal-template",
+    "status": "draft",
+    "short_description": "Should not be public",
+    "long_description": "This template must not appear publicly.",
+    "tags": [],
+    "tech_stack": {},
+    "vendor_url": "https://acme.example"
+  },
+  {
+    "creator_user_id": "vendor_beta",
+    "creator_name": "Beta Labs",
+    "name": "Beta Draft Template",
+    "slug": "beta-draft-template",
+    "status": "draft",
+    "short_description": "Beta draft",
+    "long_description": "This beta template should not appear publicly.",
+    "tags": [],
+    "tech_stack": {},
+    "vendor_url": "https://beta.example"
+  }
+]

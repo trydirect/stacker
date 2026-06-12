@@ -452,8 +452,14 @@ fn print_health_result(info: &AgentCommandInfo) {
             if let Some(containers) = result.get("containers").and_then(|v| v.as_array()) {
                 println!("{:<28} {:<10} {}", "CONTAINER", "STATE", "STATUS");
                 for c in containers {
-                    let name = c.get("container_name").and_then(|v| v.as_str()).unwrap_or("-");
-                    let state = c.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+                    let name = c
+                        .get("container_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let state = c
+                        .get("container_state")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
                     let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
                     println!(
                         "{:<28} {} {:<8} {}",
@@ -469,9 +475,15 @@ fn print_health_result(info: &AgentCommandInfo) {
 
         // Single-container health
         if result_type == "health" {
-            let state = result.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+            let state = result
+                .get("container_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
             let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
-            let app = result.get("app_code").and_then(|v| v.as_str()).unwrap_or("-");
+            let app = result
+                .get("app_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
             println!(
                 "{}: {} {} ({})",
                 app,
@@ -508,7 +520,10 @@ fn print_all_container_health(containers: &[serde_json::Value]) {
     println!("Overall: {} {}", progress::status_icon(overall), overall);
     println!();
 
-    println!("{:<28} {:<12} {:<8} {:<8} {}", "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE");
+    println!(
+        "{:<28} {:<12} {:<8} {:<8} {}",
+        "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE"
+    );
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
@@ -656,8 +671,7 @@ impl CallableTrait for AgentHealthCommand {
         // No specific app requested → list all containers with health metrics.
         // This avoids sending app_code="all" to older agents that don't handle it.
         if self.app_code.is_none() && !self.include_system {
-            let containers = fetch_live_containers(&ctx, &hash)?
-                .unwrap_or_default();
+            let containers = fetch_live_containers(&ctx, &hash)?.unwrap_or_default();
             if self.json {
                 println!("{}", serde_json::to_string_pretty(&containers)?);
             } else {
@@ -1764,7 +1778,10 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
         return;
     }
 
-    println!("{:<24} {:<12} {:<22} {:<30}", "CONTAINER", "STATE", "PORTS", "IMAGE");
+    println!(
+        "{:<24} {:<12} {:<22} {:<30}",
+        "CONTAINER", "STATE", "PORTS", "IMAGE"
+    );
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c

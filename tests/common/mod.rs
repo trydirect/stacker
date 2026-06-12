@@ -5,13 +5,14 @@
 )]
 
 use actix_web::{get, web, App, HttpServer, Responder};
+use serde::Deserialize;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
 use stacker::connectors::config::UserServiceConfig;
 use stacker::forms;
 use stacker::helpers::AgentPgPool;
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use wiremock::MockServer;
 
@@ -352,6 +353,196 @@ pub async fn create_test_client(pool: &PgPool, user_id: &str) -> i32 {
         row.get::<i32, _>("id")
     })
     .expect("Failed to insert test client")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarketplaceVendorFixture {
+    pub creator_user_id: String,
+    pub public_slug: String,
+    pub display_name: String,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub website_url: Option<String>,
+    pub verification_status: String,
+    pub onboarding_status: String,
+    pub payouts_enabled: bool,
+    pub payout_provider: Option<String>,
+    pub payout_account_ref: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarketplaceTemplateFixture {
+    pub creator_user_id: String,
+    pub creator_name: String,
+    pub name: String,
+    pub slug: String,
+    pub status: String,
+    pub short_description: Option<String>,
+    pub long_description: Option<String>,
+    pub tags: serde_json::Value,
+    pub tech_stack: serde_json::Value,
+    pub vendor_url: Option<String>,
+}
+
+fn shared_fixtures_root() -> PathBuf {
+    if let Ok(path) = std::env::var("SHARED_FIXTURES_DIR") {
+        return PathBuf::from(path);
+    }
+
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+        .join("config/shared-fixtures")
+}
+
+fn read_marketplace_shared_fixture(file_name: &str) -> String {
+    let shared_path = shared_fixtures_root().join("marketplace").join(file_name);
+    if shared_path.exists() {
+        return std::fs::read_to_string(&shared_path).unwrap_or_else(|err| {
+            panic!(
+                "Failed to read shared fixture {}: {}",
+                shared_path.display(),
+                err
+            )
+        });
+    }
+
+    let fallback_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/shared/marketplace")
+        .join(file_name);
+    std::fs::read_to_string(&fallback_path).unwrap_or_else(|err| {
+        panic!(
+            "Failed to read fallback fixture {}: {}",
+            fallback_path.display(),
+            err
+        )
+    })
+}
+
+pub fn marketplace_vendor_fixtures() -> Vec<MarketplaceVendorFixture> {
+    serde_json::from_str(&read_marketplace_shared_fixture("vendors.json"))
+        .expect("marketplace vendor fixtures should be valid JSON")
+}
+
+pub fn marketplace_template_fixtures() -> Vec<MarketplaceTemplateFixture> {
+    serde_json::from_str(&read_marketplace_shared_fixture("templates.json"))
+        .expect("marketplace template fixtures should be valid JSON")
+}
+
+pub async fn seed_marketplace_vendor_fixture(
+    pool: &PgPool,
+    public_slug: &str,
+) -> MarketplaceVendorFixture {
+    let vendor = marketplace_vendor_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.public_slug == public_slug)
+        .unwrap_or_else(|| panic!("Unknown marketplace vendor fixture: {}", public_slug));
+
+    sqlx::query(
+        r#"INSERT INTO marketplace_vendor_profile (
+            creator_user_id,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            public_slug = EXCLUDED.public_slug,
+            display_name = EXCLUDED.display_name,
+            bio = EXCLUDED.bio,
+            avatar_url = EXCLUDED.avatar_url,
+            website_url = EXCLUDED.website_url,
+            verification_status = EXCLUDED.verification_status,
+            onboarding_status = EXCLUDED.onboarding_status,
+            payouts_enabled = EXCLUDED.payouts_enabled,
+            payout_provider = EXCLUDED.payout_provider,
+            payout_account_ref = EXCLUDED.payout_account_ref,
+            metadata = EXCLUDED.metadata,
+            updated_at = NOW()"#,
+    )
+    .bind(&vendor.creator_user_id)
+    .bind(&vendor.public_slug)
+    .bind(&vendor.display_name)
+    .bind(&vendor.bio)
+    .bind(&vendor.avatar_url)
+    .bind(&vendor.website_url)
+    .bind(&vendor.verification_status)
+    .bind(&vendor.onboarding_status)
+    .bind(vendor.payouts_enabled)
+    .bind(&vendor.payout_provider)
+    .bind(&vendor.payout_account_ref)
+    .bind(&vendor.metadata)
+    .execute(pool)
+    .await
+    .expect("Failed to seed marketplace vendor fixture");
+
+    vendor
+}
+
+pub async fn seed_marketplace_template_fixtures_for_vendor(
+    pool: &PgPool,
+    creator_user_id: &str,
+) -> Vec<MarketplaceTemplateFixture> {
+    let templates = marketplace_template_fixtures()
+        .into_iter()
+        .filter(|fixture| fixture.creator_user_id == creator_user_id)
+        .collect::<Vec<_>>();
+
+    for template in &templates {
+        sqlx::query(
+            r#"INSERT INTO stack_template (
+                creator_user_id,
+                creator_name,
+                name,
+                slug,
+                status,
+                short_description,
+                long_description,
+                tags,
+                tech_stack,
+                vendor_url,
+                approved_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                CASE WHEN $5 = 'approved' THEN NOW() ELSE NULL END
+            )
+            ON CONFLICT (slug) DO UPDATE SET
+                creator_user_id = EXCLUDED.creator_user_id,
+                creator_name = EXCLUDED.creator_name,
+                name = EXCLUDED.name,
+                status = EXCLUDED.status,
+                short_description = EXCLUDED.short_description,
+                long_description = EXCLUDED.long_description,
+                tags = EXCLUDED.tags,
+                tech_stack = EXCLUDED.tech_stack,
+                vendor_url = EXCLUDED.vendor_url,
+                approved_at = EXCLUDED.approved_at"#,
+        )
+        .bind(&template.creator_user_id)
+        .bind(&template.creator_name)
+        .bind(&template.name)
+        .bind(&template.slug)
+        .bind(&template.status)
+        .bind(&template.short_description)
+        .bind(&template.long_description)
+        .bind(&template.tags)
+        .bind(&template.tech_stack)
+        .bind(&template.vendor_url)
+        .execute(pool)
+        .await
+        .expect("Failed to seed marketplace template fixture");
+    }
+
+    templates
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

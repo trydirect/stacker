@@ -3,7 +3,9 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
 
-use crate::cli::config_parser::{AppType, DomainConfig, ProxyType, ServiceDefinition, StackerConfig};
+use crate::cli::config_parser::{
+    AppType, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
+};
 use crate::cli::error::CliError;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -153,7 +155,9 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
                 }
             }
             if injected {
-                compose.external_networks.push("default_network".to_string());
+                compose
+                    .external_networks
+                    .push("default_network".to_string());
             }
         }
 
@@ -868,11 +872,16 @@ mod tests {
             api_svc.networks
         );
         assert!(
-            compose.external_networks.contains(&"default_network".to_string()),
+            compose
+                .external_networks
+                .contains(&"default_network".to_string()),
             "default_network should be declared as external"
         );
         let yaml = compose.render();
-        assert!(yaml.contains("external: true"), "rendered YAML should declare default_network external:\n{yaml}");
+        assert!(
+            yaml.contains("external: true"),
+            "rendered YAML should declare default_network external:\n{yaml}"
+        );
     }
 
     #[test]

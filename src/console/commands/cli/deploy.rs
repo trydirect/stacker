@@ -2276,7 +2276,12 @@ impl DeployCommand {
         // Find compose file: prefer deploy.compose_file from stacker.yml, else default.
         let compose_path = stacker_config
             .as_ref()
-            .and_then(|c| c.deploy.compose_file.as_deref().map(|f| project_dir.join(f)))
+            .and_then(|c| {
+                c.deploy
+                    .compose_file
+                    .as_deref()
+                    .map(|f| project_dir.join(f))
+            })
             .unwrap_or_else(|| project_dir.join("docker-compose.yml"));
 
         if !compose_path.exists() {
@@ -2314,20 +2319,19 @@ impl DeployCommand {
             .to_string();
 
         // Auto-inject default_network when the service is an NginxProxyManager upstream.
-        let compose_content =
-            if let Some(ref cfg) = stacker_config {
-                if crate::cli::compose_service_sync::inject_npm_proxy_network(
-                    &mut compose_doc,
-                    service,
-                    &cfg.proxy,
-                ) {
-                    serde_yaml::to_string(&compose_doc)?
-                } else {
-                    compose_content
-                }
+        let compose_content = if let Some(ref cfg) = stacker_config {
+            if crate::cli::compose_service_sync::inject_npm_proxy_network(
+                &mut compose_doc,
+                service,
+                &cfg.proxy,
+            ) {
+                serde_yaml::to_string(&compose_doc)?
             } else {
                 compose_content
-            };
+            }
+        } else {
+            compose_content
+        };
 
         let ctx = crate::cli::runtime::CliRuntime::new("deploy")?;
         let hash = resolve_deployment_hash(&None, &ctx)?;
@@ -2388,7 +2392,10 @@ impl DeployCommand {
                         Ok::<_, CliError>(())
                     });
                     if let Err(e) = registered {
-                        eprintln!("Warning: deployed successfully but app registration failed: {}", e);
+                        eprintln!(
+                            "Warning: deployed successfully but app registration failed: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -5363,8 +5370,8 @@ monitoring:
     // These tests verify the compose-mutation step that deploy_single_service
     // performs before sending compose content to the agent.
 
-    use crate::cli::config_parser::{DomainConfig, ProxyConfig, ProxyType, SslMode};
     use crate::cli::compose_service_sync::inject_npm_proxy_network;
+    use crate::cli::config_parser::{DomainConfig, ProxyConfig, ProxyType, SslMode};
 
     fn npm_proxy_for(upstream: &str) -> ProxyConfig {
         ProxyConfig {
@@ -5381,7 +5388,8 @@ monitoring:
 
     #[test]
     fn deploy_single_service_compose_injection_adds_default_network_for_proxied_service() {
-        let compose_yaml = "services:\n  api:\n    image: myapp:latest\n    ports:\n      - \"3000:3000\"\n";
+        let compose_yaml =
+            "services:\n  api:\n    image: myapp:latest\n    ports:\n      - \"3000:3000\"\n";
         let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_yaml).unwrap();
 
         let changed = inject_npm_proxy_network(&mut doc, "api", &npm_proxy_for("api:3000"));

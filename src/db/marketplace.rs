@@ -1,7 +1,7 @@
 use crate::models::{
-    AnalyticsPeriod, AnalyticsSummary, CloudBreakdown, MarketplaceVendorProfile, SeriesBucket,
-    StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion, TemplateAnalytics,
-    TemplatePerformance, VendorAnalytics,
+    AnalyticsPeriod, AnalyticsSummary, CloudBreakdown, MarketplaceVendorProfile,
+    PublicVendorProfile, SeriesBucket, StackCategory, StackTemplate, StackTemplateReview,
+    StackTemplateVersion, TemplateAnalytics, TemplatePerformance, VendorAnalytics,
 };
 use chrono::{Duration, Utc};
 use serde_json::{Map, Value};
@@ -16,6 +16,100 @@ pub enum CreateDraftError {
     Internal,
 }
 
+pub async fn get_public_vendor_profile(
+    pool: &PgPool,
+    identifier: &str,
+) -> Result<Option<PublicVendorProfile>, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_public_vendor_profile", identifier = %identifier);
+
+    sqlx::query_as::<_, PublicVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            public_slug AS slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url,
+            verification_status = 'verified' AS verified,
+            COALESCE(metadata - 'onboarding', '{}'::jsonb) AS metadata
+        FROM marketplace_vendor_profile
+        WHERE public_slug = $1 OR creator_user_id = $1
+        LIMIT 1"#,
+    )
+    .bind(identifier)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_public_vendor_profile error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
+pub async fn list_approved_by_creator(
+    pool: &PgPool,
+    creator_user_id: &str,
+    sort: Option<&str>,
+) -> Result<Vec<StackTemplate>, String> {
+    let mut base = String::from(
+        r#"SELECT
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS category_code,
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
+            t.created_at,
+            t.updated_at,
+            t.approved_at,
+            t.verifications,
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        WHERE t.status = 'approved' AND t.creator_user_id = $1"#,
+    );
+
+    match sort.unwrap_or("recent") {
+        "popular" => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
+        ),
+        "rating" => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST",
+        ),
+        _ => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.approved_at DESC NULLS LAST, t.created_at DESC",
+        ),
+    }
+
+    let query_span = tracing::info_span!("marketplace_list_approved_by_creator", creator_user_id = %creator_user_id);
+
+    sqlx::query_as::<_, StackTemplate>(&base)
+        .bind(creator_user_id)
+        .fetch_all(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|e| {
+            tracing::error!("list_approved_by_creator error: {:?}", e);
+            "Internal Server Error".to_string()
+        })
+}
+
 pub async fn list_approved(
     pool: &PgPool,
     category: Option<&str>,
@@ -23,7 +117,7 @@ pub async fn list_approved(
     sort: Option<&str>,
 ) -> Result<Vec<StackTemplate>, String> {
     let mut base = String::from(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -118,7 +212,7 @@ pub async fn get_by_slug_and_user(
         tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
 
     sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -167,7 +261,7 @@ pub async fn get_by_slug_with_latest(
     let query_span = tracing::info_span!("marketplace_get_by_slug_with_latest", slug = %slug);
 
     let template = sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -208,7 +302,7 @@ pub async fn get_by_slug_with_latest(
     })?;
 
     let version = sqlx::query_as::<_, StackTemplateVersion>(
-        r#"SELECT 
+        r#"SELECT
             id,
             template_id,
             version,
@@ -243,7 +337,7 @@ pub async fn get_by_id(
     let query_span = tracing::info_span!("marketplace_get_by_id", id = %template_id);
 
     let template = sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -328,7 +422,7 @@ pub async fn create_draft(
             tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, required_plan_name, currency,
             public_ports, vendor_url
         ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13,$14,$15,$16)
-        RETURNING 
+        RETURNING
             id,
             creator_user_id,
             creator_name,
@@ -604,7 +698,7 @@ pub async fn update_metadata(
     }
 
     let res = sqlx::query(
-        r#"UPDATE stack_template SET 
+        r#"UPDATE stack_template SET
             name = COALESCE($2, name),
             short_description = COALESCE($3, short_description),
             long_description = COALESCE($4, long_description),
@@ -1019,7 +1113,7 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
     let query_span = tracing::info_span!("marketplace_list_mine", user = %user_id);
 
     sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -1073,7 +1167,7 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
     let query_span = tracing::info_span!("marketplace_admin_list_submitted");
 
     sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -1103,7 +1197,7 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status IN ('submitted', 'approved')
-        ORDER BY 
+        ORDER BY
             CASE t.status
                 WHEN 'submitted' THEN 0
                 WHEN 'approved' THEN 1
