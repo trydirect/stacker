@@ -1,7 +1,8 @@
 use crate::models::{
     AnalyticsPeriod, AnalyticsSummary, CloudBreakdown, MarketplaceVendorProfile,
-    PublicVendorProfile, SeriesBucket, StackCategory, StackTemplate, StackTemplateReview,
-    StackTemplateVersion, TemplateAnalytics, TemplatePerformance, VendorAnalytics,
+    PublicVendorProfile, PublicVendorTemplate, SeriesBucket, StackCategory, StackTemplate,
+    StackTemplateReview, StackTemplateVersion, TemplateAnalytics, TemplatePerformance,
+    VendorAnalytics,
 };
 use chrono::{Duration, Utc};
 use serde_json::{Map, Value};
@@ -22,37 +23,44 @@ pub async fn get_public_vendor_profile(
 ) -> Result<Option<PublicVendorProfile>, String> {
     let query_span =
         tracing::info_span!("marketplace_get_public_vendor_profile", identifier = %identifier);
-
-    sqlx::query_as::<_, PublicVendorProfile>(
+    let vendor_rating_sql =
+        crate::db::rating::visible_average_subquery_for_creator("mvp.creator_user_id");
+    let query = format!(
         r#"SELECT
-            creator_user_id,
-            public_slug AS slug,
-            display_name,
-            bio,
-            avatar_url,
-            website_url,
-            verification_status = 'verified' AS verified,
-            COALESCE(metadata - 'onboarding', '{}'::jsonb) AS metadata
-        FROM marketplace_vendor_profile
-        WHERE public_slug = $1 OR creator_user_id = $1
-        LIMIT 1"#,
-    )
-    .bind(identifier)
-    .fetch_optional(pool)
-    .instrument(query_span)
-    .await
-    .map_err(|e| {
-        tracing::error!("get_public_vendor_profile error: {:?}", e);
-        "Internal Server Error".to_string()
-    })
+            mvp.creator_user_id,
+            mvp.public_slug AS slug,
+            mvp.display_name,
+            mvp.bio,
+            mvp.avatar_url,
+            mvp.website_url,
+            mvp.verification_status = 'verified' AS verified,
+            {vendor_rating_sql} AS rating,
+            COALESCE(mvp.metadata - 'onboarding', '{{}}'::jsonb) AS metadata,
+            mvp.created_at
+        FROM marketplace_vendor_profile mvp
+        WHERE mvp.public_slug = $1 OR mvp.creator_user_id = $1
+        LIMIT 1"#
+    );
+
+    sqlx::query_as::<_, PublicVendorProfile>(&query)
+        .bind(identifier)
+        .fetch_optional(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_public_vendor_profile error: {:?}", e);
+            "Internal Server Error".to_string()
+        })
 }
 
 pub async fn list_approved_by_creator(
     pool: &PgPool,
     creator_user_id: &str,
     sort: Option<&str>,
-) -> Result<Vec<StackTemplate>, String> {
-    let mut base = String::from(
+) -> Result<Vec<PublicVendorTemplate>, String> {
+    let template_rating_sql =
+        crate::db::rating::visible_average_subquery_for_obj_id("t.product_id");
+    let mut base = format!(
         r#"SELECT
             t.id,
             t.creator_user_id,
@@ -79,7 +87,8 @@ pub async fn list_approved_by_creator(
             t.verifications,
             t.infrastructure_requirements,
             t.public_ports,
-            t.vendor_url
+            t.vendor_url,
+            {template_rating_sql} AS rating
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status = 'approved' AND t.creator_user_id = $1"#,
@@ -89,9 +98,10 @@ pub async fn list_approved_by_creator(
         "popular" => base.push_str(
             " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
         ),
-        "rating" => base.push_str(
-            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST",
-        ),
+        "rating" => base.push_str(&format!(
+            " ORDER BY (t.verifications @> '{{\"hardened_images\":true}}') DESC, {} DESC NULLS LAST",
+            template_rating_sql
+        )),
         _ => base.push_str(
             " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.approved_at DESC NULLS LAST, t.created_at DESC",
         ),
@@ -99,7 +109,7 @@ pub async fn list_approved_by_creator(
 
     let query_span = tracing::info_span!("marketplace_list_approved_by_creator", creator_user_id = %creator_user_id);
 
-    sqlx::query_as::<_, StackTemplate>(&base)
+    sqlx::query_as::<_, PublicVendorTemplate>(&base)
         .bind(creator_user_id)
         .fetch_all(pool)
         .instrument(query_span)
@@ -116,6 +126,8 @@ pub async fn list_approved(
     tag: Option<&str>,
     sort: Option<&str>,
 ) -> Result<Vec<StackTemplate>, String> {
+    let template_rating_sql =
+        crate::db::rating::visible_average_subquery_for_obj_id("t.product_id");
     let mut base = String::from(
         r#"SELECT
             t.id,
@@ -161,9 +173,10 @@ pub async fn list_approved(
         "popular" => base.push_str(
             " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
         ),
-        "rating" => base.push_str(
-            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST",
-        ),
+        "rating" => base.push_str(&format!(
+            " ORDER BY (t.verifications @> '{{\"hardened_images\":true}}') DESC, {} DESC NULLS LAST",
+            template_rating_sql
+        )),
         _ => base.push_str(
             " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.approved_at DESC NULLS LAST, t.created_at DESC",
         ),

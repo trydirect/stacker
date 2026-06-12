@@ -1,16 +1,27 @@
 use crate::models;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tracing::Instrument;
+
+pub fn visible_average_subquery_for_obj_id(obj_id_expr: &str) -> String {
+    format!(
+        "(SELECT AVG(r.rate)::float8 FROM rating r WHERE r.obj_id = {obj_id_expr} AND r.rate IS NOT NULL AND r.hidden = false)"
+    )
+}
+
+pub fn visible_average_subquery_for_creator(creator_user_id_expr: &str) -> String {
+    format!(
+        "(SELECT AVG(r.rate)::float8 FROM stack_template t JOIN rating r ON r.obj_id = t.product_id WHERE t.creator_user_id = {creator_user_id_expr} AND t.status = 'approved' AND r.rate IS NOT NULL AND r.hidden = false)"
+    )
+}
 
 pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
     let query_span = tracing::info_span!("Fetch all ratings.");
-    sqlx::query_as!(
-        models::Rating,
-        r#"SELECT 
+    sqlx::query_as::<_, models::Rating>(
+        r#"SELECT
             id,
             user_id,
             obj_id,
-            category as "category: _",
+            category,
             comment,
             hidden,
             rate,
@@ -18,7 +29,7 @@ pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
             updated_at
         FROM rating
         ORDER BY id DESC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .instrument(query_span)
@@ -31,13 +42,12 @@ pub async fn fetch_all(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
 
 pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Rating>, String> {
     let query_span = tracing::info_span!("Fetch rating by id");
-    sqlx::query_as!(
-        models::Rating,
-        r#"SELECT 
+    sqlx::query_as::<_, models::Rating>(
+        r#"SELECT
             id,
             user_id,
             obj_id,
-            category as "category: _",
+            category,
             comment,
             hidden,
             rate,
@@ -46,8 +56,8 @@ pub async fn fetch(pool: &PgPool, id: i32) -> Result<Option<models::Rating>, Str
         FROM rating
         WHERE id=$1
         LIMIT 1"#,
-        id
     )
+    .bind(id)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -68,13 +78,12 @@ pub async fn fetch_by_obj_and_user_and_category(
     category: models::RateCategory,
 ) -> Result<Option<models::Rating>, String> {
     let query_span = tracing::info_span!("Fetch rating by obj, user and category.");
-    sqlx::query_as!(
-        models::Rating,
-        r#"SELECT 
+    sqlx::query_as::<_, models::Rating>(
+        r#"SELECT
             id,
             user_id,
             obj_id,
-            category as "category: _",
+            category,
             comment,
             hidden,
             rate,
@@ -85,10 +94,10 @@ pub async fn fetch_by_obj_and_user_and_category(
             AND obj_id=$2
             AND category=$3
         LIMIT 1"#,
-        user_id,
-        obj_id,
-        category as _
     )
+    .bind(user_id)
+    .bind(obj_id)
+    .bind(category)
     .fetch_one(pool)
     .instrument(query_span)
     .await
@@ -104,24 +113,24 @@ pub async fn fetch_by_obj_and_user_and_category(
 
 pub async fn insert(pool: &PgPool, mut rating: models::Rating) -> Result<models::Rating, String> {
     let query_span = tracing::info_span!("Saving new rating details into the database");
-    sqlx::query!(
+    sqlx::query(
         r#"
         INSERT INTO rating (user_id, obj_id, category, comment, hidden, rate, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, NOW() at time zone 'utc', NOW() at time zone 'utc')
         RETURNING id
         "#,
-        rating.user_id,
-        rating.obj_id,
-        rating.category as _,
-        rating.comment,
-        rating.hidden,
-        rating.rate
     )
+    .bind(&rating.user_id)
+    .bind(rating.obj_id)
+    .bind(rating.category)
+    .bind(&rating.comment)
+    .bind(rating.hidden)
+    .bind(rating.rate)
     .fetch_one(pool)
     .instrument(query_span)
     .await
     .map(move |result| {
-        rating.id = result.id;
+        rating.id = result.get("id");
         rating
     })
     .map_err(|e| {
@@ -132,21 +141,21 @@ pub async fn insert(pool: &PgPool, mut rating: models::Rating) -> Result<models:
 
 pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rating, String> {
     let query_span = tracing::info_span!("Updating rating into the database");
-    sqlx::query!(
+    sqlx::query(
         r#"
         UPDATE rating
-        SET 
+        SET
             comment=$1,
             rate=$2,
             hidden=$3,
             updated_at=NOW() at time zone 'utc'
         WHERE id = $4
         "#,
-        rating.comment,
-        rating.rate,
-        rating.hidden,
-        rating.id
     )
+    .bind(&rating.comment)
+    .bind(rating.rate)
+    .bind(rating.hidden)
+    .bind(rating.id)
     .execute(pool)
     .instrument(query_span)
     .await
@@ -162,20 +171,19 @@ pub async fn update(pool: &PgPool, rating: models::Rating) -> Result<models::Rat
 
 pub async fn fetch_all_visible(pool: &PgPool) -> Result<Vec<models::Rating>, String> {
     let query_span = tracing::info_span!("Fetch all ratings.");
-    sqlx::query_as!(
-        models::Rating,
-        r#"SELECT 
+    sqlx::query_as::<_, models::Rating>(
+        r#"SELECT
             id,
             user_id,
             obj_id,
-            category as "category: _",
+            category,
             comment,
             hidden,
             rate,
             created_at,
             updated_at
         FROM rating
-        WHERE hidden = false 
+        WHERE hidden = false
         ORDER BY id DESC
         "#,
     )
@@ -190,19 +198,18 @@ pub async fn fetch_all_visible(pool: &PgPool) -> Result<Vec<models::Rating>, Str
 
 pub async fn delete(pool: &PgPool, rating: models::Rating) -> Result<(), String> {
     let query_span = tracing::info_span!("Deleting rating from the database");
-    sqlx::query!(
+    sqlx::query(
         r#"
         DELETE FROM rating
         WHERE id = $1
         "#,
-        rating.id
     )
+    .bind(rating.id)
     .execute(pool)
     .instrument(query_span)
     .await
     .map(|_| {
         tracing::info!("Rating {} has been deleted from the database", rating.id);
-        ()
     })
     .map_err(|err| {
         tracing::error!("Failed to execute query: {:?}", err);

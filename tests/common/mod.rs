@@ -6,6 +6,7 @@
 
 use actix_web::{get, web, App, HttpServer, Responder};
 use serde::Deserialize;
+use sqlx::Row;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use stacker::configuration::{get_configuration, DatabaseSettings, Settings};
 use stacker::connectors::config::UserServiceConfig;
@@ -15,7 +16,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use wiremock::MockServer;
-
 static ACCESS_CONTROL_CONF_READY: OnceLock<()> = OnceLock::new();
 
 pub async fn spawn_app_with_configuration(mut configuration: Settings) -> Option<TestApp> {
@@ -543,6 +543,71 @@ pub async fn seed_marketplace_template_fixtures_for_vendor(
     }
 
     templates
+}
+
+pub async fn seed_marketplace_template_ratings_for_vendor(pool: &PgPool, creator_user_id: &str) {
+    let ratings_by_slug: std::collections::BTreeMap<&str, &[i32]> =
+        std::collections::BTreeMap::from([
+            ("wordpress-pro", &[5, 4][..]),
+            ("postgres-backup", &[3][..]),
+        ]);
+
+    let templates = sqlx::query(
+        r#"SELECT id, slug FROM stack_template
+           WHERE creator_user_id = $1 AND status = 'approved'
+           ORDER BY slug"#,
+    )
+    .bind(creator_user_id)
+    .fetch_all(pool)
+    .await
+    .expect("Failed to fetch seeded marketplace templates for ratings");
+
+    for (index, row) in templates.iter().enumerate() {
+        let slug: String = row.get("slug");
+        let product_id = 910_000 + index as i32;
+
+        sqlx::query(
+            r#"INSERT INTO product (id, obj_id, obj_type, created_at, updated_at)
+               VALUES ($1, $1, 'marketplace_template', NOW(), NOW())
+               ON CONFLICT (id) DO NOTHING"#,
+        )
+        .bind(product_id)
+        .execute(pool)
+        .await
+        .expect("Failed to seed marketplace product for ratings");
+
+        sqlx::query("UPDATE stack_template SET product_id = $2 WHERE slug = $1")
+            .bind(&slug)
+            .bind(product_id)
+            .execute(pool)
+            .await
+            .expect("Failed to attach product_id to marketplace template");
+
+        if let Some(ratings) = ratings_by_slug.get(slug.as_str()) {
+            for (rating_index, rating_value) in ratings.iter().enumerate() {
+                sqlx::query(
+                    r#"INSERT INTO rating (
+                        user_id,
+                        obj_id,
+                        category,
+                        comment,
+                        hidden,
+                        rate,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, 'application', $3, false, $4, NOW(), NOW())"#,
+                )
+                .bind(format!("rating-user-{}-{}", slug, rating_index))
+                .bind(product_id)
+                .bind(format!("rating {} for {}", rating_index, slug))
+                .bind(*rating_value)
+                .execute(pool)
+                .await
+                .expect("Failed to seed marketplace rating");
+            }
+        }
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

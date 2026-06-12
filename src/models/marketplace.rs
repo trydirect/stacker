@@ -155,13 +155,67 @@ pub struct PublicVendorProfile {
     pub avatar_url: Option<String>,
     pub website_url: Option<String>,
     pub verified: bool,
+    pub rating: Option<f64>,
     pub metadata: serde_json::Value,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct PublicVendorTemplate {
+    pub id: Uuid,
+    pub creator_user_id: String,
+    pub creator_name: Option<String>,
+    pub name: String,
+    pub slug: String,
+    pub short_description: Option<String>,
+    pub long_description: Option<String>,
+    pub category_code: Option<String>,
+    pub product_id: Option<i32>,
+    pub tags: serde_json::Value,
+    pub tech_stack: serde_json::Value,
+    pub status: String,
+    pub is_configurable: Option<bool>,
+    pub view_count: Option<i32>,
+    pub deploy_count: Option<i32>,
+    pub required_plan_name: Option<String>,
+    pub price: Option<f64>,
+    pub billing_cycle: Option<String>,
+    pub currency: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub verifications: serde_json::Value,
+    pub infrastructure_requirements: serde_json::Value,
+    pub public_ports: Option<serde_json::Value>,
+    pub vendor_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub changelog: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub config_files: serde_json::Value,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub assets: serde_json::Value,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub seed_jobs: serde_json::Value,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub post_deploy_hooks: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub update_mode_capabilities: Option<serde_json::Value>,
+    pub rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PublicVendorPage {
     pub vendor: PublicVendorProfile,
-    pub templates: Vec<StackTemplate>,
+    pub templates: Vec<PublicVendorTemplate>,
 }
 
 impl MarketplaceVendorProfile {

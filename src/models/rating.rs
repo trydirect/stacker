@@ -1,7 +1,7 @@
 use crate::models;
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, sqlx::FromRow)]
 pub struct Rating {
     pub id: i32,
     pub user_id: String, // external user_id, 100, taken using token (middleware?)
