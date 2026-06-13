@@ -68,4 +68,15 @@ pub trait UserServiceConnector: Send + Sync {
     /// Get list of categories from User Service
     /// Calls GET /api/1.0/category and returns available categories
     async fn get_categories(&self) -> Result<Vec<CategoryInfo>, ConnectorError>;
+
+    /// Search the unified applications catalog used by try.direct/applications.
+    async fn search_marketplace_templates(
+        &self,
+        user_token: &str,
+        query: Option<&str>,
+        category: Option<&str>,
+        is_marketplace: Option<bool>,
+        page: Option<u32>,
+        max_results: Option<u32>,
+    ) -> Result<Vec<serde_json::Value>, ConnectorError>;
 }

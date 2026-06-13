@@ -189,6 +189,34 @@ enum StackerCommands {
         #[arg(long)]
         price: Option<f64>,
     },
+    /// Search marketplace application templates
+    Find {
+        /// Search query, e.g. "dify"
+        query: String,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of results to return
+        #[arg(long)]
+        limit: Option<u32>,
+    },
+    /// Create a project from a marketplace application template
+    Install {
+        /// Template slug from `stacker find`
+        template: String,
+        /// Project name override
+        #[arg(long)]
+        name: Option<String>,
+        /// Path to write stacker.yml (default: ./stacker.yml)
+        #[arg(long, value_name = "FILE")]
+        file: Option<std::path::PathBuf>,
+        /// Overwrite an existing stacker.yml
+        #[arg(long)]
+        force: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Show container logs
     Logs {
         /// Show logs for a specific service only
@@ -2576,6 +2604,22 @@ fn get_command(
             plan_type,
             price,
         )),
+        StackerCommands::Find { query, json, limit } => Box::new(
+            stacker::console::commands::cli::marketplace::MarketplaceFindCommand::new(
+                query, json, limit,
+            ),
+        ),
+        StackerCommands::Install {
+            template,
+            name,
+            file,
+            force,
+            json,
+        } => Box::new(
+            stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
+                template, name, file, force, json,
+            ),
+        ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {
             MarketplaceCommands::Status { name, json } => Box::new(
                 stacker::console::commands::cli::marketplace::MarketplaceStatusCommand::new(

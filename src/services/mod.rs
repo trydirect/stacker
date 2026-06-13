@@ -11,6 +11,7 @@ pub mod explain;
 pub mod grpc_pipe;
 pub mod handoff;
 pub mod log_cache;
+pub mod marketplace_access;
 pub mod marketplace_assets;
 pub mod payout_provider;
 pub mod project;
@@ -53,6 +54,7 @@ pub use explain::{
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;
+pub use marketplace_access::{validate_marketplace_template_access, MarketplaceAccessError};
 pub use marketplace_assets::{
     build_asset_key, presign_asset_download, presign_asset_upload, MarketplaceAssetStorageError,
     MarketplaceAssetUploadRequest, PresignedMarketplaceAssetResponse,

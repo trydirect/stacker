@@ -267,6 +267,7 @@ pub async fn run(
                                       .service(crate::routes::marketplace::creator::submit_handler)
                                       .service(crate::routes::marketplace::creator::resubmit_handler)
                                      .service(crate::routes::marketplace::public::detail_handler)
+                                     .service(crate::routes::marketplace::install::install_handler)
                                      .service(crate::routes::marketplace::public::increment_view_count_handler)
                                      .service(crate::routes::marketplace::public::increment_deploy_count_handler),
                     )
@@ -291,10 +292,12 @@ pub async fn run(
                             .service(
                                 crate::routes::marketplace::creator::presign_asset_download_handler,
                             )
-                            .service(crate::routes::marketplace::public::detail_handler),
+                           .service(crate::routes::marketplace::public::detail_handler)
+                           .service(crate::routes::marketplace::install::install_handler),
                     )
                     .service(
                         web::scope("/v1/marketplace")
+                            .service(crate::routes::marketplace::search::applications_search_handler)
                             .service(crate::routes::marketplace::public::install_script_handler)
                             .service(crate::routes::marketplace::public::download_stack_handler)
                             .service(crate::routes::marketplace::public::deploy_complete_handler)

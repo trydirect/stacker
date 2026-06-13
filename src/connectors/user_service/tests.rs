@@ -264,6 +264,53 @@ async fn test_get_installation_by_hash_uses_lightweight_route() {
 }
 
 #[tokio::test]
+async fn test_search_marketplace_templates_sends_query_upstream_and_filters_results() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/applications/")
+        .match_header("authorization", "Bearer test_token")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("q".to_string(), "dify".to_string()),
+            Matcher::UrlEncoded("max_results".to_string(), "10".to_string()),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_items": [
+                    {
+                        "name": "OpenClaw preconfigured",
+                        "code": "openclaw-preconfigured",
+                        "description": "Experimental OpenClaw setup",
+                        "is_from_marketplace": true
+                    },
+                    {
+                        "name": "Dify",
+                        "code": "dify",
+                        "description": "Dify AI workflow platform",
+                        "is_from_marketplace": true
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let results = client
+        .search_marketplace_templates("test_token", Some("dify"), None, None, None, Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("code").and_then(|value| value.as_str()),
+        Some("dify")
+    );
+}
+
+#[tokio::test]
 async fn test_get_installation_falls_back_to_legacy_install_route() {
     let mut server = Server::new_async().await;
     let _api_mock = server

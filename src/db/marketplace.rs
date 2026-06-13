@@ -136,7 +136,9 @@ pub async fn list_approved(
     pool: &PgPool,
     category: Option<&str>,
     tag: Option<&str>,
+    query: Option<&str>,
     sort: Option<&str>,
+    limit: Option<i64>,
 ) -> Result<Vec<StackTemplate>, String> {
     let template_rating_sql =
         crate::db::rating::visible_average_subquery_for_obj_id("t.product_id");
@@ -173,11 +175,25 @@ pub async fn list_approved(
         WHERE t.status = 'approved'"#,
     );
 
-    match (category.is_some(), tag.is_some()) {
-        (true, true) => base.push_str(" AND c.name = $1 AND t.tags ? $2"),
-        (true, false) => base.push_str(" AND c.name = $1"),
-        (false, true) => base.push_str(" AND t.tags ? $1"),
-        (false, false) => {}
+    let mut bind_index = 1;
+    if category.is_some() {
+        base.push_str(&format!(" AND c.name = ${}", bind_index));
+        bind_index += 1;
+    }
+    if tag.is_some() {
+        base.push_str(&format!(" AND t.tags ? ${}", bind_index));
+        bind_index += 1;
+    }
+    if query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        base.push_str(&format!(
+            " AND (t.slug ILIKE ${0} OR t.name ILIKE ${0} OR COALESCE(t.short_description, '') ILIKE ${0} OR COALESCE(t.long_description, '') ILIKE ${0} OR t.tags::text ILIKE ${0})",
+            bind_index
+        ));
+        bind_index += 1;
     }
 
     match sort.unwrap_or("recent") {
@@ -194,33 +210,27 @@ pub async fn list_approved(
         ),
     }
 
+    if limit.is_some() {
+        base.push_str(&format!(" LIMIT ${}", bind_index));
+    }
+
     let query_span = tracing::info_span!("marketplace_list_approved");
 
-    let res = if category.is_some() && tag.is_some() {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .bind(category.unwrap())
-            .bind(tag.unwrap())
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    } else if category.is_some() {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .bind(category.unwrap())
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    } else if tag.is_some() {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .bind(tag.unwrap())
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    } else {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    };
+    let mut sql_query = sqlx::query_as::<_, StackTemplate>(&base);
+    if let Some(category) = category {
+        sql_query = sql_query.bind(category);
+    }
+    if let Some(tag) = tag {
+        sql_query = sql_query.bind(tag);
+    }
+    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        sql_query = sql_query.bind(format!("%{}%", query));
+    }
+    if let Some(limit) = limit {
+        sql_query = sql_query.bind(limit.clamp(1, 100));
+    }
+
+    let res = sql_query.fetch_all(pool).instrument(query_span).await;
 
     res.map_err(|e| {
         tracing::error!("list_approved error: {:?}", e);

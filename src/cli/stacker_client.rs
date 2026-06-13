@@ -218,18 +218,32 @@ pub struct AuthorizePublicKeyResponse {
 // Marketplace response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Marketplace template summary as returned by `GET /marketplace`
+/// Marketplace template summary as returned by `GET /api/templates`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceTemplate {
     pub id: Option<serde_json::Value>,
+    #[serde(alias = "code")]
     pub slug: String,
     pub name: String,
+    #[serde(default, alias = "short_description")]
     pub description: Option<String>,
+    #[serde(alias = "category")]
     pub category_code: Option<String>,
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub tags: serde_json::Value,
     pub status: Option<String>,
+    pub required_plan_name: Option<String>,
+    pub price: Option<f64>,
+    pub billing_cycle: Option<String>,
+    pub is_from_marketplace: Option<bool>,
     pub stack_definition: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceInstallResponse {
+    pub project: ProjectInfo,
+    pub template: MarketplaceTemplate,
+    pub latest_version: serde_json::Value,
 }
 
 /// Marketplace template info as returned by `/api/templates/mine`
@@ -1725,13 +1739,31 @@ impl StackerClient {
         category: Option<&str>,
         tag: Option<&str>,
     ) -> Result<Vec<MarketplaceTemplate>, CliError> {
-        let mut url = format!("{}/marketplace", self.base_url);
+        self.search_marketplace_templates(None, category, tag, None)
+            .await
+    }
+
+    /// Search approved marketplace templates.
+    pub async fn search_marketplace_templates(
+        &self,
+        query: Option<&str>,
+        category: Option<&str>,
+        tag: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Vec<MarketplaceTemplate>, CliError> {
+        let mut url = format!("{}/api/v1/marketplace/applications", self.base_url);
         let mut params: Vec<String> = Vec::new();
+        if let Some(q) = query.map(str::trim).filter(|q| !q.is_empty()) {
+            params.push(format!("q={}", urlencoding::encode(q)));
+        }
         if let Some(c) = category {
-            params.push(format!("category={}", c));
+            params.push(format!("category={}", urlencoding::encode(c)));
         }
         if let Some(t) = tag {
-            params.push(format!("tag={}", t));
+            params.push(format!("tag={}", urlencoding::encode(t)));
+        }
+        if let Some(limit) = limit {
+            params.push(format!("limit={}", limit));
         }
         if !params.is_empty() {
             url = format!("{}?{}", url, params.join("&"));
@@ -1755,7 +1787,7 @@ impl StackerClient {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: stacker_api_failure_with_message(
                     "Marketplace listing failed",
-                    "GET /marketplace",
+                    "GET /api/v1/marketplace/applications",
                     status,
                     &body,
                     cli_debug_enabled(),
@@ -1777,7 +1809,7 @@ impl StackerClient {
         &self,
         slug: &str,
     ) -> Result<Option<MarketplaceTemplate>, CliError> {
-        let url = format!("{}/marketplace/{}", self.base_url, slug);
+        let url = format!("{}/api/templates/{}", self.base_url, slug);
         let resp = self
             .http
             .get(&url)
@@ -1800,7 +1832,7 @@ impl StackerClient {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: stacker_api_failure_with_message(
                     "Marketplace template fetch failed",
-                    &format!("GET /marketplace/{slug}"),
+                    &format!("GET /api/templates/{slug}"),
                     status,
                     &body,
                     cli_debug_enabled(),
@@ -1808,13 +1840,63 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<MarketplaceTemplate> =
+        let api: ApiResponse<serde_json::Value> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
-        Ok(api.item)
+        let Some(item) = api.item else {
+            return Ok(None);
+        };
+        let template = item.get("template").cloned().unwrap_or(item);
+        serde_json::from_value(template)
+            .map(Some)
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid marketplace template response: {}", e),
+            })
+    }
+
+    /// Create a Stacker project from a marketplace template.
+    pub async fn install_marketplace_template(
+        &self,
+        slug: &str,
+        name: Option<&str>,
+    ) -> Result<MarketplaceInstallResponse, CliError> {
+        let url = format!("{}/api/templates/{}/install", self.base_url, slug);
+        let body = serde_json::json!({ "name": name });
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::MarketplaceFailed(format!("Stacker server unreachable: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Marketplace install failed",
+                    &format!("POST /api/templates/{slug}/install"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        let api: ApiResponse<MarketplaceInstallResponse> = resp.json().await.map_err(|e| {
+            CliError::MarketplaceFailed(format!("Invalid response from Stacker server: {}", e))
+        })?;
+
+        api.item
+            .ok_or_else(|| CliError::MarketplaceFailed("No install response returned".to_string()))
     }
 
     // ── Deploy ───────────────────────────────────────

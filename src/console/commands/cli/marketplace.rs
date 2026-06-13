@@ -1,7 +1,150 @@
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
+use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::StackerClient;
 use crate::console::commands::CallableTrait;
+use std::path::PathBuf;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// marketplace find/install
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct MarketplaceFindCommand {
+    query: String,
+    json: bool,
+    limit: Option<u32>,
+}
+
+impl MarketplaceFindCommand {
+    pub fn new(query: String, json: bool, limit: Option<u32>) -> Self {
+        Self { query, json, limit }
+    }
+}
+
+impl CallableTrait for MarketplaceFindCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("find marketplace templates")?;
+        let templates = ctx.block_on(async {
+            ctx.client
+                .search_marketplace_templates(
+                    Some(&self.query),
+                    None,
+                    None,
+                    Some(self.limit.unwrap_or(20)),
+                )
+                .await
+        })?;
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&templates)?);
+            return Ok(());
+        }
+
+        if templates.is_empty() {
+            println!("No marketplace templates found for '{}'.", self.query);
+            return Ok(());
+        }
+
+        println!(
+            "{:<24} {:<28} {:<14} {}",
+            "TEMPLATE", "NAME", "PLAN", "DESCRIPTION"
+        );
+        println!("{}", "\u{2500}".repeat(92));
+        for template in &templates {
+            println!(
+                "{:<24} {:<28} {:<14} {}",
+                truncate(&template.slug, 22),
+                truncate(&template.name, 26),
+                template.required_plan_name.as_deref().unwrap_or("pro/team"),
+                truncate(template.description.as_deref().unwrap_or(""), 26),
+            );
+        }
+        eprintln!(
+            "\nInstall one with: stacker install {}",
+            templates
+                .first()
+                .map(|template| template.slug.as_str())
+                .unwrap_or("<template>")
+        );
+
+        Ok(())
+    }
+}
+
+pub struct MarketplaceInstallCommand {
+    template: String,
+    name: Option<String>,
+    file: PathBuf,
+    force: bool,
+    json: bool,
+}
+
+impl MarketplaceInstallCommand {
+    pub fn new(
+        template: String,
+        name: Option<String>,
+        file: Option<PathBuf>,
+        force: bool,
+        json: bool,
+    ) -> Self {
+        Self {
+            template,
+            name,
+            file: file.unwrap_or_else(|| PathBuf::from("stacker.yml")),
+            force,
+            json,
+        }
+    }
+}
+
+impl CallableTrait for MarketplaceInstallCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.file.exists() && !self.force && !self.json {
+            return Err(Box::new(CliError::ConfigValidation(format!(
+                "{} already exists. Re-run with --force to overwrite it.",
+                self.file.display()
+            ))));
+        }
+
+        let ctx = CliRuntime::new("install marketplace template")?;
+        let response = ctx.block_on(async {
+            ctx.client
+                .install_marketplace_template(&self.template, self.name.as_deref())
+                .await
+        })?;
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+
+        let stack_definition = response
+            .latest_version
+            .get("stack_definition")
+            .cloned()
+            .ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "Install response did not include a stack definition".to_string(),
+                )
+            })?;
+        let yaml = serde_yaml::to_string(&stack_definition).map_err(|err| {
+            CliError::ConfigValidation(format!("Failed to render stacker.yml: {}", err))
+        })?;
+        std::fs::write(&self.file, yaml)?;
+
+        println!(
+            "Installed '{}' as project #{}.",
+            response.template.slug, response.project.id
+        );
+        println!("Wrote {}", self.file.display());
+        println!(
+            "Deploy with: stacker deploy --project {}",
+            response.project.name
+        );
+
+        Ok(())
+    }
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // marketplace status

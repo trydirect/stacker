@@ -13,9 +13,11 @@ pub async fn list_handler(
 ) -> Result<impl Responder> {
     let category = query.category.as_deref();
     let tag = query.tag.as_deref();
+    let search = query.q.as_deref();
     let sort = query.sort.as_deref();
+    let limit = query.limit.map(i64::from);
 
-    db::marketplace::list_approved(pg_pool.get_ref(), category, tag, sort)
+    db::marketplace::list_approved(pg_pool.get_ref(), category, tag, search, sort, limit)
         .await
         .map_err(|err| {
             JsonResponse::<Vec<crate::models::StackTemplate>>::build().internal_server_error(err)
@@ -134,7 +136,9 @@ pub async fn download_stack_handler(
 pub struct TemplateListQuery {
     pub category: Option<String>,
     pub tag: Option<String>,
+    pub q: Option<String>,
     pub sort: Option<String>, // recent|popular|rating
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize)]

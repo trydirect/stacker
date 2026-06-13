@@ -41,6 +41,22 @@ fn parse_template_requirements(
     })
 }
 
+fn map_marketplace_access_error(err: services::MarketplaceAccessError) -> actix_web::Error {
+    match err {
+        services::MarketplaceAccessError::ValidationFailed(reason) => {
+            tracing::error!("Failed to validate marketplace access: {}", reason);
+            JsonResponse::<models::Project>::build()
+                .internal_server_error("Failed to validate marketplace access")
+        }
+        services::MarketplaceAccessError::MissingUserToken
+        | services::MarketplaceAccessError::InsufficientFeaturePlan
+        | services::MarketplaceAccessError::InsufficientTemplatePlan { .. }
+        | services::MarketplaceAccessError::TemplateNotOwned => {
+            JsonResponse::<models::Project>::build().forbidden(err.to_string())
+        }
+    }
+}
+
 fn validate_template_target_requirements(
     template: &models::StackTemplate,
     requirements: &models::InfrastructureRequirements,
@@ -1410,29 +1426,13 @@ pub async fn item(
             .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
         if let Some(template) = template {
-            if let Some(required_plan) = template.required_plan_name.as_deref() {
-                let has_plan = user_service
-                    .user_has_plan(&user.id, required_plan, user.access_token.as_deref())
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to validate plan: {:?}", err);
-                        JsonResponse::<models::Project>::build()
-                            .internal_server_error("Failed to validate subscription plan")
-                    })?;
-
-                if !has_plan {
-                    tracing::warn!(
-                        "User {} lacks required plan {} to deploy template {}",
-                        user.id,
-                        required_plan,
-                        template_id
-                    );
-                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
-                        "You require a '{}' subscription to deploy this template",
-                        required_plan
-                    )));
-                }
-            }
+            services::validate_marketplace_template_access(
+                user_service.get_ref(),
+                user.as_ref(),
+                &template,
+            )
+            .await
+            .map_err(map_marketplace_access_error)?;
 
             Some(template)
         } else {
@@ -1651,29 +1651,13 @@ pub async fn saved_item(
             .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
         if let Some(template) = template {
-            if let Some(required_plan) = template.required_plan_name.as_deref() {
-                let has_plan = user_service
-                    .user_has_plan(&user.id, required_plan, user.access_token.as_deref())
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to validate plan: {:?}", err);
-                        JsonResponse::<models::Project>::build()
-                            .internal_server_error("Failed to validate subscription plan")
-                    })?;
-
-                if !has_plan {
-                    tracing::warn!(
-                        "User {} lacks required plan {} to deploy template {}",
-                        user.id,
-                        required_plan,
-                        template_id
-                    );
-                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
-                        "You require a '{}' subscription to deploy this template",
-                        required_plan
-                    )));
-                }
-            }
+            services::validate_marketplace_template_access(
+                user_service.get_ref(),
+                user.as_ref(),
+                &template,
+            )
+            .await
+            .map_err(map_marketplace_access_error)?;
 
             Some(template)
         } else {
@@ -1875,6 +1859,7 @@ pub async fn rollback(
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
     vault_client: Data<VaultClient>,
 ) -> Result<impl Responder> {
     let id = path.0;
@@ -1898,6 +1883,13 @@ pub async fn rollback(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
         .ok_or_else(|| JsonResponse::<models::Project>::build().not_found("Template not found"))?;
+    services::validate_marketplace_template_access(
+        user_service.get_ref(),
+        user.as_ref(),
+        &template,
+    )
+    .await
+    .map_err(map_marketplace_access_error)?;
 
     let target_version = db::marketplace::list_versions_by_template(pg_pool.get_ref(), template_id)
         .await

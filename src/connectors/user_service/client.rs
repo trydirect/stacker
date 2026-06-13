@@ -597,4 +597,25 @@ impl UserServiceConnector for UserServiceClient {
             }
         }
     }
+
+    async fn search_marketplace_templates(
+        &self,
+        user_token: &str,
+        query: Option<&str>,
+        category: Option<&str>,
+        is_marketplace: Option<bool>,
+        page: Option<u32>,
+        max_results: Option<u32>,
+    ) -> Result<Vec<serde_json::Value>, ConnectorError> {
+        UserServiceClient::search_marketplace_templates(
+            self,
+            user_token,
+            query,
+            category,
+            is_marketplace,
+            page,
+            max_results,
+        )
+        .await
+    }
 }
