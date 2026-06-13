@@ -1820,10 +1820,14 @@ pub async fn ensure_vendor_onboarding_link(
     generated_account_ref: &str,
 ) -> Result<(MarketplaceVendorProfile, bool), String> {
     let existing = get_vendor_profile_by_creator(pool, creator_user_id).await?;
-    let linkage_created = existing
+    let reusable_existing_linkage = existing
         .as_ref()
-        .map(|profile| profile.payout_provider.is_none() || profile.payout_account_ref.is_none())
-        .unwrap_or(true);
+        .map(|profile| {
+            profile.payout_provider.as_deref() == Some(payout_provider)
+                && profile.payout_account_ref.is_some()
+        })
+        .unwrap_or(false);
+    let linkage_created = !reusable_existing_linkage;
 
     let verification_status = existing
         .as_ref()
@@ -1836,18 +1840,30 @@ pub async fn ensure_vendor_onboarding_link(
         Some("not_started") | None => "in_progress",
         Some(status) => status,
     };
-    let payouts_enabled = existing
-        .as_ref()
-        .map(|profile| profile.payouts_enabled)
-        .unwrap_or(false);
-    let payout_provider = existing
-        .as_ref()
-        .and_then(|profile| profile.payout_provider.as_deref())
-        .unwrap_or(payout_provider);
-    let payout_account_ref = existing
-        .as_ref()
-        .and_then(|profile| profile.payout_account_ref.as_deref())
-        .unwrap_or(generated_account_ref);
+    let payouts_enabled = if reusable_existing_linkage {
+        existing
+            .as_ref()
+            .map(|profile| profile.payouts_enabled)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let payout_provider = if reusable_existing_linkage {
+        existing
+            .as_ref()
+            .and_then(|profile| profile.payout_provider.as_deref())
+            .unwrap_or(payout_provider)
+    } else {
+        payout_provider
+    };
+    let payout_account_ref = if reusable_existing_linkage {
+        existing
+            .as_ref()
+            .and_then(|profile| profile.payout_account_ref.as_deref())
+            .unwrap_or(generated_account_ref)
+    } else {
+        generated_account_ref
+    };
     let existing_metadata = existing
         .as_ref()
         .map(|profile| profile.metadata.clone())
@@ -1873,6 +1889,7 @@ pub async fn complete_vendor_onboarding(
     pool: &PgPool,
     creator_user_id: &str,
     source: &str,
+    payouts_enabled: bool,
 ) -> Result<Option<(MarketplaceVendorProfile, bool)>, String> {
     let existing = match get_vendor_profile_by_creator(pool, creator_user_id).await? {
         Some(profile) => profile,
@@ -1888,7 +1905,22 @@ pub async fn complete_vendor_onboarding(
     }
 
     if existing.onboarding_status == "completed" {
-        return Ok(Some((existing, false)));
+        if existing.payouts_enabled == payouts_enabled {
+            return Ok(Some((existing, false)));
+        }
+
+        let profile = upsert_vendor_profile(
+            pool,
+            creator_user_id,
+            Some(&existing.verification_status),
+            Some("completed"),
+            Some(payouts_enabled),
+            existing.payout_provider.as_deref(),
+            existing.payout_account_ref.as_deref(),
+            Some(existing.metadata.clone()),
+        )
+        .await?;
+        return Ok(Some((profile, false)));
     }
 
     let metadata = merge_onboarding_completion_metadata(&existing.metadata, source);
@@ -1897,7 +1929,7 @@ pub async fn complete_vendor_onboarding(
         creator_user_id,
         Some(&existing.verification_status),
         Some("completed"),
-        Some(existing.payouts_enabled),
+        Some(payouts_enabled),
         existing.payout_provider.as_deref(),
         existing.payout_account_ref.as_deref(),
         Some(metadata),
@@ -1905,6 +1937,47 @@ pub async fn complete_vendor_onboarding(
     .await?;
 
     Ok(Some((profile, true)))
+}
+
+pub async fn complete_vendor_onboarding_by_payout_account_ref(
+    pool: &PgPool,
+    payout_provider: &str,
+    payout_account_ref: &str,
+    source: &str,
+    payouts_enabled: bool,
+) -> Result<Option<(MarketplaceVendorProfile, bool)>, String> {
+    let profile = sqlx::query_as::<_, MarketplaceVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata,
+            created_at,
+            updated_at
+        FROM marketplace_vendor_profile
+        WHERE payout_provider = $1 AND payout_account_ref = $2
+        LIMIT 1"#,
+    )
+    .bind(payout_provider)
+    .bind(payout_account_ref)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!(
+            "complete_vendor_onboarding_by_payout_account_ref lookup error: {:?}",
+            err
+        );
+        "Internal Server Error".to_string()
+    })?;
+
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+
+    complete_vendor_onboarding(pool, &profile.creator_user_id, source, payouts_enabled).await
 }
 
 /// Save a security scan result as a review record with security_checklist populated

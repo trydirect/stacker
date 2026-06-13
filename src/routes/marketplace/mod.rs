@@ -2,6 +2,7 @@ pub mod admin;
 pub mod agent;
 pub mod categories;
 pub mod creator;
+pub mod payout_webhook;
 pub mod public;
 pub mod template_rating;
 

@@ -107,6 +107,9 @@ pub async fn run(
         connectors::init_user_service(&settings.connectors, api_pool.clone());
     let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
     let install_service_connector = connectors::init_install_service(&settings.connectors);
+    let payout_provider = crate::services::init_payout_provider(&settings.payouts)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
+    let payout_provider = web::Data::new(payout_provider);
 
     let authorization =
         middleware::authorization::try_new(settings.database.connection_string()).await?;
@@ -149,6 +152,7 @@ pub async fn run(
             .app_data(handoff_store.clone())
             .app_data(oauth_http_client.clone())
             .app_data(oauth_cache.clone())
+            .app_data(payout_provider.clone())
             .service(
                 web::scope("/health_check")
                     .service(routes::health_check)
@@ -294,6 +298,7 @@ pub async fn run(
                             .service(crate::routes::marketplace::public::install_script_handler)
                             .service(crate::routes::marketplace::public::download_stack_handler)
                             .service(crate::routes::marketplace::public::deploy_complete_handler)
+                            .service(crate::routes::marketplace::payout_webhook::webhook_handler)
                             .service(web::scope("/agents").service(
                                 crate::routes::marketplace::agent::register_marketplace_agent_handler,
                             )),

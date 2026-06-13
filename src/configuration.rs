@@ -32,6 +32,8 @@ pub struct Settings {
     pub deployment: DeploymentSettings,
     #[serde(default)]
     pub marketplace_assets: MarketplaceAssetSettings,
+    #[serde(default)]
+    pub payouts: PayoutSettings,
 }
 
 impl std::fmt::Debug for Settings {
@@ -63,6 +65,7 @@ impl std::fmt::Debug for Settings {
             .field("connectors", &self.connectors)
             .field("deployment", &self.deployment)
             .field("marketplace_assets", &self.marketplace_assets)
+            .field("payouts", &self.payouts)
             .finish()
     }
 }
@@ -87,6 +90,7 @@ impl Default for Settings {
             connectors: ConnectorConfig::default(),
             deployment: DeploymentSettings::default(),
             marketplace_assets: MarketplaceAssetSettings::default(),
+            payouts: PayoutSettings::default(),
         }
     }
 }
@@ -198,6 +202,119 @@ impl Default for DeploymentSettings {
     fn default() -> Self {
         Self {
             config_base_path: Self::default_config_base_path(),
+        }
+    }
+}
+
+#[derive(serde::Deserialize, Clone)]
+pub struct PayoutSettings {
+    #[serde(default = "PayoutSettings::default_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub stripe_secret_key: String,
+    #[serde(default)]
+    pub stripe_webhook_secret: String,
+    #[serde(default = "PayoutSettings::default_stripe_api_base_url")]
+    pub stripe_api_base_url: String,
+    #[serde(default = "PayoutSettings::default_onboarding_return_url")]
+    pub onboarding_return_url: String,
+    #[serde(default = "PayoutSettings::default_onboarding_refresh_url")]
+    pub onboarding_refresh_url: String,
+    #[serde(default = "PayoutSettings::default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl std::fmt::Debug for PayoutSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PayoutSettings")
+            .field("provider", &self.provider)
+            .field("stripe_secret_key", &"[REDACTED]")
+            .field("stripe_webhook_secret", &"[REDACTED]")
+            .field("stripe_api_base_url", &self.stripe_api_base_url)
+            .field("onboarding_return_url", &self.onboarding_return_url)
+            .field("onboarding_refresh_url", &self.onboarding_refresh_url)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
+}
+
+impl Default for PayoutSettings {
+    fn default() -> Self {
+        Self {
+            provider: Self::default_provider(),
+            stripe_secret_key: String::new(),
+            stripe_webhook_secret: String::new(),
+            stripe_api_base_url: Self::default_stripe_api_base_url(),
+            onboarding_return_url: Self::default_onboarding_return_url(),
+            onboarding_refresh_url: Self::default_onboarding_refresh_url(),
+            timeout_secs: Self::default_timeout_secs(),
+        }
+    }
+}
+
+impl PayoutSettings {
+    fn default_provider() -> String {
+        std::env::var("STACKER_PAYOUT_PROVIDER").unwrap_or_else(|_| "mock".to_string())
+    }
+
+    fn default_stripe_api_base_url() -> String {
+        std::env::var("STRIPE_API_BASE_URL")
+            .unwrap_or_else(|_| "https://api.stripe.com".to_string())
+    }
+
+    fn default_onboarding_return_url() -> String {
+        std::env::var("PAYOUT_ONBOARDING_RETURN_URL").unwrap_or_else(|_| {
+            let public_url = std::env::var("STACKER_PUBLIC_URL")
+                .unwrap_or_else(|_| "http://localhost:8000".to_string());
+            format!(
+                "{}/marketplace/vendor/onboarding/return",
+                public_url.trim_end_matches('/')
+            )
+        })
+    }
+
+    fn default_onboarding_refresh_url() -> String {
+        std::env::var("PAYOUT_ONBOARDING_REFRESH_URL").unwrap_or_else(|_| {
+            let public_url = std::env::var("STACKER_PUBLIC_URL")
+                .unwrap_or_else(|_| "http://localhost:8000".to_string());
+            format!(
+                "{}/marketplace/vendor/onboarding/refresh",
+                public_url.trim_end_matches('/')
+            )
+        })
+    }
+
+    const fn default_timeout_secs() -> u64 {
+        15
+    }
+
+    pub fn overlay_env(self) -> Self {
+        let provider = std::env::var("STACKER_PAYOUT_PROVIDER").unwrap_or(self.provider);
+        let stripe_secret_key = std::env::var("STRIPE_SECRET_KEY")
+            .or_else(|_| std::env::var("PAYOUT_STRIPE_SECRET_KEY"))
+            .unwrap_or(self.stripe_secret_key);
+        let stripe_webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
+            .or_else(|_| std::env::var("PAYOUT_STRIPE_WEBHOOK_SECRET"))
+            .unwrap_or(self.stripe_webhook_secret);
+        let stripe_api_base_url =
+            std::env::var("STRIPE_API_BASE_URL").unwrap_or(self.stripe_api_base_url);
+        let onboarding_return_url =
+            std::env::var("PAYOUT_ONBOARDING_RETURN_URL").unwrap_or(self.onboarding_return_url);
+        let onboarding_refresh_url =
+            std::env::var("PAYOUT_ONBOARDING_REFRESH_URL").unwrap_or(self.onboarding_refresh_url);
+        let timeout_secs = std::env::var("PAYOUT_PROVIDER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(self.timeout_secs);
+
+        Self {
+            provider,
+            stripe_secret_key,
+            stripe_webhook_secret,
+            stripe_api_base_url,
+            onboarding_return_url,
+            onboarding_refresh_url,
+            timeout_secs,
         }
     }
 }
@@ -471,6 +588,7 @@ pub fn get_configuration() -> Result<Settings, config::ConfigError> {
 
     // Overlay Vault settings with environment variables if present
     config.vault = config.vault.overlay_env();
+    config.payouts = config.payouts.overlay_env();
 
     if let Ok(timeout) = std::env::var("STACKER_AGENT_POLL_TIMEOUT_SECS") {
         if let Ok(parsed) = timeout.parse::<u64>() {
