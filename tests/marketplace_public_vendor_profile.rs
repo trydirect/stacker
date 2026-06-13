@@ -90,6 +90,26 @@ async fn public_vendor_profile_returns_vendor_and_approved_templates_by_slug() {
 }
 
 #[tokio::test]
+async fn public_vendor_profile_cannot_be_loaded_by_creator_user_id() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let vendor = seed_vendor_page(&app, "acme-cloud").await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/vendors/{}",
+            app.address, vendor.creator_user_id
+        ))
+        .send()
+        .await
+        .expect("Failed to fetch public vendor profile by creator id");
+
+    assert_eq!(StatusCode::NOT_FOUND, response.status());
+}
+
+#[tokio::test]
 async fn public_vendor_profile_does_not_expose_sensitive_payout_fields() {
     // Given a vendor fixture with a payout account reference
     let app = match common::spawn_app().await {
@@ -97,6 +117,15 @@ async fn public_vendor_profile_does_not_expose_sensitive_payout_fields() {
         None => return,
     };
     let vendor = seed_vendor_page(&app, "acme-cloud").await;
+    sqlx::query(
+        r#"UPDATE marketplace_vendor_profile
+           SET metadata = metadata || '{"internal_note":"do-not-leak","onboarding":{"secret":"hidden"}}'::jsonb
+           WHERE creator_user_id = $1"#,
+    )
+    .bind(&vendor.creator_user_id)
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to add private metadata");
 
     // When the public vendor page is requested
     let response = reqwest::Client::new()
@@ -117,6 +146,13 @@ async fn public_vendor_profile_does_not_expose_sensitive_payout_fields() {
     // Then payout account references are not exposed anywhere in the payload
     assert!(body["item"]["vendor"].get("payout_account_ref").is_none());
     assert!(!body.to_string().contains("acct_acme_fixture"));
+    assert!(!body.to_string().contains("do-not-leak"));
+    assert!(body["item"]["vendor"]["metadata"]
+        .get("internal_note")
+        .is_none());
+    assert!(body["item"]["vendor"]["metadata"]
+        .get("onboarding")
+        .is_none());
 }
 
 #[tokio::test]

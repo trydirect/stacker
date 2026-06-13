@@ -26,7 +26,27 @@ pub fn visible_count_subquery_for_creator(creator_user_id_expr: &str) -> String 
     )
 }
 
-async fn fetch_approved_template_product_id(
+async fn fetch_approved_template_product_id_readonly(
+    pool: &PgPool,
+    template_id: &uuid::Uuid,
+) -> Result<Option<Option<i32>>, String> {
+    sqlx::query(
+        r#"SELECT product_id
+           FROM stack_template
+           WHERE id = $1 AND status = 'approved'
+           LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .await
+    .map(|row| row.map(|row| row.get::<Option<i32>, _>("product_id")))
+    .map_err(|err| {
+        tracing::error!("Failed to fetch approved template product_id: {:?}", err);
+        "Internal Server Error".to_string()
+    })
+}
+
+async fn ensure_approved_template_product_id(
     pool: &PgPool,
     template_id: &uuid::Uuid,
 ) -> Result<Option<i32>, String> {
@@ -53,7 +73,7 @@ async fn fetch_approved_template_product_id(
     .await
     .map(|row| row.and_then(|row| row.get::<Option<i32>, _>("product_id")))
     .map_err(|err| {
-        tracing::error!("Failed to fetch approved template product_id: {:?}", err);
+        tracing::error!("Failed to ensure approved template product_id: {:?}", err);
         "Internal Server Error".to_string()
     })
 }
@@ -62,8 +82,17 @@ pub async fn template_summary(
     pool: &PgPool,
     template_id: &uuid::Uuid,
 ) -> Result<Option<models::TemplateRatingSummary>, String> {
-    let Some(product_id) = fetch_approved_template_product_id(pool, template_id).await? else {
+    let Some(product_id) = fetch_approved_template_product_id_readonly(pool, template_id).await?
+    else {
         return Ok(None);
+    };
+    let Some(product_id) = product_id else {
+        return Ok(Some(models::TemplateRatingSummary {
+            template_id: *template_id,
+            rating: None,
+            rating_count: 0,
+            rating_scale: 5,
+        }));
     };
 
     let row = sqlx::query(
@@ -97,7 +126,11 @@ pub async fn fetch_template_rating_for_user(
     template_id: &uuid::Uuid,
     user_id: &str,
 ) -> Result<Option<models::MyTemplateRating>, String> {
-    let Some(product_id) = fetch_approved_template_product_id(pool, template_id).await? else {
+    let Some(product_id) = fetch_approved_template_product_id_readonly(pool, template_id).await?
+    else {
+        return Ok(None);
+    };
+    let Some(product_id) = product_id else {
         return Ok(None);
     };
 
@@ -147,34 +180,50 @@ pub async fn upsert_template_rating_for_user(
     stars: i32,
     comment: Option<String>,
 ) -> Result<Option<models::MyTemplateRating>, String> {
-    let Some(product_id) = fetch_approved_template_product_id(pool, template_id).await? else {
+    let Some(product_id) = ensure_approved_template_product_id(pool, template_id).await? else {
         return Ok(None);
     };
     let internal_rate = stars * 2;
 
-    let existing = fetch_by_obj_and_user_and_category(
-        pool,
-        product_id,
-        user_id.to_string(),
-        models::RateCategory::Application,
+    let rating = sqlx::query_as::<_, models::Rating>(
+        r#"INSERT INTO rating (
+            user_id,
+            obj_id,
+            category,
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, 'application', $3, false, $4, NOW() at time zone 'utc', NOW() at time zone 'utc')
+        ON CONFLICT (user_id, obj_id, category) WHERE hidden = false
+        DO UPDATE SET
+            comment = EXCLUDED.comment,
+            rate = EXCLUDED.rate,
+            hidden = false,
+            updated_at = NOW() at time zone 'utc'
+        RETURNING
+            id,
+            user_id,
+            obj_id,
+            category,
+            comment,
+            hidden,
+            rate,
+            created_at,
+            updated_at"#,
     )
-    .await?;
-
-    let rating = if let Some(mut rating) = existing {
-        rating.rate = Some(internal_rate);
-        rating.comment = comment;
-        rating.hidden = Some(false);
-        update(pool, rating).await?
-    } else {
-        let mut rating = models::Rating::default();
-        rating.user_id = user_id.to_string();
-        rating.obj_id = product_id;
-        rating.category = models::RateCategory::Application;
-        rating.comment = comment;
-        rating.hidden = Some(false);
-        rating.rate = Some(internal_rate);
-        insert(pool, rating).await?
-    };
+    .bind(user_id)
+    .bind(product_id)
+    .bind(comment)
+    .bind(internal_rate)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!("Failed to upsert template rating: {:?}", err);
+        "Internal Server Error".to_string()
+    })?;
 
     Ok(Some(models::MyTemplateRating {
         template_id: *template_id,
@@ -192,7 +241,11 @@ pub async fn hide_template_rating_for_user(
     template_id: &uuid::Uuid,
     user_id: &str,
 ) -> Result<Option<()>, String> {
-    let Some(product_id) = fetch_approved_template_product_id(pool, template_id).await? else {
+    let Some(product_id) = fetch_approved_template_product_id_readonly(pool, template_id).await?
+    else {
+        return Ok(None);
+    };
+    let Some(product_id) = product_id else {
         return Ok(None);
     };
 

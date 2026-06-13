@@ -39,10 +39,14 @@ pub async fn get_public_vendor_profile(
             {vendor_rating_sql} AS rating,
             {vendor_rating_count_sql} AS rating_count,
             5 AS rating_scale,
-            COALESCE(mvp.metadata - 'onboarding', '{{}}'::jsonb) AS metadata,
+            jsonb_strip_nulls(jsonb_build_object(
+                'country', mvp.metadata->'country',
+                'support_email', mvp.metadata->'support_email',
+                'socials', mvp.metadata->'socials'
+            )) AS metadata,
             mvp.created_at
         FROM marketplace_vendor_profile mvp
-        WHERE mvp.public_slug = $1 OR mvp.creator_user_id = $1
+        WHERE mvp.public_slug = $1
         LIMIT 1"#
     );
 

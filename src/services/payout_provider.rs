@@ -127,6 +127,13 @@ impl StripeConnectPayoutProvider {
                 "stripe_secret_key is required when payouts.provider=stripe_connect".to_string(),
             ));
         }
+        let webhook_secret = settings.stripe_webhook_secret.trim().to_string();
+        if webhook_secret.is_empty() {
+            return Err(PayoutProviderError::NotConfigured(
+                "stripe_webhook_secret is required when payouts.provider=stripe_connect"
+                    .to_string(),
+            ));
+        }
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(settings.timeout_secs))
@@ -136,7 +143,7 @@ impl StripeConnectPayoutProvider {
         Ok(Self {
             http_client,
             secret_key,
-            webhook_secret: settings.stripe_webhook_secret.clone(),
+            webhook_secret,
             api_base_url: settings
                 .stripe_api_base_url
                 .trim_end_matches('/')
@@ -280,9 +287,7 @@ impl PayoutProvider for StripeConnectPayoutProvider {
         payload: &[u8],
         signature: Option<&str>,
     ) -> Result<Option<PayoutWebhookUpdate>, PayoutProviderError> {
-        if !self.webhook_secret.trim().is_empty() {
-            verify_stripe_signature(payload, signature, &self.webhook_secret)?;
-        }
+        verify_stripe_signature(payload, signature, &self.webhook_secret)?;
 
         let event = serde_json::from_slice::<Value>(payload)
             .map_err(|err| PayoutProviderError::InvalidResponse(err.to_string()))?;
@@ -343,24 +348,28 @@ fn verify_stripe_signature(
     let timestamp = stripe_signature_part(signature_header, "t").ok_or_else(|| {
         PayoutProviderError::Request("Stripe-Signature header missing timestamp".to_string())
     })?;
+    let timestamp_i64 = timestamp.parse::<i64>().map_err(|_| {
+        PayoutProviderError::Request("Stripe-Signature timestamp is invalid".to_string())
+    })?;
+    let now = chrono::Utc::now().timestamp();
+    if (now - timestamp_i64).abs() > 300 {
+        return Err(PayoutProviderError::Request(
+            "Stripe webhook signature timestamp is outside tolerance".to_string(),
+        ));
+    }
+
     let expected_signature = stripe_signature_part(signature_header, "v1").ok_or_else(|| {
         PayoutProviderError::Request("Stripe-Signature header missing v1 signature".to_string())
     })?;
+    let expected_signature = hex_decode(expected_signature)?;
 
     let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes())
         .map_err(|err| PayoutProviderError::Request(err.to_string()))?;
     mac.update(timestamp.as_bytes());
     mac.update(b".");
     mac.update(payload);
-    let computed = hex_encode(&mac.finalize().into_bytes());
-
-    if computed != expected_signature {
-        return Err(PayoutProviderError::Request(
-            "Invalid Stripe webhook signature".to_string(),
-        ));
-    }
-
-    Ok(())
+    mac.verify_slice(&expected_signature)
+        .map_err(|_| PayoutProviderError::Request("Invalid Stripe webhook signature".to_string()))
 }
 
 fn stripe_signature_part<'a>(header: &'a str, key: &str) -> Option<&'a str> {
@@ -370,14 +379,31 @@ fn stripe_signature_part<'a>(header: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
+fn hex_decode(value: &str) -> Result<Vec<u8>, PayoutProviderError> {
+    if value.len() % 2 != 0 {
+        return Err(PayoutProviderError::Request(
+            "Stripe webhook signature hex is invalid".to_string(),
+        ));
     }
-    out
+
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for chunk in value.as_bytes().chunks_exact(2) {
+        let high = hex_value(chunk[0])?;
+        let low = hex_value(chunk[1])?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_value(byte: u8) -> Result<u8, PayoutProviderError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(PayoutProviderError::Request(
+            "Stripe webhook signature hex is invalid".to_string(),
+        )),
+    }
 }
 
 pub fn init_payout_provider(
@@ -391,5 +417,91 @@ pub fn init_payout_provider(
         other => Err(PayoutProviderError::NotConfigured(format!(
             "Unknown payout provider '{other}'. Expected 'mock' or 'stripe_connect'"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::configuration::PayoutSettings;
+
+    fn stripe_settings() -> PayoutSettings {
+        PayoutSettings {
+            provider: "stripe_connect".to_string(),
+            stripe_secret_key: "sk_test_123".to_string(),
+            stripe_webhook_secret: "whsec_test".to_string(),
+            stripe_api_base_url: "https://api.stripe.com".to_string(),
+            onboarding_return_url: "https://example.com/return".to_string(),
+            onboarding_refresh_url: "https://example.com/refresh".to_string(),
+            timeout_secs: 5,
+        }
+    }
+
+    fn test_hex_encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    fn sign_payload(payload: &[u8], timestamp: i64, secret: &str) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(timestamp.to_string().as_bytes());
+        mac.update(b".");
+        mac.update(payload);
+        format!(
+            "t={},v1={}",
+            timestamp,
+            test_hex_encode(&mac.finalize().into_bytes())
+        )
+    }
+
+    #[test]
+    fn stripe_provider_requires_webhook_secret() {
+        let mut settings = stripe_settings();
+        settings.stripe_webhook_secret.clear();
+
+        let err = match StripeConnectPayoutProvider::try_new(&settings) {
+            Ok(_) => panic!("stripe provider should require webhook secret"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("stripe_webhook_secret is required"));
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_stale_signature() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_1","details_submitted":true,"payouts_enabled":true}}}"#;
+        let stale_timestamp = chrono::Utc::now().timestamp() - 1_000;
+        let signature = sign_payload(payload, stale_timestamp, "whsec_test");
+
+        let err = provider
+            .parse_webhook_update(payload, Some(&signature))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("outside tolerance"));
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_parses_valid_account_update() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_1","details_submitted":true,"payouts_enabled":true}}}"#;
+        let signature = sign_payload(payload, chrono::Utc::now().timestamp(), "whsec_test");
+
+        let update = provider
+            .parse_webhook_update(payload, Some(&signature))
+            .await
+            .unwrap()
+            .expect("account.updated should produce update");
+
+        assert_eq!("stripe_connect", update.provider);
+        assert_eq!("acct_1", update.account_ref);
+        assert!(update.onboarding_completed);
+        assert!(update.payouts_enabled);
     }
 }

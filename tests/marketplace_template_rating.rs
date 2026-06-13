@@ -20,6 +20,45 @@ async fn seed_template(app: &common::TestApp, slug: &str) -> uuid::Uuid {
 }
 
 #[tokio::test]
+async fn public_rating_summary_does_not_create_product_for_unrated_template() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let template_id = seed_template(&app, "wordpress-pro").await;
+
+    let before: Option<i32> = sqlx::query("SELECT product_id FROM stack_template WHERE id = $1")
+        .bind(template_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("template lookup should work")
+        .get("product_id");
+    assert_eq!(None, before);
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/templates/{}/rating/summary",
+            app.address, template_id
+        ))
+        .send()
+        .await
+        .expect("Failed to fetch template rating summary");
+
+    assert_eq!(StatusCode::OK, response.status());
+    let body: Value = response.json().await.expect("summary JSON");
+    assert!(body["item"]["rating"].is_null());
+    assert_eq!(0, body["item"]["rating_count"]);
+
+    let after: Option<i32> = sqlx::query("SELECT product_id FROM stack_template WHERE id = $1")
+        .bind(template_id)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("template lookup should work")
+        .get("product_id");
+    assert_eq!(None, after);
+}
+
+#[tokio::test]
 async fn user_can_rate_template_by_template_id_without_product_id_knowledge() {
     let app = match common::spawn_app().await {
         Some(app) => app,
