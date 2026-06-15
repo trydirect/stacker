@@ -207,6 +207,7 @@ The end-user tool. No server required for local deploys.
 | `stacker pipe replay <exec-id>` | Re-run a previous pipe execution |
 | `stacker target [local\|cloud\|server]` | Switch deployment target mode |
 | `stacker env [local\|dev\|prod]` | Show or persist the active deploy environment/profile used by app-only updates |
+| `stacker whoami` | Show the active login, subscription plan, and current project deployment context |
 | `stacker submit` | Package current stack and submit to marketplace for review |
 | `stacker marketplace status` | Check submission status for your marketplace templates |
 | `stacker marketplace logs <name>` | Show review comments and history for a submission |

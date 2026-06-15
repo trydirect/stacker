@@ -361,7 +361,7 @@ async fn test_get_installation_falls_back_to_legacy_install_route() {
 }
 
 #[tokio::test]
-async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
+async fn test_get_subscription_plan_accepts_user_profile_fixture() {
     let mut server = Server::new_async().await;
     let _mock = server
         .mock("GET", "/oauth_server/api/me")
@@ -370,16 +370,30 @@ async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
         .with_header("content-type", "application/json")
         .with_body(
             json!({
-                "item": {
+                "user": {
                     "_id": "user-1",
+                    "owner": 410,
+                    "role": "root",
+                    "email": "user@example.com",
                     "plan": {
-                        "name": "Free",
-                        "code": "plan-free-periodically",
+                        "supported_stacks": {},
+                        "date_end": null,
+                        "name": "Team",
+                        "code": "plan-individual-monthly",
                         "includes": [
-                            { "code": "deploys-20", "name": "20 deploys per month" }
+                            { "code": "deploys-unlimited", "name": "Unlimited deploys" },
+                            { "code": "providers-all", "name": "All providers" },
+                            { "code": "support-email", "name": "Email support" }
                         ],
+                        "team": "TryDirect Team",
+                        "billing_email": "billing@try.direct",
+                        "date_of_purchase": "08 January 2026",
+                        "currency": "USD",
+                        "price": "79.00",
+                        "period": "month",
+                        "date_start": "08 January 2026",
                         "active": true,
-                        "price": "0.00"
+                        "billing_id": "sub_123"
                     }
                 }
             })
@@ -391,8 +405,11 @@ async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
     let client = UserServiceClient::new_public(&server.url());
     let plan = client.get_subscription_plan("test_token").await.unwrap();
 
-    assert_eq!(plan.name.as_deref(), Some("Free"));
-    assert_eq!(plan.code.as_deref(), Some("plan-free-periodically"));
+    assert_eq!(plan.name.as_deref(), Some("Team"));
+    assert_eq!(plan.code.as_deref(), Some("plan-individual-monthly"));
+    assert_eq!(plan.price.as_deref(), Some("79.00"));
+    assert_eq!(plan.currency.as_deref(), Some("USD"));
+    assert_eq!(plan.period.as_deref(), Some("month"));
     assert!(plan.includes.unwrap().is_array());
 }
 

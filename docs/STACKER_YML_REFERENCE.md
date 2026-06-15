@@ -1625,6 +1625,9 @@ A: Yes. Set `deploy.compose_file: ./docker-compose.yml` and Stacker will use it 
 **Q: What cloud providers are supported?**
 A: Hetzner, DigitalOcean, AWS, Linode, and Vultr. You must `stacker login` first and have the appropriate API keys configured in your TryDirect account.
 
+**Q: Can I have more than one agent for a project?**
+A: Yes. A Stacker project can have multiple deployments, and each deployment runs its own Status Panel agent. For example, the same project can have separate staging and production deployments on different servers. When you run agent commands without `--deployment <hash>`, the CLI resolves the target in this order: explicit `--deployment`, local deployment lock, then project name from `stacker.yml` (which resolves to the most recently active deployment). To target a specific agent in a multi-deployment project, pass `--deployment <hash>` explicitly.
+
 ---
 
 ## File Structure

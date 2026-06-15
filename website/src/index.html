@@ -657,6 +657,28 @@
     </div>
   </section>
 
+  <!-- Q&A Section -->
+  <section class="section" id="qa">
+    <div class="container">
+      <div class="section__header" data-animate="fade-up">
+        <span class="section__label">Q&amp;A</span>
+        <h2 class="section__title">Common deployment questions.<br><span class="gradient-text">Answered directly.</span></h2>
+      </div>
+      <div class="release__grid">
+        <article class="release-card" data-animate="fade-up">
+          <span class="release-card__eyebrow">Agents</span>
+          <h3 class="release-card__title">Can one Stacker project have more than one agent?</h3>
+          <p class="release-card__desc">Yes. A single project can have multiple deployments, and each deployment runs its own Status Panel agent. That means staging and production can belong to the same project while still using different agents on different servers.</p>
+        </article>
+        <article class="release-card" data-animate="fade-up" data-delay="100">
+          <span class="release-card__eyebrow">Targeting</span>
+          <h3 class="release-card__title">How do I talk to the right agent?</h3>
+          <p class="release-card__desc">Use <code>--deployment &lt;hash&gt;</code> when a project has more than one deployment. Without it, the CLI resolves the target from the local deployment lock or falls back to the most recently active deployment found from <code>stacker.yml</code>.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
   <!-- CTA Section -->
   <section class="section cta" id="cta">
     <div class="container">
