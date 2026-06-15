@@ -244,6 +244,7 @@ pub struct MarketplaceInstallResponse {
     pub project: ProjectInfo,
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
+    pub deployment_id: Option<i32>,
 }
 
 /// Marketplace template info as returned by `/api/templates/mine`
@@ -1863,9 +1864,10 @@ impl StackerClient {
         &self,
         slug: &str,
         name: Option<&str>,
+        deploy_form: Option<serde_json::Value>,
     ) -> Result<MarketplaceInstallResponse, CliError> {
         let url = format!("{}/api/templates/{}/install", self.base_url, slug);
-        let body = serde_json::json!({ "name": name });
+        let body = serde_json::json!({ "name": name, "deploy": deploy_form });
         let resp = self
             .http
             .post(&url)

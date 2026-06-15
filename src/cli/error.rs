@@ -253,7 +253,7 @@ impl fmt::Display for CliError {
                 write!(f, "I/O error: {err}")
             }
             Self::Typed(envelope) => {
-                write!(f, "{}", envelope.message)
+                write!(f, "{}", envelope.to_json())
             }
         }
     }

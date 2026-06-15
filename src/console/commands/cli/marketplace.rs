@@ -1,7 +1,8 @@
+use crate::cli::config_parser::StackerConfig;
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
-use crate::cli::stacker_client::StackerClient;
+use crate::cli::stacker_client::{build_deploy_form, StackerClient};
 use crate::console::commands::CallableTrait;
 use std::path::PathBuf;
 
@@ -47,7 +48,7 @@ impl CallableTrait for MarketplaceFindCommand {
 
         println!(
             "{:<24} {:<28} {:<14} {}",
-            "TEMPLATE", "NAME", "PLAN", "DESCRIPTION"
+            "ITEM", "NAME", "PLAN", "DESCRIPTION"
         );
         println!("{}", "\u{2500}".repeat(92));
         for template in &templates {
@@ -64,7 +65,7 @@ impl CallableTrait for MarketplaceFindCommand {
             templates
                 .first()
                 .map(|template| template.slug.as_str())
-                .unwrap_or("<template>")
+                .unwrap_or("<item>")
         );
 
         Ok(())
@@ -99,22 +100,41 @@ impl MarketplaceInstallCommand {
 
 impl CallableTrait for MarketplaceInstallCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.file.exists() && !self.force && !self.json {
-            return Err(Box::new(CliError::ConfigValidation(format!(
-                "{} already exists. Re-run with --force to overwrite it.",
-                self.file.display()
-            ))));
-        }
+        let deploy_form = if self.file.exists() {
+            let config = StackerConfig::from_file(&self.file)?;
+            let mut form = build_deploy_form(&config);
+            if let Some(stack) = form
+                .get_mut("stack")
+                .and_then(|value| value.as_object_mut())
+            {
+                stack.insert(
+                    "stack_code".to_string(),
+                    serde_json::Value::String(self.template.clone()),
+                );
+            }
+            Some(form)
+        } else {
+            None
+        };
 
         let ctx = CliRuntime::new("install marketplace template")?;
         let response = ctx.block_on(async {
             ctx.client
-                .install_marketplace_template(&self.template, self.name.as_deref())
+                .install_marketplace_template(&self.template, self.name.as_deref(), deploy_form)
                 .await
         })?;
 
         if self.json {
             println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+
+        if let Some(deployment_id) = response.deployment_id {
+            println!(
+                "Installed '{}' as project #{} and started deployment #{}.",
+                response.template.slug, response.project.id, deployment_id
+            );
+            println!("Track with: stacker deployments state {}", deployment_id);
             return Ok(());
         }
 

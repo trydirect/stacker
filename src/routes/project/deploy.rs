@@ -1383,21 +1383,18 @@ async fn execute_deployment(
     Ok((deploy_result, deployment_id))
 }
 
-#[tracing::instrument(name = "Deploy for every user", skip_all)]
-#[post("/{id}/deploy")]
-pub async fn item(
-    user: web::ReqData<Arc<models::User>>,
-    path: web::Path<(i32,)>,
-    mut form: web::Json<forms::project::Deploy>,
-    pg_pool: Data<PgPool>,
-    mq_manager: Data<MqManager>,
-    sets: Data<Settings>,
-    user_service: Data<Arc<dyn UserServiceConnector>>,
-    install_service: Data<Arc<dyn InstallServiceConnector>>,
-    vault_client: Data<VaultClient>,
-) -> Result<impl Responder> {
-    let id = path.0;
-    tracing::debug!("User {} is deploying project: {}", user.id, id);
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn deploy_project(
+    user: &models::User,
+    project: models::Project,
+    mut form: forms::project::Deploy,
+    pg_pool: &PgPool,
+    mq_manager: &MqManager,
+    settings: &Settings,
+    user_service: &Arc<dyn UserServiceConnector>,
+    install_service: &Arc<dyn InstallServiceConnector>,
+    vault_client: &VaultClient,
+) -> Result<(i32, i32)> {
     form.cloud.provider = form.cloud.provider.trim().to_string();
 
     if !form.validate().is_ok() {
@@ -1408,31 +1405,18 @@ pub async fn item(
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
     }
 
-    // Validate project
-    let project = db::project::fetch(pg_pool.get_ref(), id)
-        .await
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
-        .and_then(|project| match project {
-            Some(project) => Ok(project),
-            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
-        })?;
-
     validate_project_locked_cloud_provider(&project, &form.cloud.provider)
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
-        let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+        let template = db::marketplace::get_by_id(pg_pool, template_id)
             .await
             .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
         if let Some(template) = template {
-            services::validate_marketplace_template_access(
-                user_service.get_ref(),
-                user.as_ref(),
-                &template,
-            )
-            .await
-            .map_err(map_marketplace_access_error)?;
+            services::validate_marketplace_template_access(user_service, user, &template)
+                .await
+                .map_err(map_marketplace_access_error)?;
 
             Some(template)
         } else {
@@ -1478,7 +1462,7 @@ pub async fn item(
     let cloud_creds: models::Cloud = (&form.cloud).into();
 
     let cloud_creds = if Some(true) == cloud_creds.save_token {
-        db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
+        db::cloud::insert(pg_pool, cloud_creds.clone())
             .await
             .map_err(|_| {
                 JsonResponse::<models::Cloud>::build()
@@ -1491,7 +1475,7 @@ pub async fn item(
     // Handle server: if server_id provided, update existing; otherwise create new
     let server = if let Some(server_id) = form.server.server_id {
         // Update existing server
-        let existing = db::server::fetch(pg_pool.get_ref(), server_id)
+        let existing = db::server::fetch(pg_pool, server_id)
             .await
             .map_err(|_| {
                 JsonResponse::<models::Server>::build()
@@ -1520,12 +1504,9 @@ pub async fn item(
             server.connection_mode = form.server.connection_mode.clone().unwrap();
         }
 
-        db::server::update(pg_pool.get_ref(), server)
-            .await
-            .map_err(|_| {
-                JsonResponse::<models::Server>::build()
-                    .internal_server_error("Failed to update server")
-            })?
+        db::server::update(pg_pool, server).await.map_err(|_| {
+            JsonResponse::<models::Server>::build().internal_server_error("Failed to update server")
+        })?
     } else {
         // Create new server
         let mut server: models::Server = (&form.server).into();
@@ -1536,12 +1517,9 @@ pub async fn item(
             server.cloud_id = Some(cloud_creds.id);
         }
 
-        db::server::insert(pg_pool.get_ref(), server)
-            .await
-            .map_err(|_| {
-                JsonResponse::<models::Server>::build()
-                    .internal_server_error("Internal Server Error")
-            })?
+        db::server::insert(pg_pool, server).await.map_err(|_| {
+            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+        })?
     };
 
     validate_reused_cloud_server(&cloud_creds, &server)
@@ -1556,15 +1534,9 @@ pub async fn item(
     .await
     .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
-    ensure_default_status_panel_npm_credentials(
-        user.as_ref(),
-        &form,
-        pg_pool.get_ref(),
-        sets.get_ref(),
-        &server,
-    )
-    .await
-    .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    ensure_default_status_panel_npm_credentials(user, &form, pg_pool, settings, &server)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     if let Some(template) = marketplace_template.as_ref() {
         let requirements = parse_template_requirements(template)
@@ -1594,17 +1566,56 @@ pub async fn item(
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     }
 
-    let (project_id, deployment_id) = execute_deployment(
-        user.as_ref(),
+    execute_deployment(
+        user,
         project,
         &form,
-        pg_pool.get_ref(),
-        mq_manager.get_ref(),
-        install_service.get_ref(),
-        vault_client.get_ref(),
-        sets.get_ref(),
+        pg_pool,
+        mq_manager,
+        install_service,
+        vault_client,
+        settings,
         cloud_creds,
         server,
+    )
+    .await
+}
+
+#[tracing::instrument(name = "Deploy for every user", skip_all)]
+#[post("/{id}/deploy")]
+pub async fn item(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    form: web::Json<forms::project::Deploy>,
+    pg_pool: Data<PgPool>,
+    mq_manager: Data<MqManager>,
+    sets: Data<Settings>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
+    install_service: Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: Data<VaultClient>,
+) -> Result<impl Responder> {
+    let id = path.0;
+    tracing::debug!("User {} is deploying project: {}", user.id, id);
+
+    // Validate project
+    let project = db::project::fetch(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .and_then(|project| match project {
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+        })?;
+
+    let (project_id, deployment_id) = deploy_project(
+        user.as_ref(),
+        project,
+        form.into_inner(),
+        pg_pool.get_ref(),
+        mq_manager.get_ref(),
+        sets.get_ref(),
+        user_service.get_ref(),
+        install_service.get_ref(),
+        vault_client.get_ref(),
     )
     .await?;
 
