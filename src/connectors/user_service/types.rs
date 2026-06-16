@@ -49,6 +49,11 @@ pub struct UserProduct {
 /// User profile with ownership information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
+    /// Stable user identity from the OAuth server (Flask `_id` field).
+    /// This is what `deployment.user_id` is populated with on create —
+    /// the email field is *not* a join key.
+    #[serde(default, rename = "_id", alias = "id")]
+    pub id: String,
     pub email: String,
     pub plan: Option<serde_json::Value>, // Plan details from existing endpoint
     #[serde(default)]

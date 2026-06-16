@@ -114,8 +114,10 @@ pub async fn login_handler(
                 .internal_server_error(format!("Failed to fetch user profile: {}", e))
         })?;
 
-    // 3. Fetch user's deployments from Stacker DB
-    let deployments = db::deployment::fetch_by_user(api_pool.get_ref(), &profile.email, 50)
+    // 3. Fetch user's deployments from Stacker DB.
+    // deployment.user_id is the OAuth `_id`, not the email — querying by email
+    // returns zero rows even when the user has deployments.
+    let deployments = db::deployment::fetch_by_user(api_pool.get_ref(), &profile.id, 50)
         .await
         .map_err(|e| {
             helpers::JsonResponse::<AgentLoginResponse>::build()
@@ -157,7 +159,7 @@ pub async fn login_handler(
 
     Ok(HttpResponse::Ok().json(AgentLoginResponse {
         session_token: access_token,
-        user_id: profile.email,
+        user_id: profile.id,
         deployments: deployment_infos,
     }))
 }

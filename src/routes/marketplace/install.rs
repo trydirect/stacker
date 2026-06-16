@@ -334,7 +334,7 @@ async fn install_catalog_application(
     })?;
 
     let applications = user_service
-        .search_marketplace_templates(token, Some(slug), None, Some(true), Some(1), Some(10))
+        .search_marketplace_templates(token, Some(slug), None, None, Some(1), Some(10))
         .await
         .map_err(|err| {
             tracing::error!(
@@ -349,13 +349,7 @@ async fn install_catalog_application(
     let slug_lc = slug.to_ascii_lowercase();
     let application = applications
         .into_iter()
-        .find(|application| {
-            application
-                .get("code")
-                .and_then(|value| value.as_str())
-                .map(|code| code.to_ascii_lowercase() == slug_lc)
-                .unwrap_or(false)
-        })
+        .find(|application| catalog_application_matches_slug(application, &slug_lc))
         .ok_or_else(|| {
             JsonResponse::<serde_json::Value>::build().not_found(format!(
                 "Template or catalog application '{}' was not found",
@@ -405,6 +399,16 @@ async fn install_catalog_application(
             "rendered_by": "install_service"
         }),
         deployment_id,
+    })
+}
+
+fn catalog_application_matches_slug(application: &Value, slug_lc: &str) -> bool {
+    ["code", "slug"].iter().any(|field| {
+        application
+            .get(field)
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_ascii_lowercase() == slug_lc)
+            .unwrap_or(false)
     })
 }
 
@@ -505,5 +509,21 @@ mod tests {
             payload.custom.catalog_application["is_from_marketplace"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn catalog_application_slug_match_accepts_code_or_slug() {
+        assert!(super::catalog_application_matches_slug(
+            &json!({ "code": "dify" }),
+            "dify"
+        ));
+        assert!(super::catalog_application_matches_slug(
+            &json!({ "slug": "dify" }),
+            "dify"
+        ));
+        assert!(!super::catalog_application_matches_slug(
+            &json!({ "code": "wordpress" }),
+            "dify"
+        ));
     }
 }

@@ -103,6 +103,7 @@ impl UserServiceConnector for MockUserServiceConnector {
 
     async fn get_user_profile(&self, _user_token: &str) -> Result<UserProfile, ConnectorError> {
         Ok(UserProfile {
+            id: "mock-user-id".to_string(),
             email: "test@example.com".to_string(),
             plan: Some(serde_json::json!({
                 "name": "professional",
