@@ -1519,6 +1519,7 @@ mod tests {
             services: vec![service_definition("upload")],
             proxy: Default::default(),
             deploy: Default::default(),
+            install: Default::default(),
             environments: Default::default(),
             ai: Default::default(),
             monitoring: Default::default(),
