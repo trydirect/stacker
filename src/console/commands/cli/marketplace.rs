@@ -4,6 +4,7 @@ use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{build_deploy_form, StackerClient};
 use crate::console::commands::CallableTrait;
+use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -78,6 +79,8 @@ pub struct MarketplaceInstallCommand {
     file: PathBuf,
     force: bool,
     json: bool,
+    domain: Option<String>,
+    set_values: Vec<String>,
 }
 
 impl MarketplaceInstallCommand {
@@ -87,6 +90,8 @@ impl MarketplaceInstallCommand {
         file: Option<PathBuf>,
         force: bool,
         json: bool,
+        domain: Option<String>,
+        set_values: Vec<String>,
     ) -> Self {
         Self {
             template,
@@ -94,13 +99,15 @@ impl MarketplaceInstallCommand {
             file: file.unwrap_or_else(|| PathBuf::from("stacker.yml")),
             force,
             json,
+            domain,
+            set_values,
         }
     }
 }
 
 impl CallableTrait for MarketplaceInstallCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let deploy_form = if self.file.exists() {
+        let (mut deploy_form, config_inputs) = if self.file.exists() {
             let config = StackerConfig::from_file(&self.file)?;
             let mut form = build_deploy_form(&config);
             if let Some(stack) = form
@@ -112,15 +119,30 @@ impl CallableTrait for MarketplaceInstallCommand {
                     serde_json::Value::String(self.template.clone()),
                 );
             }
-            Some(form)
+            (Some(form), config.install.inputs)
         } else {
+            (None, Default::default())
+        };
+        let install_inputs =
+            resolve_install_inputs(config_inputs, self.domain.as_deref(), &self.set_values)?;
+        if let Some(form) = deploy_form.as_mut() {
+            apply_install_inputs_to_deploy_form(form, &install_inputs);
+        }
+        let install_inputs = if install_inputs.is_empty() {
             None
+        } else {
+            Some(install_inputs)
         };
 
         let ctx = CliRuntime::new("install marketplace template")?;
         let response = ctx.block_on(async {
             ctx.client
-                .install_marketplace_template(&self.template, self.name.as_deref(), deploy_form)
+                .install_marketplace_template(
+                    &self.template,
+                    self.name.as_deref(),
+                    deploy_form,
+                    install_inputs,
+                )
                 .await
         })?;
 
@@ -163,6 +185,80 @@ impl CallableTrait for MarketplaceInstallCommand {
         );
 
         Ok(())
+    }
+}
+
+fn normalize_install_input_key(key: &str) -> String {
+    match key.trim() {
+        "domain" | "base_domain" => "commonDomain".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn parse_set_value(entry: &str) -> Result<(String, Value), CliError> {
+    let (key, value) = entry.split_once('=').ok_or_else(|| {
+        CliError::ConfigValidation(format!(
+            "Invalid --set value '{}'. Expected KEY=VALUE.",
+            entry
+        ))
+    })?;
+    let key = normalize_install_input_key(key);
+    if key.trim().is_empty() {
+        return Err(CliError::ConfigValidation(
+            "Invalid --set value: key cannot be empty".to_string(),
+        ));
+    }
+    Ok((key, Value::String(value.trim().to_string())))
+}
+
+fn resolve_install_inputs(
+    mut inputs: Map<String, Value>,
+    domain: Option<&str>,
+    set_values: &[String],
+) -> Result<Map<String, Value>, CliError> {
+    if let Some(value) = inputs.remove("base_domain") {
+        inputs.entry("commonDomain".to_string()).or_insert(value);
+    }
+    if let Some(value) = inputs.remove("domain") {
+        inputs.entry("commonDomain".to_string()).or_insert(value);
+    }
+    if let Some(domain) = domain.map(str::trim).filter(|value| !value.is_empty()) {
+        inputs.insert(
+            "commonDomain".to_string(),
+            Value::String(domain.to_ascii_lowercase()),
+        );
+    }
+    for entry in set_values {
+        let (key, value) = parse_set_value(entry)?;
+        inputs.insert(key, value);
+    }
+    Ok(inputs)
+}
+
+fn apply_install_inputs_to_deploy_form(form: &mut Value, inputs: &Map<String, Value>) {
+    if inputs.is_empty() {
+        return;
+    }
+    if let Some(common_domain) = inputs.get("commonDomain").cloned() {
+        if let Some(obj) = form.as_object_mut() {
+            obj.insert("commonDomain".to_string(), common_domain);
+        }
+    }
+    let Some(stack) = form
+        .get_mut("stack")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return;
+    };
+    let vars = stack
+        .entry("vars".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(vars) = vars.as_array_mut() else {
+        return;
+    };
+    for (key, value) in inputs {
+        vars.retain(|entry| entry.get("key").and_then(Value::as_str) != Some(key.as_str()));
+        vars.push(serde_json::json!({ "key": key, "value": value }));
     }
 }
 
@@ -369,5 +465,84 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}\u{2026}", truncated)
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_install_inputs_to_deploy_form, resolve_install_inputs};
+    use serde_json::{json, Map, Value};
+
+    #[test]
+    fn install_domain_populates_common_domain_and_stack_vars() {
+        let inputs = resolve_install_inputs(Map::new(), Some("DIFY.COM"), &[])
+            .expect("inputs should resolve");
+        assert_eq!(inputs.get("commonDomain"), Some(&json!("dify.com")));
+
+        let mut form = json!({
+            "stack": {
+                "stack_code": "dify",
+                "vars": []
+            }
+        });
+        apply_install_inputs_to_deploy_form(&mut form, &inputs);
+
+        assert_eq!(form["commonDomain"], json!("dify.com"));
+        assert_eq!(
+            form["stack"]["vars"],
+            json!([{ "key": "commonDomain", "value": "dify.com" }])
+        );
+    }
+
+    #[test]
+    fn install_inputs_normalize_base_domain_and_cli_overrides_win() {
+        let mut config_inputs = Map::new();
+        config_inputs.insert("base_domain".to_string(), json!("example.com"));
+        config_inputs.insert("admin_email".to_string(), json!("admin@example.com"));
+
+        let inputs = resolve_install_inputs(
+            config_inputs,
+            Some("dify.com"),
+            &[
+                "admin_email=owner@dify.com".to_string(),
+                "public_domain=app.dify.com".to_string(),
+            ],
+        )
+        .expect("inputs should resolve");
+
+        assert_eq!(inputs.get("commonDomain"), Some(&json!("dify.com")));
+        assert_eq!(inputs.get("admin_email"), Some(&json!("owner@dify.com")));
+        assert_eq!(inputs.get("public_domain"), Some(&json!("app.dify.com")));
+        assert!(!inputs.contains_key("base_domain"));
+    }
+
+    #[test]
+    fn apply_install_inputs_replaces_existing_vars() {
+        let mut inputs = Map::new();
+        inputs.insert("commonDomain".to_string(), json!("new.example.com"));
+        inputs.insert("admin_email".to_string(), json!("admin@new.example.com"));
+        let mut form = json!({
+            "stack": {
+                "vars": [
+                    { "key": "commonDomain", "value": "old.example.com" },
+                    { "key": "keep", "value": "yes" }
+                ]
+            }
+        });
+
+        apply_install_inputs_to_deploy_form(&mut form, &inputs);
+
+        let vars = form["stack"]["vars"]
+            .as_array()
+            .expect("vars should be array");
+        assert_eq!(
+            vars.iter()
+                .filter(|entry| entry.get("key") == Some(&Value::String("commonDomain".to_string())))
+                .count(),
+            1
+        );
+        assert!(vars.contains(&json!({ "key": "keep", "value": "yes" })));
+        assert!(vars.contains(&json!({ "key": "commonDomain", "value": "new.example.com" })));
+        assert!(vars.contains(&json!({ "key": "admin_email", "value": "admin@new.example.com" })));
     }
 }

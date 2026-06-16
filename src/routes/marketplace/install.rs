@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use serde_valid::Validate;
 use sqlx::PgPool;
 
@@ -10,6 +11,7 @@ use crate::connectors::install_service::InstallServiceConnector;
 use crate::connectors::user_service::UserServiceConnector;
 use crate::forms;
 use crate::forms::project::ProjectForm;
+use crate::forms::project::Var;
 use crate::helpers::{JsonResponse, MqManager, VaultClient};
 use crate::{db, models, project_app, services};
 
@@ -18,6 +20,8 @@ pub struct InstallTemplateRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub deploy: Option<forms::project::Deploy>,
+    #[serde(default)]
+    pub install_inputs: Map<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -184,12 +188,14 @@ async fn maybe_deploy_installed_project(
     user_service: &Arc<dyn UserServiceConnector>,
     install_service: &Arc<dyn InstallServiceConnector>,
     vault_client: &VaultClient,
+    install_inputs: &Map<String, Value>,
 ) -> Result<(models::Project, Option<i32>)> {
     let Some(mut deploy_form) = deploy.take() else {
         return Ok((project, None));
     };
 
     deploy_form.stack.stack_code = Some(slug.to_string());
+    apply_install_inputs_to_deploy(&mut deploy_form, install_inputs);
     let project_for_response = project.clone();
     let (_, deployment_id) = crate::routes::project::deploy::deploy_project(
         user,
@@ -205,6 +211,53 @@ async fn maybe_deploy_installed_project(
     .await?;
 
     Ok((project_for_response, Some(deployment_id)))
+}
+
+fn apply_install_inputs_to_deploy(
+    deploy_form: &mut forms::project::Deploy,
+    install_inputs: &Map<String, Value>,
+) {
+    if install_inputs.is_empty() {
+        return;
+    }
+    let vars = deploy_form.stack.vars.get_or_insert_with(Vec::new);
+    for (key, value) in install_inputs {
+        vars.retain(|var| var.key.as_deref() != Some(key.as_str()));
+        vars.push(Var {
+            key: Some(key.clone()),
+            value: Some(value.clone()),
+        });
+    }
+}
+
+fn normalized_install_inputs(inputs: &Map<String, Value>) -> Map<String, Value> {
+    let mut normalized = inputs.clone();
+    if let Some(value) = normalized.remove("base_domain") {
+        normalized
+            .entry("commonDomain".to_string())
+            .or_insert(value);
+    }
+    if let Some(value) = normalized.remove("domain") {
+        normalized
+            .entry("commonDomain".to_string())
+            .or_insert(value);
+    }
+    normalized
+}
+
+fn attach_install_inputs(request_json: &mut Value, install_inputs: &Map<String, Value>) {
+    if install_inputs.is_empty() {
+        return;
+    }
+    if let Some(custom) = request_json
+        .get_mut("custom")
+        .and_then(|value| value.as_object_mut())
+    {
+        custom.insert(
+            "install_inputs".to_string(),
+            Value::Object(install_inputs.clone()),
+        );
+    }
 }
 
 async fn install_stack_template(
@@ -224,10 +277,12 @@ async fn install_stack_template(
         .map_err(map_access_error)?;
 
     let form = build_project_form(&template, &latest_version, request.name.as_deref())?;
-    let request_json = serde_json::to_value(&form).map_err(|err| {
+    let mut request_json = serde_json::to_value(&form).map_err(|err| {
         tracing::error!("Failed to serialize marketplace project form: {:?}", err);
         JsonResponse::<serde_json::Value>::build().internal_server_error("Internal Server Error")
     })?;
+    let install_inputs = normalized_install_inputs(&request.install_inputs);
+    attach_install_inputs(&mut request_json, &install_inputs);
 
     let mut project = insert_project_from_form(pg_pool, user, &form, request_json).await?;
     project.source_template_id = Some(template.id);
@@ -249,6 +304,7 @@ async fn install_stack_template(
         user_service,
         install_service,
         vault_client,
+        &install_inputs,
     )
     .await?;
 
@@ -321,6 +377,8 @@ async fn install_catalog_application(
     {
         custom.insert("catalog_application".to_string(), application.clone());
     }
+    let install_inputs = normalized_install_inputs(&request.install_inputs);
+    attach_install_inputs(&mut request_json, &install_inputs);
 
     let project = insert_project_from_form(pg_pool, user, &form, request_json).await?;
     let (project, deployment_id) = maybe_deploy_installed_project(
@@ -334,6 +392,7 @@ async fn install_catalog_application(
         user_service,
         install_service,
         vault_client,
+        &install_inputs,
     )
     .await?;
 

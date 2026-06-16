@@ -531,6 +531,12 @@ pub struct EnvironmentConfig {
     pub env_file: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallConfig {
+    #[serde(default)]
+    pub inputs: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Cloud provider settings for cloud deployments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudConfig {
@@ -732,6 +738,9 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub deploy: DeployConfig,
+
+    #[serde(default)]
+    pub install: InstallConfig,
 
     #[serde(default)]
     pub environments: BTreeMap<String, EnvironmentConfig>,
@@ -1386,6 +1395,7 @@ impl ConfigBuilder {
                 default_target: None,
                 targets: BTreeMap::new(),
             },
+            install: InstallConfig::default(),
             environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),

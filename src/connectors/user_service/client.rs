@@ -11,6 +11,20 @@ use super::types::{
 };
 use super::utils::is_plan_higher_tier;
 
+/// Parse the `/oauth_server/api/me` response body.
+/// The endpoint returns `{"user": {...}}`
+/// at the top level — both shapes are accepted for forward/backward compatibility.
+pub(super) fn parse_user_profile_response(text: &str) -> Result<UserProfile, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        user: UserProfile,
+    }
+    if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text) {
+        return Ok(wrapper.user);
+    }
+    serde_json::from_str::<UserProfile>(text)
+}
+
 /// HTTP-based User Service client
 pub struct UserServiceClient {
     pub(crate) base_url: String,
@@ -403,7 +417,7 @@ impl UserServiceConnector for UserServiceClient {
             .text()
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-        serde_json::from_str::<UserProfile>(&text).map_err(|e| {
+        parse_user_profile_response(&text).map_err(|e| {
             tracing::error!("Failed to parse user profile: {:?}", e);
             ConnectorError::InvalidResponse(text)
         })

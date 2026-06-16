@@ -1865,9 +1865,18 @@ impl StackerClient {
         slug: &str,
         name: Option<&str>,
         deploy_form: Option<serde_json::Value>,
+        install_inputs: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<MarketplaceInstallResponse, CliError> {
         let url = format!("{}/api/templates/{}/install", self.base_url, slug);
-        let body = serde_json::json!({ "name": name, "deploy": deploy_form });
+        let mut body = serde_json::json!({ "name": name, "deploy": deploy_form });
+        if let Some(install_inputs) = install_inputs {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert(
+                    "install_inputs".to_string(),
+                    serde_json::Value::Object(install_inputs),
+                );
+            }
+        }
         let resp = self
             .http
             .post(&url)

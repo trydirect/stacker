@@ -207,6 +207,12 @@ enum StackerCommands {
         /// Project name override
         #[arg(long)]
         name: Option<String>,
+        /// Base domain for Install Service commonDomain, e.g. dify.com
+        #[arg(long, value_name = "DOMAIN")]
+        domain: Option<String>,
+        /// Install input override. Repeat as needed, e.g. --set admin_email=owner@example.com
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set_values: Vec<String>,
         /// Path to write stacker.yml (default: ./stacker.yml)
         #[arg(long, value_name = "FILE")]
         file: Option<std::path::PathBuf>,
@@ -2615,9 +2621,11 @@ fn get_command(
             file,
             force,
             json,
+            domain,
+            set_values,
         } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
-                template, name, file, force, json,
+                template, name, file, force, json, domain, set_values,
             ),
         ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {

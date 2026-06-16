@@ -486,6 +486,34 @@ fn test_user_profile_deserialization() {
     assert_eq!(profile.products[1].external_id, Some(42));
 }
 
+/// Regression test: Flask `/api/me` returns `{"user": {...}}` via `jsonify(user=pub)`.
+/// The HTTP layer must unwrap that envelope before deserializing into `UserProfile`.
+#[test]
+fn test_parse_user_profile_unwraps_flask_user_envelope() {
+    use super::client::parse_user_profile_response;
+    let body = r#"{
+        "user": {
+            "email": "alice@example.com",
+            "plan": {"name": "Free"},
+            "products": []
+        }
+    }"#;
+    let profile = parse_user_profile_response(body).unwrap();
+    assert_eq!(profile.email, "alice@example.com");
+}
+
+#[test]
+fn test_parse_user_profile_accepts_unwrapped_body() {
+    use super::client::parse_user_profile_response;
+    let body = r#"{
+        "email": "bob@example.com",
+        "plan": null,
+        "products": []
+    }"#;
+    let profile = parse_user_profile_response(body).unwrap();
+    assert_eq!(profile.email, "bob@example.com");
+}
+
 /// Test ProductInfo with optional fields
 #[test]
 fn test_product_info_deserialization() {

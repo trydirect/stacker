@@ -53,9 +53,8 @@ pub async fn login_handler(
     // 1. Authenticate user against TryDirect OAuth server.
     // /auth/login lives at the user-service root, not under /oauth_server/api/,
     // so we use normalize_user_service_base_url() which strips the full tail.
-    let auth_base = crate::connectors::user_service::plan::normalize_user_service_base_url(
-        &settings.auth_url,
-    );
+    let auth_base =
+        crate::connectors::user_service::plan::normalize_user_service_base_url(&settings.auth_url);
     let login_url = format!("{}/auth/login", auth_base);
 
     let http_client = reqwest::Client::builder()
@@ -176,10 +175,7 @@ mod tests {
         let auth_url = "https://dev.try.direct/server/user/oauth_server/api/me";
         let base = normalize_user_service_base_url(auth_url);
         let login_url = format!("{}/auth/login", base);
-        assert_eq!(
-            login_url,
-            "https://dev.try.direct/server/user/auth/login"
-        );
+        assert_eq!(login_url, "https://dev.try.direct/server/user/auth/login");
     }
 
     #[test]
@@ -189,10 +185,7 @@ mod tests {
         let auth_url = "https://dev.try.direct/server/user/auth/login";
         let base = normalize_user_service_base_url(auth_url);
         let login_url = format!("{}/auth/login", base);
-        assert_eq!(
-            login_url,
-            "https://dev.try.direct/server/user/auth/login"
-        );
+        assert_eq!(login_url, "https://dev.try.direct/server/user/auth/login");
     }
 
     #[test]
@@ -200,9 +193,6 @@ mod tests {
         let auth_url = "https://dev.try.direct/server/user/oauth_server/api/me/";
         let base = normalize_user_service_base_url(auth_url);
         let login_url = format!("{}/auth/login", base);
-        assert_eq!(
-            login_url,
-            "https://dev.try.direct/server/user/auth/login"
-        );
+        assert_eq!(login_url, "https://dev.try.direct/server/user/auth/login");
     }
 }

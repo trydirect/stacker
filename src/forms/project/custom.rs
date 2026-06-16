@@ -44,6 +44,8 @@ pub struct Custom {
     pub deployment_artifacts: JsonValue,
     #[serde(default)]
     pub catalog_application: JsonValue,
+    #[serde(default)]
+    pub install_inputs: JsonValue,
     #[serde(flatten)]
     pub networks: forms::project::ComposeNetworks, // all networks
 }
