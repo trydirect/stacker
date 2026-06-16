@@ -486,10 +486,10 @@ fn test_user_profile_deserialization() {
     assert_eq!(profile.products[1].external_id, Some(42));
 }
 
-/// Regression test: Flask `/api/me` returns `{"user": {...}}` via `jsonify(user=pub)`.
-/// The HTTP layer must unwrap that envelope before deserializing into `UserProfile`.
+/// Regression test: the user service returns `{"user": {...}}`. The HTTP
+/// layer must unwrap that envelope before deserializing into `UserProfile`.
 #[test]
-fn test_parse_user_profile_unwraps_flask_user_envelope() {
+fn test_parse_user_profile_unwraps_user_envelope() {
     use super::client::parse_user_profile_response;
     let body = r#"{
         "user": {

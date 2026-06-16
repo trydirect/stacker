@@ -189,6 +189,7 @@ mod tests {
 
         async fn get_user_profile(&self, _user_token: &str) -> Result<UserProfile, ConnectorError> {
             Ok(UserProfile {
+                id: "test-user-id".to_string(),
                 email: "user@example.com".to_string(),
                 plan: None,
                 products: vec![UserProduct {
