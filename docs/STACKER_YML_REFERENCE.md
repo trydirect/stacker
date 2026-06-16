@@ -20,6 +20,7 @@
   - [type](#proxytype) · [auto_detect](#proxyauto_detect) · [domains](#proxydomains) · [config](#proxyconfig)
 - [deploy — Deployment Target](#deploy)
   - [target](#deploytarget) · [compose_file](#deploycompose_file) · [cloud](#deploycloud) · [server](#deployserver)
+- [install — Marketplace Install Inputs](#install)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
@@ -618,6 +619,33 @@ deploy:
 ```
 
 > **Security tip:** Use environment variables or `${VAR}` syntax to keep credentials out of version control.
+
+---
+
+## `install`
+
+*Optional* · `object` · Default: none
+
+Install-specific inputs used by `stacker install <slug>`. These values are
+merged with CLI flags such as `--domain` and `--set`, then sent to Stacker API
+and Install Service as install render inputs.
+
+```yaml
+install:
+  inputs:
+    commonDomain: example.com
+    admin_email: admin@example.com
+```
+
+`commonDomain` is the Install Service base-domain field. For convenience,
+`base_domain` and the CLI flag `--domain example.com` are normalized to
+`commonDomain`.
+
+CLI overrides take precedence over this section:
+
+```bash
+stacker install wordpress --domain example.com --set admin_email=owner@example.com
+```
 
 ---
 
