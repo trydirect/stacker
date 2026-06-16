@@ -1438,6 +1438,30 @@ app:
     }
 
     #[test]
+    fn test_parse_install_inputs() {
+        let yaml = r#"
+name: wordpress-site
+install:
+  inputs:
+    commonDomain: example.com
+    admin_email: admin@example.com
+deploy:
+  target: cloud
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.install.inputs.get("commonDomain"),
+            Some(&serde_json::json!("example.com"))
+        );
+        assert_eq!(
+            config.install.inputs.get("admin_email"),
+            Some(&serde_json::json!("admin@example.com"))
+        );
+    }
+
+    #[test]
     fn test_parse_full_config() {
         let yaml = r#"
 name: full-app
