@@ -1454,6 +1454,10 @@ pub(crate) async fn deploy_project(
     // carry inline credentials. This makes the install/catalog flow honor
     // `deploy.cloud.key` / `deploy.cloud.name` just like the explicit
     // `POST /project/{id}/deploy/{cloud_id}` route honors its path param.
+    // We hold on to the resolved saved cloud so the new server gets linked
+    // back to the saved cloud's DB id (otherwise `server.cloud_id` would
+    // stay NULL and the Install Service has no credentials to use).
+    let mut resolved_saved_cloud: Option<models::Cloud> = None;
     if form.cloud.provider != "own" && cloud_credentials_missing(&form.cloud) {
         if let Some(name) = form
             .cloud
@@ -1464,11 +1468,12 @@ pub(crate) async fn deploy_project(
         {
             match resolve_saved_cloud_for_user(pg_pool, &user.id, name).await {
                 Ok(Some(saved)) => {
-                    let decoded = forms::cloud::CloudForm::decode_model(saved, true);
+                    let decoded = forms::cloud::CloudForm::decode_model(saved.clone(), true);
                     form.cloud.cloud_token = decoded.cloud_token;
                     form.cloud.cloud_key = decoded.cloud_key;
                     form.cloud.cloud_secret = decoded.cloud_secret;
                     form.cloud.save_token = Some(false);
+                    resolved_saved_cloud = Some(saved);
                 }
                 Ok(None) => {
                     return Err(JsonResponse::<models::Project>::build().bad_request(
@@ -1519,18 +1524,23 @@ pub(crate) async fn deploy_project(
         }
     }
 
-    // Save cloud credentials if requested, capturing the returned cloud with its DB id
-    let cloud_creds: models::Cloud = (&form.cloud).into();
-
-    let cloud_creds = if Some(true) == cloud_creds.save_token {
-        db::cloud::insert(pg_pool, cloud_creds.clone())
-            .await
-            .map_err(|_| {
-                JsonResponse::<models::Cloud>::build()
-                    .internal_server_error("Internal Server Error")
-            })?
+    // Save cloud credentials if requested, capturing the returned cloud with its DB id.
+    // When the user is reusing a saved cloud (resolved above by name), keep
+    // that cloud's DB id so `server.cloud_id` is set correctly downstream.
+    let cloud_creds: models::Cloud = if let Some(saved) = resolved_saved_cloud.take() {
+        saved
     } else {
-        cloud_creds
+        let cloud_creds: models::Cloud = (&form.cloud).into();
+        if Some(true) == cloud_creds.save_token {
+            db::cloud::insert(pg_pool, cloud_creds.clone())
+                .await
+                .map_err(|_| {
+                    JsonResponse::<models::Cloud>::build()
+                        .internal_server_error("Internal Server Error")
+                })?
+        } else {
+            cloud_creds
+        }
     };
 
     // Handle server: if server_id provided, update existing; otherwise create new

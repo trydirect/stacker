@@ -3880,6 +3880,40 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     });
 
+    // Surface saved-credential and saved-server selectors so the Stacker API
+    // can resolve them server-side. Without these, install/catalog deploys
+    // would fail credential validation even when the user has registered the
+    // cloud and reused the same names in stacker.yml.
+    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
+        if let Some(form_cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
+            if let Some(key) = cloud_cfg.key.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                form_cloud.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(key.to_string()),
+                );
+                // Don't re-insert a duplicate credential when the user is
+                // reusing a saved one.
+                form_cloud.insert(
+                    "save_token".to_string(),
+                    serde_json::Value::Bool(false),
+                );
+            }
+        }
+        if let Some(server_name) = cloud_cfg
+            .server
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if let Some(form_server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+                form_server.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(server_name.to_string()),
+                );
+            }
+        }
+    }
+
     // Inject Docker registry credentials if provided (env vars or stacker.yml).
     // These flow through the Stacker server to the Install Service, which passes
     // them as Ansible extra vars (docker_registry, docker_username, docker_password).
