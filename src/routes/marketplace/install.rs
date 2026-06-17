@@ -260,6 +260,20 @@ fn attach_install_inputs(request_json: &mut Value, install_inputs: &Map<String, 
     }
 }
 
+fn ensure_catalog_application_has_deploy_context(
+    slug: &str,
+    request: &InstallTemplateRequest,
+) -> Result<()> {
+    if request.deploy.is_none() {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+            "Catalog application '{}' requires deployment context; refusing to create a project without starting a deployment",
+            slug
+        )));
+    }
+
+    Ok(())
+}
+
 async fn install_stack_template(
     template: models::StackTemplate,
     latest_version: models::StackTemplateVersion,
@@ -328,6 +342,8 @@ async fn install_catalog_application(
     install_service: &Arc<dyn InstallServiceConnector>,
     vault_client: &VaultClient,
 ) -> Result<InstallTemplateResponse> {
+    ensure_catalog_application_has_deploy_context(slug, request)?;
+
     let token = user.access_token.as_deref().ok_or_else(|| {
         JsonResponse::<serde_json::Value>::build()
             .forbidden("User token is required to install catalog applications")
@@ -477,9 +493,9 @@ pub async fn install_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::catalog_application_project_form;
+    use super::{catalog_application_project_form, ensure_catalog_application_has_deploy_context};
     use crate::{forms::project::Payload, models};
-    use serde_json::json;
+    use serde_json::{json, Map};
 
     #[test]
     fn catalog_application_project_form_preserves_catalog_context() {
@@ -525,5 +541,16 @@ mod tests {
             &json!({ "code": "wordpress" }),
             "dify"
         ));
+    }
+
+    #[test]
+    fn catalog_application_requires_deploy_context_before_project_creation() {
+        let request = super::InstallTemplateRequest {
+            name: None,
+            deploy: None,
+            install_inputs: Map::new(),
+        };
+
+        assert!(ensure_catalog_application_has_deploy_context("dify", &request).is_err());
     }
 }

@@ -2,10 +2,11 @@ use crate::cli::config_parser::StackerConfig;
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
-use crate::cli::stacker_client::{build_deploy_form, StackerClient};
+use crate::cli::stacker_client::{build_deploy_form, MarketplaceTemplate, StackerClient};
 use crate::console::commands::CallableTrait;
+use dialoguer::Confirm;
 use serde_json::{Map, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // marketplace find/install
@@ -107,7 +108,9 @@ impl MarketplaceInstallCommand {
 
 impl CallableTrait for MarketplaceInstallCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let (mut deploy_form, config_inputs) = if self.file.exists() {
+        let ctx = CliRuntime::new("install marketplace template")?;
+
+        let (mut deploy_form, config_inputs, generated_stacker_yml) = if self.file.exists() {
             let config = StackerConfig::from_file(&self.file)?;
             let mut form = build_deploy_form(&config);
             if let Some(stack) = form
@@ -119,10 +122,66 @@ impl CallableTrait for MarketplaceInstallCommand {
                     serde_json::Value::String(self.template.clone()),
                 );
             }
-            (Some(form), config.install.inputs)
+            (Some(form), config.install.inputs, false)
         } else {
-            (None, Default::default())
+            // No local stacker.yml. If this is a catalog application, we cannot
+            // install it without deploy context — instead of erroring out and
+            // leaving the user stuck, ask permission to generate a minimal
+            // stacker.yml using --domain and proceed with a real deployment.
+            let needs_deploy_context = ctx.block_on(async {
+                catalog_app_needs_deploy_context(&ctx.client, &self.template).await
+            })?;
+
+            if needs_deploy_context {
+                if !self.force && !confirm_generate_stacker_file(&self.file, &self.template)? {
+                    println!(
+                        "Aborted: no {} written and no remote project was created.",
+                        self.file.display()
+                    );
+                    return Ok(());
+                }
+                let config = ctx.block_on(async {
+                    generate_minimal_install_config(
+                        &ctx.client,
+                        &self.template,
+                        self.name.as_deref(),
+                        self.domain.as_deref(),
+                    )
+                    .await
+                })?;
+                let yaml = serde_yaml::to_string(&config).map_err(|err| {
+                    CliError::ConfigValidation(format!("Failed to render stacker.yml: {}", err))
+                })?;
+                std::fs::write(&self.file, &yaml)?;
+                let mut form = build_deploy_form(&config);
+                if let Some(stack) = form
+                    .get_mut("stack")
+                    .and_then(|value| value.as_object_mut())
+                {
+                    stack.insert(
+                        "stack_code".to_string(),
+                        serde_json::Value::String(self.template.clone()),
+                    );
+                }
+                if let Some(cloud) = config.deploy.cloud.as_ref() {
+                    if let Some(key) = cloud.key.as_deref() {
+                        if let Some(form_cloud) = form
+                            .get_mut("cloud")
+                            .and_then(|value| value.as_object_mut())
+                        {
+                            form_cloud.insert(
+                                "name".to_string(),
+                                serde_json::Value::String(key.to_string()),
+                            );
+                        }
+                    }
+                }
+                (Some(form), config.install.inputs, true)
+            } else {
+                (None, Default::default(), false)
+            }
         };
+
         let install_inputs =
             resolve_install_inputs(config_inputs, self.domain.as_deref(), &self.set_values)?;
         if let Some(form) = deploy_form.as_mut() {
@@ -134,7 +193,13 @@ impl CallableTrait for MarketplaceInstallCommand {
             Some(install_inputs)
         };
 
-        let ctx = CliRuntime::new("install marketplace template")?;
+        if generated_stacker_yml {
+            println!(
+                "Wrote {} with defaults. Starting deployment...",
+                self.file.display()
+            );
+        }
+
         let response = ctx.block_on(async {
             ctx.client
                 .install_marketplace_template(
@@ -160,18 +225,32 @@ impl CallableTrait for MarketplaceInstallCommand {
             return Ok(());
         }
 
-        let stack_definition = response
-            .latest_version
-            .get("stack_definition")
-            .cloned()
-            .ok_or_else(|| {
-                CliError::ConfigValidation(
-                    "Install response did not include a stack definition".to_string(),
-                )
-            })?;
-        let yaml = serde_yaml::to_string(&stack_definition).map_err(|err| {
+        let Some(stack_definition) = response_stack_definition(&response) else {
+            println!(
+                "Installed '{}' as project #{}.",
+                response.template.slug, response.project.id
+            );
+            if !generated_stacker_yml {
+                println!(
+                    "No local {} was written because this catalog application did not return a stack definition.",
+                    self.file.display()
+                );
+            }
+            return Ok(());
+        };
+        let yaml = serde_yaml::to_string(stack_definition).map_err(|err| {
             CliError::ConfigValidation(format!("Failed to render stacker.yml: {}", err))
         })?;
+
+        if !self.force && !confirm_stacker_file_write(&self.file)? {
+            println!(
+                "Installed '{}' as project #{}.",
+                response.template.slug, response.project.id
+            );
+            println!("Skipped writing {}.", self.file.display());
+            return Ok(());
+        }
+
         std::fs::write(&self.file, yaml)?;
 
         println!(
@@ -186,6 +265,140 @@ impl CallableTrait for MarketplaceInstallCommand {
 
         Ok(())
     }
+}
+
+fn response_stack_definition(
+    response: &crate::cli::stacker_client::MarketplaceInstallResponse,
+) -> Option<&Value> {
+    response
+        .latest_version
+        .get("stack_definition")
+        .filter(|value| value.is_object())
+}
+
+fn confirm_stacker_file_write(file: &std::path::Path) -> Result<bool, CliError> {
+    let action = if file.exists() { "update" } else { "create" };
+    Confirm::new()
+        .with_prompt(format!(
+            "Stacker wants to {} {} in the current directory. Allow?",
+            action,
+            file.display()
+        ))
+        .default(false)
+        .interact()
+        .map_err(|err| CliError::ConfigValidation(format!("Failed to read confirmation: {}", err)))
+}
+
+async fn catalog_app_needs_deploy_context(
+    client: &StackerClient,
+    template: &str,
+) -> Result<bool, CliError> {
+    // DB-backed marketplace templates can install standalone.
+    if client.get_marketplace_template(template).await?.is_some() {
+        return Ok(false);
+    }
+
+    // Otherwise check whether this is a known catalog application.
+    let applications = client
+        .search_marketplace_templates(Some(template), None, None, Some(10))
+        .await?;
+    Ok(applications
+        .iter()
+        .any(|application| marketplace_template_matches_slug(application, template)))
+}
+
+fn confirm_generate_stacker_file(file: &Path, template: &str) -> Result<bool, CliError> {
+    Confirm::new()
+        .with_prompt(format!(
+            "Stacker wants to create {} in the current directory with defaults to install and deploy '{}' to the cloud. Allow?",
+            file.display(),
+            template
+        ))
+        .default(true)
+        .interact()
+        .map_err(|err| CliError::ConfigValidation(format!("Failed to read confirmation: {}", err)))
+}
+
+fn cloud_provider_from_code(code: &str) -> Option<crate::cli::config_parser::CloudProvider> {
+    use crate::cli::config_parser::CloudProvider;
+    match code.to_lowercase().as_str() {
+        "htz" | "hetzner" => Some(CloudProvider::Hetzner),
+        "do" | "digitalocean" => Some(CloudProvider::Digitalocean),
+        "aws" => Some(CloudProvider::Aws),
+        "lo" | "linode" => Some(CloudProvider::Linode),
+        "vu" | "vultr" => Some(CloudProvider::Vultr),
+        "cnt" | "contabo" => Some(CloudProvider::Contabo),
+        _ => None,
+    }
+}
+
+async fn generate_minimal_install_config(
+    client: &StackerClient,
+    template: &str,
+    name: Option<&str>,
+    domain: Option<&str>,
+) -> Result<StackerConfig, CliError> {
+    use crate::cli::config_parser::{CloudConfig, DeployTarget};
+
+    let mut config = StackerConfig::default();
+    config.name = name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(template)
+        .to_string();
+    config.project.identity = Some(template.to_string());
+    if let Some(domain) = domain.map(str::trim).filter(|value| !value.is_empty()) {
+        config.install.inputs.insert(
+            "commonDomain".to_string(),
+            Value::String(domain.to_ascii_lowercase()),
+        );
+    }
+
+    // Install implies remote deployment. Resolve the user's default cloud
+    // credential (first one returned by /cloud); if none is configured, ask
+    // the user to connect a cloud provider first instead of silently
+    // falling back to local.
+    let clouds = client.list_clouds().await?;
+    let cloud_info = clouds.into_iter().next().ok_or_else(|| {
+        CliError::ConfigValidation(
+            "No cloud connections found. Connect one with `stacker config cloud add` (or `stacker login`) and retry.".to_string(),
+        )
+    })?;
+    let provider = cloud_provider_from_code(&cloud_info.provider).ok_or_else(|| {
+        CliError::ConfigValidation(format!(
+            "Unsupported cloud provider '{}' on default cloud '{}'.",
+            cloud_info.provider, cloud_info.name
+        ))
+    })?;
+    eprintln!(
+        "Using cloud connection '{}' (provider: {}).",
+        cloud_info.name, cloud_info.provider
+    );
+
+    let cloud_config = CloudConfig {
+        provider,
+        orchestrator: Default::default(),
+        region: None,
+        size: None,
+        install_image: None,
+        remote_payload_file: None,
+        ssh_key: None,
+        key: Some(cloud_info.name.clone()),
+        server: None,
+    };
+
+    // Auto-generated stacker.yml never reuses an existing server. A fresh
+    // server is always provisioned on the resolved cloud. To reuse an
+    // existing one, set `deploy.cloud.server: <name>` in stacker.yml.
+    eprintln!("A fresh server will be provisioned on this cloud.");
+
+    config.deploy.target = DeployTarget::Cloud;
+    config.deploy.cloud = Some(cloud_config);
+    Ok(config)
+}
+
+fn marketplace_template_matches_slug(template: &MarketplaceTemplate, slug: &str) -> bool {
+    template.slug.eq_ignore_ascii_case(slug)
 }
 
 fn normalize_install_input_key(key: &str) -> String {
@@ -470,7 +683,13 @@ fn truncate(s: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_install_inputs_to_deploy_form, resolve_install_inputs};
+    use super::{
+        apply_install_inputs_to_deploy_form, marketplace_template_matches_slug,
+        resolve_install_inputs, response_stack_definition,
+    };
+    use crate::cli::stacker_client::{
+        MarketplaceInstallResponse, MarketplaceTemplate, ProjectInfo,
+    };
     use serde_json::{json, Map, Value};
 
     #[test]
@@ -544,5 +763,69 @@ mod tests {
         assert!(vars.contains(&json!({ "key": "keep", "value": "yes" })));
         assert!(vars.contains(&json!({ "key": "commonDomain", "value": "new.example.com" })));
         assert!(vars.contains(&json!({ "key": "admin_email", "value": "admin@new.example.com" })));
+    }
+
+    #[test]
+    fn response_stack_definition_ignores_null_or_missing_definitions() {
+        let mut response = marketplace_install_response(json!({ "stack_definition": null }));
+        assert!(response_stack_definition(&response).is_none());
+
+        response.latest_version = json!({});
+        assert!(response_stack_definition(&response).is_none());
+    }
+
+    #[test]
+    fn response_stack_definition_accepts_object_definitions() {
+        let response = marketplace_install_response(json!({
+            "stack_definition": {
+                "project": { "name": "dify" }
+            }
+        }));
+
+        assert_eq!(
+            response_stack_definition(&response),
+            Some(&json!({ "project": { "name": "dify" } }))
+        );
+    }
+
+    #[test]
+    fn marketplace_template_slug_match_is_case_insensitive() {
+        let template = marketplace_template("Dify");
+
+        assert!(marketplace_template_matches_slug(&template, "dify"));
+        assert!(!marketplace_template_matches_slug(&template, "wordpress"));
+    }
+
+    fn marketplace_install_response(latest_version: Value) -> MarketplaceInstallResponse {
+        MarketplaceInstallResponse {
+            project: ProjectInfo {
+                id: 92,
+                name: "dify".to_string(),
+                user_id: "user-1".to_string(),
+                metadata: json!({}),
+                created_at: "2026-06-16T14:29:38Z".to_string(),
+                updated_at: "2026-06-16T14:29:38Z".to_string(),
+            },
+            template: marketplace_template("dify"),
+            latest_version,
+            deployment_id: None,
+        }
+    }
+
+    fn marketplace_template(slug: &str) -> MarketplaceTemplate {
+        MarketplaceTemplate {
+            id: None,
+            slug: slug.to_string(),
+            name: slug.to_string(),
+            description: None,
+            category_code: None,
+            tags: json!(null),
+            status: None,
+            required_plan_name: None,
+            price: None,
+            billing_cycle: None,
+            is_from_marketplace: None,
+            stack_definition: None,
+        }
     }
 }

@@ -70,12 +70,25 @@ fn stacker_api_failure_with_message(
     debug: bool,
 ) -> String {
     if debug {
-        format!("Stacker server {action} failed ({status}): {body}")
-    } else {
-        format!(
-            "{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details."
-        )
+        return format!("Stacker server {action} failed ({status}): {body}");
     }
+    // For client errors (4xx), the body usually contains an actionable
+    // message — include it (truncated) so users don't have to rerun with
+    // DEBUG=true just to see what went wrong.
+    if (400..500).contains(&status) {
+        let trimmed = body.trim();
+        let detail = if trimmed.is_empty() {
+            "<empty response body>".to_string()
+        } else if trimmed.len() > 600 {
+            format!("{}...", &trimmed[..600])
+        } else {
+            trimmed.to_string()
+        };
+        return format!("{summary} ({status}): {detail}");
+    }
+    format!(
+        "{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details."
+    )
 }
 
 /// Project as returned by `/project` endpoints
