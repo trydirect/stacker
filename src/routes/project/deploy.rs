@@ -204,6 +204,25 @@ fn is_hetzner_provider(provider: &str) -> bool {
     matches!(normalized_provider(provider).as_str(), "htz" | "hetzner")
 }
 
+fn cloud_credentials_missing(cloud: &crate::forms::CloudForm) -> bool {
+    let token_empty = cloud.cloud_token.as_ref().map_or(true, |t| t.is_empty());
+    let key_empty = cloud.cloud_key.as_ref().map_or(true, |k| k.is_empty());
+    let secret_empty = cloud.cloud_secret.as_ref().map_or(true, |s| s.is_empty());
+    token_empty && key_empty && secret_empty
+}
+
+async fn resolve_saved_cloud_for_user(
+    pg_pool: &PgPool,
+    user_id: &str,
+    name: &str,
+) -> Result<Option<models::Cloud>, String> {
+    let clouds = db::cloud::fetch_by_user(pg_pool, user_id).await?;
+    let needle = name.to_ascii_lowercase();
+    Ok(clouds
+        .into_iter()
+        .find(|cloud| cloud.name.to_ascii_lowercase() == needle))
+}
+
 fn server_display_name(server: &models::Server) -> String {
     server
         .name
@@ -1431,6 +1450,48 @@ pub(crate) async fn deploy_project(
     form.cloud.user_id = Some(user.id.clone());
     form.cloud.project_id = Some(id);
 
+    // Resolve saved cloud credentials by name when the inbound form did not
+    // carry inline credentials. This makes the install/catalog flow honor
+    // `deploy.cloud.key` / `deploy.cloud.name` just like the explicit
+    // `POST /project/{id}/deploy/{cloud_id}` route honors its path param.
+    if form.cloud.provider != "own" && cloud_credentials_missing(&form.cloud) {
+        if let Some(name) = form
+            .cloud
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            match resolve_saved_cloud_for_user(pg_pool, &user.id, name).await {
+                Ok(Some(saved)) => {
+                    let decoded = forms::cloud::CloudForm::decode_model(saved, true);
+                    form.cloud.cloud_token = decoded.cloud_token;
+                    form.cloud.cloud_key = decoded.cloud_key;
+                    form.cloud.cloud_secret = decoded.cloud_secret;
+                    form.cloud.save_token = Some(false);
+                }
+                Ok(None) => {
+                    return Err(JsonResponse::<models::Project>::build().bad_request(
+                        format!(
+                            "Saved cloud credential '{}' was not found. Run `stacker list clouds` to see available names or omit `deploy.cloud.key` to attach a new one.",
+                            name
+                        ),
+                    ));
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "Failed to load saved cloud credential '{}' for user {}: {}",
+                        name,
+                        user.id,
+                        err
+                    );
+                    return Err(JsonResponse::<models::Project>::build()
+                        .internal_server_error("Failed to load saved cloud credentials"));
+                }
+            }
+        }
+    }
+
     // Validate cloud credentials before encrypting/saving.
     // For cloud providers ("htz", "do", "lin", "aws", etc.) we need valid credentials.
     if form.cloud.provider != "own" {
@@ -1453,7 +1514,7 @@ pub(crate) async fn deploy_project(
             );
             return Err(JsonResponse::<models::Project>::build().bad_request(
                 "Cloud API credentials are required for cloud deployments. \
-                 Please provide your cloud provider API token.",
+                 Please provide your cloud provider API token, or set `deploy.cloud.key` to the name of a saved credential (see `stacker list clouds`).",
             ));
         }
     }
