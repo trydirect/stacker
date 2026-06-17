@@ -4100,7 +4100,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn stacker_api_failure_hides_endpoint_and_body_without_debug() {
+    fn stacker_api_failure_hides_endpoint_but_surfaces_body_for_4xx() {
         let message = stacker_api_failure_with_debug(
             "GET /cloud",
             400,
@@ -4108,10 +4108,26 @@ mod tests {
             false,
         );
 
+        // 4xx body is intentionally surfaced inline so users don't have to
+        // rerun with DEBUG=true to see the actual server message. The
+        // internal endpoint path stays hidden.
         assert!(message.contains("Stacker server request failed (400)"));
         assert!(!message.contains("GET /cloud"));
-        assert!(!message.contains("401 Unauthorized"));
-        assert!(!message.contains(r#"{"message""#));
+        assert!(message.contains("401 Unauthorized"));
+    }
+
+    #[test]
+    fn stacker_api_failure_hides_endpoint_and_body_for_5xx_without_debug() {
+        let message = stacker_api_failure_with_debug(
+            "GET /cloud",
+            502,
+            "upstream timeout",
+            false,
+        );
+
+        assert!(message.contains("Stacker server request failed (502)"));
+        assert!(!message.contains("GET /cloud"));
+        assert!(!message.contains("upstream timeout"));
         assert!(message.contains("DEBUG=true"));
         assert!(message.contains("RUST_LOG=debug"));
     }
