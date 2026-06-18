@@ -1111,6 +1111,144 @@ pub struct ConfigFixCommand {
     pub interactive: bool,
 }
 
+/// `stacker config setup server [--ip <IP>] [--user <USER>] [--port <PORT>] [--key <PATH>] [--file stacker.yml]`
+///
+/// Register an intranet/local-network server as a deploy target.
+/// Checks for an existing server config, then prompts whether to save to
+/// stacker.yml or to a deployment lock file.
+pub struct ConfigSetupServerCommand {
+    pub file: Option<String>,
+    pub ip: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    pub key: Option<String>,
+}
+
+impl ConfigSetupServerCommand {
+    pub fn new(
+        file: Option<String>,
+        ip: Option<String>,
+        user: Option<String>,
+        port: Option<u16>,
+        key: Option<String>,
+    ) -> Self {
+        Self { file, ip, user, port, key }
+    }
+}
+
+impl CallableTrait for ConfigSetupServerCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = std::env::current_dir()?;
+        let config_path_str = resolve_config_path(&self.file);
+        let config_path = project_dir.join(&config_path_str);
+
+        // Load config if it exists; allow running without one (lock-only path).
+        let existing_server = if config_path.exists() {
+            StackerConfig::from_file_raw(&config_path)
+                .ok()
+                .and_then(|c| c.deploy.server)
+        } else {
+            None
+        };
+
+        if let Some(ref s) = existing_server {
+            eprintln!(
+                "Note: stacker.yml already has a server configured (host: {}).",
+                s.host
+            );
+            eprintln!("Continuing will overwrite it.");
+        }
+
+        // Collect host
+        let host = match self.ip.clone() {
+            Some(h) if !h.trim().is_empty() => h,
+            _ => {
+                let mut h = String::new();
+                while h.trim().is_empty() {
+                    h = prompt_line("Server IP or hostname (e.g. 192.168.100.245): ")?;
+                }
+                h
+            }
+        };
+
+        // Collect user
+        let user_default = self
+            .user
+            .clone()
+            .or_else(|| existing_server.as_ref().map(|s| s.user.clone()))
+            .unwrap_or_else(|| "root".to_string());
+        let user = prompt_with_default("SSH user", &user_default)?;
+
+        // Collect port
+        let port_default = self
+            .port
+            .or_else(|| existing_server.as_ref().map(|s| s.port))
+            .unwrap_or(22);
+        let port_str = prompt_with_default("SSH port", &port_default.to_string())?;
+        let port = port_str.parse::<u16>().unwrap_or(22);
+
+        // Collect SSH key
+        let key_default = self
+            .key
+            .clone()
+            .or_else(|| {
+                existing_server
+                    .as_ref()
+                    .and_then(|s| s.ssh_key.clone())
+                    .map(|p| p.to_string_lossy().to_string())
+            })
+            .unwrap_or_else(|| "~/.ssh/id_ed25519".to_string());
+        let key_input = prompt_with_default("SSH key path (leave empty to skip)", &key_default)?;
+        let ssh_key = if key_input.trim().is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(&key_input))
+        };
+
+        let server_cfg = ServerConfig { host, user, ssh_key, port };
+
+        eprintln!();
+        eprintln!("Server details:");
+        eprintln!("  host: {}", server_cfg.host);
+        eprintln!("  user: {}", server_cfg.user);
+        eprintln!("  port: {}", server_cfg.port);
+        if let Some(ref k) = server_cfg.ssh_key {
+            eprintln!("  ssh_key: {}", k.display());
+        }
+        eprintln!();
+
+        // Ask where to save
+        eprintln!("Where would you like to save this server configuration?");
+        eprintln!("  1) stacker.yml  (persists across fresh clones)");
+        eprintln!("  2) Lock file    (.stacker/deployment-server.lock, ignored by git)");
+        let choice = prompt_with_default("Choice", "1")?;
+
+        match choice.trim() {
+            "2" => {
+                let lock = DeploymentLock::for_server(&server_cfg);
+                let lock_path = lock.save(&project_dir)?;
+                eprintln!();
+                eprintln!("✓ Saved to lock file: {}", lock_path.display());
+                eprintln!("  Run `stacker deploy --target server` to deploy.");
+            }
+            _ => {
+                if !config_path.exists() {
+                    return Err(Box::new(CliError::ConfigNotFound { path: config_path }));
+                }
+                let mut config = StackerConfig::from_file_raw(&config_path)?;
+                config.deploy.target = DeployTarget::Server;
+                config.deploy.server = Some(server_cfg);
+                DeploymentLock::write_config(&config, &config_path)?;
+                eprintln!();
+                eprintln!("✓ stacker.yml updated (backup: {}.bak).", config_path_str);
+                eprintln!("  Run `stacker deploy` to deploy to this server.");
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// `stacker config setup cloud [--file stacker.yml]`
 ///
 /// Interactive cloud setup wizard that writes deploy.target/deploy.cloud.

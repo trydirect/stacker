@@ -277,6 +277,9 @@ struct HetznerServerTypesResponse {
 #[derive(Debug, Deserialize)]
 struct HetznerServerTypeEntry {
     name: String,
+    /// Non-null when Hetzner has deprecated this type; value is an ISO-8601 timestamp.
+    #[serde(default)]
+    deprecated: Option<String>,
 }
 
 fn hetzner_api_base_url() -> String {
@@ -505,24 +508,49 @@ async fn validate_hetzner_server_type(
         }
     };
 
-    let available: Vec<&str> = body.server_types.iter().map(|t| t.name.as_str()).collect();
-
-    if !available
+    // Check if the requested type is deprecated before checking availability.
+    if let Some(entry) = body
+        .server_types
         .iter()
-        .any(|name| name.eq_ignore_ascii_case(server_type))
+        .find(|t| t.name.eq_ignore_ascii_case(server_type))
     {
-        return Err(format!(
-            "Server type '{}' is not available in Hetzner. Available types: {}",
-            server_type,
-            if available.is_empty() {
-                "none found".to_string()
-            } else {
-                available.join(", ")
-            }
-        ));
+        if entry.deprecated.is_some() {
+            let active: Vec<&str> = body
+                .server_types
+                .iter()
+                .filter(|t| t.deprecated.is_none())
+                .map(|t| t.name.as_str())
+                .collect();
+            return Err(format!(
+                "Server type '{}' is deprecated in Hetzner and can no longer be used to create new servers. \
+                 Set `deploy.cloud.size` in stacker.yml to an active type: {}",
+                server_type,
+                if active.is_empty() {
+                    "none found".to_string()
+                } else {
+                    active.join(", ")
+                }
+            ));
+        }
+        return Ok(());
     }
 
-    Ok(())
+    let available: Vec<&str> = body
+        .server_types
+        .iter()
+        .filter(|t| t.deprecated.is_none())
+        .map(|t| t.name.as_str())
+        .collect();
+
+    Err(format!(
+        "Server type '{}' is not available in Hetzner. Available types: {}",
+        server_type,
+        if available.is_empty() {
+            "none found".to_string()
+        } else {
+            available.join(", ")
+        }
+    ))
 }
 
 async fn validate_template_server_capacity_requirements(

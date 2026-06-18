@@ -264,6 +264,23 @@ enum StackerConfigCommands {
 
 #[derive(Debug, Subcommand)]
 enum StackerConfigSetupCommands {
+    /// Register a server (intranet or remote) as the deploy target
+    Server {
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Server IP address or hostname (e.g. 192.168.100.245)
+        #[arg(long, value_name = "IP")]
+        ip: Option<String>,
+        /// SSH user (default: root)
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        /// SSH port (default: 22)
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+        /// Path to SSH private key
+        #[arg(long, value_name = "PATH")]
+        key: Option<String>,
+    },
     /// Configure cloud deployment defaults in stacker.yml
     Cloud {
         #[arg(long, value_name = "FILE")]
@@ -497,6 +514,11 @@ fn get_command(
                     stacker::console::commands::cli::config::ConfigUnlockCommand::new(file),
                 )),
                 StackerConfigCommands::Setup { command } => match command {
+                    StackerConfigSetupCommands::Server { file, ip, user, port, key } => Ok(Box::new(
+                        stacker::console::commands::cli::config::ConfigSetupServerCommand::new(
+                            file, ip, user, port, key,
+                        ),
+                    )),
                     StackerConfigSetupCommands::Cloud { file } => Ok(Box::new(
                         stacker::console::commands::cli::config::ConfigSetupCloudCommand::new(file),
                     )),
