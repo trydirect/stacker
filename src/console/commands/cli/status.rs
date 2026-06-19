@@ -6,6 +6,7 @@ use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::local_compose::resolve_local_compose_path;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
+use crate::services::{DeploymentEvent, DeploymentEventClassification, DeploymentEventFeed};
 use crate::console::commands::cli::ssh_key::{format_ssh_command, local_backup_private_key_path};
 use crate::console::commands::CallableTrait;
 
@@ -78,6 +79,53 @@ struct StatusContext<'a> {
     server: Option<&'a ServerInfo>,
     config: Option<&'a StackerConfig>,
     live_containers: Option<&'a [serde_json::Value]>,
+    events: Option<&'a DeploymentEventFeed>,
+}
+
+/// Strip Python/paramiko noise lines from a raw install-service error message.
+///
+/// The install service emits CryptographyDeprecationWarning and Ansible preamble
+/// before the actual error. This function keeps only lines that look meaningful:
+/// no `WARNING:`, no `CryptographyDeprecation`, no `import` paths, no blank lines.
+fn clean_status_message(raw: &str) -> String {
+    let noise_prefixes = [
+        "/root/.local/lib/python",
+        "  \"cipher\":",
+        "  \"class\":",
+        "CryptographyDeprecationWarning",
+        "[WARNING]:",
+        "warnings.warn(",
+        "import warnings",
+    ];
+
+    let meaningful: Vec<&str> = raw
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !noise_prefixes.iter().any(|prefix| trimmed.starts_with(prefix))
+        })
+        .collect();
+
+    // If filtering left nothing, return the original (truncated to 400 chars)
+    if meaningful.is_empty() {
+        return raw.chars().take(400).collect();
+    }
+
+    meaningful.join("\n")
+}
+
+/// Format a deployment event for display in the status timeline.
+fn format_event_line(event: &DeploymentEvent) -> String {
+    use crate::services::deployment_events::DeploymentEventClassification;
+    let icon = match event.classification {
+        DeploymentEventClassification::Success => "✓",
+        DeploymentEventClassification::Failure => "✗",
+        DeploymentEventClassification::Progress => "→",
+        DeploymentEventClassification::Info => "·",
+    };
+    let ts = event.occurred_at.format("%H:%M:%S");
+    format!("  {} [{}] {}", icon, ts, event.summary)
 }
 
 fn emergency_ssh_command(server: &ServerInfo) -> Option<String> {
@@ -122,7 +170,12 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
         status_icon, info.id, info.status
     );
     if let Some(ref msg) = info.status_message {
-        println!("  Message:         {}", msg);
+        let cleaned = clean_status_message(msg);
+        // For paused/failed show truncated summary here; full detail in the events section
+        let preview: String = cleaned.lines().next().unwrap_or("").chars().take(120).collect();
+        if !preview.is_empty() {
+            println!("  Message:         {}", preview);
+        }
     }
     println!("  Project ID:      {}", info.project_id);
     println!("  Deployment hash: {}", info.deployment_hash);
@@ -132,6 +185,36 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
     // Only show the rich details for terminal (completed/failed) statuses
     if !is_terminal(&info.status) {
         return;
+    }
+
+    // ── Deployment events timeline ───────────────
+    if let Some(feed) = ctx.events {
+        if !feed.events.is_empty() {
+            println!("\n── Deployment Log ─────────────────────────");
+            // Show last 20 events; for failures highlight the failure events
+            let show_from = feed.events.len().saturating_sub(20);
+            for event in &feed.events[show_from..] {
+                println!("{}", format_event_line(event));
+            }
+        }
+    }
+
+    // ── Full error detail (paused / failed) ─────
+    let is_failure = matches!(info.status.as_str(), "paused" | "failed" | "error");
+    if is_failure {
+        if let Some(ref msg) = info.status_message {
+            let cleaned = clean_status_message(msg);
+            // Only show if it's multi-line or the preview was truncated
+            if cleaned.lines().count() > 1 || cleaned.len() > 120 {
+                println!("\n── Error Detail ───────────────────────────");
+                for line in cleaned.lines().take(30) {
+                    println!("  {}", line);
+                }
+                if cleaned.lines().count() > 30 {
+                    println!("  … (truncated, use `stacker deployment events` for full log)");
+                }
+            }
+        }
     }
 
     // ── Server info ─────────────────────────────
@@ -227,21 +310,51 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
         }
 
         // ── Next steps ──────────────────────────────
-        if info.status == "completed" {
-            println!("\n── Next Steps ─────────────────────────────");
-            println!("  • Check service health:   stacker status --watch");
-            println!("  • View logs:              stacker logs");
-            if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
-                println!("  • Manage proxy:           stacker proxy");
+        println!("\n── Next Steps ─────────────────────────────");
+        match info.status.as_str() {
+            "completed" => {
+                println!("  • Check service health:   stacker status --watch");
+                println!("  • View logs:              stacker logs");
+                if config.proxy.proxy_type != ProxyType::None && !config.proxy.domains.is_empty() {
+                    println!("  • Manage proxy:           stacker proxy");
+                }
+                println!(
+                    "  • Redeploy:               stacker deploy --target {}",
+                    config.deploy.target
+                );
+                println!("\n── Documentation ──────────────────────────");
+                println!(
+                    "  https://github.com/trydirect/stacker/blob/main/docs/STACKER_YML_REFERENCE.md"
+                );
             }
-            println!(
-                "  • Redeploy:               stacker deploy --target {}",
-                config.deploy.target
-            );
-            println!("\n── Documentation ──────────────────────────");
-            println!(
-                "  https://github.com/trydirect/stacker/blob/main/docs/STACKER_YML_REFERENCE.md"
-            );
+            "paused" | "failed" | "error" => {
+                println!("  • Full event log:         stacker deployment events");
+                println!(
+                    "  • Retry deploy:           stacker deploy --target {}",
+                    config.deploy.target
+                );
+                // If this is an intranet server, nudge them toward agent install
+                let is_intranet = config
+                    .deploy
+                    .server
+                    .as_ref()
+                    .map(|s| crate::helpers::ip::is_private_host(&s.host))
+                    .unwrap_or(false);
+                if is_intranet {
+                    println!("  • Install agent (intranet): stacker agent install");
+                    println!("    (allows future deploys without Stacker cloud install service)");
+                }
+                println!("  • SSH to server:          {}", {
+                    ctx.server
+                        .and_then(|s| s.srv_ip.as_deref())
+                        .map(|ip| {
+                            let user = ctx.server.and_then(|s| s.ssh_user.as_deref()).unwrap_or("root");
+                            format!("ssh {}@{}", user, ip)
+                        })
+                        .unwrap_or_else(|| "see Server section above".to_string())
+                });
+            }
+            _ => {}
         }
     }
 
@@ -333,6 +446,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                     server: None,
                     config: Some(&config),
                     live_containers: None,
+                    events: None,
                 };
                 if !watch {
                     let status = client.get_deployment_by_hash(deployment_hash).await?;
@@ -382,6 +496,7 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                                     config: Some(&config),
                                     live_containers: (!live_containers.is_empty())
                                         .then_some(live_containers.as_slice()),
+                                    events: None,
                                 };
                                 print_deployment_status_rich(&info, json, &ctx);
                                 last_status = info.status.clone();
@@ -437,11 +552,22 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                         .ok()
                         .map(|(snapshot, _)| snapshot_containers(&snapshot))
                         .unwrap_or_default();
+                    // Fetch events for terminal states so the user can see what went wrong
+                    let events = if is_terminal(&info.status) {
+                        client
+                            .get_deployment_events_by_hash(&info.deployment_hash)
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
                     let ctx = StatusContext {
                         server: server.as_ref(),
                         config: Some(&config),
                         live_containers: (!live_containers.is_empty())
                             .then_some(live_containers.as_slice()),
+                        events: events.as_ref(),
                     };
                     print_deployment_status_rich(&info, json, &ctx);
                     Ok(())
@@ -482,11 +608,21 @@ fn run_remote_status(json: bool, watch: bool) -> Result<(), Box<dyn std::error::
                         let message_changed = info.status_message != last_message;
                         let containers_changed = container_sig != last_containers;
                         if status_changed || message_changed || containers_changed {
+                            let events = if is_terminal(&info.status) {
+                                client
+                                    .get_deployment_events_by_hash(&info.deployment_hash)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                            } else {
+                                None
+                            };
                             let ctx = StatusContext {
                                 server: server.as_ref(),
                                 config: Some(&config),
                                 live_containers: (!live_containers.is_empty())
                                     .then_some(live_containers.as_slice()),
+                                events: events.as_ref(),
                             };
                             print_deployment_status_rich(&info, json, &ctx);
                             last_status = info.status.clone();

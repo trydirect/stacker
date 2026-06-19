@@ -84,10 +84,12 @@ pub async fn link_handler(
         helpers::JsonResponse::<LinkAgentResponse>::build().not_found("Deployment not found")
     })?;
 
-    // Check ownership: deployment.user_id must match the authenticated user
-    if deployment.user_id.as_deref() != Some(&profile.email) {
+    // Check ownership: deployment.user_id stores the queue_key (profile.id),
+    // not the email. See UserProfile.id doc comment in types.rs.
+    if deployment.user_id.as_deref() != Some(&profile.id) {
         tracing::warn!(
             user = %profile.email,
+            user_id = %profile.id,
             deployment_user = ?deployment.user_id,
             deployment_hash = %payload.deployment_id,
             "User attempted to link to deployment they don't own"

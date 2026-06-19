@@ -1509,6 +1509,10 @@ enum AgentCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+        /// Install via local SSH instead of the Stacker cloud install service.
+        /// Detected automatically when deploy.server.host is a private/intranet IP.
+        #[arg(long)]
+        local: bool,
     },
 }
 
@@ -2568,7 +2572,8 @@ fn get_command(
                     file,
                     persist_config,
                     json,
-                } => Box::new(agent::AgentInstallCommand::new(file, persist_config, json)),
+                    local,
+                } => Box::new(agent::AgentInstallCommand::new(file, persist_config, json).with_local(local)),
             }
         }
         StackerCommands::Cloud { command } => match command {

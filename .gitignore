@@ -12,3 +12,4 @@ docs/*.sql
 config-to-validate.yaml
 *.bak
 .claude/settings.local.json
+plan/

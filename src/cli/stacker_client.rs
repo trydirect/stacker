@@ -2376,6 +2376,62 @@ impl StackerClient {
     /// Enqueue a command for the Status Panel agent on a deployment.
     ///
     /// `POST /api/v1/agent/commands/enqueue`
+    /// Link an agent to a deployment using the CLI's stored OAuth token.
+    ///
+    /// `POST /api/v1/agent/link`
+    ///
+    /// Returns `(agent_id, agent_token, deployment_hash)` — the credentials the
+    /// status-panel binary needs in its `.env` to start polling for commands.
+    pub async fn agent_link(
+        &self,
+        deployment_hash: &str,
+        server_fingerprint: serde_json::Value,
+    ) -> Result<(String, String, String), CliError> {
+        let url = format!("{}/api/v1/agent/link", self.base_url);
+
+        let body = serde_json::json!({
+            "session_token": self.token,
+            "deployment_id": deployment_hash,
+            "server_fingerprint": server_fingerprint,
+            "capabilities": ["status_panel", "compose_agent"],
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Stacker server unreachable: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(stacker_api_failure_with_message(
+                "Agent link failed",
+                "POST /api/v1/agent/link",
+                status,
+                &body,
+                cli_debug_enabled(),
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct LinkResp {
+            agent_id: String,
+            agent_token: String,
+            deployment_hash: String,
+        }
+
+        let link: LinkResp = resp
+            .json()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid link response: {}", e)))?;
+
+        Ok((link.agent_id, link.agent_token, link.deployment_hash))
+    }
+
     pub async fn agent_enqueue(
         &self,
         request: &AgentEnqueueRequest,

@@ -2535,6 +2535,20 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     let mut lock_server_name: Option<String> = None;
     if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
+            if crate::helpers::ip::is_private_host(&server_cfg.host) {
+                // Private/intranet host — skip SSH check and switch to Server target.
+                // The russh client cannot reliably reach intranet IPs from the CLI's
+                // routing stack (EHOSTUNREACH), but the local SSH binary can. Trust
+                // the config and proceed.
+                eprintln!(
+                    "  Found deploy.server section (host={}). Intranet address — skipping SSH pre-check.",
+                    server_cfg.host
+                );
+                eprintln!(
+                    "  Switching deploy target from 'cloud' → 'server' (intranet server)."
+                );
+                deploy_target = DeployTarget::Server;
+            } else {
             eprintln!(
                 "  Found deploy.server section (host={}). Checking SSH connectivity...",
                 server_cfg.host
@@ -2596,6 +2610,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                     });
                 }
             }
+            }
         } else if DeploymentLock::exists_for_target(project_dir, "cloud")
             || DeploymentLock::exists(project_dir)
         {
@@ -2648,48 +2663,59 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     if deploy_target == DeployTarget::Server {
         if let Some(ref server_cfg) = config.deploy.server {
-            eprintln!(
-                "  Validating SSH connectivity to {} before bootstrap deploy...",
-                server_cfg.host
-            );
+            if crate::helpers::ip::is_private_host(&server_cfg.host) {
+                // Intranet / private-IP servers are not reachable from the cloud,
+                // so the russh pre-check will always fail (EHOSTUNREACH on the CLI
+                // machine's routing stack may differ from the system SSH). Skip it
+                // and proceed directly — the user configured this server themselves.
+                eprintln!(
+                    "  Skipping SSH pre-check for intranet server {} (private address).",
+                    server_cfg.host
+                );
+            } else {
+                eprintln!(
+                    "  Validating SSH connectivity to {} before bootstrap deploy...",
+                    server_cfg.host
+                );
 
-            match try_ssh_server_check(server_cfg) {
-                Some(check) if check.connected && check.authenticated => {
-                    eprintln!(
-                        "  ✓ Server {} is reachable ({})",
-                        server_cfg.host,
-                        check.summary()
-                    );
+                match try_ssh_server_check(server_cfg) {
+                    Some(check) if check.connected && check.authenticated => {
+                        eprintln!(
+                            "  ✓ Server {} is reachable ({})",
+                            server_cfg.host,
+                            check.summary()
+                        );
 
-                    if !check.docker_installed {
+                        if !check.docker_installed {
+                            return Err(CliError::DeployFailed {
+                                target: DeployTarget::Server,
+                                reason: format!(
+                                    "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
+                                    server_cfg.host
+                                ),
+                            });
+                        }
+                    }
+                    Some(check) => {
+                        print_server_unreachable_hint(server_cfg, &check);
                         return Err(CliError::DeployFailed {
                             target: DeployTarget::Server,
                             reason: format!(
-                                "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
+                                "Failed to connect to {} over SSH: {}",
+                                server_cfg.host,
+                                check.error.as_deref().unwrap_or("unknown error")
+                            ),
+                        });
+                    }
+                    None => {
+                        return Err(CliError::DeployFailed {
+                            target: DeployTarget::Server,
+                            reason: format!(
+                                "Could not verify SSH connectivity to {}. Check deploy.server.ssh_key and retry.",
                                 server_cfg.host
                             ),
                         });
                     }
-                }
-                Some(check) => {
-                    print_server_unreachable_hint(server_cfg, &check);
-                    return Err(CliError::DeployFailed {
-                        target: DeployTarget::Server,
-                        reason: format!(
-                            "Failed to connect to {} over SSH: {}",
-                            server_cfg.host,
-                            check.error.as_deref().unwrap_or("unknown error")
-                        ),
-                    });
-                }
-                None => {
-                    return Err(CliError::DeployFailed {
-                        target: DeployTarget::Server,
-                        reason: format!(
-                            "Could not verify SSH connectivity to {}. Check deploy.server.ssh_key and retry.",
-                            server_cfg.host
-                        ),
-                    });
                 }
             }
         }

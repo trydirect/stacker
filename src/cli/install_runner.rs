@@ -1774,6 +1774,228 @@ fn persist_remote_payload_snapshot(
 
 pub struct ServerDeploy;
 
+/// Deploy to an intranet server directly from the CLI using the system `ssh`/`rsync`.
+///
+/// The Stacker cloud install service cannot reach private-IP servers, so this
+/// path bypasses it entirely:
+///   1. `rsync` the project directory to `~/stacker/<project>/` on the remote
+///   2. `docker compose up -d --build` on the remote
+///
+/// The home-directory path avoids any permission issues — the SSH user can always
+/// write there without sudo.  Falls back to `tar+ssh` if `rsync` is not found.
+fn deploy_to_intranet_server(
+    config: &StackerConfig,
+    context: &DeployContext,
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+) -> Result<DeployResult, CliError> {
+    let project_name = context
+        .project_name_override
+        .clone()
+        .or_else(|| config.project.identity.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| config.name.clone());
+
+    let ssh_key_path = server_cfg
+        .ssh_key
+        .as_ref()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home).join(&s[2..])
+            } else {
+                p.clone()
+            }
+        })
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "deploy.server.ssh_key is required for intranet server deploy.\n\
+                 Set it in stacker.yml: deploy.server.ssh_key: ~/.ssh/id_ed25519"
+                    .to_string(),
+            )
+        })?;
+
+    if !ssh_key_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "SSH key not found: {}",
+            ssh_key_path.display()
+        )));
+    }
+
+    // Use ~/stacker/<project> so the SSH user can write without sudo.
+    // The shell expands ~ on the remote, so no hardcoded home path needed.
+    let remote_dir = format!("$HOME/stacker/{}", project_name);
+    let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
+    let ssh_args = [
+        "-i", ssh_key_path.to_str().unwrap_or(""),
+        "-p", &server_cfg.port.to_string(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+    ];
+
+    // 1. Resolve the remote home directory so rsync gets an absolute path.
+    let remote_home = {
+        let out = std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg("echo $HOME")
+            .output()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to run ssh: {}", e),
+            })?;
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    let remote_dir_abs = if remote_home.is_empty() {
+        // Fallback: keep the $HOME token; mkdir/compose will still expand it
+        remote_dir.clone()
+    } else {
+        format!("{}/stacker/{}", remote_home, project_name)
+    };
+
+    eprintln!("  Creating remote directory {}...", remote_dir_abs);
+    let mkdir_status = std::process::Command::new("ssh")
+        .args(&ssh_args)
+        .arg(&user_at_host)
+        .arg(format!("mkdir -p {}", remote_dir_abs))
+        .status()
+        .map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("Failed to run ssh: {}", e),
+        })?;
+
+    if !mkdir_status.success() {
+        return Err(CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "Could not create remote directory {}.\n\
+                 Check that the SSH user '{}' has write access to their home directory.",
+                remote_dir_abs, server_cfg.user
+            ),
+        });
+    }
+
+    // 2. Sync project files to remote (rsync preferred, tar+ssh fallback)
+    let project_src = format!("{}/", context.project_dir.display());
+    let remote_dest = format!("{}:{}/", user_at_host, remote_dir_abs);
+    let rsync_ssh_opt = format!(
+        "ssh -i {} -p {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+        ssh_key_path.display(),
+        server_cfg.port
+    );
+    let rsync_excludes = &["--exclude=.git", "--exclude=target", "--exclude=node_modules"];
+
+    eprintln!("  Syncing project files to {}...", user_at_host);
+    let rsync_available = std::process::Command::new("rsync")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if rsync_available {
+        let mut rsync = std::process::Command::new("rsync");
+        rsync
+            .arg("-az")
+            .arg("--progress")
+            .args(rsync_excludes)
+            .arg("-e")
+            .arg(&rsync_ssh_opt)
+            .arg(&project_src)
+            .arg(&remote_dest);
+
+        let status = rsync.status().map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("rsync failed: {}", e),
+        })?;
+        if !status.success() {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: "rsync exited with error — check SSH key and server connectivity".to_string(),
+            });
+        }
+    } else {
+        // Fallback: tar over SSH
+        eprintln!("  (rsync not found, using tar+ssh fallback)");
+        let tar_cmd = format!(
+            "tar czf - --exclude=.git --exclude=target --exclude=node_modules -C {} . | \
+             ssh {} {} 'tar xzf - -C {}'",
+            context.project_dir.display(),
+            ssh_args.join(" "),
+            user_at_host,
+            remote_dir_abs,
+        );
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&tar_cmd)
+            .status()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("tar+ssh failed: {}", e),
+            })?;
+        if !status.success() {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: "tar+ssh transfer failed — check SSH key and server connectivity".to_string(),
+            });
+        }
+    }
+
+    // 3. Run docker compose on the remote
+    let compose_file = context
+        .compose_path
+        .strip_prefix(&context.project_dir)
+        .unwrap_or(&context.compose_path)
+        .display()
+        .to_string();
+
+    let compose_cmd = format!(
+        "cd {} && docker compose -f {} up -d --build 2>&1",
+        remote_dir_abs, compose_file
+    );
+
+    eprintln!("  Running docker compose on {}...", server_cfg.host);
+    let output = std::process::Command::new("ssh")
+        .args(&ssh_args)
+        .arg(&user_at_host)
+        .arg(&compose_cmd)
+        .output()
+        .map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("SSH docker compose failed: {}", e),
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().chain(stderr.lines()) {
+        eprintln!("  │ {}", line);
+    }
+
+    if !output.status.success() {
+        return Err(CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "docker compose failed on remote (exit {}). See output above.",
+                output.status.code().unwrap_or(-1)
+            ),
+        });
+    }
+
+    eprintln!("  ✓ Deployed '{}' to {} ({})", project_name, server_cfg.host, remote_dir_abs);
+
+    Ok(DeployResult {
+        target: DeployTarget::Server,
+        message: format!(
+            "Deployed '{}' to {} via local SSH (rsync + docker compose, remote: {})",
+            project_name, server_cfg.host, remote_dir_abs
+        ),
+        server_ip: Some(server_cfg.host.clone()),
+        deployment_id: None,
+        project_id: None,
+        server_name: None,
+    })
+}
+
 impl DeployStrategy for ServerDeploy {
     fn validate(&self, config: &StackerConfig) -> Result<(), CliError> {
         if config.deploy.server.is_none() {
@@ -1816,6 +2038,23 @@ impl DeployStrategy for ServerDeploy {
             });
         }
 
+        // For private/intranet hosts, the Stacker cloud install service cannot
+        // reach the server via SSH. Deploy directly from the CLI using rsync +
+        // docker compose over the local SSH key.
+        let server_cfg = config
+            .deploy
+            .server
+            .as_ref()
+            .ok_or(CliError::ServerHostMissing)?;
+
+        if crate::helpers::ip::is_private_host(&server_cfg.host) {
+            eprintln!(
+                "  Server {} is on a private network — deploying via local SSH.",
+                server_cfg.host
+            );
+            return deploy_to_intranet_server(config, context, server_cfg);
+        }
+
         let creds =
             CredentialsManager::with_default_store().require_valid_token("server deploy")?;
         let base_url = normalize_stacker_server_url(
@@ -1824,11 +2063,6 @@ impl DeployStrategy for ServerDeploy {
                 .as_deref()
                 .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
         );
-        let server_cfg = config
-            .deploy
-            .server
-            .as_ref()
-            .ok_or(CliError::ServerHostMissing)?;
         let project_name = resolve_remote_project_name(config, context);
         let project_config = compose_targets::config_with_compose_secret_target_services(
             config,

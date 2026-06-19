@@ -2243,16 +2243,22 @@ impl CallableTrait for AgentHistoryCommand {
 
 // ── Install (deploy Status Panel to existing server) ─
 
-/// `stacker agent install [--file <path>] [--persist-config] [--json]`
+/// `stacker agent install [--file <path>] [--persist-config] [--json] [--local]`
 ///
-/// Deploys the Status Panel agent to an existing server that was previously
-/// deployed without it. Reads the project identity from stacker.yml, finds
-/// the corresponding project and server on the Stacker API, and triggers
-/// a deploy with only the statuspanel feature enabled.
+/// Deploys the Status Panel agent.
+///
+/// For cloud / public-IP servers the command routes through the Stacker install
+/// service (Ansible over cloud-initiated SSH). For intranet servers — detected
+/// automatically when `deploy.server.host` is a private RFC1918 address, or
+/// forced with `--local` — the CLI itself SSHes to the host, runs the status
+/// panel install script, and links the agent via the Stacker API. No inbound
+/// connection from the cloud is needed.
 pub struct AgentInstallCommand {
     pub file: Option<String>,
     pub persist_config: bool,
     pub json: bool,
+    /// Force the local-SSH path even for public-IP servers.
+    pub local: bool,
 }
 
 impl AgentInstallCommand {
@@ -2261,8 +2267,139 @@ impl AgentInstallCommand {
             file,
             persist_config,
             json,
+            local: false,
         }
     }
+
+    pub fn with_local(mut self, local: bool) -> Self {
+        self.local = local;
+        self
+    }
+}
+
+use crate::helpers::ip::is_private_host;
+
+/// Install the Status Panel agent directly from the CLI over local SSH.
+///
+/// Used when the target server is on an intranet and the Stacker cloud install
+/// service cannot reach it. Uses the system `ssh` binary (not russh) to avoid
+/// macOS routing stack issues (EHOSTUNREACH) with private IPs. Steps:
+///   1. Call `POST /api/v1/agent/link` to mint agent credentials
+///   2. Run the status panel install script on the remote via system `ssh`
+///   3. Write `~/stacker/.agent.env` with `AGENT_ID`, `AGENT_TOKEN`, `DASHBOARD_URL`
+///   4. Start the agent in daemon mode
+async fn install_agent_via_local_ssh(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    deployment_hash: &str,
+    ctx: &CliRuntime,
+    stacker_url: &str,
+) -> Result<(), CliError> {
+    let key_path = server_cfg
+        .ssh_key
+        .as_ref()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home).join(&s[2..])
+            } else {
+                p.clone()
+            }
+        })
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "deploy.server.ssh_key is required for local agent install.\n\
+                 Set it in stacker.yml or run `stacker config setup server`."
+                    .to_string(),
+            )
+        })?;
+
+    if !key_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "SSH key not found: {}",
+            key_path.display()
+        )));
+    }
+
+    let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
+    let ssh_args = [
+        "-i", key_path.to_str().unwrap_or(""),
+        "-p", &server_cfg.port.to_string(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+    ];
+
+    // Helper: run a command on the remote, stream output, return exit code.
+    let ssh_run = |cmd: &str| -> Result<std::process::Output, CliError> {
+        std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg(cmd)
+            .output()
+            .map_err(|e| CliError::ConfigValidation(format!("ssh exec failed: {}", e)))
+    };
+
+    // 1. Mint agent credentials via the Stacker API (outbound, always works)
+    eprintln!("  Linking agent to deployment {}...", deployment_hash);
+    let fingerprint = serde_json::json!({ "host": server_cfg.host, "source": "cli_local_install" });
+    let (agent_id, agent_token, linked_hash) =
+        ctx.client.agent_link(deployment_hash, fingerprint).await?;
+    eprintln!("  Agent linked (id: {}).", agent_id);
+
+    // 2. Install the status panel binary
+    eprintln!("  Running status panel install script on {}...", server_cfg.host);
+    let install_out = ssh_run(
+        "curl -sSfL https://raw.githubusercontent.com/trydirect/status/master/install.sh | sh",
+    )?;
+    if !install_out.status.success() {
+        let stderr = String::from_utf8_lossy(&install_out.stderr);
+        return Err(CliError::ConfigValidation(format!(
+            "Install script failed (exit {}):\n{}",
+            install_out.status.code().unwrap_or(-1),
+            stderr.trim()
+        )));
+    }
+    eprintln!("  Binary installed.");
+
+    // 3. Write .env into the agent's working directory.
+    // The status panel binary loads .env from its current working directory
+    // via dotenvy::dotenv() at startup.  We use ~/stacker/ as the working dir.
+    let env_content = format!(
+        "AGENT_ID={}\nAGENT_TOKEN={}\nDASHBOARD_URL={}\nCOMPOSE_AGENT_ENABLED=true\n",
+        agent_id, agent_token, stacker_url
+    );
+    use base64::Engine as _;
+    let env_b64 = base64::engine::general_purpose::STANDARD.encode(&env_content);
+    let write_cmd = format!(
+        "mkdir -p ~/stacker && printf '%s' '{}' | base64 -d > ~/stacker/.env && chmod 600 ~/stacker/.env",
+        env_b64
+    );
+    let write_out = ssh_run(&write_cmd)?;
+    if !write_out.status.success() {
+        let stderr = String::from_utf8_lossy(&write_out.stderr);
+        return Err(CliError::ConfigValidation(format!(
+            "Failed to write ~/stacker/.env: {}",
+            stderr.trim()
+        )));
+    }
+
+    // 4. Start the daemon from ~/stacker/ so it picks up the .env there.
+    let start_cmd = "cd ~/stacker && \
+        (systemctl restart status 2>/dev/null || \
+         (pkill -f 'status daemon' 2>/dev/null; \
+          nohup status daemon > ~/stacker/status.log 2>&1 &))";
+    let _ = ssh_run(start_cmd)?;
+
+    eprintln!();
+    eprintln!("✓ Status Panel agent installed on {}.", server_cfg.host);
+    eprintln!("  Agent ID:         {}", agent_id);
+    eprintln!("  Deployment:       {}", linked_hash);
+    eprintln!("  Working dir:      ~/stacker/");
+    eprintln!("  Config:           ~/stacker/.env");
+    eprintln!("  The agent is now polling {} for deploy commands.", stacker_url);
+    eprintln!("  Run `stacker agent status` to verify connectivity.");
+
+    Ok(())
 }
 
 fn fallback_server_config_for_agent_install(
@@ -2516,7 +2653,79 @@ impl CallableTrait for AgentInstallCommand {
             .clone()
             .unwrap_or_else(|| config.name.clone());
 
+        // Detect intranet server: use local SSH path when the host is a private IP
+        // (or --local is explicitly set) so the cloud install service is bypassed.
+        let server_host = config.deploy.server.as_ref().map(|s| s.host.as_str()).unwrap_or("");
+        let use_local_ssh = self.local || is_private_host(server_host);
+
         let ctx = CliRuntime::new("agent install")?;
+
+        if use_local_ssh {
+            let server_cfg = config.deploy.server.clone().ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "deploy.server must be configured for local agent install.\n\
+                     Run `stacker config setup server` first."
+                        .to_string(),
+                )
+            })?;
+
+            let stacker_url = std::env::var("STACKER_URL")
+                .unwrap_or_else(|_| stacker_client::DEFAULT_STACKER_URL.to_string());
+
+            eprintln!(
+                "Server {} is on a private network — using local SSH to install agent.",
+                server_host
+            );
+            eprintln!("(Use --local to force this path for public-IP servers.)");
+            eprintln!();
+
+            // Find the deployment hash for this project
+            let pb = progress::spinner("Resolving deployment...");
+            let deployment_hash: Result<String, CliError> = ctx.block_on(async {
+                let project = ctx
+                    .client
+                    .find_project_by_name(&project_name)
+                    .await?
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "Project '{}' not found on the Stacker server.\n\
+                             Deploy the project first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })?;
+
+                let deployments = ctx.client.list_deployments(Some(project.id), Some(1)).await?;
+                deployments
+                    .into_iter()
+                    .next()
+                    .map(|d| d.deployment_hash)
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "No active deployment found for project '{}'.\n\
+                             Deploy first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })
+            });
+            progress::finish_success(&pb, "Deployment resolved");
+
+            let deployment_hash = deployment_hash?;
+
+            ctx.block_on(install_agent_via_local_ssh(
+                &server_cfg,
+                &deployment_hash,
+                &ctx,
+                &stacker_url,
+            ))?;
+
+            persist_agent_install_config_if_requested(&config_path, self.persist_config)?
+                .as_ref()
+                .map(print_agent_install_config_persistence);
+
+            return Ok(());
+        }
+
+        // ── Cloud install path (public-IP servers) ────────────────────────────
         let pb = progress::spinner("Installing Status Panel agent");
 
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {
