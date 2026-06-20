@@ -50,17 +50,32 @@ pub(crate) fn resolve_deployment_hash(
     }
 
     let project_dir = std::env::current_dir().map_err(CliError::Io)?;
-
-    // 2. stacker.yml project → active agent (takes priority over lock file)
-    // The lock file records the deployment_id at deploy time but the agent may
-    // have been redeployed since, leaving the lock pointing at a stale hash.
     let config_path = project_dir.join("stacker.yml");
+
+    // 2. stacker.yml deploy.deployment_hash — written by `stacker agent install`
+    // and `stacker deploy` after a successful remote deploy.
     if config_path.exists() {
         if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
-            .and_then(|config| config.with_resolved_deploy_target(None))
+            .and_then(|c| c.with_resolved_deploy_target(None))
         {
-            if let Some(ref project_name) = config.project.identity {
-                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name))
+            if let Some(ref hash) = config.deploy.deployment_hash {
+                if !hash.trim().is_empty() {
+                    return Ok(hash.clone());
+                }
+            }
+
+            // 3. stacker.yml project identity → active agent
+            // Falls back to config.name when project.identity is null.
+            let project_name = config
+                .project
+                .identity
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| config.name.clone());
+
+            if !project_name.trim().is_empty() {
+                if let Ok(Some(proj)) =
+                    ctx.block_on(ctx.client.find_project_by_name(&project_name))
                 {
                     match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
                         Ok((_, hash)) => {
@@ -70,8 +85,15 @@ pub(crate) fn resolve_deployment_hash(
                             );
                             return Ok(hash);
                         }
-                        Err(_) => {
-                            // No active agent for this project; fall through to lock
+                        Err(_) => {}
+                    }
+
+                    // No active agent yet; try most recent deployment for the project
+                    if let Ok(deployments) =
+                        ctx.block_on(ctx.client.list_deployments(Some(proj.id), Some(1)))
+                    {
+                        if let Some(dep) = deployments.into_iter().next() {
+                            return Ok(dep.deployment_hash);
                         }
                     }
                 }
@@ -79,7 +101,7 @@ pub(crate) fn resolve_deployment_hash(
         }
     }
 
-    // 3. Deployment lock (fallback when no stacker.yml or no active project agent)
+    // 4. Deployment lock → integer ID → API lookup
     if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
         if let Some(dep_id) = lock.deployment_id {
             let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
@@ -2346,10 +2368,14 @@ async fn install_agent_via_local_ssh(
         ctx.client.agent_link(deployment_hash, fingerprint).await?;
     eprintln!("  Agent linked (id: {}).", agent_id);
 
-    // 2. Install the status panel binary
+    // 2. Install the status panel binary into ~/.local/bin (no sudo needed).
+    // The install.sh respects INSTALL_DIR; we avoid /usr/local/bin which
+    // requires sudo and prompts for a TTY we don't have in BatchMode.
     eprintln!("  Running status panel install script on {}...", server_cfg.host);
     let install_out = ssh_run(
-        "curl -sSfL https://raw.githubusercontent.com/trydirect/status/master/install.sh | sh",
+        "mkdir -p $HOME/.local/bin && \
+         curl -sSfL https://raw.githubusercontent.com/trydirect/status/master/install.sh \
+         | INSTALL_DIR=$HOME/.local/bin sh",
     )?;
     if !install_out.status.success() {
         let stderr = String::from_utf8_lossy(&install_out.stderr);
@@ -2365,8 +2391,8 @@ async fn install_agent_via_local_ssh(
     // The status panel binary loads .env from its current working directory
     // via dotenvy::dotenv() at startup.  We use ~/stacker/ as the working dir.
     let env_content = format!(
-        "AGENT_ID={}\nAGENT_TOKEN={}\nDASHBOARD_URL={}\nCOMPOSE_AGENT_ENABLED=true\n",
-        agent_id, agent_token, stacker_url
+        "AGENT_ID={}\nAGENT_TOKEN={}\nDASHBOARD_URL={}\nDEPLOYMENT_HASH={}\nCOMPOSE_AGENT_ENABLED=true\n",
+        agent_id, agent_token, stacker_url, linked_hash
     );
     use base64::Engine as _;
     let env_b64 = base64::engine::general_purpose::STANDARD.encode(&env_content);
@@ -2383,11 +2409,20 @@ async fn install_agent_via_local_ssh(
         )));
     }
 
-    // 4. Start the daemon from ~/stacker/ so it picks up the .env there.
+    // 4. Generate config.json (required by the daemon) then start it.
+    // `status init` creates config.json with defaults; without --force it
+    // won't overwrite the .env we already wrote.
+    //
+    // Do NOT use `status --daemon`: that flag triggers POSIX daemonize() which
+    // forks and redirects its own stdout/stderr to /dev/null — the polling loop
+    // runs silently and the log file only ever gets the banner.
+    //
+    // Instead run `status` in foreground mode and use setsid+nohup to detach
+    // from the SSH session. This keeps all log output going to status.log.
     let start_cmd = "cd ~/stacker && \
-        (systemctl restart status 2>/dev/null || \
-         (pkill -f 'status daemon' 2>/dev/null; \
-          nohup status daemon > ~/stacker/status.log 2>&1 &))";
+        $HOME/.local/bin/status init 2>/dev/null; \
+        pkill -f '$HOME/.local/bin/status' 2>/dev/null; \
+        setsid nohup $HOME/.local/bin/status > ~/stacker/status.log 2>&1 &";
     let _ = ssh_run(start_cmd)?;
 
     eprintln!();
@@ -2717,6 +2752,19 @@ impl CallableTrait for AgentInstallCommand {
                 &ctx,
                 &stacker_url,
             ))?;
+
+            // Persist the deployment hash into stacker.yml so that subsequent
+            // `stacker agent status/logs` commands can find it without --deployment.
+            if config_path.exists() {
+                if let Ok(mut cfg) =
+                    crate::cli::config_parser::StackerConfig::from_file_raw(&config_path)
+                {
+                    cfg.deploy.deployment_hash = Some(deployment_hash.clone());
+                    if let Ok(yaml) = serde_yaml::to_string(&cfg) {
+                        let _ = std::fs::write(&config_path, yaml);
+                    }
+                }
+            }
 
             persist_agent_install_config_if_requested(&config_path, self.persist_config)?
                 .as_ref()
