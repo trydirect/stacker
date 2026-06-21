@@ -46,7 +46,7 @@ pub async fn get_public_vendor_profile(
             )) AS metadata,
             mvp.created_at
         FROM marketplace_vendor_profile mvp
-        WHERE mvp.public_slug = $1 OR mvp.creator_user_id = $1
+        WHERE mvp.public_slug = $1
         LIMIT 1"#
     );
 
@@ -1766,6 +1766,49 @@ pub async fn upsert_vendor_profile(
     .map_err(|e| {
         tracing::error!("upsert_vendor_profile error: {:?}", e);
         "Internal Server Error".to_string()
+    })
+}
+
+pub async fn update_vendor_public_profile(
+    pool: &PgPool,
+    creator_user_id: &str,
+    public_slug: Option<&str>,
+    display_name: Option<&str>,
+    bio: Option<&str>,
+    avatar_url: Option<&str>,
+    website_url: Option<&str>,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("update_vendor_public_profile", creator_user_id = %creator_user_id);
+
+    sqlx::query(
+        r#"INSERT INTO marketplace_vendor_profile (creator_user_id, public_slug, display_name, bio, avatar_url, website_url)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            public_slug   = COALESCE($2, marketplace_vendor_profile.public_slug),
+            display_name  = COALESCE($3, marketplace_vendor_profile.display_name),
+            bio           = COALESCE($4, marketplace_vendor_profile.bio),
+            avatar_url    = COALESCE($5, marketplace_vendor_profile.avatar_url),
+            website_url   = COALESCE($6, marketplace_vendor_profile.website_url),
+            updated_at    = NOW()"#,
+    )
+    .bind(creator_user_id)
+    .bind(public_slug)
+    .bind(display_name)
+    .bind(bio)
+    .bind(avatar_url)
+    .bind(website_url)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map(|_| ())
+    .map_err(|e| {
+        tracing::error!("update_vendor_public_profile error: {:?}", e);
+        if e.to_string().contains("public_slug") {
+            "Slug is already taken — choose a different one".to_string()
+        } else {
+            "Internal Server Error".to_string()
+        }
     })
 }
 

@@ -239,6 +239,9 @@ pub async fn run(
                                       .service(
                                           crate::routes::marketplace::creator::self_vendor_profile_handler,
                                       )
+                                      .service(
+                                          crate::routes::marketplace::creator::update_vendor_public_profile_handler,
+                                      )
                                      .service(
                                          crate::routes::marketplace::creator::create_onboarding_link_handler,
                                      )

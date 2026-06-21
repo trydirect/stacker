@@ -4,7 +4,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::services;
-use actix_web::{get, post, put, web, Responder, Result};
+use actix_web::{get, patch, post, put, web, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -1077,7 +1077,55 @@ pub async fn vendor_profile_status_handler(
         .ok("OK"))
 }
 
-#[tracing::instrument(name = "Get my self vendor profile", skip_all)]
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateVendorPublicProfileRequest {
+    /// URL-safe slug for the vendor's public page, e.g. "acme-cloud"
+    pub public_slug: Option<String>,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub website_url: Option<String>,
+}
+
+#[tracing::instrument(name = "Update my vendor public profile", skip_all)]
+#[patch("/mine/vendor-profile")]
+pub async fn update_vendor_public_profile_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<UpdateVendorPublicProfileRequest>,
+) -> Result<impl Responder> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+    let req = body.into_inner();
+
+    if let Some(ref slug) = req.public_slug {
+        let valid = !slug.is_empty()
+            && slug.len() <= 100
+            && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !slug.starts_with('-')
+            && !slug.ends_with('-');
+        if !valid {
+            return Err(JsonResponse::<serde_json::Value>::build().bad_request(
+                "public_slug must be 1–100 characters, lowercase alphanumeric and hyphens only, no leading/trailing hyphens",
+            ));
+        }
+    }
+
+    db::marketplace::update_vendor_public_profile(
+        pg_pool.get_ref(),
+        &user.id,
+        req.public_slug.as_deref(),
+        req.display_name.as_deref(),
+        req.bio.as_deref(),
+        req.avatar_url.as_deref(),
+        req.website_url.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor public profile updated"))
+}
+
+#[tracing::instrument(name = "Get my vendor profile", skip_all)]
 #[get("/mine/vendor-profile")]
 pub async fn self_vendor_profile_handler(
     user: Option<web::ReqData<Arc<models::User>>>,
