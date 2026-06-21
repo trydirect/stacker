@@ -718,6 +718,11 @@ mod tests {
     use crate::cli::deployment_lock::DeploymentLock;
     use crate::cli::stacker_client::ServerInfo;
     use chrono::{Duration, Utc};
+    use std::sync::Mutex;
+
+    // Serialise tests that mutate XDG_CONFIG_HOME to prevent races when
+    // cargo runs lib tests in parallel threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_status_local_constructs_query() {
@@ -953,6 +958,7 @@ deploy:
 
     #[test]
     fn test_emergency_ssh_command_uses_local_backup_key_when_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let temp_home = tempfile::TempDir::new().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", temp_home.path());
 
@@ -989,6 +995,7 @@ deploy:
 
     #[test]
     fn test_emergency_ssh_command_is_absent_without_local_backup_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let temp_home = tempfile::TempDir::new().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", temp_home.path());
 
