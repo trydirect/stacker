@@ -134,13 +134,13 @@ impl ToolHandler for CloneProjectTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "clone_project".to_string(),
-            description: "Clone/duplicate an existing project with a new name".to_string(),
+            description: "Duplicate an existing project into a new one with a different name. ONLY use this when the user explicitly asks to clone or copy an existing project. Do NOT use this to create a new blank project — use create_project for that.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "project_id": {
                         "type": "number",
-                        "description": "Project ID to clone"
+                        "description": "ID of the existing project to copy"
                     },
                     "new_name": {
                         "type": "string",

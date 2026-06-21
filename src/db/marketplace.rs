@@ -46,7 +46,7 @@ pub async fn get_public_vendor_profile(
             )) AS metadata,
             mvp.created_at
         FROM marketplace_vendor_profile mvp
-        WHERE mvp.public_slug = $1
+        WHERE mvp.public_slug = $1 OR mvp.creator_user_id = $1
         LIMIT 1"#
     );
 

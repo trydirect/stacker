@@ -697,7 +697,7 @@ impl ToolHandler for ExecuteAgentCommandTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "execute_agent_command".to_string(),
-            description: "Queue a raw command for the Status Panel agent and optionally wait for the result. Use for advanced operations not covered by a dedicated MCP tool.".to_string(),
+            description: "Queue a raw low-level command directly to the Status Panel agent. Use ONLY when no other dedicated tool covers the operation (e.g. get_container_logs, restart_container, deploy_app). Do NOT call this for general project management, deployment, or app configuration — use the appropriate specific tool instead. Requires a valid command_type recognised by the agent.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
