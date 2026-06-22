@@ -46,7 +46,7 @@ pub async fn get_public_vendor_profile(
             )) AS metadata,
             mvp.created_at
         FROM marketplace_vendor_profile mvp
-        WHERE mvp.public_slug = $1
+        WHERE LOWER(TRIM(mvp.public_slug)) = LOWER(TRIM($1)) OR LOWER(TRIM(mvp.creator_user_id)) = LOWER(TRIM($1))
         LIMIT 1"#
     );
 
@@ -104,7 +104,7 @@ pub async fn list_approved_by_creator(
             5 AS rating_scale
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        LEFT JOIN marketplace_vendor_profile mvp ON mvp.creator_user_id = t.creator_user_id
+        LEFT JOIN marketplace_vendor_profile mvp ON LOWER(TRIM(mvp.creator_user_id)) = LOWER(TRIM(t.creator_user_id))
         WHERE t.status = 'approved' AND t.creator_user_id = $1"#,
     );
 
@@ -328,7 +328,7 @@ pub async fn get_by_slug_with_latest(
             mvp.public_slug AS vendor_slug
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
-        LEFT JOIN marketplace_vendor_profile mvp ON mvp.creator_user_id = t.creator_user_id
+        LEFT JOIN marketplace_vendor_profile mvp ON LOWER(TRIM(mvp.creator_user_id)) = LOWER(TRIM(t.creator_user_id))
         WHERE t.slug = $1 AND t.status = 'approved'"#,
     )
     .bind(slug)
