@@ -167,6 +167,11 @@ pub struct PublicVendorTemplate {
     pub id: Uuid,
     pub creator_user_id: String,
     pub creator_name: Option<String>,
+    /// Public slug for the vendor's page, e.g. "acme-cloud".
+    /// Use this — not `creator_user_id` — to build `/vendors/{slug}` URLs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub vendor_slug: Option<String>,
     pub name: String,
     pub slug: String,
     pub short_description: Option<String>,

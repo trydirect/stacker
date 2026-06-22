@@ -75,6 +75,7 @@ pub async fn list_approved_by_creator(
             t.id,
             t.creator_user_id,
             t.creator_name,
+            mvp.public_slug AS vendor_slug,
             t.name,
             t.slug,
             t.short_description,
@@ -103,6 +104,7 @@ pub async fn list_approved_by_creator(
             5 AS rating_scale
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
+        LEFT JOIN marketplace_vendor_profile mvp ON mvp.creator_user_id = t.creator_user_id
         WHERE t.status = 'approved' AND t.creator_user_id = $1"#,
     );
 

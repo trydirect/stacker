@@ -151,3 +151,177 @@ async fn creator_self_vendor_profile_requires_authentication() {
 
     assert_eq!(StatusCode::FORBIDDEN, response.status());
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PATCH /mine/vendor-profile — self-service public profile update
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[tokio::test]
+async fn creator_patch_vendor_public_profile_creates_profile_when_missing() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    let response = reqwest::Client::new()
+        .patch(format!(
+            "{}/api/templates/mine/vendor-profile",
+            app.address
+        ))
+        .bearer_auth(USER_TOKEN)
+        .json(&json!({
+            "display_name": "Acme Cloud",
+            "bio": "We build stacks.",
+            "website_url": "https://acme-cloud.example.com",
+            "avatar_url": "https://acme-cloud.example.com/avatar.png",
+            "public_slug": "acme-cloud"
+        }))
+        .send()
+        .await
+        .expect("Failed to PATCH vendor public profile");
+
+    assert_eq!(StatusCode::OK, response.status());
+
+    // Verify the profile was persisted by reading it back
+    let get_response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/templates/mine/vendor-profile",
+            app.address
+        ))
+        .bearer_auth(USER_TOKEN)
+        .send()
+        .await
+        .expect("Failed to GET self vendor profile after PATCH");
+
+    assert_eq!(StatusCode::OK, get_response.status());
+
+    let body: Value = get_response
+        .json()
+        .await
+        .expect("response should be valid JSON");
+
+    let profile = &body["item"]["vendor_profile"];
+    assert_eq!("acme-cloud", profile["public_slug"]);
+    assert_eq!("Acme Cloud", profile["display_name"]);
+    assert_eq!("We build stacks.", profile["bio"]);
+    assert_eq!(
+        "https://acme-cloud.example.com/avatar.png",
+        profile["avatar_url"]
+    );
+    assert_eq!(
+        "https://acme-cloud.example.com",
+        profile["website_url"]
+    );
+}
+
+#[tokio::test]
+async fn creator_patch_vendor_public_profile_updates_existing_profile() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    // Seed an existing public profile
+    sqlx::query(
+        r#"INSERT INTO marketplace_vendor_profile (
+            creator_user_id, public_slug, display_name, bio,
+            avatar_url, website_url,
+            verification_status, onboarding_status
+        )
+        VALUES ($1, 'old-slug', 'Old Name', 'Old bio',
+                'https://old.example.com/avatar.png', 'https://old.example.com',
+                'unverified', 'not_started')"#,
+    )
+    .bind("test_user_id")
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to seed vendor profile");
+
+    // Update only display_name and bio — slug and URLs should be preserved via COALESCE
+    let response = reqwest::Client::new()
+        .patch(format!(
+            "{}/api/templates/mine/vendor-profile",
+            app.address
+        ))
+        .bearer_auth(USER_TOKEN)
+        .json(&json!({
+            "display_name": "New Name",
+            "bio": "New bio"
+        }))
+        .send()
+        .await
+        .expect("Failed to PATCH vendor public profile");
+
+    assert_eq!(StatusCode::OK, response.status());
+
+    // Verify only the specified fields changed
+    let get_response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/templates/mine/vendor-profile",
+            app.address
+        ))
+        .bearer_auth(USER_TOKEN)
+        .send()
+        .await
+        .expect("Failed to GET self vendor profile");
+
+    let body: Value = get_response
+        .json()
+        .await
+        .expect("response should be valid JSON");
+
+    let profile = &body["item"]["vendor_profile"];
+    assert_eq!("old-slug", profile["public_slug"]);
+    assert_eq!("New Name", profile["display_name"]);
+    assert_eq!("New bio", profile["bio"]);
+    assert_eq!(
+        "https://old.example.com/avatar.png",
+        profile["avatar_url"]
+    );
+    assert_eq!("https://old.example.com", profile["website_url"]);
+}
+
+#[tokio::test]
+async fn creator_patch_vendor_public_profile_rejects_invalid_slug() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    let response = reqwest::Client::new()
+        .patch(format!(
+            "{}/api/templates/mine/vendor-profile",
+            app.address
+        ))
+        .bearer_auth(USER_TOKEN)
+        .json(&json!({
+            "public_slug": "-invalid-slug"
+        }))
+        .send()
+        .await
+        .expect("Failed to PATCH vendor public profile with invalid slug");
+
+    assert_eq!(StatusCode::BAD_REQUEST, response.status());
+}
+
+#[tokio::test]
+async fn creator_patch_vendor_public_profile_requires_authentication() {
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    let response = reqwest::Client::new()
+        .patch(format!(
+            "{}/api/templates/mine/vendor-profile",
+            app.address
+        ))
+        .json(&json!({
+            "display_name": "Should Not Work"
+        }))
+        .send()
+        .await
+        .expect("Failed to PATCH vendor public profile without auth");
+
+    assert_eq!(StatusCode::FORBIDDEN, response.status());
+}
