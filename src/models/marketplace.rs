@@ -38,6 +38,9 @@ pub struct StackTemplate {
     pub infrastructure_requirements: serde_json::Value,
     pub public_ports: Option<serde_json::Value>,
     pub vendor_url: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub vendor_slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub version: Option<String>,

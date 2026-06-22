@@ -236,3 +236,96 @@ async fn public_vendor_profile_returns_empty_template_list_when_vendor_has_no_ap
             .len()
     );
 }
+
+#[tokio::test]
+async fn template_detail_includes_vendor_slug_from_vendor_profile() {
+    // Given a vendor with an approved template
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+    let vendor = seed_vendor_page(&app, "acme-cloud").await;
+
+    // When fetching the template detail for an approved template owned by that vendor
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/templates/wordpress-pro", app.address))
+        .send()
+        .await
+        .expect("Failed to fetch template detail");
+
+    // Then the response includes the vendor's public_slug as vendor_slug
+    assert_eq!(StatusCode::OK, response.status());
+
+    let body: Value = response
+        .json()
+        .await
+        .expect("template detail response should be valid JSON");
+
+    assert_eq!("OK", body["message"]);
+    assert_eq!(
+        vendor.public_slug,
+        body["item"]["template"]["vendor_slug"]
+            .as_str()
+            .expect("vendor_slug should be a non-null string")
+    );
+    assert_eq!(
+        "WordPress Pro",
+        body["item"]["template"]["name"]
+            .as_str()
+            .expect("name should be a string")
+    );
+}
+
+#[tokio::test]
+async fn template_detail_vendor_slug_is_null_when_no_vendor_profile() {
+    // Given a template whose creator has no marketplace_vendor_profile record
+    let app = match common::spawn_app().await {
+        Some(app) => app,
+        None => return,
+    };
+
+    // Insert a template directly without creating a vendor profile
+    sqlx::query(
+        r#"INSERT INTO stack_template (
+            id, creator_user_id, creator_name, name, slug, status,
+            short_description, tags, tech_stack
+        )
+        VALUES (
+            'a0000000-0000-0000-0000-000000000001'::uuid,
+            'orphan_creator',
+            'Orphan Creator',
+            'Orphan Template',
+            'orphan-template',
+            'approved',
+            'A template with no vendor profile',
+            '[]'::jsonb,
+            '{}'::jsonb
+        )"#,
+    )
+    .execute(&app.db_pool)
+    .await
+    .expect("Failed to insert orphan template");
+
+    // When fetching the template detail
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/templates/orphan-template", app.address))
+        .send()
+        .await
+        .expect("Failed to fetch orphan template detail");
+
+    // Then vendor_slug is null because no vendor profile exists
+    assert_eq!(StatusCode::OK, response.status());
+
+    let body: Value = response
+        .json()
+        .await
+        .expect("template detail response should be valid JSON");
+
+    assert!(body["item"]["template"]["vendor_slug"].is_null());
+    assert_eq!(
+        "Orphan Template",
+        body["item"]["template"]["name"]
+            .as_str()
+            .expect("name should be a string")
+    );
+}

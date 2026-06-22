@@ -2132,6 +2132,7 @@ mod tests {
             infrastructure_requirements: json!({}),
             public_ports: None,
             vendor_url: None,
+            vendor_slug: None,
             version: None,
             changelog: None,
             config_files: json!(null),

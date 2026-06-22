@@ -324,9 +324,11 @@ pub async fn get_by_slug_with_latest(
             t.verifications,
             t.infrastructure_requirements,
             t.public_ports,
-            t.vendor_url
+            t.vendor_url,
+            mvp.public_slug AS vendor_slug
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
+        LEFT JOIN marketplace_vendor_profile mvp ON mvp.creator_user_id = t.creator_user_id
         WHERE t.slug = $1 AND t.status = 'approved'"#,
     )
     .bind(slug)
