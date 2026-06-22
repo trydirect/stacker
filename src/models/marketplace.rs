@@ -144,6 +144,11 @@ pub struct MarketplaceVendorProfile {
     pub metadata: serde_json::Value,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+    pub public_slug: Option<String>,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub website_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, sqlx::FromRow)]
@@ -258,6 +263,11 @@ impl MarketplaceVendorProfile {
             metadata: serde_json::json!({}),
             created_at: None,
             updated_at: None,
+            public_slug: None,
+            display_name: None,
+            bio: None,
+            avatar_url: None,
+            website_url: None,
         }
     }
 }

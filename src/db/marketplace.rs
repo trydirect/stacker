@@ -1690,7 +1690,12 @@ pub async fn get_vendor_profile_by_creator(
             payout_account_ref,
             metadata,
             created_at,
-            updated_at
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url
         FROM marketplace_vendor_profile
         WHERE creator_user_id = $1"#,
     )
@@ -1753,7 +1758,12 @@ pub async fn upsert_vendor_profile(
             payout_account_ref,
             metadata,
             created_at,
-            updated_at"#,
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url"#,
     )
     .bind(creator_user_id)
     .bind(verification_status)
@@ -2015,7 +2025,12 @@ pub async fn complete_vendor_onboarding_by_payout_account_ref(
             payout_account_ref,
             metadata,
             created_at,
-            updated_at
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url
         FROM marketplace_vendor_profile
         WHERE payout_provider = $1 AND payout_account_ref = $2
         LIMIT 1"#,

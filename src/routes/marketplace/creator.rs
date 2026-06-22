@@ -40,6 +40,11 @@ fn build_vendor_profile_status_item(
             "onboarding_status": vendor_profile.onboarding_status,
             "payouts_enabled": vendor_profile.payouts_enabled,
             "payout_provider": vendor_profile.payout_provider,
+            "public_slug": vendor_profile.public_slug,
+            "display_name": vendor_profile.display_name,
+            "bio": vendor_profile.bio,
+            "avatar_url": vendor_profile.avatar_url,
+            "website_url": vendor_profile.website_url,
             "metadata": vendor_profile.metadata,
             "created_at": vendor_profile.created_at,
             "updated_at": vendor_profile.updated_at
