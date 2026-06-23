@@ -1,5 +1,6 @@
 use crate::configuration::Settings;
 use crate::db;
+use crate::helpers::redact::redact_sensitive_json_values;
 use crate::helpers::JsonResponse;
 use crate::models;
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Result};
@@ -351,7 +352,8 @@ pub async fn detail_handler(
             let mut payload = serde_json::json!({
                 "template": template,
             });
-            if let Some(ver) = version {
+            if let Some(mut ver) = version {
+                redact_sensitive_json_values(&mut ver.stack_definition);
                 payload["latest_version"] = serde_json::to_value(ver).unwrap();
             }
             Ok(JsonResponse::build().set_item(Some(payload)).ok("OK"))

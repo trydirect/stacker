@@ -5,6 +5,7 @@ pub mod db_pools;
 pub(crate) mod json;
 pub mod mq_manager;
 pub mod project;
+pub mod redact;
 pub mod security_validator;
 pub mod ssh_client;
 pub mod vault;
