@@ -90,7 +90,7 @@ async fn public_vendor_profile_returns_vendor_and_approved_templates_by_slug() {
 }
 
 #[tokio::test]
-async fn public_vendor_profile_cannot_be_loaded_by_creator_user_id() {
+async fn public_vendor_profile_can_be_loaded_by_creator_user_id() {
     let app = match common::spawn_app().await {
         Some(app) => app,
         None => return,
@@ -106,7 +106,9 @@ async fn public_vendor_profile_cannot_be_loaded_by_creator_user_id() {
         .await
         .expect("Failed to fetch public vendor profile by creator id");
 
-    assert_eq!(StatusCode::NOT_FOUND, response.status());
+    assert_eq!(StatusCode::OK, response.status());
+    let body: serde_json::Value = response.json().await.expect("Failed to parse response");
+    assert_eq!(body["item"]["vendor"]["slug"], "acme-cloud");
 }
 
 #[tokio::test]
