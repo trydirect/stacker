@@ -683,6 +683,41 @@ pub async fn update_vendor_profile_by_creator_handler(
     Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }
 
+/// List all marketplace vendor profiles for the admin vendor overview.
+/// Returns every profile row regardless of whether the vendor has published products,
+/// so the admin UI can surface vendors who are onboarding or have only submitted templates.
+#[tracing::instrument(name = "Admin list vendor profiles", skip_all)]
+#[get("")]
+pub async fn list_vendor_profiles_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::marketplace::admin_list_vendor_profiles(pg_pool.get_ref())
+        .await
+        .map_err(|err| {
+            JsonResponse::<Vec<models::MarketplaceVendorProfile>>::build()
+                .internal_server_error(err)
+        })
+        .map(|profiles| {
+            let items: Vec<serde_json::Value> = profiles
+                .into_iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "creator_user_id":     p.creator_user_id,
+                        "public_slug":         p.public_slug,
+                        "display_name":        p.display_name,
+                        "verification_status": p.verification_status,
+                        "onboarding_status":   p.onboarding_status,
+                        "payouts_enabled":     p.payouts_enabled,
+                        "created_at":          p.created_at,
+                        "updated_at":          p.updated_at,
+                    })
+                })
+                .collect();
+            JsonResponse::build().set_list(items).ok("OK")
+        })
+}
+
 /// Request body for PATCH /{id}/verifications.
 /// Each key is a boolean flag. Unknown keys are accepted and stored as-is.
 /// Omitted keys are not touched (partial update via JSONB `||`).

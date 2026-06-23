@@ -1202,6 +1202,41 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
     })
 }
 
+/// Return every marketplace_vendor_profile row ordered newest-first.
+/// Used by the admin vendor list to surface all vendors regardless of whether
+/// they have entries in the PostgREST products table.
+pub async fn admin_list_vendor_profiles(
+    pool: &PgPool,
+) -> Result<Vec<crate::models::MarketplaceVendorProfile>, String> {
+    let query_span = tracing::info_span!("marketplace_admin_list_vendor_profiles");
+    sqlx::query_as::<_, crate::models::MarketplaceVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            COALESCE(verification_status, 'unverified') AS verification_status,
+            COALESCE(onboarding_status, 'not_started')  AS onboarding_status,
+            COALESCE(payouts_enabled, false)             AS payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            COALESCE(metadata, '{}'::jsonb)              AS metadata,
+            created_at,
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url
+        FROM marketplace_vendor_profile
+        ORDER BY created_at DESC NULLS LAST"#,
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("admin_list_vendor_profiles error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
 pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, String> {
     let query_span = tracing::info_span!("marketplace_admin_list_submitted");
 

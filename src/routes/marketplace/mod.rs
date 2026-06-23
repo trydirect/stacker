@@ -9,8 +9,8 @@ pub mod search;
 pub mod template_rating;
 
 pub use admin::{
-    approve_handler, list_plans_handler, list_submitted_handler, reject_handler,
-    security_scan_handler, unapprove_handler, AdminDecisionRequest, UnapproveRequest,
+    approve_handler, list_plans_handler, list_submitted_handler, list_vendor_profiles_handler,
+    reject_handler, security_scan_handler, unapprove_handler, AdminDecisionRequest, UnapproveRequest,
 };
 pub use creator::{
     analytics_handler, create_handler, finalize_asset_upload_handler, mine_handler,

@@ -398,6 +398,7 @@ pub async fn run(
                              )
                              .service(
                                  web::scope("/vendors")
+                                     .service(crate::routes::marketplace::admin::list_vendor_profiles_handler)
                                      .service(crate::routes::marketplace::admin::update_vendor_profile_by_creator_handler),
                              )
                              .service(
