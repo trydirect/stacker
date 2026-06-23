@@ -11,13 +11,40 @@ fn is_sensitive_key(key: &str) -> bool {
         || k.contains("auth_key")
 }
 
-/// Recursively walks a JSON value and replaces the value of any key whose name
-/// matches a sensitive pattern (password, secret, api_key, …) with the string
-/// `"***REDACTED***"`. Null values are left untouched. Structure (key names,
-/// array order) is preserved so callers can still inspect what fields exist.
+/// Recursively walks a JSON value and replaces sensitive data with `"***REDACTED***"`.
+///
+/// Two patterns are handled:
+///
+/// 1. **Direct key** — the JSON object key itself is the sensitive name:
+///    `{"DB_PASSWORD": "secret"}` → value is redacted.
+///
+/// 2. **Key-value pair** — the stack_definition vars format used by ProjectForm:
+///    `{"key": "DB_PASSWORD", "value": "secret"}` → "value" field is redacted when
+///    the string stored in "key" matches a sensitive pattern.
+///
+/// Null values are never replaced. Key names and array order are preserved.
 pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
+            // Pattern 2: {"key": "<sensitive_name>", "value": "<data>"}
+            // This is the format used for env var entries in stack_definition.
+            let named_key_is_sensitive = map
+                .get("key")
+                .and_then(|v| v.as_str())
+                .map(is_sensitive_key)
+                .unwrap_or(false);
+
+            if named_key_is_sensitive {
+                if let Some(val) = map.get_mut("value") {
+                    if !val.is_null() {
+                        *val = serde_json::Value::String("***REDACTED***".to_string());
+                    }
+                }
+                // This object is a single env-var entry; no need to recurse further.
+                return;
+            }
+
+            // Pattern 1: standard JSON keys
             for (key, val) in map.iter_mut() {
                 if is_sensitive_key(key) && !val.is_null() {
                     *val = serde_json::Value::String("***REDACTED***".to_string());
@@ -77,5 +104,34 @@ mod tests {
         redact_sensitive_json_values(&mut v);
         assert_eq!(v["DB_PASSWORD"], "***REDACTED***");
         assert_eq!(v["API_KEY"], "***REDACTED***");
+    }
+
+    /// stack_definition stores env vars as [{key: "NAME", value: "DATA"}] objects.
+    /// The sensitive name is a string *value* under "key", not a JSON object key.
+    #[test]
+    fn redacts_key_value_pair_format() {
+        let mut v = json!([
+            { "key": "DB_PASSWORD", "value": "super_secret_pw" },
+            { "key": "DB_HOST",     "value": "db.internal" },
+            { "key": "api_key",     "value": "sk-live-abc" },
+            { "key": "APP_PORT",    "value": "3000" }
+        ]);
+        redact_sensitive_json_values(&mut v);
+
+        assert_eq!(v[0]["value"], "***REDACTED***", "DB_PASSWORD must be redacted");
+        assert_eq!(v[1]["value"], "db.internal",    "DB_HOST must not be redacted");
+        assert_eq!(v[2]["value"], "***REDACTED***", "api_key must be redacted");
+        assert_eq!(v[3]["value"], "3000",           "APP_PORT must not be redacted");
+
+        // Key names must survive unchanged
+        assert_eq!(v[0]["key"], "DB_PASSWORD");
+        assert_eq!(v[1]["key"], "DB_HOST");
+    }
+
+    #[test]
+    fn key_value_pair_with_null_value_is_left_alone() {
+        let mut v = json!({ "key": "DB_PASSWORD", "value": null });
+        redact_sensitive_json_values(&mut v);
+        assert!(v["value"].is_null());
     }
 }
