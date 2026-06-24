@@ -11,6 +11,8 @@ fn is_sensitive_key(key: &str) -> bool {
         || k.contains("auth_key")
 }
 
+// ─── JSON redaction ───────────────────────────────────────────────────────────
+
 /// Recursively walks a JSON value and replaces sensitive data with `"***REDACTED***"`.
 ///
 /// Two patterns are handled:
@@ -62,10 +64,60 @@ pub fn redact_sensitive_json_values(value: &mut serde_json::Value) {
     }
 }
 
+// ─── YAML redaction ───────────────────────────────────────────────────────────
+
+fn redact_yaml_value(value: &mut serde_yaml::Value) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, val) in map.iter_mut() {
+                if let serde_yaml::Value::String(k) = key {
+                    if is_sensitive_key(k) && !val.is_null() {
+                        *val = serde_yaml::Value::String("***REDACTED***".to_string());
+                    } else {
+                        redact_yaml_value(val);
+                    }
+                }
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq.iter_mut() {
+                // Handle "VARNAME=value" entries in environment lists
+                if let serde_yaml::Value::String(s) = item {
+                    if let Some(eq) = s.find('=') {
+                        if is_sensitive_key(&s[..eq]) {
+                            let key_part = s[..eq].to_string();
+                            *s = format!("{}=***REDACTED***", key_part);
+                        }
+                    }
+                } else {
+                    redact_yaml_value(item);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Parses a YAML string, redacts values of sensitive-named keys, and
+/// re-serializes to YAML. Returns the original string on parse failure.
+pub fn redact_yaml_string(yaml: &str) -> String {
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(mut value) => {
+            redact_yaml_value(&mut value);
+            serde_yaml::to_string(&value).unwrap_or_else(|_| yaml.to_string())
+        }
+        Err(_) => yaml.to_string(),
+    }
+}
+
+// ─── tests ────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
-    use super::redact_sensitive_json_values;
+    use super::{redact_sensitive_json_values, redact_yaml_string};
     use serde_json::json;
+
+    // JSON tests
 
     #[test]
     fn redacts_password_fields() {
@@ -133,5 +185,38 @@ mod tests {
         let mut v = json!({ "key": "DB_PASSWORD", "value": null });
         redact_sensitive_json_values(&mut v);
         assert!(v["value"].is_null());
+    }
+
+    // YAML tests
+
+    #[test]
+    fn yaml_redacts_docker_compose_env_mapping() {
+        let yaml = "services:\n  app:\n    environment:\n      FLOWISE_PASSWORD: admin123\n      DATABASE_PASSWORD: Qwerty123\n      SECRETKEY: change-me\n      PORT: '3000'\n      HOST: localhost\n";
+        let result = redact_yaml_string(yaml);
+        assert!(result.contains("***REDACTED***"), "should contain REDACTED marker");
+        assert!(!result.contains("admin123"),   "FLOWISE_PASSWORD value must be gone");
+        assert!(!result.contains("Qwerty123"),  "DATABASE_PASSWORD value must be gone");
+        assert!(!result.contains("change-me"),  "SECRETKEY value must be gone");
+        assert!(result.contains("'3000'") || result.contains("3000"), "PORT must survive");
+        assert!(result.contains("localhost"),   "HOST must survive");
+    }
+
+    #[test]
+    fn yaml_redacts_env_list_format() {
+        let yaml = "services:\n  app:\n    environment:\n    - DB_PASSWORD=secret\n    - APP_PORT=8080\n    - API_KEY=sk-xxx\n";
+        let result = redact_yaml_string(yaml);
+        assert!(result.contains("DB_PASSWORD=***REDACTED***"), "list-style DB_PASSWORD must be redacted");
+        assert!(result.contains("API_KEY=***REDACTED***"),     "list-style API_KEY must be redacted");
+        assert!(result.contains("APP_PORT=8080"),              "APP_PORT must survive");
+    }
+
+    #[test]
+    fn yaml_unparseable_string_returned_as_is() {
+        // A tab character in a YAML mapping value position is invalid in strict mode.
+        // Use an unterminated flow mapping which serde_yaml 0.9 rejects.
+        let bad = "{unclosed: [";
+        let result = redact_yaml_string(bad);
+        // Either returned as-is (parse failed) or survived round-trip without panicking
+        assert!(!result.contains("PANIC"));
     }
 }

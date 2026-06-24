@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix_web::{post, web, Responder, Result};
-use crate::helpers::redact::redact_sensitive_json_values;
+use crate::helpers::redact::{redact_sensitive_json_values, redact_yaml_string};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_valid::Validate;
@@ -323,10 +323,17 @@ async fn install_stack_template(
     )
     .await?;
 
+    let format = latest_version.definition_format.as_deref().unwrap_or("").to_string();
     let mut ver_value = serde_json::to_value(latest_version)
         .unwrap_or_else(|_| serde_json::json!({}));
     if let Some(sd) = ver_value.get_mut("stack_definition") {
-        redact_sensitive_json_values(sd);
+        if format == "yaml" {
+            if let serde_json::Value::String(yaml) = sd {
+                *yaml = redact_yaml_string(yaml);
+            }
+        } else {
+            redact_sensitive_json_values(sd);
+        }
     }
     Ok(InstallTemplateResponse {
         project,
