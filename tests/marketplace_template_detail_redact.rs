@@ -101,15 +101,17 @@ services:
     restart: always
 "#;
 
+    // Store the YAML as a JSONB string value (same as how the real table stores it).
+    // Binding serde_json::Value::String lets sqlx serialize it as a JSON-quoted string.
     sqlx::query(
         r#"INSERT INTO stack_template_version (
             template_id, version, stack_definition,
             definition_format, is_latest
         )
-        VALUES ($1, '1.0.0', $2::text::jsonb, 'yaml', true)"#,
+        VALUES ($1, '1.0.0', $2, 'yaml', true)"#,
     )
     .bind(template_id)
-    .bind(yaml)
+    .bind(serde_json::Value::String(yaml.to_string()))
     .execute(pool)
     .await
     .expect("insert yaml template version");
