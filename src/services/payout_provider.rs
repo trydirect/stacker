@@ -406,14 +406,49 @@ fn hex_value(byte: u8) -> Result<u8, PayoutProviderError> {
     }
 }
 
+/// Returns true when the runtime environment is production, based on the same
+/// env vars MarketplaceAssetSettings already honours (STACKER_ENV / APP_ENV / NODE_ENV).
+fn is_production_env() -> bool {
+    let current = std::env::var("STACKER_ENV")
+        .or_else(|_| std::env::var("APP_ENV"))
+        .or_else(|_| std::env::var("NODE_ENV"))
+        .unwrap_or_default();
+    matches!(current.as_str(), "production" | "prod")
+}
+
 pub fn init_payout_provider(
     settings: &PayoutSettings,
 ) -> Result<std::sync::Arc<dyn PayoutProvider>, PayoutProviderError> {
+    init_payout_provider_inner(settings, is_production_env())
+}
+
+fn init_payout_provider_inner(
+    settings: &PayoutSettings,
+    is_production: bool,
+) -> Result<std::sync::Arc<dyn PayoutProvider>, PayoutProviderError> {
     match settings.provider.as_str() {
-        "stripe_connect" | "stripe" => Ok(std::sync::Arc::new(
-            StripeConnectPayoutProvider::try_new(settings)?,
-        )),
-        "mock" | "" => Ok(std::sync::Arc::new(MockPayoutProvider)),
+        "stripe_connect" | "stripe" => {
+            tracing::info!("Payout provider initialised: stripe_connect");
+            Ok(std::sync::Arc::new(StripeConnectPayoutProvider::try_new(
+                settings,
+            )?))
+        }
+        "mock" | "" => {
+            if is_production {
+                return Err(PayoutProviderError::NotConfigured(
+                    "Refusing to start with the 'mock' payout provider in a production \
+                     environment. Set STACKER_PAYOUT_PROVIDER=stripe_connect and provide \
+                     STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, PAYOUT_ONBOARDING_RETURN_URL, \
+                     and PAYOUT_ONBOARDING_REFRESH_URL to enable real creator payouts."
+                        .to_string(),
+                ));
+            }
+            tracing::warn!(
+                "Payout provider is MOCK — onboarding links resolve to https://mock.payouts.local/* \
+                 and no real money moves. Set STACKER_PAYOUT_PROVIDER=stripe_connect to enable Stripe."
+            );
+            Ok(std::sync::Arc::new(MockPayoutProvider))
+        }
         other => Err(PayoutProviderError::NotConfigured(format!(
             "Unknown payout provider '{other}'. Expected 'mock' or 'stripe_connect'"
         ))),
@@ -485,6 +520,56 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("outside tolerance"));
+    }
+
+    fn mock_settings() -> PayoutSettings {
+        PayoutSettings {
+            provider: "mock".to_string(),
+            stripe_secret_key: String::new(),
+            stripe_webhook_secret: String::new(),
+            stripe_api_base_url: "https://api.stripe.com".to_string(),
+            onboarding_return_url: "https://example.com/return".to_string(),
+            onboarding_refresh_url: "https://example.com/refresh".to_string(),
+            timeout_secs: 5,
+        }
+    }
+
+    #[test]
+    fn mock_provider_rejected_in_production() {
+        let err = init_payout_provider_inner(&mock_settings(), true)
+            .err()
+            .expect("mock must be refused in production");
+        let message = err.to_string();
+        assert!(
+            message.contains("mock"),
+            "error should mention mock provider: {message}"
+        );
+        assert!(
+            message.contains("STACKER_PAYOUT_PROVIDER"),
+            "error should point at the env var to set: {message}"
+        );
+    }
+
+    #[test]
+    fn mock_provider_allowed_outside_production() {
+        init_payout_provider_inner(&mock_settings(), false)
+            .expect("mock should be allowed when not production");
+    }
+
+    #[test]
+    fn empty_provider_treated_as_mock_and_rejected_in_production() {
+        let mut settings = mock_settings();
+        settings.provider.clear();
+        let err = init_payout_provider_inner(&settings, true)
+            .err()
+            .expect("empty provider in production must be refused");
+        assert!(err.to_string().contains("mock"));
+    }
+
+    #[test]
+    fn stripe_provider_initialises_in_production() {
+        init_payout_provider_inner(&stripe_settings(), true)
+            .expect("stripe_connect should initialise in production");
     }
 
     #[tokio::test]
