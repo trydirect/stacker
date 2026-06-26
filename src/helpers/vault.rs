@@ -1,5 +1,6 @@
 use crate::configuration::VaultSettings;
 use reqwest::Client;
+use reqwest::Identity;
 use serde_json::json;
 
 pub struct VaultClient {
@@ -25,8 +26,22 @@ impl std::fmt::Debug for VaultClient {
 
 impl VaultClient {
     pub fn new(settings: &VaultSettings) -> Self {
+        let mut client_builder = Client::builder();
+        if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
+            let identity_pem = format!("{}\n{}", cert, key);
+            match Identity::from_pem(identity_pem.as_bytes()) {
+                Ok(identity) => {
+                    client_builder = client_builder.identity(identity);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load mTLS identity for Vault client: {}", e);
+                }
+            }
+        }
+        let client = client_builder.build().unwrap_or_else(|_| Client::new());
+
         Self {
-            client: Client::new(),
+            client,
             address: settings.address.clone(),
             token: settings.token.clone(),
             agent_path_prefix: settings.agent_path_prefix.clone(),

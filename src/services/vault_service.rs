@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use reqwest::Client;
+use reqwest::Identity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -95,8 +96,22 @@ impl VaultService {
     pub fn from_settings(
         settings: &crate::configuration::VaultSettings,
     ) -> Result<Self, VaultError> {
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        let mut builder = Client::builder()
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+
+        if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
+            let identity_pem = format!("{}\n{}", cert, key);
+            match Identity::from_pem(identity_pem.as_bytes()) {
+                Ok(identity) => {
+                    builder = builder.identity(identity);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load mTLS identity for Vault service: {}", e);
+                }
+            }
+        }
+
+        let http_client = builder
             .build()
             .map_err(|e| VaultError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -120,6 +135,8 @@ impl VaultService {
     /// - `VAULT_ADDRESS`: Base URL (e.g., https://vault.try.direct)
     /// - `VAULT_TOKEN`: Authentication token
     /// - `VAULT_CONFIG_PATH_PREFIX`: KV mount/prefix (e.g., secret/debug)
+    /// - `VAULT_CLIENT_CERT`: Client certificate PEM for mTLS
+    /// - `VAULT_CLIENT_KEY`: Client key PEM for mTLS
     pub fn from_env() -> Result<Option<Self>, VaultError> {
         let base_url = std::env::var("VAULT_ADDRESS").ok();
         let token = std::env::var("VAULT_TOKEN").ok();
@@ -129,8 +146,24 @@ impl VaultService {
 
         match (base_url, token, prefix) {
             (Some(base), Some(tok), Some(pref)) => {
-                let http_client = Client::builder()
-                    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+                let mut builder = Client::builder()
+                    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+
+                let client_cert = std::env::var("VAULT_CLIENT_CERT").ok();
+                let client_key = std::env::var("VAULT_CLIENT_KEY").ok();
+                if let (Some(cert), Some(key)) = (&client_cert, &client_key) {
+                    let identity_pem = format!("{}\n{}", cert, key);
+                    match Identity::from_pem(identity_pem.as_bytes()) {
+                        Ok(identity) => {
+                            builder = builder.identity(identity);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load mTLS identity for Vault service from env: {}", e);
+                        }
+                    }
+                }
+
+                let http_client = builder
                     .build()
                     .map_err(|e| {
                         VaultError::Other(format!("Failed to create HTTP client: {}", e))

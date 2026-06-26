@@ -42,6 +42,9 @@ services:
       # Vault — must point to the real Vault service in the TryDirect network
       - VAULT_ADDRESS=https://vault.try.direct
       - VAULT_TOKEN=${STACKER_VAULT_TOKEN:-change-me}
+      # mTLS client cert for Vault — inline PEMs
+      - VAULT_CLIENT_CERT=${VAULT_CLIENT_CERT:-}
+      - VAULT_CLIENT_KEY=${VAULT_CLIENT_KEY:-}
     depends_on:
       stackerdb:
         condition: service_healthy
