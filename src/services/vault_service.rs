@@ -100,8 +100,7 @@ impl VaultService {
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
         if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
-            let identity_pem = format!("{}\n{}", cert, key);
-            match Identity::from_pem(identity_pem.as_bytes()) {
+            match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
                 Ok(identity) => {
                     builder = builder.identity(identity);
                 }
@@ -152,8 +151,7 @@ impl VaultService {
                 let client_cert = std::env::var("VAULT_CLIENT_CERT").ok();
                 let client_key = std::env::var("VAULT_CLIENT_KEY").ok();
                 if let (Some(cert), Some(key)) = (&client_cert, &client_key) {
-                    let identity_pem = format!("{}\n{}", cert, key);
-                    match Identity::from_pem(identity_pem.as_bytes()) {
+                    match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
                         Ok(identity) => {
                             builder = builder.identity(identity);
                         }

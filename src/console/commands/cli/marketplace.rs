@@ -9,6 +9,74 @@ use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// marketplace templates (list all / browse catalog)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub struct MarketplaceTemplatesCommand {
+    category: Option<String>,
+    tag: Option<String>,
+    json: bool,
+}
+
+impl MarketplaceTemplatesCommand {
+    pub fn new(category: Option<String>, tag: Option<String>, json: bool) -> Self {
+        Self { category, tag, json }
+    }
+}
+
+impl CallableTrait for MarketplaceTemplatesCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = CliRuntime::new("list marketplace templates")?;
+        let templates = ctx.block_on(async {
+            ctx.client
+                .list_marketplace_templates(self.category.as_deref(), self.tag.as_deref())
+                .await
+        })?;
+
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&templates)?);
+            return Ok(());
+        }
+
+        if templates.is_empty() {
+            let filter_hint = match (&self.category, &self.tag) {
+                (Some(cat), None) => format!(" for category '{}'", cat),
+                (None, Some(tag)) => format!(" for tag '{}'", tag),
+                (Some(cat), Some(tag)) => format!(" for category '{}' and tag '{}'", cat, tag),
+                (None, None) => String::new(),
+            };
+            println!("No marketplace templates found{}.", filter_hint);
+            println!("Browse the catalog at: https://try.direct/applications");
+            return Ok(());
+        }
+
+        println!(
+            "{:<24} {:<28} {:<14} {}",
+            "ITEM", "NAME", "PLAN", "DESCRIPTION"
+        );
+        println!("{}", "\u{2500}".repeat(92));
+        for template in &templates {
+            println!(
+                "{:<24} {:<28} {:<14} {}",
+                truncate(&template.slug, 22),
+                truncate(&template.name, 26),
+                display_plan(template),
+                truncate(template.description.as_deref().unwrap_or(""), 26),
+            );
+        }
+        eprintln!(
+            "\nInstall one with: stacker install {}",
+            templates
+                .first()
+                .map(|template| template.slug.as_str())
+                .unwrap_or("<item>")
+        );
+
+        Ok(())
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // marketplace find/install
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -27,15 +95,22 @@ impl MarketplaceFindCommand {
 impl CallableTrait for MarketplaceFindCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = CliRuntime::new("find marketplace templates")?;
+
+        let is_list_all = self.query.eq_ignore_ascii_case("all") || self.query == "*";
+
         let templates = ctx.block_on(async {
-            ctx.client
-                .search_marketplace_templates(
-                    Some(&self.query),
-                    None,
-                    None,
-                    Some(self.limit.unwrap_or(20)),
-                )
-                .await
+            if is_list_all {
+                ctx.client.list_marketplace_templates(None, None).await
+            } else {
+                ctx.client
+                    .search_marketplace_templates(
+                        Some(&self.query),
+                        None,
+                        None,
+                        Some(self.limit.unwrap_or(20)),
+                    )
+                    .await
+            }
         })?;
 
         if self.json {
@@ -44,7 +119,15 @@ impl CallableTrait for MarketplaceFindCommand {
         }
 
         if templates.is_empty() {
-            println!("No marketplace templates found for '{}'.", self.query);
+            if is_list_all {
+                println!("No marketplace templates found.");
+                println!("Browse the catalog at: https://try.direct/applications");
+            } else {
+                println!(
+                    "No marketplace templates found for '{}'. Try 'stacker find all' to browse everything.",
+                    self.query
+                );
+            }
             return Ok(());
         }
 
@@ -58,7 +141,7 @@ impl CallableTrait for MarketplaceFindCommand {
                 "{:<24} {:<28} {:<14} {}",
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
-                template.required_plan_name.as_deref().unwrap_or("pro/team"),
+                display_plan(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
         }
@@ -670,6 +753,31 @@ impl CallableTrait for MarketplaceLogsCommand {
 }
 
 // ── helpers ──────────────────────────────────────────
+
+/// Format the plan/price column for display.
+/// Shows `required_plan_name` if set, otherwise formats `price` with currency,
+/// or "free" if neither indicates a paid template.
+fn display_plan(template: &MarketplaceTemplate) -> String {
+    if let Some(plan) = template.required_plan_name.as_deref().filter(|p| !p.is_empty()) {
+        return plan.to_string();
+    }
+    if let Some(price) = template.price {
+        if price > 0.0 {
+            let cycle = template
+                .billing_cycle
+                .as_deref()
+                .unwrap_or("/mo");
+            let cycle = match cycle {
+                "one_time" | "one-time" | "once" | "free" => "",
+                "monthly" | "month" | "/mo" => "/mo",
+                "yearly" | "year" | "/yr" => "/yr",
+                other => other,
+            };
+            return format!("${:.2}{}", price, cycle);
+        }
+    }
+    "free".to_string()
+}
 
 /// Truncate a string to `max_len` characters, adding "..." if truncated.
 fn truncate(s: &str, max_len: usize) -> String {
