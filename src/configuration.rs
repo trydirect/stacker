@@ -474,6 +474,14 @@ pub struct VaultSettings {
     pub api_prefix: String,
     #[serde(default)]
     pub ssh_key_path_prefix: Option<String>,
+    /// Client certificate PEM for mTLS (inline) or file path.
+    /// Read from VAULT_CLIENT_CERT env var.
+    #[serde(default)]
+    pub client_cert: Option<String>,
+    /// Client key PEM for mTLS (inline) or file path.
+    /// Read from VAULT_CLIENT_KEY env var.
+    #[serde(default)]
+    pub client_key: Option<String>,
 }
 
 impl std::fmt::Debug for VaultSettings {
@@ -484,6 +492,8 @@ impl std::fmt::Debug for VaultSettings {
             .field("agent_path_prefix", &self.agent_path_prefix)
             .field("api_prefix", &self.api_prefix)
             .field("ssh_key_path_prefix", &self.ssh_key_path_prefix)
+            .field("client_cert", &self.client_cert.as_ref().map(|_| "[REDACTED]"))
+            .field("client_key", &self.client_key.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
 }
@@ -496,6 +506,8 @@ impl Default for VaultSettings {
             agent_path_prefix: "agent".to_string(),
             api_prefix: Self::default_api_prefix(),
             ssh_key_path_prefix: Some("users".to_string()),
+            client_cert: None,
+            client_key: None,
         }
     }
 }
@@ -517,6 +529,8 @@ impl VaultSettings {
             self.ssh_key_path_prefix
                 .unwrap_or_else(|| "users".to_string()),
         );
+        let client_cert = std::env::var("VAULT_CLIENT_CERT").ok().or(self.client_cert);
+        let client_key = std::env::var("VAULT_CLIENT_KEY").ok().or(self.client_key);
 
         VaultSettings {
             address,
@@ -524,6 +538,8 @@ impl VaultSettings {
             agent_path_prefix,
             api_prefix,
             ssh_key_path_prefix: Some(ssh_key_path_prefix),
+            client_cert,
+            client_key,
         }
     }
 }
