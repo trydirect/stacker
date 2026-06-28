@@ -255,17 +255,6 @@ impl UserServiceConnector for UserServiceClient {
             req = req.header("Authorization", auth);
         }
 
-        #[derive(serde::Deserialize)]
-        struct UserMeResponse {
-            #[serde(default)]
-            plan: Option<PlanInfo>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct PlanInfo {
-            name: Option<String>,
-        }
-
         let resp = req.send().instrument(span.clone()).await.map_err(|e| {
             tracing::error!("user_has_plan error: {:?}", e);
             ConnectorError::HttpError(format!("Failed to check plan: {}", e))
@@ -277,12 +266,16 @@ impl UserServiceConnector for UserServiceClient {
                     .text()
                     .await
                     .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-                serde_json::from_str::<UserMeResponse>(&text)
-                    .map(|response| {
-                        let user_plan = response.plan.and_then(|p| p.name).unwrap_or_default();
-                        is_plan_higher_tier(&user_plan, required_plan_name)
-                    })
-                    .map_err(|_| ConnectorError::InvalidResponse(text))
+
+                let user_plan = parse_plan_from_me_response(&text).unwrap_or_default();
+                let result = is_plan_higher_tier(&user_plan, required_plan_name);
+                tracing::info!(
+                    "user_has_plan: extracted plan_name={:?}, required={}, result={}",
+                    user_plan,
+                    required_plan_name,
+                    result
+                );
+                Ok(result)
             }
             401 | 403 => {
                 tracing::debug!(parent: &span, "User not authenticated or authorized");
@@ -313,11 +306,17 @@ impl UserServiceConnector for UserServiceClient {
         #[derive(serde::Deserialize)]
         struct PlanInfoResponse {
             #[serde(default)]
+            user: Option<UserPlanPayload>,
+        }
+
+        #[derive(serde::Deserialize, Default)]
+        struct UserPlanPayload {
+            #[serde(alias = "_id")]
+            user_id: Option<String>,
+            #[serde(default)]
             plan: Option<String>,
             #[serde(default)]
             plan_name: Option<String>,
-            #[serde(default)]
-            user_id: Option<String>,
             #[serde(default)]
             description: Option<String>,
             #[serde(default)]
@@ -339,14 +338,17 @@ impl UserServiceConnector for UserServiceClient {
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
         serde_json::from_str::<PlanInfoResponse>(&text)
-            .map(|info| UserPlanInfo {
-                user_id: info.user_id.unwrap_or_else(|| user_id.to_string()),
-                plan_name: info.plan.or(info.plan_name).unwrap_or_default(),
-                plan_description: info.description,
-                tier: None,
-                active: info.active.unwrap_or(true),
-                started_at: None,
-                expires_at: None,
+            .map(|info| {
+                let user = info.user.unwrap_or_default();
+                UserPlanInfo {
+                    user_id: user.user_id.unwrap_or_else(|| user_id.to_string()),
+                    plan_name: user.plan.or(user.plan_name).unwrap_or_default(),
+                    plan_description: user.description,
+                    tier: None,
+                    active: user.active.unwrap_or(true),
+                    started_at: None,
+                    expires_at: None,
+                }
             })
             .map_err(|_| ConnectorError::InvalidResponse(text))
     }
@@ -632,4 +634,32 @@ impl UserServiceConnector for UserServiceClient {
         )
         .await
     }
+}
+
+/// Parse the `/oauth_server/api/me` response text and extract the user's plan name.
+/// Accepts both `{"user": {"plan": {"name": "..."}}}` (service-account token)
+/// and `{"plan": {"name": "..."}}` (user token) response shapes.
+fn parse_plan_from_me_response(text: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct PlanInfo {
+        name: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct UserInfo {
+        #[serde(default)]
+        plan: Option<PlanInfo>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        user: UserInfo,
+    }
+
+    if let Ok(wrapper) = serde_json::from_str::<Wrapper>(text) {
+        return wrapper.user.plan.and_then(|p| p.name);
+    }
+
+    serde_json::from_str::<UserInfo>(text)
+        .ok()
+        .and_then(|u| u.plan)
+        .and_then(|p| p.name)
 }
