@@ -200,6 +200,19 @@ enum StackerCommands {
         #[arg(long)]
         limit: Option<u32>,
     },
+    /// List all available marketplace application templates
+    #[command(visible_alias = "catalog", visible_alias = "apps")]
+    Templates {
+        /// Filter by category code
+        #[arg(long)]
+        category: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a project from a marketplace application template
     Install {
         /// Template slug from `stacker find`
@@ -2640,6 +2653,11 @@ fn get_command(
         StackerCommands::Find { query, json, limit } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceFindCommand::new(
                 query, json, limit,
+            ),
+        ),
+        StackerCommands::Templates { category, tag, json } => Box::new(
+            stacker::console::commands::cli::marketplace::MarketplaceTemplatesCommand::new(
+                category, tag, json,
             ),
         ),
         StackerCommands::Install {
