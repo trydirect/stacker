@@ -308,7 +308,7 @@ impl CallableTrait for MarketplaceInstallCommand {
             return Ok(());
         }
 
-        let Some(stack_definition) = response_stack_definition(&response) else {
+        let Some(yaml) = response_stack_definition(&response) else {
             println!(
                 "Installed '{}' as project #{}.",
                 response.template.slug, response.project.id
@@ -321,9 +321,6 @@ impl CallableTrait for MarketplaceInstallCommand {
             }
             return Ok(());
         };
-        let yaml = serde_yaml::to_string(stack_definition).map_err(|err| {
-            CliError::ConfigValidation(format!("Failed to render stacker.yml: {}", err))
-        })?;
 
         if !self.force && !confirm_stacker_file_write(&self.file)? {
             println!(
@@ -352,11 +349,16 @@ impl CallableTrait for MarketplaceInstallCommand {
 
 fn response_stack_definition(
     response: &crate::cli::stacker_client::MarketplaceInstallResponse,
-) -> Option<&Value> {
-    response
-        .latest_version
-        .get("stack_definition")
-        .filter(|value| value.is_object())
+) -> Option<String> {
+    response.latest_version.get("stack_definition").and_then(|value| {
+        if value.is_object() {
+            serde_yaml::to_string(value).ok()
+        } else if value.is_string() {
+            Some(value.as_str().unwrap().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn confirm_stacker_file_write(file: &std::path::Path) -> Result<bool, CliError> {
@@ -890,9 +892,23 @@ mod tests {
             }
         }));
 
+        let result = response_stack_definition(&response);
+        assert!(result.is_some());
+        let yaml = result.unwrap();
+        assert!(yaml.contains("project:"));
+        assert!(yaml.contains("name: dify"));
+    }
+
+    #[test]
+    fn response_stack_definition_accepts_string_definitions() {
+        let compose = "version: '3'\nservices:\n  app:\n    image: nginx\n";
+        let response = marketplace_install_response(json!({
+            "stack_definition": compose
+        }));
+
         assert_eq!(
             response_stack_definition(&response),
-            Some(&json!({ "project": { "name": "dify" } }))
+            Some(compose.to_string())
         );
     }
 
