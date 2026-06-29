@@ -30,6 +30,17 @@ pub struct PayoutWebhookUpdate {
     pub event_type: String,
 }
 
+/// Phrases (lowercase) in Stripe error messages that mean *TryDirect's*
+/// platform Connect setup is incomplete — the vendor cannot fix these.
+const PLATFORM_SETUP_PHRASES: &[&str] = &[
+    "complete your platform profile",
+    "signed up for connect",
+    "sign up for connect",
+    "review the responsibilities of managing connected accounts",
+    "platform settings",
+    "enable connect",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum PayoutProviderError {
     #[error("Payout provider is not configured: {0}")]
@@ -38,6 +49,36 @@ pub enum PayoutProviderError {
     Request(String),
     #[error("Payout provider response was invalid: {0}")]
     InvalidResponse(String),
+}
+
+impl PayoutProviderError {
+    /// True when the error is caused by TryDirect's own Connect setup being
+    /// incomplete — the vendor cannot act on it.
+    pub fn is_platform_setup_error(&self) -> bool {
+        let msg = self.to_string().to_lowercase();
+        PLATFORM_SETUP_PHRASES
+            .iter()
+            .any(|phrase| msg.contains(phrase))
+    }
+
+    /// User-friendly message safe to show to a creator.
+    pub fn user_message(&self) -> String {
+        if self.is_platform_setup_error() {
+            "Creator payouts are being set up by the TryDirect team. \
+             We'll email you the moment it's ready — no action needed on your side."
+                .to_string()
+        } else {
+            match self {
+                PayoutProviderError::NotConfigured(_) => {
+                    "Payout provider is not configured.".to_string()
+                }
+                PayoutProviderError::Request(msg) => msg.clone(),
+                PayoutProviderError::InvalidResponse(_) => {
+                    "Received an unexpected response from the payout provider.".to_string()
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]

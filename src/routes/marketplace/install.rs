@@ -62,7 +62,28 @@ fn build_project_form(
     latest_version: &models::StackTemplateVersion,
     requested_name: Option<&str>,
 ) -> Result<ProjectForm> {
-    let mut form: ProjectForm = serde_json::from_value(latest_version.stack_definition.clone())
+    let stack_def = if latest_version.definition_format.as_deref() == Some("yaml") {
+        let yaml_str = latest_version
+            .stack_definition
+            .as_str()
+            .ok_or_else(|| {
+                JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                    "Template '{}' has a YAML stack definition that is not a string",
+                    template.slug
+                ))
+            })?;
+        serde_yaml::from_str::<serde_json::Value>(yaml_str)
+            .map_err(|err| {
+                JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                    "Template '{}' has an invalid YAML stack definition: {}",
+                    template.slug, err
+                ))
+            })?
+    } else {
+        latest_version.stack_definition.clone()
+    };
+
+    let mut form: ProjectForm = serde_json::from_value(stack_def)
         .map_err(|err| {
             JsonResponse::<serde_json::Value>::build().bad_request(format!(
                 "Template '{}' cannot be installed because its stack definition is invalid: {}",

@@ -4,7 +4,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::services;
-use actix_web::{get, patch, post, put, web, Responder, Result};
+use actix_web::{get, patch, post, put, web, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -1174,7 +1174,25 @@ pub async fn create_onboarding_link_handler(
         .create_onboarding_link(&user, existing_account_ref)
         .await
         .map_err(|err| {
-            JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+            let user_msg = err.user_message();
+            let is_platform = err.is_platform_setup_error();
+            tracing::error!(
+                platform_setup = is_platform,
+                raw_error = %err,
+                "Payout provider onboarding-link failed"
+            );
+            // 503 for platform-setup issues (vendor cannot act); 422 for vendor issues.
+            let http_status = if is_platform { 503u16 } else { 422 };
+            let body = serde_json::json!({
+                "message": user_msg,
+                "code": if is_platform { "platform_setup_required" } else { "vendor_action_required" },
+            });
+            let status_code = actix_web::http::StatusCode::from_u16(http_status)
+                .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
+            let response = HttpResponse::build(status_code).json(body);
+            actix_web::Error::from(
+                actix_web::error::InternalError::from_response(err, response)
+            )
         })?;
 
     let (vendor_profile, linkage_created) = db::marketplace::ensure_vendor_onboarding_link(
