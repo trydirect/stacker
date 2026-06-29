@@ -39,6 +39,7 @@ impl UserServiceClient {
         let timeout = std::time::Duration::from_secs(config.timeout_secs);
         let http_client = reqwest::Client::builder()
             .timeout(timeout)
+            .pool_max_idle_per_host(0)
             .build()
             .expect("Failed to create HTTP client");
 
