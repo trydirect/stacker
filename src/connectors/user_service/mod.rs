@@ -11,7 +11,6 @@ pub mod marketplace_webhook;
 pub mod mock;
 pub mod notifications;
 pub mod plan;
-pub mod profile;
 pub mod stack;
 pub mod types;
 pub mod utils;
