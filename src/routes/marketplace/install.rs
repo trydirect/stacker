@@ -62,7 +62,9 @@ fn build_project_form(
     latest_version: &models::StackTemplateVersion,
     requested_name: Option<&str>,
 ) -> Result<ProjectForm> {
-    let stack_def = if latest_version.definition_format.as_deref() == Some("yaml") {
+    let is_yaml = latest_version.definition_format.as_deref() == Some("yaml");
+
+    let mut form: ProjectForm = if is_yaml {
         let yaml_str = latest_version
             .stack_definition
             .as_str()
@@ -72,46 +74,86 @@ fn build_project_form(
                     template.slug
                 ))
             })?;
-        serde_yaml::from_str::<serde_json::Value>(yaml_str)
-            .map_err(|err| {
-                JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                    "Template '{}' has an invalid YAML stack definition: {}",
-                    template.slug, err
-                ))
-            })?
-    } else {
-        latest_version.stack_definition.clone()
-    };
 
-    let mut form: ProjectForm = serde_json::from_value(stack_def)
-        .map_err(|err| {
+        let project_name = requested_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&template.slug);
+        let stack_code = normalized_project_name(project_name);
+
+        let mut config_files: Vec<serde_json::Value> =
+            serde_json::from_value(latest_version.config_files.clone()).unwrap_or_default();
+        let has_compose = config_files.iter().any(|f| {
+            f.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n.contains("docker-compose") || n.contains("compose"))
+                .unwrap_or(false)
+        });
+        if !has_compose {
+            config_files.push(serde_json::json!({
+                "name": "docker-compose.yml",
+                "content": yaml_str
+            }));
+        }
+
+        let form_value = serde_json::json!({
+            "custom": {
+                "custom_stack_code": stack_code,
+                "project_name": template.name.clone(),
+                "custom_stack_short_description": template.short_description,
+                "custom_stack_category": template.category_code.as_ref().map(|c| vec![c.clone()]),
+                "web": [],
+                "service": serde_json::Value::Array(vec![]),
+                "feature": serde_json::Value::Array(vec![]),
+                "networks": [],
+                "marketplace_config_files": config_files,
+                "marketplace_version": latest_version.version,
+                "marketplace_changelog": latest_version.changelog,
+                "marketplace_assets": latest_version.assets,
+                "marketplace_seed_jobs": latest_version.seed_jobs,
+                "marketplace_post_deploy_hooks": latest_version.post_deploy_hooks,
+                "marketplace_update_mode_capabilities": latest_version.update_mode_capabilities,
+            }
+        });
+
+        serde_json::from_value(form_value).map_err(|err| {
+            JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Template '{}' has an invalid stack definition: {}",
+                template.slug, err
+            ))
+        })?
+    } else {
+        serde_json::from_value(latest_version.stack_definition.clone()).map_err(|err| {
             JsonResponse::<serde_json::Value>::build().bad_request(format!(
                 "Template '{}' cannot be installed because its stack definition is invalid: {}",
                 template.slug, err
             ))
-        })?;
+        })?
+    };
 
-    if let Some(name) = requested_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-    {
-        let project_name = normalized_project_name(name);
-        form.custom.custom_stack_code = project_name.clone();
-        if form.custom.project_name.is_none() {
-            form.custom.project_name = Some(project_name);
+    if !is_yaml {
+        if let Some(name) = requested_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            let project_name = normalized_project_name(name);
+            form.custom.custom_stack_code = project_name.clone();
+            if form.custom.project_name.is_none() {
+                form.custom.project_name = Some(project_name);
+            }
         }
-    }
 
-    form.custom.marketplace_version = Some(latest_version.version.clone());
-    form.custom.marketplace_changelog = latest_version.changelog.clone();
-    form.custom.marketplace_config_files = latest_version.config_files.clone();
-    form.custom.marketplace_assets = latest_version.assets.clone();
-    form.custom.marketplace_seed_jobs = latest_version.seed_jobs.clone();
-    form.custom.marketplace_post_deploy_hooks = latest_version.post_deploy_hooks.clone();
-    form.custom.marketplace_update_mode_capabilities = latest_version
-        .update_mode_capabilities
-        .clone()
-        .unwrap_or_default();
+        form.custom.marketplace_version = Some(latest_version.version.clone());
+        form.custom.marketplace_changelog = latest_version.changelog.clone();
+        form.custom.marketplace_config_files = latest_version.config_files.clone();
+        form.custom.marketplace_assets = latest_version.assets.clone();
+        form.custom.marketplace_seed_jobs = latest_version.seed_jobs.clone();
+        form.custom.marketplace_post_deploy_hooks = latest_version.post_deploy_hooks.clone();
+        form.custom.marketplace_update_mode_capabilities = latest_version
+            .update_mode_capabilities
+            .clone()
+            .unwrap_or_default();
+    }
 
     form.validate()
         .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err.to_string()))?;
@@ -526,9 +568,112 @@ pub async fn install_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog_application_project_form, ensure_catalog_application_has_deploy_context};
+    use super::{
+        build_project_form, catalog_application_project_form,
+        ensure_catalog_application_has_deploy_context,
+    };
     use crate::{forms::project::Payload, models};
     use serde_json::{json, Map};
+    use uuid::Uuid;
+
+    fn make_yaml_version() -> models::StackTemplateVersion {
+        models::StackTemplateVersion {
+            id: Uuid::new_v4(),
+            template_id: Uuid::new_v4(),
+            version: "1.0.0".to_string(),
+            stack_definition: json!("version: '3.8'\nservices:\n  app:\n    image: nginx:latest"),
+            config_files: json!([]),
+            assets: json!([]),
+            seed_jobs: json!([]),
+            post_deploy_hooks: json!([]),
+            update_mode_capabilities: None,
+            definition_format: Some("yaml".to_string()),
+            changelog: None,
+            is_latest: Some(true),
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn yaml_stack_definition_builds_valid_project_form() {
+        let template = models::StackTemplate {
+            slug: "stackdog".to_string(),
+            name: "Stackdog".to_string(),
+            short_description: Some("A monitoring tool".to_string()),
+            category_code: Some("monitoring".to_string()),
+            ..Default::default()
+        };
+        let version = make_yaml_version();
+
+        let form = build_project_form(&template, &version, None)
+            .expect("YAML stack should produce a valid ProjectForm");
+
+        assert_eq!(form.custom.custom_stack_code, "stackdog");
+        assert_eq!(form.custom.project_name, Some("Stackdog".to_string()));
+        assert_eq!(
+            form.custom.custom_stack_short_description,
+            Some("A monitoring tool".to_string())
+        );
+        assert!(form.custom.web.is_empty());
+        assert_eq!(
+            form.custom.service.as_ref().map(|v| v.len()),
+            Some(0)
+        );
+        assert_eq!(
+            form.custom.feature.as_ref().map(|v| v.len()),
+            Some(0)
+        );
+        assert_eq!(
+            form.custom.marketplace_version,
+            Some("1.0.0".to_string())
+        );
+    }
+
+    #[test]
+    fn yaml_stack_definition_embeds_compose_in_config_files() {
+        let template = models::StackTemplate {
+            slug: "stackdog".to_string(),
+            name: "Stackdog".to_string(),
+            ..Default::default()
+        };
+        let version = make_yaml_version();
+
+        let form = build_project_form(&template, &version, None)
+            .expect("YAML stack should produce a valid ProjectForm");
+
+        let config_files: &Vec<serde_json::Value> = form
+            .custom
+            .marketplace_config_files
+            .as_array()
+            .expect("config_files should be an array");
+
+        let has_compose = config_files.iter().any(|f| {
+            f.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n.contains("docker-compose") || n.contains("compose"))
+                .unwrap_or(false)
+        });
+        assert!(has_compose, "config_files should contain a compose entry");
+    }
+
+    #[test]
+    fn yaml_stack_definition_respects_requested_name() {
+        let template = models::StackTemplate {
+            slug: "stackdog".to_string(),
+            name: "Stackdog".to_string(),
+            ..Default::default()
+        };
+        let version = make_yaml_version();
+
+        let form = build_project_form(&template, &version, Some("my-instance"))
+            .expect("YAML stack should produce a valid ProjectForm");
+
+        assert_eq!(form.custom.custom_stack_code, "my-instance");
+        assert_eq!(
+            form.custom.project_name,
+            Some("Stackdog".to_string())
+        );
+    }
 
     #[test]
     fn catalog_application_project_form_preserves_catalog_context() {
