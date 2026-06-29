@@ -104,7 +104,16 @@ pub async fn validate_marketplace_template_access(
         }
     }
 
-    if template.product_id.is_some()
+    let no_price = template.price.map(|p| p <= 0.0).unwrap_or(true);
+    let no_plan = template
+        .required_plan_name
+        .as_deref()
+        .map(|p| p.trim().is_empty() || p.trim().eq_ignore_ascii_case("free"))
+        .unwrap_or(true);
+    let is_free = no_price && no_plan;
+
+    if !is_free
+        && template.product_id.is_some()
         && !user_owns_template_by_any_identifier(user_service, user_token, template).await?
     {
         return Err(MarketplaceAccessError::TemplateNotOwned);
@@ -296,6 +305,72 @@ mod tests {
         let result =
             validate_marketplace_template_access(&user_service, &test_user(), &test_template())
                 .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::TemplateNotOwned)
+        ));
+    }
+
+    #[tokio::test]
+    async fn allows_free_templates_without_ownership() {
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true)],
+            &[],
+        ));
+
+        let template = models::StackTemplate {
+            slug: "free-template".to_string(),
+            product_id: Some(999),
+            price: None,
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn allows_zero_price_templates_without_ownership() {
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true)],
+            &[],
+        ));
+
+        let template = models::StackTemplate {
+            slug: "zero-price-template".to_string(),
+            product_id: Some(888),
+            price: Some(0.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejects_unowned_template_with_plan_requirement() {
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true), ("enterprise", true)],
+            &[],
+        ));
+
+        let template = models::StackTemplate {
+            slug: "plan-only-template".to_string(),
+            product_id: Some(777),
+            price: None,
+            required_plan_name: Some("enterprise".to_string()),
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
 
         assert!(matches!(
             result,
