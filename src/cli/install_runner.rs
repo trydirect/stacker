@@ -47,6 +47,23 @@ impl CommandOutput {
 /// Tests: `MockExecutor` records commands for assertion without side effects.
 pub trait CommandExecutor: Send + Sync {
     fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError>;
+
+    /// Execute with a hard timeout.  The default implementation (used by
+    /// `MockExecutor`) delegates to [`execute`](CommandExecutor::execute)
+    /// and ignores the timeout + current_dir — mocks never block.
+    ///
+    /// `ShellExecutor` overrides this with a real timeout that uses
+    /// [`Command::spawn`] + [`try_wait`] + [`kill`], clears the environment,
+    /// and sets the working directory to `current_dir` when provided.
+    fn execute_with_timeout(
+        &self,
+        program: &str,
+        args: &[&str],
+        _timeout: std::time::Duration,
+        _current_dir: Option<&Path>,
+    ) -> Result<CommandOutput, CliError> {
+        self.execute(program, args)
+    }
 }
 
 /// Production executor — actually runs docker commands.
@@ -67,6 +84,79 @@ impl CommandExecutor for ShellExecutor {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
+    }
+
+    fn execute_with_timeout(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: std::time::Duration,
+        current_dir: Option<&Path>,
+    ) -> Result<CommandOutput, CliError> {
+        let program_owned = program.to_string();
+        let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
+        let mut cmd = std::process::Command::new(&program_owned);
+        cmd.args(&args_owned);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        // Security: clear environment to prevent secret leakage (H2)
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin:/usr/local/bin");
+        if let Some(home) = std::env::var_os("HOME") {
+            cmd.env("HOME", home);
+        }
+        if let Some(dir) = current_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| CliError::CommandFailed {
+            command: format!("{} {} — {}", program, args.join(" "), e),
+            exit_code: -1,
+        })?;
+
+        let deadline = std::time::Instant::now() + timeout;
+        let poll_interval = std::time::Duration::from_millis(100);
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    let output = child.wait_with_output().map_err(|_| {
+                        CliError::CommandFailed {
+                            command: format!("{} {}", program, args.join(" ")),
+                            exit_code: -1,
+                        }
+                    })?;
+                    return Ok(CommandOutput {
+                        exit_code: output.status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    });
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait_with_output();
+                        return Err(CliError::DeployFailed {
+                            target: crate::cli::config_parser::DeployTarget::Local,
+                            reason: format!(
+                                "Command '{} {}' timed out after {}s",
+                                program,
+                                args.join(" "),
+                                timeout.as_secs()
+                            ),
+                        });
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+                Err(_e) => {
+                    return Err(CliError::CommandFailed {
+                        command: format!("{} {}", program, args.join(" ")),
+                        exit_code: -1,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -3421,6 +3511,84 @@ services:
         assert!(
             conflicts[0].contains(&port.to_string()),
             "conflict message should mention the port"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Security-audit follow-up tests — CommandExecutor timeout.
+    //
+    // These tests are written FIRST (TDD). They MUST fail against the
+    // current `execute_with_timeout` default impl, which uses
+    // `std::thread::scope` around a blocking `Command::output()` — the
+    // scope joins on exit, so even when `recv_timeout` fires the closure
+    // does not return until the child process exits. Net effect: the
+    // "300-second timeout" is cosmetic.
+    //
+    // After the fix (Phase 4 of the plan), `execute_with_timeout` (or its
+    // successor `execute_hook`) must spawn a `Child`, poll deadline with
+    // `try_wait`, and `child.kill()` on miss — these tests then turn green
+    // in ~3 seconds for a 30-second sleep with a 2-second budget.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// C2: a real timeout must actually terminate the child process and
+    /// return within the timeout budget — NOT block until the child
+    /// finishes naturally.
+    ///
+    /// Marked `#[ignore]` because it spawns a real `sleep 30`. Run with:
+    ///     cargo test -p stacker --lib test_execute_with_timeout_actually_terminates_child -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_actually_terminates_child() {
+        use std::time::{Duration, Instant};
+
+        let executor = ShellExecutor;
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let result = executor.execute_with_timeout("sleep", &["30"], timeout, None);
+        let elapsed = started.elapsed();
+
+        // The call must error on timeout.
+        assert!(
+            result.is_err(),
+            "execute_with_timeout must return Err on timeout, got Ok"
+        );
+
+        // Wall-clock must be within ~3s — significantly less than the
+        // 30s sleep. With the buggy `thread::scope` implementation this
+        // assertion fires because elapsed ≈ 30s.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "execute_with_timeout must terminate the child within timeout budget; \
+             actual elapsed = {:?} (sleep child should have been killed)",
+            elapsed
+        );
+    }
+
+    /// C2 sibling: when a child process is timed out, a follow-up call
+    /// to the same executor must succeed promptly — no zombie state,
+    /// no thread leak that holds resources.
+    ///
+    /// Marked `#[ignore]` for the same reason.
+    #[test]
+    #[ignore]
+    fn test_executor_remains_usable_after_timeout() {
+        use std::time::{Duration, Instant};
+
+        let executor = ShellExecutor;
+        let _ = executor.execute_with_timeout("sleep", &["10"], Duration::from_secs(1), None);
+
+        // Now run a quick command and assert it completes quickly.
+        let started = Instant::now();
+        let result = executor.execute("/bin/sh", &["-c", "echo ok"]);
+        let elapsed = started.elapsed();
+
+        assert!(result.is_ok(), "Follow-up exec must succeed: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output.exit_code, 0);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Follow-up exec must run promptly, elapsed = {:?}",
+            elapsed
         );
     }
 }

