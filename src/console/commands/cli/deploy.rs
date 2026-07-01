@@ -4681,7 +4681,7 @@ services:
     #[test]
     fn test_deploy_runs_pre_build_hook() {
         let config =
-            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+            "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  pre_build: ./build.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hello</h1>"),
             ("stacker.yml", config),
@@ -4716,7 +4716,7 @@ services:
     #[test]
     fn test_deploy_runs_post_deploy_hook_on_success() {
         let config =
-            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  post_deploy: ./post.sh\n";
+            "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  post_deploy: ./post.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hello</h1>"),
             ("stacker.yml", config),
@@ -6007,7 +6007,7 @@ monitoring:
     /// after the fix, malicious content must still hard-fail.
     #[test]
     fn test_hook_content_validation_applies_to_post_deploy() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  post_deploy: ./post.sh\n";
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  post_deploy: ./post.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6053,7 +6053,7 @@ monitoring:
     /// is logged as a warning without failing the deploy.
     #[test]
     fn test_post_deploy_hook_failure_surfaces() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  post_deploy: ./post.sh\n";
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  post_deploy: ./post.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6162,7 +6162,7 @@ monitoring:
     /// over-trigger and break every existing deployment.
     #[test]
     fn test_clean_pre_build_hook_still_runs_after_validation() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  pre_build: ./build.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
