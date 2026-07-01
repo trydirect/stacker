@@ -4,6 +4,9 @@
 /// Also treats bare hostnames (no dots) and `.local` / `.lan` / `.internal`
 /// suffixes as private, since those only resolve on the local network.
 pub fn is_private_host(addr: &str) -> bool {
+    if addr.is_empty() {
+        return false;
+    }
     use std::net::IpAddr;
     if let Ok(ip) = addr.parse::<IpAddr>() {
         return match ip {
@@ -58,6 +61,11 @@ mod tests {
         assert!(is_private_host("host.internal"));
         assert!(is_private_host("box.lan"));
         assert!(is_private_host("localhost"));
+    }
+
+    #[test]
+    fn empty_string_is_not_private() {
+        assert!(!is_private_host(""));
     }
 
     #[test]

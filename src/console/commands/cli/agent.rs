@@ -2690,8 +2690,12 @@ impl CallableTrait for AgentInstallCommand {
 
         // Detect intranet server: use local SSH path when the host is a private IP
         // (or --local is explicitly set) so the cloud install service is bypassed.
-        let server_host = config.deploy.server.as_ref().map(|s| s.host.as_str()).unwrap_or("");
-        let use_local_ssh = self.local || is_private_host(server_host);
+        // If there's no deploy.server at all (e.g. cloud-deployed project), always
+        // use the cloud install path.
+        let use_local_ssh = match config.deploy.server.as_ref() {
+            Some(s) => self.local || is_private_host(s.host.as_str()),
+            None => self.local,
+        };
 
         let ctx = CliRuntime::new("agent install")?;
 
@@ -2709,7 +2713,7 @@ impl CallableTrait for AgentInstallCommand {
 
             eprintln!(
                 "Server {} is on a private network — using local SSH to install agent.",
-                server_host
+                server_cfg.host
             );
             eprintln!("(Use --local to force this path for public-IP servers.)");
             eprintln!();
