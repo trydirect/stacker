@@ -4682,7 +4682,7 @@ mod tests {
         };
         let statuspanel_service = ServiceDefinition {
             name: "statuspanel".to_string(),
-            image: "ghcr.io/trydirect/statuspanel:latest".to_string(),
+            image: "trydirect/status:latest".to_string(),
             ports: vec!["5000:5000".to_string()],
             environment: std::collections::HashMap::new(),
             volumes: vec![],

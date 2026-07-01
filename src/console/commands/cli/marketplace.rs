@@ -1,5 +1,6 @@
 use crate::cli::config_parser::StackerConfig;
 use crate::cli::credentials::CredentialsManager;
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
 use crate::cli::stacker_client::{build_deploy_form, MarketplaceTemplate, StackerClient};
@@ -191,6 +192,29 @@ impl MarketplaceInstallCommand {
 
 impl CallableTrait for MarketplaceInstallCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Refuse to run inside an existing project directory.
+        // 'stacker install' creates a whole new project — it does not extend
+        // the current one. Users should use 'stacker service add' instead.
+        if self.file.exists() {
+            let project_dir = self
+                .file
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            if DeploymentLock::exists(project_dir) {
+                return Err(Box::new(CliError::ConfigValidation(
+                     "This directory already contains a deployed project.\n\
+                     'stacker install' creates a new project from a template — it cannot \
+                     be used inside an existing project directory.\n\n\
+                     To extend your current project, use:\n  \
+                     stacker service add <service>\n  \
+                     stacker agent deploy-app <stack_code>\n\n\
+                     To create a new project, run 'stacker install' in an empty directory."
+                        .to_string(),
+                )));
+            }
+        }
+
         let ctx = CliRuntime::new("install marketplace template")?;
 
         let (mut deploy_form, config_inputs, generated_stacker_yml) = if self.file.exists() {
@@ -264,6 +288,53 @@ impl CallableTrait for MarketplaceInstallCommand {
                 (None, Default::default(), false)
             }
         };
+
+        // If the deploy form has no cloud credential name, try to resolve
+        // one from the project's existing cloud deployment lock file.
+        if let Some(form) = deploy_form.as_mut() {
+            let has_cloud_name = form
+                .get("cloud")
+                .and_then(|c| c.get("name"))
+                .and_then(|n| n.as_str())
+                .filter(|s| !s.is_empty())
+                .is_some();
+
+            if !has_cloud_name {
+                let project_dir = self
+                    .file
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+
+                if let Ok(Some(lock)) = DeploymentLock::load_for_target(project_dir, "cloud") {
+                    if let Some(cloud_id) = lock.cloud_id {
+                        let cloud_info = ctx
+                            .block_on(async { ctx.client.get_cloud(cloud_id).await })
+                            .ok()
+                            .flatten();
+
+                        if let Some(cloud) = cloud_info {
+                            if let Some(form_cloud) =
+                                form.get_mut("cloud").and_then(|v| v.as_object_mut())
+                            {
+                                form_cloud.insert(
+                                    "name".to_string(),
+                                    serde_json::Value::String(cloud.name.clone()),
+                                );
+                                form_cloud.insert(
+                                    "save_token".to_string(),
+                                    serde_json::Value::Bool(false),
+                                );
+                                eprintln!(
+                                    "Using cloud credential '{}' from previous deployment.",
+                                    cloud.name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let install_inputs =
             resolve_install_inputs(config_inputs, self.domain.as_deref(), &self.set_values)?;
@@ -350,15 +421,155 @@ impl CallableTrait for MarketplaceInstallCommand {
 fn response_stack_definition(
     response: &crate::cli::stacker_client::MarketplaceInstallResponse,
 ) -> Option<String> {
-    response.latest_version.get("stack_definition").and_then(|value| {
-        if value.is_object() {
-            serde_yaml::to_string(value).ok()
-        } else if value.is_string() {
-            Some(value.as_str().unwrap().to_string())
-        } else {
-            None
+    let value = response.latest_version.get("stack_definition")?;
+
+    if value.is_object() {
+        return serde_yaml::to_string(value).ok();
+    }
+
+    if let Some(yaml_str) = value.as_str() {
+        use docker_compose_types as dctypes;
+
+        // Parse as Docker Compose and convert to stacker config format
+        let compose: dctypes::Compose = serde_yaml::from_str(yaml_str).ok()?;
+
+        let project_name = response.template.slug.clone();
+        let mut config = serde_yaml::Mapping::new();
+        config.insert("name".into(), serde_yaml::Value::String(project_name));
+
+        let mut svc_map = serde_yaml::Mapping::new();
+        for (svc_name, svc_opt) in &compose.services.0 {
+            let Some(service) = svc_opt.as_ref() else { continue };
+            let mut out = serde_yaml::Mapping::new();
+
+            // image
+            if let Some(image) = &service.image {
+                out.insert("image".into(), serde_yaml::Value::String(image.clone()));
+            }
+
+            // ports: follow the same conversion pattern as builder.rs
+            let ports: Vec<String> = match &service.ports {
+                dctypes::Ports::Short(list) => list.clone(),
+                dctypes::Ports::Long(list) => list
+                    .iter()
+                    .map(|p| {
+                        let host = p
+                            .host_ip
+                            .as_ref()
+                            .map(|h| format!("{}:", h))
+                            .unwrap_or_default();
+                        let published = p
+                            .published
+                            .as_ref()
+                            .map(|pp| match pp {
+                                dctypes::PublishedPort::Single(n) => n.to_string(),
+                                dctypes::PublishedPort::Range(s) => s.clone(),
+                            })
+                            .unwrap_or_default();
+                        format!("{}{}:{}", host, published, p.target)
+                    })
+                    .collect(),
+            };
+            if !ports.is_empty() {
+                let yaml_ports: Vec<serde_yaml::Value> = ports
+                    .into_iter()
+                    .map(serde_yaml::Value::String)
+                    .collect();
+                out.insert("ports".into(), serde_yaml::Value::Sequence(yaml_ports));
+            }
+
+            // volumes
+            let volumes: Vec<String> = service
+                .volumes
+                .iter()
+                .filter_map(|v| match v {
+                    dctypes::Volumes::Simple(s) => Some(s.clone()),
+                    dctypes::Volumes::Advanced(adv) => Some(format!(
+                        "{}:{}",
+                        adv.source.as_deref().unwrap_or(""),
+                        &adv.target
+                    )),
+                })
+                .collect();
+            if !volumes.is_empty() {
+                let yaml_vols: Vec<serde_yaml::Value> = volumes
+                    .into_iter()
+                    .map(serde_yaml::Value::String)
+                    .collect();
+                out.insert("volumes".into(), serde_yaml::Value::Sequence(yaml_vols));
+            }
+
+            // environment
+            let env_map: serde_yaml::Mapping = match &service.environment {
+                dctypes::Environment::List(list) => list
+                    .iter()
+                    .filter_map(|entry| {
+                        entry.split_once('=').map(|(k, v)| {
+                            (
+                                serde_yaml::Value::String(k.to_string()),
+                                serde_yaml::Value::String(v.to_string()),
+                            )
+                        })
+                    })
+                    .collect(),
+                dctypes::Environment::KvPair(map) => map
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = v
+                            .as_ref()
+                            .map(|sv| match sv {
+                                dctypes::SingleValue::String(s) => s.clone(),
+                                dctypes::SingleValue::Bool(b) => b.to_string(),
+                                dctypes::SingleValue::Unsigned(n) => n.to_string(),
+                                dctypes::SingleValue::Signed(n) => n.to_string(),
+                                dctypes::SingleValue::Float(f) => f.to_string(),
+                            })
+                            .unwrap_or_default();
+                        (
+                            serde_yaml::Value::String(k.clone()),
+                            serde_yaml::Value::String(val),
+                        )
+                    })
+                    .collect(),
+            };
+            if !env_map.is_empty() {
+                out.insert(
+                    "environment".into(),
+                    serde_yaml::Value::Mapping(env_map),
+                );
+            }
+
+            // depends_on: simple list of strings
+            let depends: Vec<String> = match &service.depends_on {
+                dctypes::DependsOnOptions::Simple(list) => list.clone(),
+                dctypes::DependsOnOptions::Conditional(map) => {
+                    map.keys().cloned().collect()
+                }
+            };
+            if !depends.is_empty() {
+                let yaml_dep: Vec<serde_yaml::Value> = depends
+                    .into_iter()
+                    .map(serde_yaml::Value::String)
+                    .collect();
+                out.insert(
+                    "depends_on".into(),
+                    serde_yaml::Value::Sequence(yaml_dep),
+                );
+            }
+
+            svc_map.insert(
+                serde_yaml::Value::String(svc_name.clone()),
+                serde_yaml::Value::Mapping(out),
+            );
         }
-    })
+        if !svc_map.is_empty() {
+            config.insert("services".into(), serde_yaml::Value::Mapping(svc_map));
+        }
+
+        return serde_yaml::to_string(&config).ok();
+    }
+
+    None
 }
 
 fn confirm_stacker_file_write(file: &std::path::Path) -> Result<bool, CliError> {
@@ -906,10 +1117,12 @@ mod tests {
             "stack_definition": compose
         }));
 
-        assert_eq!(
-            response_stack_definition(&response),
-            Some(compose.to_string())
-        );
+        let result = response_stack_definition(&response);
+        assert!(result.is_some());
+        let yaml = result.unwrap();
+        // Should be converted to stacker config format (name added from template slug)
+        assert!(yaml.contains("name: dify"));
+        assert!(yaml.contains("image: nginx"));
     }
 
     #[test]

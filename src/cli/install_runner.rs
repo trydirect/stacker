@@ -2005,25 +2005,49 @@ fn deploy_to_intranet_server(
             });
         }
     } else {
-        // Fallback: tar over SSH
+        // Fallback: tar over SSH (pipe tar → ssh, no shell -c to avoid injection)
         eprintln!("  (rsync not found, using tar+ssh fallback)");
-        let tar_cmd = format!(
-            "tar czf - --exclude=.git --exclude=target --exclude=node_modules -C {} . | \
-             ssh {} {} 'tar xzf - -C {}'",
-            context.project_dir.display(),
-            ssh_args.join(" "),
-            user_at_host,
-            remote_dir_abs,
-        );
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&tar_cmd)
+        let mut tar_child = std::process::Command::new("tar")
+            .arg("czf")
+            .arg("-")
+            .arg("--exclude=.git")
+            .arg("--exclude=target")
+            .arg("--exclude=node_modules")
+            .arg("-C")
+            .arg(context.project_dir.as_os_str())
+            .arg(".")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("tar failed: {}", e),
+            })?;
+
+        let tar_stdout = tar_child.stdout.take().ok_or_else(|| {
+            CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: "Could not capture tar stdout".to_string(),
+            }
+        })?;
+
+        let ssh_status = std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg(format!("tar xzf - -C {}", remote_dir_abs))
+            .stdin(tar_stdout)
             .status()
             .map_err(|e| CliError::DeployFailed {
                 target: DeployTarget::Server,
-                reason: format!("tar+ssh failed: {}", e),
+                reason: format!("ssh (tar extract) failed: {}", e),
             })?;
-        if !status.success() {
+
+        // Reap the tar child
+        let tar_status = tar_child.wait().map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("tar wait failed: {}", e),
+        })?;
+
+        if !ssh_status.success() || !tar_status.success() {
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Server,
                 reason: "tar+ssh transfer failed — check SSH key and server connectivity".to_string(),
