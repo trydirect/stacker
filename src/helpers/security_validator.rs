@@ -604,13 +604,17 @@ fn check_no_malicious_code(content: &str) -> SecurityCheckResult {
     }
 
     // Check for crypto miner patterns
-    let content_lower = content.to_lowercase();
     for miner_pattern in KNOWN_CRYPTO_MINER_PATTERNS {
-        if content_lower.contains(miner_pattern) {
-            findings.push(format!(
-                "[CRITICAL] Potential crypto miner reference detected: '{}'",
-                miner_pattern
-            ));
+        if let Ok(re) = RegexBuilder::new(&regex::escape(miner_pattern))
+            .case_insensitive(true)
+            .build()
+        {
+            if re.is_match(content) {
+                findings.push(format!(
+                    "[CRITICAL] Potential crypto miner reference detected: '{}'",
+                    miner_pattern
+                ));
+            }
         }
     }
 
