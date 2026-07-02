@@ -1,7 +1,16 @@
 use crate::configuration::get_configuration;
+use crate::connectors::install_service::InstallServiceConnector;
 use crate::db;
+use crate::forms::cloud_firewall::{
+    idempotency_key, normalize_provider, CloudFirewallAction, CloudFirewallCredentials,
+    CloudFirewallOperationMessage, CloudFirewallRequestedBy, CloudFirewallRule,
+    CloudFirewallTarget, CLOUD_FIREWALL_PROTOCOL_VERSION,
+};
+use crate::forms::firewall::{parse_public_port, FirewallRuleDirection};
+use crate::forms::CloudForm;
 use crate::helpers::ip::extract_ipv4_from_text;
 use crate::helpers::mq_manager::MqManager;
+use crate::models;
 use actix_web::rt;
 use actix_web::web;
 use chrono::Utc;
@@ -11,8 +20,11 @@ use lapin::options::{BasicAckOptions, BasicConsumeOptions};
 use lapin::types::FieldTable;
 use serde_derive::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 pub struct ListenCommand {}
 
@@ -79,6 +91,172 @@ fn progress_message_server_ip(msg: &ProgressMessage) -> Option<String> {
         .or_else(|| extract_ipv4_from_text(&msg.message))
 }
 
+fn extract_public_ports(metadata: &Value) -> Vec<String> {
+    metadata
+        .get("public_ports")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .filter(|s| !s.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn build_public_firewall_message(
+    deployment: &models::Deployment,
+    server: &models::Server,
+    cloud: models::Cloud,
+    port_strings: &[String],
+    operation_id: String,
+) -> Result<CloudFirewallOperationMessage, String> {
+    let cloud_id = server.cloud_id.ok_or_else(|| {
+        format!(
+            "server {} has no cloud_id; auto-firewall skipped",
+            server.id
+        )
+    })?;
+    let server_public_ip = server
+        .srv_ip
+        .clone()
+        .filter(|ip| !ip.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "server {} has no public IP yet; auto-firewall skipped",
+                server.id
+            )
+        })?;
+    let provider = normalize_provider(&cloud.provider).ok_or_else(|| {
+        format!(
+            "cloud provider '{}' does not support auto-firewall",
+            cloud.provider
+        )
+    })?;
+
+    let cloud = if cloud.save_token == Some(true) {
+        CloudForm::decode_model(cloud, true)
+    } else {
+        cloud
+    };
+    let non_empty = |s: Option<String>| {
+        s.map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let credentials = CloudFirewallCredentials {
+        provider: provider.to_string(),
+        token: non_empty(cloud.cloud_token),
+        key: non_empty(cloud.cloud_key),
+        secret: non_empty(cloud.cloud_secret),
+    };
+    if provider == "htz" && credentials.token.is_none() {
+        return Err(format!(
+            "Hetzner auto-firewall requires a valid cloud token for cloud {}",
+            cloud_id
+        ));
+    }
+
+    let managed_scope = format!("server:{}", server.id);
+    let mut rules: Vec<CloudFirewallRule> = Vec::with_capacity(port_strings.len());
+    for input in port_strings {
+        let port_rule = parse_public_port(input)
+            .map_err(|err| format!("invalid public_port '{}': {}", input, err))?;
+        let mut rule = CloudFirewallRule::from_port_rule(
+            port_rule,
+            FirewallRuleDirection::Inbound,
+            managed_scope.clone(),
+        );
+        rule.labels
+            .insert("stacker.server_id".to_string(), server.id.to_string());
+        rule.labels
+            .insert("stacker.operation_id".to_string(), operation_id.clone());
+        rule.labels.insert(
+            "stacker.deployment_hash".to_string(),
+            deployment.deployment_hash.clone(),
+        );
+        rules.push(rule);
+    }
+    if rules.is_empty() {
+        return Err("no valid public_ports to configure".to_string());
+    }
+
+    let target = CloudFirewallTarget {
+        provider: provider.to_string(),
+        cloud_id,
+        server_id: server.id,
+        project_id: server.project_id,
+        deployment_hash: Some(deployment.deployment_hash.clone()),
+        server_public_ip,
+        provider_server_id: None,
+        server_name: server.name.clone().or_else(|| server.server.clone()),
+        region: server.region.clone(),
+        zone: server.zone.clone(),
+        firewall_id: None,
+        firewall_name: None,
+    };
+
+    let action = CloudFirewallAction::Add;
+    Ok(CloudFirewallOperationMessage {
+        protocol_version: CLOUD_FIREWALL_PROTOCOL_VERSION.to_string(),
+        operation_id,
+        idempotency_key: idempotency_key(server.id, &action, &rules),
+        action,
+        dry_run: false,
+        target,
+        rules,
+        credentials,
+        provider_context: BTreeMap::new(),
+        requested_by: CloudFirewallRequestedBy {
+            user_id: deployment.user_id.clone().unwrap_or_default(),
+            user_email: None,
+        },
+    })
+}
+
+async fn configure_public_firewall_for_deployment(
+    db_pool: &PgPool,
+    install_service: &Arc<dyn InstallServiceConnector>,
+    mq_manager: &MqManager,
+    deployment: &models::Deployment,
+) -> Result<(), String> {
+    let port_strings = extract_public_ports(&deployment.metadata);
+    if port_strings.is_empty() {
+        return Ok(());
+    }
+
+    let servers = db::server::fetch_by_project(db_pool, deployment.project_id).await?;
+    let server = servers
+        .into_iter()
+        .find(|s| {
+            s.cloud_id.is_some()
+                && s.srv_ip
+                    .as_ref()
+                    .map_or(false, |ip| !ip.trim().is_empty())
+        })
+        .ok_or_else(|| {
+            format!(
+                "no cloud-managed server with public IP for project {}",
+                deployment.project_id
+            )
+        })?;
+
+    let cloud_id = server
+        .cloud_id
+        .expect("cloud_id checked above during server selection");
+    let cloud = db::cloud::fetch(db_pool, cloud_id)
+        .await?
+        .ok_or_else(|| format!("cloud {} not found for server {}", cloud_id, server.id))?;
+
+    let operation_id = format!("cfw_{}", Uuid::new_v4());
+    let message =
+        build_public_firewall_message(deployment, &server, cloud, &port_strings, operation_id)?;
+
+    install_service
+        .configure_cloud_firewall(message, mq_manager)
+        .await
+        .map(|_| ())
+}
+
 impl crate::console::commands::CallableTrait for ListenCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         rt::System::new().block_on(async {
@@ -88,6 +266,9 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                 .expect("Failed to connect to database.");
 
             let db_pool = web::Data::new(db_pool);
+            let install_service_data = crate::connectors::init_install_service(&settings.connectors);
+            let install_service: Arc<dyn InstallServiceConnector> =
+                install_service_data.get_ref().clone();
             let queue_name = "stacker_listener";
 
             // Outer loop for reconnection on connection errors
@@ -264,6 +445,8 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                             }
                                         }
 
+                                        let is_completed = row.status == "completed";
+                                        let row_for_firewall = row.clone();
                                         println!(
                                             "Deployment {} updated with status {}",
                                             &row.id, &row.status
@@ -272,6 +455,26 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                                             deployment::update(db_pool.get_ref(), row).await
                                         {
                                             eprintln!("Failed to update deployment: {}", e);
+                                        }
+
+                                        // Auto-configure cloud firewall when a new
+                                        // deployment reaches "completed" and the
+                                        // project has public_ports declared.
+                                        if is_completed {
+                                            if let Err(e) =
+                                                configure_public_firewall_for_deployment(
+                                                    db_pool.get_ref(),
+                                                    &install_service,
+                                                    &mq_manager,
+                                                    &row_for_firewall,
+                                                )
+                                                .await
+                                            {
+                                                eprintln!(
+                                                    "Auto-firewall failed for deployment {}: {}",
+                                                    row_for_firewall.id, e
+                                                );
+                                            }
                                         }
                                     }
                                     Ok(None) => println!("Deployment record was not found in db"),

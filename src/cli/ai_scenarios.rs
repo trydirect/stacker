@@ -8,31 +8,50 @@ use crate::cli::config_parser::{AiConfig, AiProviderType, AppType, StackerConfig
 use crate::cli::error::CliError;
 
 pub const WEBSITE_DEPLOY_SCENARIO: &str = "website-deploy";
-const SCENARIO_PROVIDER_DIR: &str = "qwen2.5-code";
+macro_rules! ai_model_str {
+    () => {
+        "qwen2.5-code"
+    };
+}
+
+pub const AI_MODEL: &str = ai_model_str!();
+const SCENARIO_PROVIDER_DIR: &str = AI_MODEL;
 
 const WEBSITE_DEPLOY_MANIFEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/scenarios/qwen2.5-code/website-deploy/scenario.yaml"
+    "/scenarios/",
+    ai_model_str!(),
+    "/website-deploy/scenario.yaml"
 ));
 const WEBSITE_DEPLOY_STEP_INIT_VALIDATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/scenarios/qwen2.5-code/website-deploy/steps/01-init-validate.md"
+    "/scenarios/",
+    ai_model_str!(),
+    "/website-deploy/steps/01-init-validate.md"
 ));
 const WEBSITE_DEPLOY_STEP_IMAGE_PUBLISH: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/scenarios/qwen2.5-code/website-deploy/steps/02-image-publish.md"
+    "/scenarios/",
+    ai_model_str!(),
+    "/website-deploy/steps/02-image-publish.md"
 ));
 const WEBSITE_DEPLOY_STEP_CLOUD_DEPLOY: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/scenarios/qwen2.5-code/website-deploy/steps/03-cloud-deploy.md"
+    "/scenarios/",
+    ai_model_str!(),
+    "/website-deploy/steps/03-cloud-deploy.md"
 ));
 const WEBSITE_DEPLOY_STEP_AGENT_PROXY: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/scenarios/qwen2.5-code/website-deploy/steps/04-agent-firewall-dns-proxy.md"
+    "/scenarios/",
+    ai_model_str!(),
+    "/website-deploy/steps/04-agent-firewall-dns-proxy.md"
 ));
 const WEBSITE_DEPLOY_STEP_RUNTIME_OPS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/scenarios/qwen2.5-code/website-deploy/steps/05-runtime-ops.md"
+    "/scenarios/",
+    ai_model_str!(),
+    "/website-deploy/steps/05-runtime-ops.md"
 ));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,7 +178,7 @@ pub fn is_qwen_website_scenario_model(ai_config: &AiConfig) -> bool {
         .as_deref()
         .map(|model| {
             let normalized = model.to_ascii_lowercase();
-            normalized.contains("qwen2.5-code") || normalized.contains("qwen2.5-coder")
+            normalized.contains(AI_MODEL) || normalized.contains("qwen2.5-coder")
         })
         .unwrap_or(false)
 }
@@ -788,7 +807,7 @@ mod tests {
 
         let context = load_scenario_prompt_context(
             dir.path(),
-            &website_ai_config("qwen2.5-code:latest"),
+            &website_ai_config(AI_MODEL),
             &ScenarioSelection::new(WEBSITE_DEPLOY_SCENARIO, Some("init-validate".to_string())),
         )
         .unwrap();

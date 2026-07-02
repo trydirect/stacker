@@ -1414,6 +1414,13 @@ async fn execute_deployment(
         None
     };
 
+    // Capture server and cloud references before they move into deploy().
+    let has_server_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.trim().is_empty());
+    let should_configure_firewall = has_server_ip
+        && form.public_ports.as_ref().map_or(false, |p| !p.is_empty());
+    let firewall_server = server.clone();
+    let firewall_cloud = cloud.clone();
+
     let deploy_result = install_service
         .deploy(
             user.id.clone(),
@@ -1441,6 +1448,28 @@ async fn execute_deployment(
             &settings.vault,
         )
         .await;
+    }
+
+    // When deploying to an existing server (has IP), configure cloud firewall immediately.
+    if should_configure_firewall {
+        if let Some(ref ports) = form.public_ports {
+            if let Err(e) = crate::forms::cloud_firewall::publish_public_firewall_rules(
+                mq_manager,
+                &firewall_server,
+                &firewall_cloud,
+                ports,
+                &deployment_hash,
+                &user.id,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to auto-configure cloud firewall for deployment {}: {}",
+                    deployment_hash,
+                    e
+                );
+            }
+        }
     }
 
     Ok((deploy_result, deployment_id))
