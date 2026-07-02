@@ -1629,6 +1629,7 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
         return None;
     }
 
+    let protocol = trimmed.rsplit_once('/').map(|(_, proto)| proto.trim().to_lowercase());
     let without_protocol = trimmed.split('/').next().unwrap_or(trimmed);
     let parts: Vec<&str> = without_protocol.split(':').collect();
 
@@ -1636,10 +1637,16 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
         return None;
     }
 
-    parts
+    let mut result = parts
         .get(parts.len().saturating_sub(2))
         .map(|part| part.trim().to_string())
-        .filter(|part| !part.is_empty())
+        .filter(|part| !part.is_empty())?;
+
+    if let Some(proto) = protocol {
+        result.push_str(&format!("/{}", proto));
+    }
+
+    Some(result)
 }
 
 /// Detect host-port collisions between stacker.yml `services:` and a user-supplied compose file.
