@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -834,15 +834,19 @@ pub fn validate_shell_scripts(scripts: &[(&str, &str)]) -> SecurityCheckResult {
             }
         }
 
-        // Check for crypto miner references in script content
-        let content_lower = content.to_lowercase();
+        // Check for crypto miner references in script content (case-insensitive)
         for miner_pattern in KNOWN_CRYPTO_MINER_PATTERNS {
-            if let Some(pos) = content_lower.find(miner_pattern) {
-                let line = content[..pos].lines().count() + 1;
-                script_findings.push(format!(
-                    "[CRITICAL] Potential crypto miner reference '{}' in '{}' line {}",
-                    miner_pattern, name, line
-                ));
+            if let Ok(re) = RegexBuilder::new(&regex::escape(miner_pattern))
+                .case_insensitive(true)
+                .build()
+            {
+                if let Some(mat) = re.find(content) {
+                    let line = content[..mat.start()].lines().count() + 1;
+                    script_findings.push(format!(
+                        "[CRITICAL] Potential crypto miner reference '{}' in '{}' line {}",
+                        miner_pattern, name, line
+                    ));
+                }
             }
         }
 
