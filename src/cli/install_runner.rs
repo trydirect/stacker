@@ -24,6 +24,48 @@ pub const CONTAINER_COMPOSE_PATH: &str = "/app/docker-compose.yml";
 pub const CONTAINER_SSH_KEY_PATH: &str = "/root/.ssh/id_rsa";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// HookPolicy — user-controlled hook execution guard rails
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Runtime policy for shell hook execution during deploy.
+///
+/// Separates two concerns:
+///   * `no_hooks`         — skip all hooks unconditionally (CI-safe deploys).
+///   * `allow_untrusted`  — permit hooks even when `StackerConfig::origin`
+///                           is `MarketplaceGenerated`. Default is to refuse
+///                           so a hostile marketplace template can't drive
+///                           local execution just because the user typed
+///                           `stacker deploy` after `stacker install`.
+///
+/// Both flags default to `false`. `run_hook` reads this policy together with
+/// the config's origin and either runs, skips, or errors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HookPolicy {
+    pub no_hooks: bool,
+    pub allow_untrusted: bool,
+}
+
+impl HookPolicy {
+    pub fn trusted() -> Self {
+        Self::default()
+    }
+
+    pub fn allow_untrusted() -> Self {
+        Self {
+            no_hooks: false,
+            allow_untrusted: true,
+        }
+    }
+
+    pub fn no_hooks() -> Self {
+        Self {
+            no_hooks: true,
+            allow_untrusted: false,
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CommandExecutor — abstraction for running shell commands (DIP)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

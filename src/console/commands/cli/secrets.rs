@@ -1527,6 +1527,7 @@ mod tests {
             env_file: None,
             env: Default::default(),
             config_contract: Default::default(),
+            origin: Default::default(),
         };
 
         assert_eq!(

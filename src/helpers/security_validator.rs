@@ -491,8 +491,14 @@ fn check_no_hardcoded_creds(content: &str) -> SecurityCheckResult {
         }
     }
 
-    // Check for common default credentials
-    let default_creds = [
+    // Check for common default credentials.
+    //
+    // Uses the same `RegexBuilder::case_insensitive` pattern as the crypto-miner
+    // check at line ~608 and the shell-script scan at line ~840 — case-insensitive
+    // matching against the original `content` so we never rely on offsets from a
+    // lowercased copy (M2 defence, even though `.contains()` alone is byte-safe,
+    // future changes to add offset-based reporting stay safe by construction).
+    let default_creds: &[(&str, &str)] = &[
         ("admin:admin", "Default admin:admin credentials"),
         ("root:root", "Default root:root credentials"),
         ("admin:password", "Default admin:password credentials"),
@@ -500,8 +506,13 @@ fn check_no_hardcoded_creds(content: &str) -> SecurityCheckResult {
     ];
 
     for (cred, desc) in default_creds {
-        if content.to_lowercase().contains(cred) {
-            findings.push(format!("[WARNING] {}", desc));
+        if let Ok(re) = RegexBuilder::new(&regex::escape(cred))
+            .case_insensitive(true)
+            .build()
+        {
+            if re.is_match(content) {
+                findings.push(format!("[WARNING] {}", desc));
+            }
         }
     }
 
@@ -1413,6 +1424,85 @@ mod tests {
         assert!(
             !report.passed,
             "Miner pattern with Unicode prefix should still be flagged after fix"
+        );
+    }
+
+    /// Regression guard for the M2-sibling refactor at `check_no_hardcoded_creds`.
+    ///
+    /// The old implementation was `content.to_lowercase().contains(cred)` which
+    /// (a) allocated a fresh String per credential iteration, and (b) shared
+    /// the `to_lowercase()` code smell with the two miner-detection sites that
+    /// triggered the ẞ UTF-8 panic. The refactor switches to
+    /// `RegexBuilder::case_insensitive(true)` for consistency and to eliminate
+    /// per-call allocation. These tests lock in the observable behaviour so a
+    /// future rewrite can't silently make the check case-sensitive or ASCII-only.
+    #[test]
+    fn test_hardcoded_default_creds_detected_uppercase() {
+        // ADMIN:ADMIN in an env value — must still be flagged case-insensitively.
+        let definition = serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "myapp:1.0",
+                    "environment": {
+                        "TEST_CREDS": "ADMIN:ADMIN"
+                    }
+                }
+            }
+        });
+        let report = validate_stack_security(&definition);
+        assert!(
+            !report.no_hardcoded_creds.passed,
+            "ADMIN:ADMIN must be flagged as a default credential, details: {:?}",
+            report.no_hardcoded_creds.details
+        );
+    }
+
+    #[test]
+    fn test_hardcoded_default_creds_detected_mixed_case() {
+        // Root:Root — real-world sighting from misconfigured healthchecks.
+        let definition = serde_json::json!({
+            "services": {
+                "db": {
+                    "image": "postgres:16",
+                    "environment": {
+                        "AUTH_STRING": "Root:Root"
+                    }
+                }
+            }
+        });
+        let report = validate_stack_security(&definition);
+        assert!(
+            !report.no_hardcoded_creds.passed,
+            "Root:Root must be flagged as a default credential, details: {:?}",
+            report.no_hardcoded_creds.details
+        );
+    }
+
+    /// The refactor uses `regex::escape(cred)` so credential strings are
+    /// treated as literals. Sanity-check the escape by confirming that a
+    /// non-credential value containing regex metacharacters does NOT
+    /// accidentally trigger the check.
+    #[test]
+    fn test_hardcoded_default_creds_regex_metachar_safe() {
+        // "admin.admin" is not one of the tracked credentials. If the
+        // credential string were compiled as a regex without escape, `.`
+        // would match any char and this would match. With regex::escape
+        // it stays a literal dot and won't match "admin:admin".
+        let definition = serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "myapp:1.0",
+                    "environment": {
+                        "NOTE": "admin.admin"
+                    }
+                }
+            }
+        });
+        let report = validate_stack_security(&definition);
+        assert!(
+            report.no_hardcoded_creds.passed,
+            "'admin.admin' must NOT match the 'admin:admin' credential rule after regex::escape, details: {:?}",
+            report.no_hardcoded_creds.details
         );
     }
 

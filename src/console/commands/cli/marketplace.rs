@@ -1,4 +1,4 @@
-use crate::cli::config_parser::StackerConfig;
+use crate::cli::config_parser::{StackerConfig, MARKETPLACE_ORIGIN_MARKER};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
@@ -259,7 +259,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                 let yaml = serde_yaml::to_string(&config).map_err(|err| {
                     CliError::ConfigValidation(format!("Failed to render stacker.yml: {}", err))
                 })?;
-                std::fs::write(&self.file, &yaml)?;
+                std::fs::write(&self.file, prepend_marketplace_marker(&yaml))?;
                 let mut form = build_deploy_form(&config);
                 if let Some(stack) = form
                     .get_mut("stack")
@@ -402,7 +402,7 @@ impl CallableTrait for MarketplaceInstallCommand {
             return Ok(());
         }
 
-        std::fs::write(&self.file, yaml)?;
+        std::fs::write(&self.file, prepend_marketplace_marker(&yaml))?;
 
         println!(
             "Installed '{}' as project #{}.",
@@ -410,11 +410,46 @@ impl CallableTrait for MarketplaceInstallCommand {
         );
         println!("Wrote {}", self.file.display());
         println!(
+            "  Hooks in this file will be REFUSED by `stacker deploy` until you review \
+             them and remove the '{}' marker line (or pass --allow-untrusted-hooks).",
+            MARKETPLACE_ORIGIN_MARKER
+        );
+        println!(
             "Deploy with: stacker deploy --project {}",
             response.project.name
         );
 
         Ok(())
+    }
+}
+
+/// Prepend the marketplace-origin marker to a YAML body so that a
+/// subsequent `stacker deploy` treats hook execution as untrusted.
+///
+/// The marker is idempotent — if the body already starts with the
+/// marker line, we don't add a second copy.
+fn prepend_marketplace_marker(yaml: &str) -> String {
+    let already_marked = yaml
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.trim()
+                .strip_prefix('#')
+                .map(|rest| rest.trim().eq_ignore_ascii_case(
+                    MARKETPLACE_ORIGIN_MARKER.trim_start_matches('#').trim(),
+                ))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if already_marked {
+        yaml.to_string()
+    } else {
+        format!(
+            "{marker}\n# Delete the line above once you have reviewed hooks in this file — \
+             `stacker deploy` refuses to run hooks while the marker is present.\n{body}",
+            marker = MARKETPLACE_ORIGIN_MARKER,
+            body = yaml
+        )
     }
 }
 
