@@ -4048,6 +4048,23 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     }
 
+    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
+        if !cloud_cfg.public_ports.is_empty() {
+            if let Some(obj) = form.as_object_mut() {
+                obj.insert(
+                    "public_ports".to_string(),
+                    serde_json::Value::Array(
+                        cloud_cfg
+                            .public_ports
+                            .iter()
+                            .map(|p| serde_json::Value::String(p.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+    }
+
     form
 }
 
@@ -4252,6 +4269,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -4417,6 +4435,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .project_identity("optimumcode")
             .build()
@@ -4441,6 +4460,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .monitoring(crate::cli::config_parser::MonitoringConfig {
                 status_panel: true,
@@ -4503,6 +4523,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .proxy(crate::cli::config_parser::ProxyConfig {
                 proxy_type: crate::cli::config_parser::ProxyType::Nginx,

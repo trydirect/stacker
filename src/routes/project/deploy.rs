@@ -11,6 +11,7 @@ use crate::models;
 use crate::services;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde::Deserialize;
+use serde_json;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -1355,7 +1356,22 @@ async fn execute_deployment(
         ));
     }
 
-    let json_request = dc.project.metadata.clone();
+    let mut json_request = dc.project.metadata.clone();
+    if let Some(ref public_ports) = form.public_ports {
+        if !public_ports.is_empty() {
+            if let Some(obj) = json_request.as_object_mut() {
+                obj.insert(
+                    "public_ports".to_string(),
+                    serde_json::Value::Array(
+                        public_ports
+                            .iter()
+                            .map(|p| serde_json::Value::String(p.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+    }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,

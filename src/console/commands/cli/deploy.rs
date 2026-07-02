@@ -2057,6 +2057,9 @@ fn merge_cloud_config_from_info(
         ssh_key: existing.and_then(|cloud| cloud.ssh_key.clone()),
         key: Some(cloud_info.name.clone()),
         server: existing.and_then(|cloud| cloud.server.clone()),
+        public_ports: existing
+            .map(|cloud| cloud.public_ports.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -5055,6 +5058,7 @@ include:
             ssh_key: None,
             key: None,
             server: None,
+            public_ports: Vec::new(),
         };
         let cloud = stacker_client::CloudInfo {
             id: 5,

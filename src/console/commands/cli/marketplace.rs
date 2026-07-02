@@ -681,6 +681,7 @@ async fn generate_minimal_install_config(
         ssh_key: None,
         key: Some(cloud_info.name.clone()),
         server: None,
+        public_ports: Vec::new(),
     };
 
     // Auto-generated stacker.yml never reuses an existing server. A fresh

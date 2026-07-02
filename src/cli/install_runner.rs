@@ -2543,6 +2543,7 @@ mod tests {
                 ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap()
@@ -2722,6 +2723,7 @@ mod tests {
                 ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();

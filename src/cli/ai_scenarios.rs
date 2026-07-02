@@ -725,6 +725,7 @@ mod tests {
             ssh_key: None,
             key: None,
             server: None,
+            public_ports: Vec::new(),
         });
 
         // Simulate a git remote through an existing state seed instead of shelling out in tests.

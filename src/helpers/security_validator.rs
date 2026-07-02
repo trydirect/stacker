@@ -1379,21 +1379,27 @@ mod tests {
 
     /// M2: `validate_shell_scripts` indexes the original `content` with an
     /// offset computed from `content.to_lowercase()`. For inputs where
-    /// `to_lowercase()` SHRINKS the byte length (e.g. `ſ` U+017F → `s`),
-    /// the returned index can land mid-UTF-8 sequence in the original,
-    /// panicking the slice. The fix must use a non-panicking lookup.
+    /// `to_lowercase()` SHRINKS the byte length — e.g. `ẞ` (U+1E9E, Capital
+    /// Sharp S, 3 bytes) → `ß` (U+00DF, 2 bytes) — the returned index can
+    /// land mid-UTF-8 sequence in the original, panicking the slice. The
+    /// fix must map the lowercase offset back to a valid char boundary
+    /// in the original (or search the original directly).
     #[test]
-    fn test_miner_detection_does_not_panic_on_unicode_prefix() {
+    fn test_miner_detection_does_not_panic_on_shrinking_lowercase() {
+        // ẞ (capital sharp S, 3 bytes) lowercases to ß (2 bytes).
+        // With the leading ẞ, `content_lower.find("xmrig")` returns 2,
+        // but byte index 2 in `content` lands mid-codepoint of ẞ.
         let scripts: &[(&str, &str)] = &[(
             "evil.sh",
-            "ſxmrig --url stratum+tcp://pool.example:4444\n",
+            "ẞxmrig --url stratum+tcp://pool.example:4444\n",
         )];
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             validate_shell_scripts(scripts)
         }));
         assert!(
             outcome.is_ok(),
-            "validate_shell_scripts must not panic on Unicode-prefixed miner patterns"
+            "validate_shell_scripts must not panic on Unicode-prefixed miner patterns \
+             where to_lowercase() shrinks byte length"
         );
         let report = outcome.unwrap();
         assert!(

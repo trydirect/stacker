@@ -75,6 +75,11 @@ pub struct Deploy {
     /// Safe metadata for Stack Builder artifact/config-file visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) config_bundle: Option<Value>,
+
+    /// Public ports to open in the cloud provider firewall after deployment.
+    /// Each string is a port number or "port/protocol" (e.g. "8000" or "8000/tcp").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) public_ports: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for Deploy {

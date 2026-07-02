@@ -571,6 +571,12 @@ pub struct CloudConfig {
     /// When set, the CLI passes the server_id to the deploy form so it is reused.
     #[serde(default)]
     pub server: Option<String>,
+
+    /// Public ports to open in the cloud provider firewall after deployment.
+    /// Each entry is a port number or "port/protocol" string (e.g. "8000" or "8000/tcp").
+    /// These are sent to the Install Service to configure provider-level firewall rules.
+    #[serde(default)]
+    pub public_ports: Vec<String>,
 }
 
 /// Remote server settings for server deployments.
@@ -2096,6 +2102,7 @@ deploy:
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -2173,6 +2180,7 @@ deploy:
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();

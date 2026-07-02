@@ -436,6 +436,7 @@ pub fn run_generate_remote_payload(
         ssh_key: None,
         key: None,
         server: None,
+        public_ports: Vec::new(),
     });
 
     config.deploy.target = DeployTarget::Cloud;
@@ -449,6 +450,7 @@ pub fn run_generate_remote_payload(
         ssh_key: existing_cloud.ssh_key,
         key: existing_cloud.key,
         server: existing_cloud.server,
+        public_ports: existing_cloud.public_ports,
     });
 
     let backup_path = format!("{}.bak", config_path);
@@ -505,6 +507,7 @@ fn apply_cloud_settings(
         ssh_key,
         key: None,
         server: None,
+        public_ports: Vec::new(),
     });
 }
 
@@ -836,6 +839,7 @@ pub fn run_fix_interactive(config_path: &str) -> Result<Vec<String>, CliError> {
                     ssh_key,
                     key: None,
                     server: None,
+                    public_ports: Vec::new(),
                 });
 
                 applied.push("Set deploy.target=cloud and deploy.cloud.*".to_string());
