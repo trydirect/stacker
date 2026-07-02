@@ -788,7 +788,111 @@ hooks:
   on_failure: ./scripts/alert-team.sh
 ```
 
-> Hook scripts must be executable (`chmod +x`).
+> Hook scripts run under `sh`, not the shebang. Use POSIX shell features or explicitly `exec` a different interpreter from inside the script.
+
+### Execution contract
+
+Everything below is enforced by the CLI at hook execution time, not by convention.
+
+#### Path resolution
+
+- Hook paths are relative to the project directory (the directory containing `stacker.yml`).
+- Absolute paths are **rejected**.
+- Paths containing `..` are **rejected** after canonicalization if the resolved path escapes the project directory.
+- Symlinks that point outside the project directory are **rejected** — the CLI uses `symlink_metadata`, not just `exists()`.
+- Missing scripts are **rejected**, with the resolved path in the error message.
+
+Rejection at the path-resolution stage means the executor is never invoked. Nothing runs.
+
+#### Content validation
+
+Before invocation, the script's contents are scanned against a fixed pattern set for known dangerous constructs. Any `[CRITICAL]` match refuses the hook. Current critical patterns include:
+
+- Remote script execution (`curl … | sh`, `bash <(curl …)`, base64 → shell)
+- Bash TCP/UDP redirects (`/dev/tcp/`, `/dev/udp/`) and `nc -e` / `ncat -e`
+- Recursive delete on root or home (`rm -rf /`, `rm -rf $HOME`, `rm -rf ~/`)
+- `chmod u+s` / `g+s` (setuid / setgid installation)
+- Python or Perl reverse-shell one-liners
+- References to `authorized_keys`, `pastebin.com`, `hastebin.com`
+- Known crypto miner names (xmrig, minerd, etc.)
+- Overly permissive chmod / privileged-container sudo
+
+`[WARNING]` matches (SSH key file references, `kill -9`, base64 blobs over 1 MiB, obfuscated `eval` chains) are logged to stderr but do not block execution.
+
+Scripts larger than 1 MiB are not scanned — the CLI logs a warning and refuses to run them without an explicit opt-in.
+
+#### Trust model
+
+Every loaded `stacker.yml` carries an in-memory `origin` marker derived from the file's leading comment block:
+
+| Origin                  | Marker line (top of file)                       | Default hook behaviour              |
+|-------------------------|-------------------------------------------------|--------------------------------------|
+| `UserAuthored`          | (no `# @stacker-origin: marketplace` present)   | Hooks run                            |
+| `MarketplaceGenerated`  | `# @stacker-origin: marketplace`                | Hooks **refused** unless opted in    |
+
+`stacker install <template>` writes the marker automatically. Delete the marker line after you have reviewed hooks in the file, and the CLI treats the file as user-authored on the next deploy.
+
+#### CLI flags
+
+| Flag                       | Effect                                                                                                |
+|----------------------------|-------------------------------------------------------------------------------------------------------|
+| *(none)*                   | Runs hooks for user-authored files. Refuses hooks for marketplace-generated files.                    |
+| `--allow-untrusted-hooks`  | Runs hooks even when the file carries the marketplace marker. Use only after reviewing every script.  |
+| `--no-hooks`               | Skips every hook regardless of provenance. CI-safe default.                                           |
+
+#### Runtime environment
+
+- `sh <script>` — always interpreted by POSIX `sh` regardless of shebang.
+- Working directory: the project directory.
+- Environment: **cleared**. Only `PATH` and `HOME` are re-exported. Cloud tokens, Docker registry credentials, `GH_TOKEN`, `OPENAI_API_KEY`, etc. **are not visible** to hook scripts. If a hook needs a secret, plumb it through explicitly.
+- Hard timeout: 5 minutes per hook. On timeout the child process is `kill`ed (not merely abandoned).
+- stdout and stderr are captured, ANSI escape sequences are stripped, and the combined output is capped at 1 MiB before being relayed to the terminal or embedded in error messages.
+
+#### Error behaviour
+
+Two distinct outcomes surface differently:
+
+| Cause                                                       | `pre_build`                | `post_deploy`                                                     | `on_failure`                                                             |
+|-------------------------------------------------------------|----------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------|
+| Path invalid / symlink escape / content critical / untrusted | Deploy **fails**           | Deploy **fails** — rejection is not silently downgraded to a warn | Original deploy error is preserved; rejection is chained into the message |
+| Script exits non-zero at runtime                             | Deploy **fails**           | Warning logged; deploy result stays **Ok**                        | Warning logged; original deploy error preserved                          |
+| Timeout (300 s)                                              | Deploy **fails**           | Warning logged; deploy result stays **Ok**                        | Warning logged; original deploy error preserved                          |
+
+This is a deliberate asymmetry: `pre_build` is a build-gating step, `post_deploy` and `on_failure` are best-effort notifications — but a *security rejection* of any of them is treated as a config-time bug, never a runtime blip.
+
+#### Full example
+
+```yaml
+# @stacker-origin: marketplace
+# Delete the line above once you have reviewed hooks in this file —
+# `stacker deploy` refuses to run hooks while the marker is present.
+
+name: my-app
+
+hooks:
+  pre_build: ./scripts/verify-lockfile.sh
+  post_deploy: ./scripts/warm-cache.sh
+  on_failure: ./scripts/alert-team.sh
+```
+
+Deploying this file without changes:
+
+```console
+$ stacker deploy
+Hook 'pre_build' rejected before execution: this stacker.yml was generated by the marketplace
+and has not been marked trusted. Review the hook script, then either remove the
+'# @stacker-origin: marketplace' marker line from the top of stacker.yml, or re-run with
+--allow-untrusted-hooks. Use --no-hooks to skip all hooks.
+```
+
+Options once you have reviewed the scripts:
+
+```console
+$ stacker deploy --allow-untrusted-hooks      # trust just this run
+$ stacker deploy --no-hooks                    # skip hooks entirely
+$ sed -i '/# @stacker-origin: marketplace/,/# `stacker deploy` refuses/d' stacker.yml
+$ stacker deploy                               # marker gone → file trusted going forward
+```
 
 ---
 

@@ -629,8 +629,12 @@ fn check_no_malicious_code(content: &str) -> SecurityCheckResult {
         }
     }
 
-    // Check for suspicious base64 encoded content (long base64 strings could hide payloads)
-    if let Ok(re) = Regex::new(r"[A-Za-z0-9+/]{100,}={0,2}") {
+    // Check for suspicious base64 encoded content (long base64 strings could hide payloads).
+    // Threshold matches the shell-script scanner at `validate_shell_scripts` — at 100 chars
+    // this fires on every PEM cert body, JWT, dockerconfigjson blob, and Kubernetes secret,
+    // which trains operators to ignore the warning. 1024 chars is still under the size of
+    // real embedded payloads but large enough to skip everyday config noise (audit M3).
+    if let Ok(re) = Regex::new(r"[A-Za-z0-9+/]{1024,}={0,2}") {
         if re.is_match(content) {
             findings.push(
                 "[WARNING] Long base64-encoded content detected — may contain hidden payload"

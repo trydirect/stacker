@@ -69,6 +69,19 @@ impl HookPolicy {
 // CommandExecutor — abstraction for running shell commands (DIP)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Byte cap enforced at the OS pipe level by `ShellExecutor::execute_with_timeout`.
+///
+/// This is the OOM-defence layer: even if a hostile hook emits gigabytes on
+/// stdout / stderr, at most this many bytes are ever held in the CLI's
+/// memory. Anything beyond the cap is drained straight to a sink so the
+/// child does not block on a full pipe.
+///
+/// Slightly larger than `HOOK_OUTPUT_MAX_BYTES` in `deploy.rs` (which caps
+/// the *displayed* output at 1 MiB) so callers can distinguish "output
+/// hit the pipe cap" from "output hit the display cap". Both layers are
+/// necessary — pipe-level guards memory, display-level guards the terminal.
+pub const HOOK_PIPE_OUTPUT_MAX_BYTES: usize = 1_048_576 + 1024;
+
 /// Result of executing a command.
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
@@ -157,28 +170,53 @@ impl CommandExecutor for ShellExecutor {
             exit_code: -1,
         })?;
 
+        // Phase 8b OOM defence: drain each pipe in its own thread with a
+        // hard byte cap. Anything past the cap is discarded — but the
+        // drain CONTINUES so the child never blocks on a full pipe.
+        //
+        // Both threads must be spawned before `try_wait` sees `Some`,
+        // otherwise the child can fill its pipe buffer and block on
+        // write while we sit polling.
+        let stdout_pipe = child.stdout.take().ok_or_else(|| CliError::CommandFailed {
+            command: format!("{} {}", program, args.join(" ")),
+            exit_code: -1,
+        })?;
+        let stderr_pipe = child.stderr.take().ok_or_else(|| CliError::CommandFailed {
+            command: format!("{} {}", program, args.join(" ")),
+            exit_code: -1,
+        })?;
+
+        let stdout_handle = std::thread::spawn(move || {
+            drain_capped(stdout_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES)
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            drain_capped(stderr_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES)
+        });
+
         let deadline = std::time::Instant::now() + timeout;
         let poll_interval = std::time::Duration::from_millis(100);
 
         loop {
             match child.try_wait() {
-                Ok(Some(_status)) => {
-                    let output = child.wait_with_output().map_err(|_| {
-                        CliError::CommandFailed {
-                            command: format!("{} {}", program, args.join(" ")),
-                            exit_code: -1,
-                        }
-                    })?;
+                Ok(Some(status)) => {
+                    // Reap the drainer threads — they exit on EOF once
+                    // the child closes its pipes at exit.
+                    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+                    let stderr_bytes = stderr_handle.join().unwrap_or_default();
                     return Ok(CommandOutput {
-                        exit_code: output.status.code().unwrap_or(-1),
-                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        exit_code: status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
+                        stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
                     });
                 }
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
-                        let _ = child.wait_with_output();
+                        let _ = child.wait();
+                        // Drainers will now see EOF and finish; joining
+                        // them here is bounded by the OS pipe buffer size.
+                        let _ = stdout_handle.join();
+                        let _ = stderr_handle.join();
                         return Err(CliError::DeployFailed {
                             target: crate::cli::config_parser::DeployTarget::Local,
                             reason: format!(
@@ -192,12 +230,44 @@ impl CommandExecutor for ShellExecutor {
                     std::thread::sleep(poll_interval);
                 }
                 Err(_e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
                     return Err(CliError::CommandFailed {
                         command: format!("{} {}", program, args.join(" ")),
                         exit_code: -1,
                     });
                 }
             }
+        }
+    }
+}
+
+/// Read from `reader` and return up to `max_bytes` in a `Vec<u8>`. Anything
+/// past the cap is discarded to a sink so the writer never blocks on a
+/// full pipe. Returns on EOF or on the first read error.
+fn drain_capped<R: std::io::Read>(mut reader: R, max_bytes: usize) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(4096.min(max_bytes));
+    let mut chunk = [0u8; 8192];
+    let mut sink_only = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return kept,
+            Ok(n) => {
+                if sink_only {
+                    continue;
+                }
+                let remaining = max_bytes.saturating_sub(kept.len());
+                let take = n.min(remaining);
+                if take > 0 {
+                    kept.extend_from_slice(&chunk[..take]);
+                }
+                if kept.len() >= max_bytes {
+                    sink_only = true;
+                }
+            }
+            Err(_) => return kept,
         }
     }
 }
@@ -3628,6 +3698,111 @@ services:
             elapsed < Duration::from_secs(5),
             "execute_with_timeout must terminate the child within timeout budget; \
              actual elapsed = {:?} (sleep child should have been killed)",
+            elapsed
+        );
+    }
+
+    /// Phase 8b: a hook that emits far more stdout than the pipe-level
+    /// OOM cap must NOT be captured verbatim into memory. After the
+    /// bounded-pipe-reader lands, captured stdout is at or under the
+    /// pipe cap regardless of how much the child wrote.
+    ///
+    /// Marked `#[ignore]` because it spawns a real shell child that
+    /// dumps ~10 MiB of data. Run with:
+    ///     cargo test -p stacker --lib test_execute_with_timeout_caps_large_stdout -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_caps_large_stdout() {
+        use std::time::Duration;
+
+        let executor = ShellExecutor;
+        // Emit ~10 MiB of ASCII bytes on stdout — well above the 1 MiB+slack
+        // pipe cap the bounded reader enforces.
+        let result = executor
+            .execute_with_timeout(
+                "sh",
+                &[
+                    "-c",
+                    // 10 * 1024 * 1024 = 10485760 bytes of 'A' + newline.
+                    "yes A | head -c 10485760",
+                ],
+                Duration::from_secs(20),
+                None,
+            )
+            .expect("execute_with_timeout should complete despite large stdout");
+
+        assert_eq!(result.exit_code, 0, "child must exit 0");
+        assert!(
+            result.stdout.len() <= HOOK_PIPE_OUTPUT_MAX_BYTES,
+            "captured stdout must be capped at or below HOOK_PIPE_OUTPUT_MAX_BYTES ({}), \
+             got {} bytes — bounded pipe reader is not enforcing the OOM defence",
+            HOOK_PIPE_OUTPUT_MAX_BYTES,
+            result.stdout.len(),
+        );
+    }
+
+    /// Phase 8b sibling: same guarantee for stderr. A hostile hook can
+    /// pick either channel; both must be bounded.
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_caps_large_stderr() {
+        use std::time::Duration;
+
+        let executor = ShellExecutor;
+        let result = executor
+            .execute_with_timeout(
+                "sh",
+                &["-c", "yes A | head -c 10485760 >&2"],
+                Duration::from_secs(20),
+                None,
+            )
+            .expect("execute_with_timeout should complete despite large stderr");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result.stderr.len() <= HOOK_PIPE_OUTPUT_MAX_BYTES,
+            "captured stderr must be capped at or below HOOK_PIPE_OUTPUT_MAX_BYTES ({}), \
+             got {} bytes",
+            HOOK_PIPE_OUTPUT_MAX_BYTES,
+            result.stderr.len(),
+        );
+    }
+
+    /// Phase 8b hang-defence: writing past the OS pipe buffer without a
+    /// concurrent reader hangs the child on write. This test proves the
+    /// bounded reader drains both pipes concurrently so the child can
+    /// exit even when its output exceeds the cap by orders of magnitude.
+    ///
+    /// If this test hangs (rather than fails), the fix is missing the
+    /// "keep reading past the cap into /dev/null" drain step.
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_drains_past_cap_so_child_exits() {
+        use std::time::{Duration, Instant};
+
+        let executor = ShellExecutor;
+        // ~50 MiB — well past any reasonable pipe cap and past the OS
+        // pipe buffer (usually 64 KiB), so without concurrent draining
+        // the child would block on write forever.
+        let started = Instant::now();
+        let result = executor
+            .execute_with_timeout(
+                "sh",
+                &["-c", "yes A | head -c 52428800"],
+                Duration::from_secs(30),
+                None,
+            )
+            .expect("child must complete even with 50 MiB of stdout");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.exit_code, 0);
+        // 50 MiB / plausible RAM bandwidth should be seconds, not
+        // minutes. If we ever get close to the 30s timeout, the drain
+        // is not happening concurrently.
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "child took {:?} to complete a 50 MiB dump — drain is not \
+             running concurrently with try_wait",
             elapsed
         );
     }
