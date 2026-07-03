@@ -1168,6 +1168,24 @@ fn validate_deploy_semantics(
                     });
                 }
             }
+
+            // Validate public_ports format up front so invalid entries are
+            // surfaced by `stacker config validate` instead of being silently
+            // dropped during cloud firewall provisioning. Bare numbers and
+            // "port/proto" specs are both accepted.
+            for port in &cloud.public_ports {
+                if let Err(err) = crate::forms::firewall::normalize_public_port(port) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E005".to_string(),
+                        message: format!(
+                            "Invalid public_ports entry '{}': {}. Expected a port number or \"port/protocol\" (e.g. \"8000\" or \"8000/tcp\").",
+                            port, err
+                        ),
+                        field: Some(field("cloud.public_ports")),
+                    });
+                }
+            }
         }
     }
 }
@@ -2208,6 +2226,66 @@ deploy:
                 .iter()
                 .any(|e| e.field.as_deref() == Some("project.identity")),
             "Expected project.identity informational hint"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_cloud_public_ports_accepts_bare_number() {
+        let config = ConfigBuilder::new()
+            .name("ports-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cpx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+                public_ports: vec!["8000".to_string(), "443/tcp".to_string()],
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error && i.code == "E005")
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "Bare port numbers and port/proto specs must be valid, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_cloud_public_ports_rejects_invalid() {
+        let config = ConfigBuilder::new()
+            .name("ports-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cpx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+                public_ports: vec!["80/icmp".to_string(), "not-a-port".to_string()],
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let e005: Vec<_> = issues.iter().filter(|i| i.code == "E005").collect();
+        assert_eq!(
+            e005.len(),
+            2,
+            "Expected two E005 issues for invalid public_ports, got: {e005:?}"
         );
     }
 

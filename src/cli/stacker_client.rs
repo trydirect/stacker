@@ -4053,17 +4053,29 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
 
     if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
         if !cloud_cfg.public_ports.is_empty() {
-            if let Some(obj) = form.as_object_mut() {
-                obj.insert(
-                    "public_ports".to_string(),
-                    serde_json::Value::Array(
-                        cloud_cfg
-                            .public_ports
-                            .iter()
-                            .map(|p| serde_json::Value::String(p.clone()))
-                            .collect(),
-                    ),
-                );
+            // Normalize each entry to canonical "port/protocol" form so the
+            // Install Service and cloud-provider firewall always receive a
+            // fully-qualified spec. Bare numbers ("8000") become "8000/tcp";
+            // invalid entries are dropped with a warning rather than silently
+            // swallowed downstream.
+            let normalized: Vec<serde_json::Value> = cloud_cfg
+                .public_ports
+                .iter()
+                .filter_map(|p| match crate::forms::firewall::normalize_public_port(p) {
+                    Ok(spec) => Some(serde_json::Value::String(spec)),
+                    Err(err) => {
+                        eprintln!("  warning: skipping invalid public_port '{}': {}", p, err);
+                        None
+                    }
+                })
+                .collect();
+            if !normalized.is_empty() {
+                if let Some(obj) = form.as_object_mut() {
+                    obj.insert(
+                        "public_ports".to_string(),
+                        serde_json::Value::Array(normalized),
+                    );
+                }
             }
         }
     }

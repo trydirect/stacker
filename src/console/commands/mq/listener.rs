@@ -97,7 +97,13 @@ fn extract_public_ports(metadata: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    // Tolerate numeric port entries (e.g. `"public_ports": [8000]`)
+                    // by coercing them to strings before normalization.
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
                 .filter(|s| !s.trim().is_empty())
                 .collect()
         })

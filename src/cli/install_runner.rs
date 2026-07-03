@@ -503,6 +503,127 @@ fn get_own_compose_running_ports(
     ports
 }
 
+/// Check the remote server for port conflicts before `docker compose up`.
+///
+/// SSHs to the server and collects occupied ports from both `ss -tlnp` (system
+/// listeners) and `docker ps` (Docker containers). Returns a list of port
+/// conflicts that would prevent `docker compose up` from succeeding.
+///
+/// Returns an empty vec if SSH fails (network issue, no key, etc.) so the
+/// deployment can still proceed — the pre-check is best-effort.
+fn check_remote_host_port_conflicts(
+    compose_path: &Path,
+    user_at_host: &str,
+    ssh_args: &[&str],
+) -> Vec<String> {
+    let port_services = collect_compose_host_port_services(compose_path);
+    if port_services.is_empty() {
+        return vec![];
+    }
+
+    let check_cmd = r#"ss -tlnp 2>/dev/null | awk '/LISTEN/{print $4}' | sed 's/.*://'; docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | sed -n 's/.*:\([0-9]*\)->.*/\1/p'"#;
+
+    let output = match std::process::Command::new("ssh")
+        .args(ssh_args)
+        .arg(user_at_host)
+        .arg(check_cmd)
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let occupied: std::collections::HashSet<String> = stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+
+    let mut conflicts = Vec::new();
+    for (port, svc) in &port_services {
+        if occupied.contains(port) {
+            conflicts.push(format!(
+                "port {} (service '{}') is already occupied on remote {} — \
+                 find the owning process with: ssh -t {} 'ss -tlnp sport = :{}'",
+                port, svc, user_at_host, user_at_host, port
+            ));
+        }
+    }
+    conflicts
+}
+
+/// Detect port-conflict error patterns in install-container output and return
+/// human-readable hints to help the user diagnose and fix them.
+fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
+    let combined = format!("{}\n{}", stderr, stdout);
+    let lower = combined.to_lowercase();
+
+    if !lower.contains("is already allocated")
+        && !lower.contains("bind for 0.0.0.0")
+        && !lower.contains("failed programming external connectivity")
+    {
+        return vec![];
+    }
+
+    let mut hints = vec![
+        "Port conflict detected on the deployment target.".to_string(),
+        "A process or container on the remote server is already using a port that this deploy requires.".to_string(),
+    ];
+
+    let port: Option<String> = {
+        let full = format!("{} {}", stderr, stdout);
+        let mut found = None;
+        if let Ok(re) = regex::Regex::new(r"Bind for [\d.]+:(\d+) failed") {
+            for line in full.lines() {
+                if let Some(caps) = re.captures(line) {
+                    if let Some(port_match) = caps.get(1) {
+                        found = Some(port_match.as_str().to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        if found.is_none() {
+            if let Ok(re) = regex::Regex::new(r"port (\d+) is already allocated") {
+                for line in full.lines() {
+                    if let Some(caps) = re.captures(line) {
+                        if let Some(port_match) = caps.get(1) {
+                            found = Some(port_match.as_str().to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        found
+    };
+
+    if let Some(ref port) = port {
+        hints.push(format!(
+            "Conflicting port: {} — use `ssh <host> 'ss -tlnp sport = :{}'` to identify the owner.",
+            port, port
+        ));
+    }
+
+    hints.push("Check for leftover containers from previous deploys below and clean them up:".to_string());
+    hints.push("  ssh <host> 'docker ps --format \"table {{.Names}}\\t{{.Ports}}\"'".to_string());
+    hints.push("  ssh <host> 'docker rm -f <container>'".to_string());
+    hints.push("Alternatively, change the conflicting port in stacker.yml and redeploy.".to_string());
+
+    hints
+}
+
+/// Return a human-readable message listing port conflicts found before deploy.
+fn format_preflight_port_conflicts(target: &str, conflicts: &[String]) -> String {
+    format!(
+        "Host port conflict detected before deploy to {}:\n  • {}\n\
+         Stop the conflicting process or change the port in stacker.yml, then retry.",
+        target,
+        conflicts.join("\n  • ")
+    )
+}
+
 /// Pre-flight check: detect host ports that are already occupied by something
 /// OTHER than the current compose project's own running containers.
 ///
@@ -1223,9 +1344,15 @@ impl DeployStrategy for CloudDeploy {
         let output = executor.execute("docker", &args_refs)?;
 
         if !output.success() {
+            let mut reason = format!("Install container failed: {}", output.stderr.trim());
+            let port_hints = detect_port_conflicts_in_output(&output.stderr, &output.stdout);
+            if !port_hints.is_empty() {
+                reason.push_str("\n\nPort conflict details:\n  • ");
+                reason.push_str(&port_hints.join("\n  • "));
+            }
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Cloud,
-                reason: format!("Install container failed: {}", output.stderr.trim()),
+                reason,
             });
         }
 
@@ -2167,7 +2294,27 @@ fn deploy_to_intranet_server(
         }
     }
 
-    // 3. Run docker compose on the remote
+    // 3. Pre-flight: check remote port availability before docker compose up.
+    //    This catches "port is already allocated" errors before they become
+    //    opaque Docker daemon failures on the remote server.
+    let remote_ssh_args = [
+        "-i", ssh_key_path.to_str().unwrap_or(""),
+        "-p", &server_cfg.port.to_string(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+    ];
+    let port_conflicts =
+        check_remote_host_port_conflicts(&context.compose_path, &user_at_host, &remote_ssh_args);
+    if !port_conflicts.is_empty() {
+        return Err(CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format_preflight_port_conflicts(
+                &format!("remote server {}", server_cfg.host),
+                &port_conflicts,
+            ),
+        });
+    }
+
     let compose_file = context
         .compose_path
         .strip_prefix(&context.project_dir)
@@ -2246,9 +2393,16 @@ impl DeployStrategy for ServerDeploy {
             let output = executor.execute("docker", &args_refs)?;
 
             if !output.success() {
+                let mut reason = format!("Server deployment failed: {}", output.stderr.trim());
+                let port_hints =
+                    detect_port_conflicts_in_output(&output.stderr, &output.stdout);
+                if !port_hints.is_empty() {
+                    reason.push_str("\n\nPort conflict details:\n  • ");
+                    reason.push_str(&port_hints.join("\n  • "));
+                }
                 return Err(CliError::DeployFailed {
                     target: DeployTarget::Server,
-                    reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                    reason,
                 });
             }
 
@@ -3649,6 +3803,110 @@ services:
         assert!(
             conflicts[0].contains(&port.to_string()),
             "conflict message should mention the port"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Port conflict detection in install-container output
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_bind_error() {
+        let stderr = "Error response from daemon: driver failed programming external connectivity on endpoint nginx-proxy-manager (abc123): Bind for 0.0.0.0:80 failed: port is already allocated";
+        let hints = detect_port_conflicts_in_output(stderr, "");
+        assert!(!hints.is_empty(), "should detect port conflict from Bind error");
+        assert!(
+            hints.iter().any(|h| h.contains("80")),
+            "should include port 80 in hints: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_already_allocated() {
+        let stderr = "Error: failed to start container: port 443 is already allocated";
+        let hints = detect_port_conflicts_in_output(stderr, "");
+        assert!(!hints.is_empty(), "should detect port conflict");
+        assert!(
+            hints.iter().any(|h| h.contains("443")),
+            "should include port 443 in hints: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_stdout() {
+        // Docker sometimes emits port errors on stdout instead of stderr
+        let stdout = "Container nginx-proxy-manager  Starting\nError response from daemon: driver failed programming external connectivity on endpoint nginx-proxy-manager: Bind for 0.0.0.0:8080 failed: port is already allocated";
+        let hints = detect_port_conflicts_in_output("", stdout);
+        assert!(!hints.is_empty(), "should detect port conflict from stdout");
+        assert!(
+            hints.iter().any(|h| h.contains("8080")),
+            "should include port 8080: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_no_conflict() {
+        let stderr = "Build failed: could not resolve dependency";
+        let hints = detect_port_conflicts_in_output(stderr, "");
+        assert!(hints.is_empty(), "should not flag non-port errors");
+    }
+
+    #[test]
+    fn test_format_preflight_port_conflicts() {
+        let conflicts = vec![
+            "port 80 (service 'nginx') is already occupied".to_string(),
+            "port 443 (service 'nginx') is already occupied".to_string(),
+        ];
+        let msg = format_preflight_port_conflicts("server", &conflicts);
+        assert!(msg.contains("server"), "should mention target: {}", msg);
+        assert!(msg.contains("port 80"), "should mention port 80: {}", msg);
+        assert!(msg.contains("port 443"), "should mention port 443: {}", msg);
+        assert!(msg.contains("stacker.yml"), "should refer to stacker.yml: {}", msg);
+    }
+
+    #[test]
+    fn test_check_remote_host_port_conflicts_empty_compose() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "version: '3'\n# no services with ports\n").unwrap();
+        // No SSH should be called since there are no ports to check
+        let conflicts = check_remote_host_port_conflicts(
+            tmp.path(),
+            "user@fakehost",
+            &["-i", "/dev/null", "-p", "22"],
+        );
+        assert!(conflicts.is_empty(), "empty compose should have no conflicts");
+    }
+
+    #[test]
+    fn test_check_remote_host_port_conflicts_ssh_unreachable_is_silent() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n"
+        )
+        .unwrap();
+        // Use an unreachable host — function MUST NOT panic, just return empty
+        let conflicts = check_remote_host_port_conflicts(
+            tmp.path(),
+            "nobody@nonexistent.invalid",
+            &[
+                "-i",
+                "/dev/null",
+                "-p",
+                "22",
+                "-o",
+                "ConnectTimeout=1",
+            ],
+        );
+        assert!(
+            conflicts.is_empty(),
+            "unreachable SSH should return empty (best-effort): {:?}",
+            conflicts
         );
     }
 

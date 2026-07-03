@@ -1357,19 +1357,37 @@ async fn execute_deployment(
     }
 
     let mut json_request = dc.project.metadata.clone();
-    if let Some(ref public_ports) = form.public_ports {
-        if !public_ports.is_empty() {
-            if let Some(obj) = json_request.as_object_mut() {
-                obj.insert(
-                    "public_ports".to_string(),
-                    serde_json::Value::Array(
-                        public_ports
-                            .iter()
-                            .map(|p| serde_json::Value::String(p.clone()))
-                            .collect(),
-                    ),
-                );
-            }
+    // Normalize public_ports to canonical "port/protocol" form so downstream
+    // consumers (deployment metadata, MQ auto-firewall, Install Service) never
+    // see a bare port number that could be silently dropped. Invalid entries
+    // are rejected up front with a 400 rather than swallowed.
+    let normalized_public_ports: Option<Vec<String>> = form
+        .public_ports
+        .as_ref()
+        .map(|ports| {
+            ports
+                .iter()
+                .map(|p| crate::forms::firewall::normalize_public_port(p))
+                .collect::<Result<Vec<String>, String>>()
+        })
+        .transpose()
+        .map_err(|err| {
+            JsonResponse::<models::Project>::build()
+                .bad_request(format!("Invalid public_ports: {err}"))
+        })?
+        .filter(|ports| !ports.is_empty());
+
+    if let Some(ref public_ports) = normalized_public_ports {
+        if let Some(obj) = json_request.as_object_mut() {
+            obj.insert(
+                "public_ports".to_string(),
+                serde_json::Value::Array(
+                    public_ports
+                        .iter()
+                        .map(|p| serde_json::Value::String(p.clone()))
+                        .collect(),
+                ),
+            );
         }
     }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
@@ -1416,8 +1434,8 @@ async fn execute_deployment(
 
     // Capture server and cloud references before they move into deploy().
     let has_server_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.trim().is_empty());
-    let should_configure_firewall = has_server_ip
-        && form.public_ports.as_ref().map_or(false, |p| !p.is_empty());
+    let should_configure_firewall =
+        has_server_ip && normalized_public_ports.as_ref().map_or(false, |p| !p.is_empty());
     let firewall_server = server.clone();
     let firewall_cloud = cloud.clone();
 
@@ -1452,7 +1470,7 @@ async fn execute_deployment(
 
     // When deploying to an existing server (has IP), configure cloud firewall immediately.
     if should_configure_firewall {
-        if let Some(ref ports) = form.public_ports {
+        if let Some(ref ports) = normalized_public_ports {
             if let Err(e) = crate::forms::cloud_firewall::publish_public_firewall_rules(
                 mq_manager,
                 &firewall_server,
