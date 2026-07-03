@@ -6741,7 +6741,7 @@ monitoring:
 
     fn build_config_with_hook(hook_field: &str, hook_path: &str) -> String {
         format!(
-            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  {}: {}\n",
+            "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8765\"\nhooks:\n  {}: {}\n",
             hook_field, hook_path
         )
     }

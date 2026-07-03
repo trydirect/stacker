@@ -3334,6 +3334,9 @@ impl StackerClient {
             .http
             .post(&url)
             .bearer_auth(&self.token)
+            .json(&serde_json::json!({
+                "confirm_no_secrets": true
+            }))
             .send()
             .await
             .map_err(|e| {

@@ -1,6 +1,6 @@
 # stacker.yml Configuration Reference
 
-> **Stacker CLI v0.2.6** — The single-file deployment configuration for containerised applications.
+> **Stacker CLI v0.3** — The single-file deployment configuration for containerised applications.
 
 `stacker.yml` is the only file you need to add to your project. Stacker reads it to auto-generate Dockerfiles, docker-compose definitions, and deploy your application locally or to cloud infrastructure.
 
@@ -12,7 +12,7 @@
 - [Minimal Example](#minimal-example)
 - [Full Example](#full-example)
 - [Top-Level Fields](#top-level-fields)
-  - [name](#name) · [version](#version) · [organization](#organization)
+  - [name](#name) · [version](#version) · [organization](#organization) · [project](#project)
 - [app — Application Source](#app)
   - [type](#apptype) · [path](#apppath) · [dockerfile](#appdockerfile) · [image](#appimage) · [build](#appbuild) · [ports](#appports) · [volumes](#appvolumes) · [environment](#appenvironment)
 - [services — Sidecar Containers](#services)
@@ -21,6 +21,9 @@
 - [deploy — Deployment Target](#deploy)
   - [target](#deploytarget) · [compose_file](#deploycompose_file) · [cloud](#deploycloud) · [server](#deployserver)
 - [install — Marketplace Install Inputs](#install)
+- [environments — Named Environments](#environments)
+- [volumes — Named Volumes](#volumes)
+- [config_contract — Service Config Contracts](#config_contract)
 - [ai — AI Assistant](#ai)
 - [monitoring — Health & Metrics](#monitoring)
   - [status_panel](#monitoringstatus_panel) · [healthcheck](#monitoringhealthcheck) · [metrics](#monitoringmetrics)
@@ -91,6 +94,9 @@ name: my-saas-app
 version: "2.0"
 organization: acme-corp
 
+project:
+  identity: my-saas-app
+
 app:
   type: node
   path: ./src
@@ -114,11 +120,17 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: "CMD pg_isready -U app"
+      interval: 10s
+      timeout: 5s
+      retries: "5"
 
   - name: redis
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    command: redis-server --requirepass "${REDIS_PASSWORD}"
 
   - name: worker
     image: myapp-worker:latest
@@ -141,11 +153,24 @@ proxy:
 
 deploy:
   target: cloud
+  environment: production
   cloud:
     provider: hetzner
     region: fsn1
     size: cx23
     ssh_key: ~/.ssh/id_ed25519
+    public_ports:
+      - "80"
+      - "443"
+      - "8080"
+
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: .env
+  staging:
+    compose_file: docker/staging/compose.yml
+    env_file: .env.staging
 
 ai:
   enabled: true
@@ -170,6 +195,9 @@ hooks:
   pre_build: ./scripts/pre-build.sh
   post_deploy: ./scripts/post-deploy.sh
   on_failure: ./scripts/notify-failure.sh
+
+volumes:
+  pgdata: {}
 
 env_file: .env
 
@@ -212,6 +240,23 @@ Organisation slug. Used for scoping cloud deployments and linking to your TryDir
 ```yaml
 organization: acme-corp
 ```
+
+### `project`
+
+*Optional* · `object` · Default: none
+
+Project-level metadata. Currently carries a single `identity` field used to pin a deployment to a specific project slug in the TryDirect backend, overriding name-based resolution.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `identity` | `string` | no | — | Stable project identifier (slug) for multi-deployment projects |
+
+```yaml
+project:
+  identity: my-saas-app
+```
+
+> **When to use:** Set `project.identity` when you rename a project or when multiple `stacker.yml` files must refer to the same backend project. Without it, the backend resolves project identity from `name`.
 
 ---
 
@@ -359,6 +404,45 @@ Additional containers deployed alongside your main application — databases, ca
 | `environment` | `map<string, string>` | no | `{}` | Environment variables |
 | `volumes` | `string[]` | no | `[]` | Volume mounts (`"name:/path"` or `"./host:/container"`) |
 | `depends_on` | `string[]` | no | `[]` | Services this depends on (started first) |
+| `command` | `string` | no | — | Override the container's default command / entrypoint |
+| `healthcheck` | `object` | no | — | Docker health check for this service |
+
+#### `services[].command`
+
+Overrides the Docker image's default `CMD`. The value is passed verbatim to `docker-compose.yml` as the `command:` key, so you can use shell syntax.
+
+```yaml
+services:
+  - name: redis
+    image: redis:7-alpine
+    command: redis-server --save 20 1 --loglevel warning --requirepass "${REDIS_PASSWORD}"
+```
+
+#### `services[].healthcheck`
+
+Docker health check configuration. Mapped directly to the compose `healthcheck:` block. Used by `depends_on` condition-based startup ordering and by the Status Panel agent for container readiness checks.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `test` | `string` | — | Health check command (e.g. `"CMD pg_isready -U postgres"`) |
+| `interval` | `string` | `30s` | Time between checks |
+| `timeout` | `string` | `30s` | Maximum time per check |
+| `retries` | `string \| integer` | `3` | Number of failures before unhealthy |
+
+```yaml
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: "CMD-SHELL pg_isready -U postgres"
+      interval: 10s
+      timeout: 5s
+      retries: "5"
+```
 
 ```yaml
 services:
@@ -516,6 +600,25 @@ deploy:
   compose_file: ./docker-compose.prod.yml
 ```
 
+### `deploy.environment`
+
+*Optional* · `string` · Default: none
+
+The active named environment (profile) to use for this deployment. Must match a key defined under the top-level [`environments`](#environments) section. When set, Stacker resolves the `compose_file` and `env_file` from that environment block instead of the global defaults.
+
+```yaml
+deploy:
+  target: local
+  environment: production
+```
+
+Switch environments at runtime without editing `stacker.yml`:
+
+```bash
+stacker env production        # persist active env for this project
+stacker deploy --env staging  # one-shot override
+```
+
 ### `deploy.cloud`
 
 *Required when `target: cloud`* · `object`
@@ -528,6 +631,38 @@ Cloud infrastructure provisioning settings. Stacker uses Terraform/Ansible under
 | `region` | `string` | no | Provider default | Data center region |
 | `size` | `string` | no | Provider default | Server size/type |
 | `ssh_key` | `string` (path) | no | none | Path to SSH private key |
+| `public_ports` | `string[]` | no | `[]` | Ports to open in the cloud-provider firewall after provisioning |
+| `orchestrator` | `enum` | no | `local` | Deployment orchestration mode (`local` or `remote`) |
+| `key` | `string` | no | none | Vault key reference used to authenticate with the provider |
+
+**`deploy.cloud.public_ports`**
+
+A list of host ports (or `port/protocol` pairs) that Stacker opens in the cloud-provider firewall immediately after the server is provisioned. Without this, the firewall only allows SSH (port 22). Use `stacker cloud firewall add` to open ports post-deploy without re-deploying.
+
+```yaml
+deploy:
+  target: cloud
+  cloud:
+    provider: hetzner
+    region: fsn1
+    size: cpx22
+    public_ports:
+      - "8000"        # HTTP app port
+      - "80"          # Nginx proxy
+      - "8053/tcp"    # DNS over TCP
+      - "8053/udp"    # DNS over UDP
+```
+
+**`deploy.cloud.orchestrator`**
+
+Controls where the deployment orchestration runs:
+
+| Value | Description |
+|-------|-------------|
+| `local` | Default — Terraform/Ansible runs on the local machine |
+| `remote` | Orchestration is handed off to the TryDirect Install Service |
+
+Remote orchestration is used for marketplace-managed deploys (`stacker install`). Most projects use the default `local` mode.
 
 **Supported cloud providers:**
 
@@ -649,6 +784,81 @@ stacker install wordpress --domain example.com --set admin_email=owner@example.c
 
 ---
 
+## `environments`
+
+*Optional* · `map<string, object>` · Default: `{}`
+
+Named environment profiles. Each key is an environment name (e.g. `production`, `staging`). When [`deploy.environment`](#deployenvironment) is set to a key, Stacker loads that profile's `compose_file` and `env_file` instead of the global defaults.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `compose_file` | `string` (path) | no | — | Compose file for this environment |
+| `env_file` | `string` (path) | no | — | `.env` file for this environment |
+
+```yaml
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: .env
+  staging:
+    compose_file: docker/staging/compose.yml
+    env_file: .env.staging
+```
+
+Combined with `deploy.environment`:
+
+```yaml
+deploy:
+  target: local
+  environment: production
+
+environments:
+  production:
+    compose_file: docker/production/compose.yml
+    env_file: .env
+```
+
+> **Note:** `stacker env <name>` persists the active environment to `.stacker/active-env` so subsequent commands (`stacker deploy`, `stacker agent deploy-app`, `stacker secrets push`) pick it up automatically.
+
+---
+
+## `volumes`
+
+*Optional* · `map<string, object>` · Default: `{}`
+
+Top-level named Docker volumes shared across services. Equivalent to the `volumes:` block in `docker-compose.yml`. Each key is the volume name; the value is a volume configuration object (typically empty `{}` for the default local driver).
+
+```yaml
+volumes:
+  ollama: {}
+  pgdata: {}
+  redis_data:
+    driver: local
+```
+
+Named volumes referenced in `app.volumes` or `services[].volumes` but not listed here are created implicitly by Docker Compose. Use this section when you need to configure the volume driver or share a volume name explicitly across services.
+
+---
+
+## `config_contract`
+
+*Optional* · `object` · Default: none
+
+Declares service-level configuration contracts — metadata consumed by the TryDirect Install Service and marketplace pipeline to validate and pre-populate service inputs. Not used during local deploys.
+
+```yaml
+config_contract:
+  services:
+    my-service:
+      required_env:
+        - DATABASE_URL
+        - SECRET_KEY
+```
+
+> This section is primarily written by `stacker install` and the marketplace generator. You rarely need to set it by hand.
+
+---
+
 ## `ai`
 
 *Optional* · `object` · Default: `enabled: false`
@@ -662,7 +872,7 @@ AI/LLM assistant configuration. When enabled, `stacker ai ask` uses the configur
 | `model` | `string` | no | Provider default | Model name |
 | `api_key` | `string` | no* | none | API key (supports `${VAR}` syntax) |
 | `endpoint` | `string` | no | Provider default | Custom API endpoint URL |
-| `timeout` | `integer` | no | `300` | Request timeout in seconds (increase for slow models / weak hardware) |
+| `timeout` | `integer` | no | `300` | Request timeout in seconds. Set to `0` to disable the timeout entirely (useful for large local models). |
 | `tasks` | `string[]` | no | `[]` | Allowed AI task types |
 
 **Supported providers:**
@@ -1111,12 +1321,14 @@ Stacker validates your configuration both syntactically (YAML structure) and sem
 | `E001` | Cloud deployment requires `deploy.cloud.provider` | `deploy.cloud.provider` |
 | `E002` | Server deployment requires `deploy.server.host` | `deploy.server.host` |
 | `E003` | Custom app type requires `app.image` or `app.dockerfile` | `app` |
+| `E004` | `deploy.environment` references an undefined environment key | `deploy.environment` / `environments` |
 
 ### Warnings (deployment may have issues)
 
 | Code | Rule | Field |
 |------|------|-------|
 | `W001` | Port conflict — multiple services bind the same host port | `services.ports` |
+| `W002` | Named volume referenced in `volumes` but not mounted by any service | `volumes` |
 
 ### Example output
 
