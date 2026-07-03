@@ -505,9 +505,10 @@ fn get_own_compose_running_ports(
 
 /// Check the remote server for port conflicts before `docker compose up`.
 ///
-/// SSHs to the server and collects occupied ports from both `ss -tlnp` (system
-/// listeners) and `docker ps` (Docker containers). Returns a list of port
-/// conflicts that would prevent `docker compose up` from succeeding.
+/// SSHs to the server and collects occupied ports from both system listeners
+/// (`ss` or `netstat` fallback) and Docker containers (`docker ps`). Returns
+/// a list of port conflicts that would prevent `docker compose up` from
+/// succeeding.
 ///
 /// Returns an empty vec if SSH fails (network issue, no key, etc.) so the
 /// deployment can still proceed — the pre-check is best-effort.
@@ -521,7 +522,7 @@ fn check_remote_host_port_conflicts(
         return vec![];
     }
 
-    let check_cmd = r#"ss -tlnp 2>/dev/null | awk '/LISTEN/{print $4}' | sed 's/.*://'; docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | sed -n 's/.*:\([0-9]*\)->.*/\1/p'"#;
+    let check_cmd = r#"( ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null ) | awk '/LISTEN/{print $4}' | sed 's/.*://'; docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | sed -n 's/.*:\([0-9]*\)->.*/\1/p'"#;
 
     let output = match std::process::Command::new("ssh")
         .args(ssh_args)
@@ -545,8 +546,8 @@ fn check_remote_host_port_conflicts(
         if occupied.contains(port) {
             conflicts.push(format!(
                 "port {} (service '{}') is already occupied on remote {} — \
-                 find the owning process with: ssh -t {} 'ss -tlnp sport = :{}'",
-                port, svc, user_at_host, user_at_host, port
+                 find the owning process with: ssh -t {} 'ss -tlnp sport = :{} || netstat -tlnp | grep :{}'",
+                port, svc, user_at_host, user_at_host, port, port
             ));
         }
     }
@@ -556,6 +557,13 @@ fn check_remote_host_port_conflicts(
 /// Detect port-conflict error patterns in install-container output and return
 /// human-readable hints to help the user diagnose and fix them.
 fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
+    use std::sync::LazyLock;
+
+    static BIND_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"Bind for [\d.]+:(\d+) failed").unwrap());
+    static ALLOCATED_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"port (\d+) is already allocated").unwrap());
+
     let combined = format!("{}\n{}", stderr, stdout);
     let lower = combined.to_lowercase();
 
@@ -574,24 +582,20 @@ fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
     let port: Option<String> = {
         let full = format!("{} {}", stderr, stdout);
         let mut found = None;
-        if let Ok(re) = regex::Regex::new(r"Bind for [\d.]+:(\d+) failed") {
-            for line in full.lines() {
-                if let Some(caps) = re.captures(line) {
-                    if let Some(port_match) = caps.get(1) {
-                        found = Some(port_match.as_str().to_string());
-                        break;
-                    }
+        for line in full.lines() {
+            if let Some(caps) = BIND_RE.captures(line) {
+                if let Some(port_match) = caps.get(1) {
+                    found = Some(port_match.as_str().to_string());
+                    break;
                 }
             }
         }
         if found.is_none() {
-            if let Ok(re) = regex::Regex::new(r"port (\d+) is already allocated") {
-                for line in full.lines() {
-                    if let Some(caps) = re.captures(line) {
-                        if let Some(port_match) = caps.get(1) {
-                            found = Some(port_match.as_str().to_string());
-                            break;
-                        }
+            for line in full.lines() {
+                if let Some(caps) = ALLOCATED_RE.captures(line) {
+                    if let Some(port_match) = caps.get(1) {
+                        found = Some(port_match.as_str().to_string());
+                        break;
                     }
                 }
             }
@@ -601,8 +605,8 @@ fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
 
     if let Some(ref port) = port {
         hints.push(format!(
-            "Conflicting port: {} — use `ssh <host> 'ss -tlnp sport = :{}'` to identify the owner.",
-            port, port
+            "Conflicting port: {} — use `ssh <host> 'ss -tlnp sport = :{} || netstat -tlnp | grep :{}'` to identify the owner.",
+            port, port, port
         ));
     }
 
