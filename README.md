@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://discord.gg/mNhsa8VdYX"><img alt="Discord" src="https://img.shields.io/discord/578119430391988232?label=discord"></a>
-<img alt="Version" src="https://img.shields.io/badge/version-0.2.8-blue">
+<img alt="Version" src="https://img.shields.io/badge/version-0.3.0-blue">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 
 <br><br>
@@ -13,11 +13,7 @@
 
 Stacker is a platform for turning any project into a deployable Docker stack. Add a `stacker.yml` to your repo, and Stacker generates Dockerfiles, docker-compose definitions, reverse-proxy configs, and deploys locally or to cloud providers — optionally with AI assistance.
 
-**v0.2.8 highlights:** remote Vault-backed secrets now work for deployable
-service/app targets from `stacker.yml` and supported Compose services, paused or
-failed cloud/server installs retain discovered IP addresses, cloud-provider
-firewalls can be managed without SSH, and MCP now exposes remote service secret
-tools.
+**v0.3.0 highlights:** generate `stacker.yml` from any GitHub repo with `stacker init --from-github`, infra-service healthcheck inference, remote Vault-backed secrets for deployable service/app targets, paused or failed cloud/server installs retain discovered IP addresses, and cloud-provider firewalls can be managed without SSH.
 
 
 ## Quick Start
@@ -36,6 +32,28 @@ stacker init              # auto-detects project type, generates stacker.yml
 stacker deploy            # builds and runs locally via docker compose
 stacker status            # check running containers
 ```
+
+### Deploy from any GitHub repo
+
+Generate a `stacker.yml` from a GitHub repository — no clone required.
+For the best results (port mappings, env vars, service context inferred
+from README and source), use `--with-ai`:
+
+```bash
+# AI-powered (recommended — reads README, compose, source files)
+stacker init --from-github owner/repo --with-ai
+
+# Template-based (project type + Dockerfile detection only)
+stacker init -g https://github.com/ArchiveBox/ArchiveBox
+```
+
+With `--with-ai`, Stacker shallow-clones the repo, then uses an LLM (Ollama
+by default) to scan project files and generate a context-aware `stacker.yml`
+with services, ports, env vars, and healthchecks. Falls back to template
+detection if the AI provider is unreachable.
+
+When environment variables are in the compose file, `.env.example` and
+`scripts/generate-secrets.sh` are also generated.
 
 ### AI-powered init (optional)
 

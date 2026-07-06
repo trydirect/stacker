@@ -3609,6 +3609,20 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     if let Some(tag) = dockerhub_tag {
         obj.insert("dockerhub_tag".to_string(), serde_json::json!(tag));
     }
+    if let Some(ref cmd) = svc.command {
+        obj.insert("command".to_string(), serde_json::json!(cmd));
+    }
+    if let Some(ref hc) = svc.healthcheck {
+        obj.insert(
+            "healthcheck".to_string(),
+            serde_json::json!({
+                "test": hc.test,
+                "interval": hc.interval,
+                "timeout": hc.timeout,
+                "retries": hc.retries,
+            }),
+        );
+    }
 
     app
 }
@@ -3700,6 +3714,20 @@ fn app_source_to_app_json(
     }
     if let Some(tag) = dockerhub_tag {
         obj.insert("dockerhub_tag".to_string(), serde_json::json!(tag));
+    }
+    if let Some(ref cmd) = config.app.command {
+        obj.insert("command".to_string(), serde_json::json!(cmd));
+    }
+    if let Some(ref hc) = config.app.healthcheck {
+        obj.insert(
+            "healthcheck".to_string(),
+            serde_json::json!({
+                "test": hc.test,
+                "interval": hc.interval,
+                "timeout": hc.timeout,
+                "retries": hc.retries,
+            }),
+        );
     }
 
     Some(app)
@@ -4671,6 +4699,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec!["npm_data:/data".to_string()],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let redis_service = ServiceDefinition {
             name: "redis".to_string(),
@@ -4679,6 +4709,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4715,6 +4747,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec!["npm_data:/data".to_string()],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let statuspanel_service = ServiceDefinition {
             name: "statuspanel".to_string(),
@@ -4723,6 +4757,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let smtp_service = ServiceDefinition {
             name: "smtp".to_string(),
@@ -4731,6 +4767,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4784,6 +4822,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("Device API")

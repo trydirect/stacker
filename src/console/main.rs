@@ -121,6 +121,12 @@ enum StackerCommands {
         with_ai: bool,
         #[arg(long)]
         with_cloud: bool,
+        /// Generate stacker.yml from a GitHub repository (owner/repo or full URL)
+        #[arg(short = 'g', long, value_name = "URL")]
+        from_github: Option<String>,
+        /// Overwrite existing stacker.yml if present
+        #[arg(short = 'f', long)]
+        force: bool,
         /// AI provider: openai, anthropic, ollama, custom (default: ollama)
         #[arg(long, value_name = "PROVIDER")]
         ai_provider: Option<String>,
@@ -130,6 +136,9 @@ enum StackerCommands {
         /// AI API key (or set OPENAI_API_KEY / ANTHROPIC_API_KEY env var)
         #[arg(long, value_name = "KEY")]
         ai_api_key: Option<String>,
+        /// AI endpoint URL (e.g. http://localhost:11434 for Ollama)
+        #[arg(long, value_name = "URL")]
+        ai_endpoint: Option<String>,
     },
     /// Build & deploy the stack
     Deploy {
@@ -442,14 +451,19 @@ fn get_command(
                 with_proxy,
                 with_ai,
                 with_cloud,
+                from_github,
+                force,
                 ai_provider,
                 ai_model,
                 ai_api_key,
+                ai_endpoint,
             } => Ok(Box::new(
                 stacker::console::commands::cli::init::InitCommand::new(
                     app_type, with_proxy, with_ai, with_cloud,
                 )
-                .with_ai_options(ai_provider, ai_model, ai_api_key),
+                .with_from_github(from_github)
+                .with_force(force)
+                .with_ai_options(ai_provider, ai_model, ai_api_key, ai_endpoint),
             )),
             StackerCommands::Deploy {
                 target,

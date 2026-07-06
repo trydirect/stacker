@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -27,6 +27,10 @@ pub struct ComposeService {
     pub labels: HashMap<String, String>,
     /// Container runtime (e.g., "kata"). None or "runc" means default.
     pub runtime: Option<String>,
+    /// Override the container CMD (docker-compose `command:`).
+    pub command: Option<String>,
+    /// Docker compose healthcheck for this service.
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 impl Default for ComposeService {
@@ -44,6 +48,8 @@ impl Default for ComposeService {
             networks: vec!["app-network".to_string()],
             labels: HashMap::new(),
             runtime: None,
+            command: None,
+            healthcheck: None,
         }
     }
 }
@@ -58,6 +64,8 @@ impl From<&ServiceDefinition> for ComposeService {
             environment: svc.environment.clone(),
             volumes: svc.volumes.clone(),
             depends_on: svc.depends_on.clone(),
+            command: svc.command.clone(),
+            healthcheck: svc.healthcheck.clone(),
             ..Default::default()
         };
         crate::helpers::stacker_labels::insert_runtime_labels(
@@ -212,6 +220,12 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
     // Volumes from app section
     svc.volumes.extend(config.app.volumes.clone());
 
+    // Command override from app section
+    svc.command = config.app.command.clone();
+
+    // Healthcheck from app section
+    svc.healthcheck = config.app.healthcheck.clone();
+
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
         svc.environment.insert(k.clone(), v.clone());
@@ -315,6 +329,14 @@ fn extract_named_volume(vol_str: &str) -> Option<String> {
     None
 }
 
+/// Quote a value for YAML output by wrapping it in double quotes.
+///
+/// This handles strings that contain spaces, colons, or special characters
+/// that would otherwise break YAML parsing (e.g. `command:`, `healthcheck.test:`).
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Rendering — produce docker-compose YAML string
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -363,6 +385,10 @@ impl ComposeDefinition {
                 }
             }
 
+            if let Some(ref cmd) = svc.command {
+                out.push_str(&format!("    command: {}\n", yaml_quote(cmd)));
+            }
+
             if !svc.volumes.is_empty() {
                 out.push_str("    volumes:\n");
                 for v in &svc.volumes {
@@ -375,6 +401,14 @@ impl ComposeDefinition {
                 for d in &svc.depends_on {
                     out.push_str(&format!("      - {}\n", d));
                 }
+            }
+
+            if let Some(ref hc) = svc.healthcheck {
+                out.push_str("    healthcheck:\n");
+                out.push_str(&format!("      test: {}\n", yaml_quote(&hc.test)));
+                out.push_str(&format!("      interval: {}\n", hc.interval));
+                out.push_str(&format!("      timeout: {}\n", hc.timeout));
+                out.push_str(&format!("      retries: {}\n", hc.retries));
             }
 
             out.push_str(&format!("    restart: {}\n", svc.restart));
@@ -517,6 +551,8 @@ mod tests {
             environment: HashMap::from([("POSTGRES_PASSWORD".into(), "secret".into())]),
             volumes: vec!["pg-data:/var/lib/postgresql/data".into()],
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -618,6 +654,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec!["redis-data:/data".into()],
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -696,6 +734,8 @@ mod tests {
             environment: HashMap::from([("MYSQL_ROOT_PASSWORD".into(), "pass".into())]),
             volumes: vec!["mysql-data:/var/lib/mysql".into()],
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -720,6 +760,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: Vec::new(),
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -897,6 +939,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("npm-proxied")
@@ -944,6 +988,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("partial-proxy")
@@ -979,6 +1025,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("traefik-app")

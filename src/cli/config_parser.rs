@@ -221,6 +221,14 @@ pub struct AppSource {
     /// section (app-level wins on conflict).
     #[serde(default)]
     pub environment: HashMap<String, String>,
+
+    /// Override the container CMD.  Maps to `command:` in docker-compose.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Docker compose healthcheck for this service.
+    #[serde(default)]
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -241,6 +249,29 @@ fn default_build_context() -> String {
     ".".to_string()
 }
 
+fn default_health_timeout_compose() -> String {
+    "30s".to_string()
+}
+
+fn default_health_retries_compose() -> u32 {
+    3
+}
+
+/// Docker compose healthcheck definition for a service.
+///
+/// This is distinct from `MonitoringConfig::healthcheck`, which is an
+/// app-level HTTP endpoint polling configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComposeHealthcheck {
+    pub test: String,
+    #[serde(default = "default_health_interval")]
+    pub interval: String,
+    #[serde(default = "default_health_timeout_compose")]
+    pub timeout: String,
+    #[serde(default = "default_health_retries_compose")]
+    pub retries: u32,
+}
+
 /// Additional container service alongside the app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
@@ -258,6 +289,14 @@ pub struct ServiceDefinition {
 
     #[serde(default)]
     pub depends_on: Vec<String>,
+
+    /// Override the container CMD.  Maps to `command:` in docker-compose.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Docker compose healthcheck for this service.
+    #[serde(default)]
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
@@ -1487,6 +1526,8 @@ impl ConfigBuilder {
                 ports: Vec::new(),
                 volumes: self.app_volumes,
                 environment: HashMap::new(),
+                command: None,
+                healthcheck: None,
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),
@@ -2329,6 +2370,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
@@ -2401,6 +2444,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "redis".to_string(),
@@ -2409,6 +2454,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "minio".to_string(),
@@ -2417,6 +2464,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .build()
             .unwrap();

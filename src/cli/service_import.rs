@@ -160,6 +160,8 @@ pub fn import_plan_from_compose_str(
             environment: environment.clone(),
             volumes: volumes.clone(),
             depends_on: depends_on.clone(),
+            command: None,
+            healthcheck: None,
         });
         reviews.push(ImportedServiceReview {
             source_name: source_name.to_string(),

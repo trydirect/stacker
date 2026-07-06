@@ -1483,6 +1483,8 @@ mod tests {
             )]),
             volumes: vec!["upload-data:/data".to_string()],
             depends_on: vec!["postgres".to_string()],
+            command: None,
+            healthcheck: None,
         }
     }
 

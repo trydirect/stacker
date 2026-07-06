@@ -187,6 +187,8 @@ fn collect_compose_services(
                     .filter_map(compose_volume_to_string)
                     .collect(),
                 depends_on: compose_depends_on(definition),
+                command: None,
+                healthcheck: None,
             });
         }
     }

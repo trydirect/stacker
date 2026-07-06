@@ -292,14 +292,36 @@ fn rewrite_volumes(
     };
 
     for volume in volumes {
-        let serde_yaml::Value::String(volume_spec) = volume else {
-            continue;
-        };
-        let Some((source, rest)) = parse_bind_mount(volume_spec) else {
-            continue;
-        };
-        let remote = collect_reference(project_root, compose_dir, environment, source, collected)?;
-        *volume_spec = format!("{remote}:{rest}");
+        if let serde_yaml::Value::String(volume_spec) = volume {
+            // Simple string form: "source:target:mode"
+            let Some((source, rest)) = parse_bind_mount(volume_spec) else {
+                continue;
+            };
+            let remote =
+                collect_reference(project_root, compose_dir, environment, source, collected)?;
+            *volume_spec = format!("{remote}:{rest}");
+        } else if let serde_yaml::Value::Mapping(map) = volume {
+            // Advanced mapping form: { type: bind, source: ..., target: ... }
+            let vol_type = map
+                .get(&serde_yaml::Value::String("type".to_string()))
+                .and_then(|v| v.as_str());
+            if vol_type != Some("bind") {
+                continue;
+            }
+            let source_key = serde_yaml::Value::String("source".to_string());
+            let source_val = match map.get(&source_key).and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let remote = collect_reference(
+                project_root,
+                compose_dir,
+                environment,
+                &source_val,
+                collected,
+            )?;
+            map.insert(source_key, serde_yaml::Value::String(remote));
+        }
     }
 
     Ok(())

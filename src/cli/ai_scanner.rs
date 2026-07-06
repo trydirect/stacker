@@ -397,8 +397,13 @@ The `stacker.yml` schema supports these top-level keys:
   - dockerfile: Path to custom Dockerfile
   - image: Pre-built Docker image
   - build: { context: '.', args: { KEY: VALUE } }
-- services: Array of sidecar containers
-  - name, image, ports[], environment{}, volumes[], depends_on[]
+  - ports: [host:container] port mappings for the main app
+  - volumes: [./host:/container] volume mounts for the main app
+  - environment: { KEY: VALUE } env vars for the main app
+  - command: Override the container CMD (e.g. for init scripts)
+  - healthcheck: { test, interval, timeout, retries } for the main app
+- services: Array of SIDECAR (infrastructure) containers ONLY — never put the main app here
+  - name, image, ports[], environment{}, volumes[], depends_on[], healthcheck
 - proxy: Reverse proxy config
   - type: nginx|nginx-proxy-manager|traefik|none
   - auto_detect: bool
@@ -413,18 +418,41 @@ The `stacker.yml` schema supports these top-level keys:
 - hooks: { pre_build, post_deploy, on_failure } (paths to scripts)
 - env_file: Path to .env file
 - env: { KEY: VALUE } inline environment variables
+- install:
+  inputs: { commonDomain: example.com }
+- config_contract:
+  services: { name: { required: [VAR], secret: [VAR] } }
 
 Rules:
-1. Output ONLY valid YAML — no markdown fences, no explanations, no comments except brief inline ones.
-2. Use ${VAR_NAME} syntax for secrets and sensitive values (DB passwords, API keys).
-3. Include appropriate services (databases, caches, queues) based on detected dependencies.
-4. Set proper port mappings avoiding conflicts.
-5. Add volumes for data persistence.
-6. Use depends_on for service ordering.
-7. Add healthcheck and monitoring when appropriate.
-8. If a Dockerfile already exists, set app.type to 'custom' and reference it via app.dockerfile.
-9. If a docker-compose already exists, set deploy.compose_file to reference it.
-10. Keep the configuration practical and deployable — don't add services that aren't needed.";
+1. Output ONLY valid YAML — no markdown fences, no explanations, no comments.
+2. THE MAIN APPLICATION goes in the `app:` block with ALL its config:
+   ports, volumes, environment, command, healthcheck — NEVER put it in `services:`.
+   `services:` is ONLY for infrastructure: databases, caches, queues, proxies.
+3. Image selection (app block) — in priority order:
+   a. Prefer `app.image` when a public Docker image exists for this project
+      (check compose files and README for image references like owner/project:tag).
+   b. Use `app.dockerfile` only when NO public image exists and the project
+      needs a custom build (e.g. `build: .` in compose with no image).
+   c. NEVER set both image and dockerfile — they are mutually exclusive.
+   d. When using image, set app.type to 'custom'.
+4. Use ${VAR_NAME} syntax for secrets and sensitive values (DB passwords, API keys).
+5. Bind infrastructure service ports to 127.0.0.1 (e.g. 127.0.0.1:5432:5432)
+   unless the service needs to be accessed externally.
+6. Add healthchecks to infrastructure services:
+   - postgres: pg_isready -U postgres (interval 5s, timeout 2s, retries 10)
+   - redis: redis-cli ping (interval 5s, timeout 2s, retries 10)
+   - mysql/mariadb: mysqladmin ping -h localhost (interval 5s, timeout 2s, retries 10)
+   - mongo: mongosh --eval 'db.adminCommand(\"ping\")' (interval 5s, timeout 2s, retries 10)
+7. Add volumes for data persistence on infrastructure services.
+8. Use depends_on to order startup (app depends on infra services).
+9. Do NOT set deploy.compose_file unless the project has a complex multi-file
+   compose setup that cannot be expressed in stacker.yml.
+10. Detect env vars from compose files and documentation; include them in the
+    app.environment or service.environment blocks.
+11. Keep the config deployable: local target, no cloud config unless requested.
+12. Add monitoring.status_panel: true for production stacks.
+13. Set deploy.target: local by default — this is a local development config.";
+
 
 /// Expose the system prompt used for AI-based stacker.yml generation.
 pub fn generation_system_prompt() -> &'static str {

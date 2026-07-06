@@ -240,6 +240,35 @@ fn service_to_compose_value(
     );
     insert_string_sequence(&mut map, "ports", &service.ports);
     insert_environment(&mut map, &service.environment);
+    if let Some(ref cmd) = service.command {
+        map.insert(
+            serde_yaml::Value::String("command".to_string()),
+            serde_yaml::Value::String(cmd.clone()),
+        );
+    }
+    if let Some(ref hc) = service.healthcheck {
+        let mut hc_map = serde_yaml::Mapping::new();
+        hc_map.insert(
+            serde_yaml::Value::String("test".to_string()),
+            serde_yaml::Value::String(hc.test.clone()),
+        );
+        hc_map.insert(
+            serde_yaml::Value::String("interval".to_string()),
+            serde_yaml::Value::String(hc.interval.clone()),
+        );
+        hc_map.insert(
+            serde_yaml::Value::String("timeout".to_string()),
+            serde_yaml::Value::String(hc.timeout.clone()),
+        );
+        hc_map.insert(
+            serde_yaml::Value::String("retries".to_string()),
+            serde_yaml::Value::Number(hc.retries.into()),
+        );
+        map.insert(
+            serde_yaml::Value::String("healthcheck".to_string()),
+            serde_yaml::Value::Mapping(hc_map),
+        );
+    }
     insert_string_sequence(&mut map, "volumes", &service.volumes);
     insert_string_sequence(&mut map, "depends_on", &service.depends_on);
     if !project_networks.is_empty() {
@@ -523,6 +552,8 @@ mod tests {
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             }],
             ..Default::default()
         }
@@ -571,6 +602,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         }];
 
         let result =
@@ -635,6 +668,8 @@ volumes:
                 ]),
                 volumes: vec!["smtp_data:/data".to_string()],
                 depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
             }],
             ..Default::default()
         };

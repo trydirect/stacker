@@ -53,6 +53,9 @@ curl -fsSL https://stacker.try.direct/install.sh | bash
 cd my-project
 stacker init
 
+# 2a. Or generate from any GitHub repo (no clone required)
+stacker init --from-github owner/repo
+
 # 3. Review the generated config
 cat stacker.yml
 
@@ -1230,7 +1233,27 @@ For monorepo-style projects, `stacker init` now:
 - Selects one primary app for the generated `app:` section
 - Reuses a detected aggregate compose file by setting `deploy.compose_file`
 - Imports image-backed compose sidecars into the generated `services:` list
+- **Infers healthchecks** for infrastructure images (postgres → `pg_isready`, redis → `redis-cli ping`, mysql/mariadb → `mysqladmin ping`, mongo → `mongosh`, rabbitmq → `rabbitmq-diagnostics`, elasticsearch → `_cluster/health`)
 - Emits warning comments when scan data suggests a required local bootstrap asset or generator is missing
+
+### Remote GitHub repository detection
+
+`stacker init --from-github <url>` applies the same detection pipeline to a
+remote repository. Use `--with-ai` to get a richer config — the AI scans the
+repo's README, compose files, and source to infer ports, env vars, and service
+relationships that simple file detection alone cannot discover.
+
+```bash
+stacker init --from-github owner/repo --with-ai        # AI-powered (recommended)
+stacker init --from-github owner/repo                    # template-based fallback
+stacker init -g https://github.com/ArchiveBox/ArchiveBox
+```
+
+Stacker shallow-clones the repo into a temp directory, runs detection
+(or AI analysis), and writes the generated `stacker.yml` to your current
+directory. When environment variables are discovered in the repo's compose
+files or by the AI, `.env.example` and `scripts/generate-secrets.sh` are
+also generated.
 
 Build-only compose services are still reported in the generated file comments, but they are not
 imported into `services:` because the current schema requires an explicit `image`.
@@ -1345,7 +1368,7 @@ Configuration issues:
 
 | Command | Description |
 |---------|-------------|
-| `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml) |
+| `stacker init` | Initialize a new project — generates `stacker.yml` and `.stacker/` directory (Dockerfile + docker-compose.yml). Use `--from-github <url>` to generate config from a remote repo without cloning it first. |
 | `stacker deploy` | Build and deploy the stack; cloud deploys also install a local SSH backup key when possible |
 | `stacker status` | Show container status |
 | `stacker logs` | Show container logs |
@@ -1386,6 +1409,7 @@ Configuration issues:
 | Flag | Description |
 |------|-------------|
 | `--app-type <TYPE>` | Application type: `static`, `node`, `python`, `rust`, `go`, `php`, `custom` |
+| `--from-github <URL>` | Generate `stacker.yml` from a remote GitHub repository. Accepts `owner/repo` or full URL. Clones shallow into a temp dir, auto-detects the project type and compose services, then writes config to the current directory. Also generates `.env.example` and `scripts/generate-secrets.sh` when env vars are detected. Short flag: `-g`. |
 | `--with-proxy` | Include reverse-proxy (nginx) configuration |
 | `--with-ai` | Use AI to scan the project and generate a tailored `stacker.yml` |
 | `--ai-provider <PROVIDER>` | AI provider: `openai`, `anthropic`, `ollama`, `custom` (default: `ollama`) |
@@ -1402,6 +1426,10 @@ Configuration issues:
 # Init
 stacker init                                          # Auto-detect project type
 stacker init --app-type node --with-proxy             # Explicit type + proxy
+stacker init --from-github ArchiveBox/ArchiveBox      # Generate from remote repo
+stacker init -g https://github.com/owner/repo          # Full URL with short flag
+stacker init --from-github owner/repo --with-ai        # AI-powered (recommended for remote repos)
+stacker init --from-github owner/repo --app-type node  # Force type for remote repo
 stacker init --with-ai                                # AI-powered generation (Ollama default)
 stacker init --with-ai --ai-model qwen2.5-coder       # Specify Ollama model
 stacker init --with-ai --ai-provider ollama --ai-model deepseek-r1
