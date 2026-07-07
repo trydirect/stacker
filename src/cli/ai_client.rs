@@ -23,7 +23,7 @@ pub fn default_model(provider: AiProviderType) -> &'static str {
     match provider {
         AiProviderType::Openai => "gpt-4o",
         AiProviderType::Anthropic => "claude-haiku-4-5-20251001",
-        AiProviderType::Ollama => "llama3",
+        AiProviderType::Ollama => "qwen2.5-coder",
         AiProviderType::Custom => "default",
     }
 }
