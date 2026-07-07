@@ -1539,7 +1539,7 @@ mod tests {
     #[test]
     fn test_default_models() {
         assert_eq!(default_model(AiProviderType::Openai), "gpt-4o");
-        assert_eq!(default_model(AiProviderType::Ollama), "llama3");
+        assert_eq!(default_model(AiProviderType::Ollama), "qwen2.5-coder");
         assert!(default_model(AiProviderType::Anthropic).starts_with("claude"));
     }
 
