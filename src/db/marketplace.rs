@@ -291,10 +291,15 @@ pub async fn get_by_slug_and_user(
     })
 }
 
+pub enum SlugLookupError {
+    NotFound,
+    Internal,
+}
+
 pub async fn get_by_slug_with_latest(
     pool: &PgPool,
     slug: &str,
-) -> Result<(StackTemplate, Option<StackTemplateVersion>), String> {
+) -> Result<(StackTemplate, Option<StackTemplateVersion>), SlugLookupError> {
     let query_span = tracing::info_span!("marketplace_get_by_slug_with_latest", slug = %slug);
 
     let template = sqlx::query_as::<_, StackTemplate>(
@@ -337,7 +342,10 @@ pub async fn get_by_slug_with_latest(
     .await
     .map_err(|e| {
         tracing::error!("get_by_slug template error: {:?}", e);
-        "Not Found".to_string()
+        match e {
+            sqlx::Error::RowNotFound => SlugLookupError::NotFound,
+            _ => SlugLookupError::Internal,
+        }
     })?;
 
     let version = sqlx::query_as::<_, StackTemplateVersion>(
@@ -363,7 +371,7 @@ pub async fn get_by_slug_with_latest(
     .await
     .map_err(|e| {
         tracing::error!("get_by_slug version error: {:?}", e);
-        "Internal Server Error".to_string()
+        SlugLookupError::Internal
     })?;
 
     Ok((template, version))

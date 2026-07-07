@@ -384,44 +384,64 @@ fn discover_local_pipe_hints(
 
 /// System prompt that instructs the AI how to generate stacker.yml.
 const SYSTEM_PROMPT: &str = "\
-You are an expert DevOps engineer integrated into the `stacker` CLI tool. \
-Your job is to generate a complete, production-ready `stacker.yml` configuration \
-based on the project files and context provided.
+You are an expert DevOps engineer. Generate a `stacker.yml` configuration file.
 
-The `stacker.yml` schema supports these top-level keys:
+IMPORTANT: You are generating stacker.yml, NOT docker-compose.yml.
+- stacker.yml has top-level keys: `name:`, `app:`, `services:`, `proxy:`, `deploy:`, `monitoring:`
+- docker-compose has top-level keys: `version:`, `services:`, `networks:`, `volumes:`
+- DO NOT output docker-compose format. DO NOT include `version:`, top-level `networks:`, or top-level `volumes:`.
+- Convert any docker-compose you see into stacker.yml format: the main app goes in `app:`, infra databases go in `services:`.
+
+CORRECT example of a stacker.yml with a public image:
+---
+name: myapp
+deploy:
+  target: local
+app:
+  type: custom
+  image: myapp/myapp:latest
+  ports:
+    - \"8080:8080\"
+  environment:
+    APP_PORT: \"8080\"
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    ports:
+      - \"127.0.0.1:5432:5432\"
+    environment:
+      POSTGRES_PASSWORD: \"${DB_PASSWORD}\"
+    healthcheck:
+      test: \"CMD-SHELL pg_isready -U postgres\"
+      interval: 5s
+      timeout: 2s
+      retries: 10
+---
+
+stacker.yml schema:
 - name: (string, required) Project name
 - version: (string) Version label
 - app: Application source config
   - type: static|node|python|rust|go|php|custom
   - path: Source directory (default '.')
-  - dockerfile: Path to custom Dockerfile
-  - image: Pre-built Docker image
+  - image: Pre-built Docker image (preferred when available)
+  - dockerfile: Path to custom Dockerfile (only when no public image exists)
   - build: { context: '.', args: { KEY: VALUE } }
-  - ports: [host:container] port mappings for the main app
-  - volumes: [./host:/container] volume mounts for the main app
-  - environment: { KEY: VALUE } env vars for the main app
-  - command: Override the container CMD (e.g. for init scripts)
-  - healthcheck: { test, interval, timeout, retries } for the main app
-- services: Array of SIDECAR (infrastructure) containers ONLY — never put the main app here
-  - name, image, ports[], environment{}, volumes[], depends_on[], healthcheck
-- proxy: Reverse proxy config
-  - type: nginx|nginx-proxy-manager|traefik|none
-  - auto_detect: bool
-  - domains: [{ domain, ssl: auto|manual|off, upstream }]
-- deploy:
-  - target: local|cloud|server
-  - cloud: { provider: hetzner|digitalocean|aws|linode|vultr, orchestrator: local|remote, region, size, ssh_key }
-  - server: { host (REQUIRED), user (default 'root'), port (default 22), ssh_key }
-  - registry: { username, password, server } — Docker registry credentials for private images
-  - compose_file: path to existing docker-compose (skips generation)
+  - ports: [\"host:container\"] port mappings
+  - volumes: [\"./host:/container\"] volume mounts
+  - environment: { KEY: VALUE } env vars
+  - command: Override the container CMD
+  - healthcheck: { test, interval, timeout, retries }
+- services: Array of INFRASTRUCTURE containers ONLY (never the main app)
+  - name, image (REQUIRED), ports[], environment{}, volumes[], depends_on[], healthcheck
+- proxy: { type: nginx|nginx-proxy-manager|traefik|none, auto_detect: bool, domains: [...] }
+- deploy: { target: local|cloud|server, compose_file, cloud: {...}, server: {...} }
 - monitoring: { status_panel: bool, healthcheck: { endpoint, interval }, metrics: { enabled, telegraf } }
-- hooks: { pre_build, post_deploy, on_failure } (paths to scripts)
+- hooks: { pre_build, post_deploy, on_failure }
 - env_file: Path to .env file
-- env: { KEY: VALUE } inline environment variables
-- install:
-  inputs: { commonDomain: example.com }
-- config_contract:
-  services: { name: { required: [VAR], secret: [VAR] } }
+- env: { KEY: VALUE }
+- install: { inputs: { commonDomain: example.com } }
+- config_contract: { services: { name: { required: [VAR], secret: [VAR] } } }
 
 Rules:
 1. Output ONLY valid YAML — no markdown fences, no explanations, no comments.

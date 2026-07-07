@@ -365,7 +365,14 @@ pub async fn detail_handler(
             }
             Ok(JsonResponse::build().set_item(Some(payload)).ok("OK"))
         }
-        Err(err) => Err(JsonResponse::<serde_json::Value>::build().not_found(err)),
+        Err(db::marketplace::SlugLookupError::Internal) => {
+            Err(JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Internal Server Error"))
+        }
+        Err(db::marketplace::SlugLookupError::NotFound) => {
+            Err(JsonResponse::<serde_json::Value>::build()
+                .not_found(format!("Template '{}' not found", slug)))
+        }
     }
 }
 

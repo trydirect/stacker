@@ -72,10 +72,14 @@ fn resolve_ai_from_env_or_config(
         }
     }
 
-    if let Ok(endpoint) = std::env::var("STACKER_AI_ENDPOINT") {
-        if !endpoint.trim().is_empty() {
-            ai.endpoint = Some(endpoint);
-            ai.enabled = true;
+    // Only apply STACKER_AI_ENDPOINT env var for ollama/custom — openai
+    // and anthropic have well-known defaults that should not be overridden.
+    if matches!(ai.provider, AiProviderType::Ollama | AiProviderType::Custom) {
+        if let Ok(endpoint) = std::env::var("STACKER_AI_ENDPOINT") {
+            if !endpoint.trim().is_empty() {
+                ai.endpoint = Some(endpoint);
+                ai.enabled = true;
+            }
         }
     }
 

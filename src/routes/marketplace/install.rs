@@ -277,6 +277,14 @@ async fn maybe_deploy_installed_project(
     Ok((project_for_response, Some(deployment_id)))
 }
 
+const RESERVED_VAR_PREFIXES: &[&str] = &["STACKER_", "DOCKER_", "VAULT_", "AGENT_"];
+
+fn is_reserved_var_key(key: &str) -> bool {
+    RESERVED_VAR_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 fn apply_install_inputs_to_deploy(
     deploy_form: &mut forms::project::Deploy,
     install_inputs: &Map<String, Value>,
@@ -286,6 +294,13 @@ fn apply_install_inputs_to_deploy(
     }
     let vars = deploy_form.stack.vars.get_or_insert_with(Vec::new);
     for (key, value) in install_inputs {
+        if is_reserved_var_key(key) {
+            tracing::warn!(
+                "install_inputs key '{}' uses a reserved prefix and was rejected",
+                key
+            );
+            continue;
+        }
         vars.retain(|var| var.key.as_deref() != Some(key.as_str()));
         vars.push(Var {
             key: Some(key.clone()),
@@ -336,6 +351,40 @@ fn ensure_catalog_application_has_deploy_context(
     }
 
     Ok(())
+}
+
+/// Redact sensitive values from a serialized `StackTemplateVersion` JSON value.
+/// Covers stack_definition, config_files content, seed_jobs, and post_deploy_hooks.
+fn redact_version_value(ver_value: &mut serde_json::Value, format: &str) {
+    if let Some(sd) = ver_value.get_mut("stack_definition") {
+        if format == "yaml" {
+            if let serde_json::Value::String(yaml) = sd {
+                *yaml = redact_yaml_string(yaml);
+            }
+        } else {
+            redact_sensitive_json_values(sd);
+        }
+    }
+
+    if let Some(files) = ver_value.get_mut("config_files").and_then(|v| v.as_array_mut()) {
+        for file in files {
+            if let Some(content) = file
+                .get_mut("content")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+            {
+                if let Some(c) = file.get_mut("content") {
+                    *c = serde_json::Value::String(redact_yaml_string(&content));
+                }
+            }
+            redact_sensitive_json_values(file);
+        }
+    }
+
+    for field in &["seed_jobs", "post_deploy_hooks"] {
+        if let Some(v) = ver_value.get_mut(*field) {
+            redact_sensitive_json_values(v);
+        }
+    }
 }
 
 async fn install_stack_template(
@@ -389,15 +438,9 @@ async fn install_stack_template(
     let format = latest_version.definition_format.as_deref().unwrap_or("").to_string();
     let mut ver_value = serde_json::to_value(latest_version)
         .unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(sd) = ver_value.get_mut("stack_definition") {
-        if format == "yaml" {
-            if let serde_json::Value::String(yaml) = sd {
-                *yaml = redact_yaml_string(yaml);
-            }
-        } else {
-            redact_sensitive_json_values(sd);
-        }
-    }
+
+    redact_version_value(&mut ver_value, &format);
+
     Ok(InstallTemplateResponse {
         project,
         template: serde_json::to_value(template).unwrap_or_else(|_| serde_json::json!({})),
@@ -541,7 +584,11 @@ pub async fn install_handler(
                 )),
             );
         }
-        Err(_) => {
+        Err(db::marketplace::SlugLookupError::Internal) => {
+            return Err(JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Internal Server Error"));
+        }
+        Err(db::marketplace::SlugLookupError::NotFound) => {
             install_catalog_application(
                 &slug,
                 &request,
@@ -731,4 +778,79 @@ mod tests {
 
         assert!(ensure_catalog_application_has_deploy_context("dify", &request).is_err());
     }
+    #[test]
+    fn reserved_prefix_vars_rejected_in_install_inputs() {
+        let mut deploy = crate::forms::project::Deploy::default();
+        let mut inputs = Map::new();
+        inputs.insert("VAULT_TOKEN".to_string(), json!("secret-vault"));
+        inputs.insert("STACKER_SECRET".to_string(), json!("stacker-internal"));
+        inputs.insert("DOCKER_HOST".to_string(), json!("unix:///var/run/docker.sock"));
+        inputs.insert("AGENT_KEY".to_string(), json!("agent-secret"));
+        inputs.insert("normal_key".to_string(), json!("safe-value"));
+
+        super::apply_install_inputs_to_deploy(&mut deploy, &inputs);
+
+        let vars = deploy.stack.vars.as_ref().expect("vars should be populated");
+        let keys: Vec<&str> = vars.iter()
+            .filter_map(|v| v.key.as_deref())
+            .collect();
+
+        for key in &keys {
+            assert!(
+                !key.starts_with("VAULT_"),
+                "VAULT_ key must be rejected but found: {}", key
+            );
+            assert!(
+                !key.starts_with("STACKER_"),
+                "STACKER_ key must be rejected but found: {}", key
+            );
+            assert!(
+                !key.starts_with("DOCKER_"),
+                "DOCKER_ key must be rejected but found: {}", key
+            );
+            assert!(
+                !key.starts_with("AGENT_"),
+                "AGENT_ key must be rejected but found: {}", key
+            );
+        }
+
+        assert!(
+            keys.contains(&"normal_key"),
+            "normal_key should pass through to vars"
+        );
+    }
+
+    #[test]
+    fn response_config_files_are_redacted() {
+        let mut version = make_yaml_version();
+        // Use YAML format (compose files) — redact_yaml_string redacts by key name.
+        version.config_files = json!([
+            {
+                "name": "docker-compose.yml",
+                "content": "services:\n  app:\n    image: nginx\n    environment:\n      SECRET_KEY: abc123secretvalue\n      DB_PASSWORD: hunter2\n"
+            }
+        ]);
+        version.stack_definition =
+            json!("SECRET_KEY: supersecret\nservices:\n  app:\n    image: nginx");
+        version.definition_format = Some("yaml".to_string());
+
+        let format = version.definition_format.as_deref().unwrap_or("").to_string();
+        let mut ver_value = serde_json::to_value(&version).unwrap();
+        super::redact_version_value(&mut ver_value, &format);
+
+        if let Some(files) = ver_value["config_files"].as_array() {
+            for file in files {
+                let content = file["content"].as_str().unwrap_or("");
+                assert!(
+                    !content.contains("abc123secretvalue"),
+                    "config_files content must not expose raw secret values (found 'abc123secretvalue')"
+                );
+                assert!(
+                    !content.contains("hunter2"),
+                    "config_files content must not expose raw secret values (found 'hunter2')"
+                );
+            }
+        }
+    }
+
 }

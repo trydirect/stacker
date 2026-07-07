@@ -11,7 +11,7 @@ docker/local/
 docs/*.sql
 config-to-validate.yaml
 *.bak
-.claude/settings.local.json
+.claude/
 
 plan/
 .stacker

