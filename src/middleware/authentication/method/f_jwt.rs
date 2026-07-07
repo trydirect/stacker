@@ -59,3 +59,74 @@ pub async fn try_jwt(req: &mut ServiceRequest) -> Result<bool, String> {
     tracing::info!("JWT authentication successful for role: {}", claims.role);
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::try_jwt;
+    use actix_web::test::TestRequest;
+    use actix_web::HttpMessage;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn make_jwt(role: &str, email: &str, exp: i64) -> String {
+        let header = URL_SAFE_NO_PAD.encode(json!({"alg":"HS256","typ":"JWT"}).to_string());
+        let payload =
+            URL_SAFE_NO_PAD.encode(json!({"role": role, "email": email, "exp": exp}).to_string());
+        format!("{}.{}.fakesig", header, payload)
+    }
+
+    #[actix_web::test]
+    async fn no_authorization_header_skips_jwt() {
+        let mut req = TestRequest::default().to_srv_request();
+        let result = try_jwt(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn non_bearer_scheme_skips_jwt() {
+        let mut req = TestRequest::default()
+            .insert_header(("authorization", "Basic dXNlcjpwYXNz"))
+            .to_srv_request();
+        let result = try_jwt(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn malformed_jwt_not_three_parts_skips() {
+        let mut req = TestRequest::default()
+            .insert_header(("authorization", "Bearer notajwt"))
+            .to_srv_request();
+        let result = try_jwt(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn expired_jwt_returns_error() {
+        let past_exp = chrono::Utc::now().timestamp() - 3600;
+        let token = make_jwt("admin_service", "x@x.com", past_exp);
+        let header_value = format!("Bearer {}", token);
+        let mut req = TestRequest::default()
+            .insert_header(("authorization", header_value.as_str()))
+            .to_srv_request();
+        let result = try_jwt(&mut req).await;
+        assert!(result.is_err(), "expected Err for expired JWT, got {:?}", result);
+    }
+
+    #[actix_web::test]
+    async fn valid_jwt_sets_user_in_extensions() {
+        let future_exp = chrono::Utc::now().timestamp() + 3600;
+        let token = make_jwt("admin_service", "admin@test.com", future_exp);
+        let header_value = format!("Bearer {}", token);
+        let mut req = TestRequest::default()
+            .insert_header(("authorization", header_value.as_str()))
+            .to_srv_request();
+        let result = try_jwt(&mut req).await;
+        assert_eq!(result, Ok(true));
+        let user_present = req
+            .extensions()
+            .get::<Arc<crate::models::User>>()
+            .is_some();
+        assert!(user_present, "expected User to be inserted into extensions");
+    }
+}

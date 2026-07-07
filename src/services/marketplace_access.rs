@@ -137,6 +137,7 @@ mod tests {
     struct TestUserService {
         plans: HashMap<String, bool>,
         owned_identifiers: HashSet<String>,
+        fail_plan_check: bool,
     }
 
     impl TestUserService {
@@ -150,7 +151,15 @@ mod tests {
                     .iter()
                     .map(|identifier| (*identifier).to_string())
                     .collect(),
+                fail_plan_check: false,
             }
+        }
+
+        /// Make the upstream plan check return a connector error, to exercise
+        /// the ValidationFailed error-propagation path.
+        fn with_plan_check_failure(mut self) -> Self {
+            self.fail_plan_check = true;
+            self
         }
     }
 
@@ -185,6 +194,11 @@ mod tests {
             required_plan_name: &str,
             _user_token: Option<&str>,
         ) -> Result<bool, ConnectorError> {
+            if self.fail_plan_check {
+                return Err(ConnectorError::ServiceUnavailable(
+                    "user service unreachable".to_string(),
+                ));
+            }
             Ok(self.plans.get(required_plan_name).copied().unwrap_or(false))
         }
 
@@ -375,6 +389,108 @@ mod tests {
         assert!(matches!(
             result,
             Err(MarketplaceAccessError::TemplateNotOwned)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_when_user_token_missing() {
+        let user_service: Arc<dyn UserServiceConnector> =
+            Arc::new(TestUserService::new(&[("professional", true)], &["100"]));
+
+        let mut user = test_user();
+        user.access_token = None;
+
+        let result =
+            validate_marketplace_template_access(&user_service, &user, &test_template()).await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::MissingUserToken)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_when_template_requires_higher_plan_than_feature_plan() {
+        // User meets the marketplace-install minimum (professional) but not the
+        // template's required plan (enterprise).
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true), ("enterprise", false)],
+            &["100"],
+        ));
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &test_template())
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::InsufficientTemplatePlan { required_plan })
+                if required_plan == "enterprise"
+        ));
+    }
+
+    #[tokio::test]
+    async fn allows_when_user_owns_template_by_uuid() {
+        let template_id = Uuid::new_v4();
+        let template = models::StackTemplate {
+            id: template_id,
+            slug: "paid-template".to_string(),
+            product_id: Some(100),
+            price: Some(5.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        // Ownership is recorded under the UUID, not the product_id — the resolver
+        // must fall through product_id -> UUID.
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true)],
+            &[template_id.to_string().as_str()],
+        ));
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn allows_when_user_owns_template_by_slug() {
+        let template = models::StackTemplate {
+            id: Uuid::new_v4(),
+            slug: "paid-template".to_string(),
+            product_id: Some(100),
+            price: Some(5.0),
+            required_plan_name: None,
+            ..Default::default()
+        };
+
+        // Ownership is recorded only under the slug — the resolver must fall
+        // through product_id -> UUID -> slug.
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
+            &[("professional", true)],
+            &["paid-template"],
+        ));
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn propagates_connector_error_as_validation_failed() {
+        let user_service: Arc<dyn UserServiceConnector> =
+            Arc::new(TestUserService::new(&[("professional", true)], &["100"])
+                .with_plan_check_failure());
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &test_template())
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::ValidationFailed(_))
         ));
     }
 }

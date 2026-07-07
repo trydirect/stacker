@@ -75,3 +75,34 @@ pub async fn try_query(req: &mut ServiceRequest) -> Result<bool, String> {
 
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::try_query;
+    use actix_web::test::TestRequest;
+
+    #[actix_web::test]
+    async fn non_mcp_path_skips_query_auth() {
+        let mut req = TestRequest::get()
+            .uri("/api/v1/project")
+            .to_srv_request();
+        let result = try_query(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn mcp_path_no_query_skips() {
+        let mut req = TestRequest::get().uri("/mcp/sse").to_srv_request();
+        let result = try_query(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn mcp_path_query_without_access_token_skips() {
+        let mut req = TestRequest::get()
+            .uri("/mcp/sse?session_id=abc&foo=bar")
+            .to_srv_request();
+        let result = try_query(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+}

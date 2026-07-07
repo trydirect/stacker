@@ -630,4 +630,139 @@ mod tests {
         assert!(update.onboarding_completed);
         assert!(update.payouts_enabled);
     }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_missing_signature_header() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_1"}}}"#;
+
+        let err = provider
+            .parse_webhook_update(payload, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Missing Stripe-Signature header"),
+            "unsigned webhook must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_forged_signature() {
+        // Attacker knows the header format and current timestamp but NOT the
+        // webhook secret — they sign with a different secret.
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_evil","details_submitted":true,"payouts_enabled":true}}}"#;
+        let forged = sign_payload(payload, chrono::Utc::now().timestamp(), "attacker_secret");
+
+        let err = provider
+            .parse_webhook_update(payload, Some(&forged))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid Stripe webhook signature"),
+            "signature signed with the wrong secret must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_tampered_payload() {
+        // Signature is valid for the original body, but the body is modified in
+        // flight — HMAC over the tampered payload must not match.
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let original = br#"{"type":"account.updated","data":{"object":{"id":"acct_1","payouts_enabled":false}}}"#;
+        let signature = sign_payload(original, chrono::Utc::now().timestamp(), "whsec_test");
+        let tampered = br#"{"type":"account.updated","data":{"object":{"id":"acct_1","payouts_enabled":true}}}"#;
+
+        let err = provider
+            .parse_webhook_update(tampered, Some(&signature))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid Stripe webhook signature"),
+            "a signature valid for a different body must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_missing_timestamp_part() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_1"}}}"#;
+
+        let err = provider
+            .parse_webhook_update(payload, Some("v1=deadbeef"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("missing timestamp"),
+            "header without t= must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_missing_v1_part() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_1"}}}"#;
+        // Valid, in-tolerance timestamp but no v1 signature component.
+        let header = format!("t={}", chrono::Utc::now().timestamp());
+
+        let err = provider
+            .parse_webhook_update(payload, Some(&header))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("missing v1 signature"),
+            "header without v1= must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_rejects_invalid_hex_signature() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{"object":{"id":"acct_1"}}}"#;
+        // In-tolerance timestamp, but v1 is not valid hex.
+        let header = format!("t={},v1=zzzz", chrono::Utc::now().timestamp());
+
+        let err = provider
+            .parse_webhook_update(payload, Some(&header))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("hex is invalid"),
+            "non-hex signature must be rejected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_ignores_non_account_updated_event() {
+        // A correctly-signed event of an unrelated type is accepted but produces
+        // no update (Ok(None)) — the handler returns "Webhook ignored".
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"payout.paid","data":{"object":{"id":"po_1"}}}"#;
+        let signature = sign_payload(payload, chrono::Utc::now().timestamp(), "whsec_test");
+
+        let update = provider
+            .parse_webhook_update(payload, Some(&signature))
+            .await
+            .expect("valid signature should verify");
+        assert!(
+            update.is_none(),
+            "non-account.updated event should yield no update"
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_webhook_account_updated_missing_object_is_invalid() {
+        let provider = StripeConnectPayoutProvider::try_new(&stripe_settings()).unwrap();
+        let payload = br#"{"type":"account.updated","data":{}}"#;
+        let signature = sign_payload(payload, chrono::Utc::now().timestamp(), "whsec_test");
+
+        let err = provider
+            .parse_webhook_update(payload, Some(&signature))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PayoutProviderError::InvalidResponse(_)),
+            "account.updated without data.object must be an invalid-response error: {err}"
+        );
+    }
 }
