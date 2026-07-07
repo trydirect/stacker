@@ -10,7 +10,7 @@ use crate::cli::error::CliError;
 pub const WEBSITE_DEPLOY_SCENARIO: &str = "website-deploy";
 macro_rules! ai_model_str {
     () => {
-        "qwen2.5-code"
+        "qwen2.5-coder"
     };
 }
 
