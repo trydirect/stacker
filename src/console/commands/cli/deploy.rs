@@ -3518,6 +3518,29 @@ impl CallableTrait for DeployCommand {
                         self.target.as_deref(),
                     )?;
                 }
+
+                // Show platform features available to the user
+                let creds_path = std::env::var("XDG_CONFIG_HOME")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+                    .map(|b| b.join("stacker/credentials.json"))
+                    .unwrap_or_default();
+                let logged_in = std::env::var("STACKER_TOKEN").is_ok()
+                    || creds_path.exists();
+
+                if !logged_in {
+                    eprintln!(
+                        "\n  Create a free account to deploy anywhere:\n\
+                           stacker login\n\
+                           (Free tier: 20 deploys/mo, 1 cloud provider — no credit card)"
+                    );
+                } else {
+                    eprintln!(
+                        "\n  Deploy to production:\n\
+                           stacker config setup cloud    (Hetzner $4/mo, 5 min setup)\n\
+                           stacker deploy --target cloud"
+                    );
+                }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
                 watch_outcome = watch_cloud_deployment(&result)?;

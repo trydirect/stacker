@@ -2141,6 +2141,9 @@ impl CallableTrait for InitCommand {
         eprintln!("  stacker config validate   # Check configuration");
         eprintln!("  stacker deploy --target local --dry-run   # Preview deployment");
         eprintln!("  stacker deploy --target local   # Deploy locally");
+        eprintln!("\n  Deploy anywhere with a free account:");
+        eprintln!("  stacker login              # Free tier — 20 deploys/mo, 1 cloud provider");
+        eprintln!("  stacker agent status       # Remote monitoring via Status Panel");
 
             if self.with_ai {
                 maybe_bootstrap_website_scenario(
