@@ -264,6 +264,53 @@ async fn test_get_installation_by_hash_uses_lightweight_route() {
 }
 
 #[tokio::test]
+async fn test_search_marketplace_templates_sends_query_upstream_and_filters_results() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("GET", "/applications/")
+        .match_header("authorization", "Bearer test_token")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("q".to_string(), "dify".to_string()),
+            Matcher::UrlEncoded("max_results".to_string(), "10".to_string()),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "_items": [
+                    {
+                        "name": "OpenClaw preconfigured",
+                        "code": "openclaw-preconfigured",
+                        "description": "Experimental OpenClaw setup",
+                        "is_from_marketplace": true
+                    },
+                    {
+                        "name": "Dify",
+                        "code": "dify",
+                        "description": "Dify AI workflow platform",
+                        "is_from_marketplace": true
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = UserServiceClient::new_public(&server.url());
+    let results = client
+        .search_marketplace_templates("test_token", Some("dify"), None, None, None, Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("code").and_then(|value| value.as_str()),
+        Some("dify")
+    );
+}
+
+#[tokio::test]
 async fn test_get_installation_falls_back_to_legacy_install_route() {
     let mut server = Server::new_async().await;
     let _api_mock = server
@@ -314,7 +361,7 @@ async fn test_get_installation_falls_back_to_legacy_install_route() {
 }
 
 #[tokio::test]
-async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
+async fn test_get_subscription_plan_accepts_user_profile_fixture() {
     let mut server = Server::new_async().await;
     let _mock = server
         .mock("GET", "/oauth_server/api/me")
@@ -323,16 +370,30 @@ async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
         .with_header("content-type", "application/json")
         .with_body(
             json!({
-                "item": {
+                "user": {
                     "_id": "user-1",
+                    "owner": 410,
+                    "role": "root",
+                    "email": "user@example.com",
                     "plan": {
-                        "name": "Free",
-                        "code": "plan-free-periodically",
+                        "supported_stacks": {},
+                        "date_end": null,
+                        "name": "Team",
+                        "code": "plan-individual-monthly",
                         "includes": [
-                            { "code": "deploys-20", "name": "20 deploys per month" }
+                            { "code": "deploys-unlimited", "name": "Unlimited deploys" },
+                            { "code": "providers-all", "name": "All providers" },
+                            { "code": "support-email", "name": "Email support" }
                         ],
+                        "team": "TryDirect Team",
+                        "billing_email": "billing@try.direct",
+                        "date_of_purchase": "08 January 2026",
+                        "currency": "USD",
+                        "price": "79.00",
+                        "period": "month",
+                        "date_start": "08 January 2026",
                         "active": true,
-                        "price": "0.00"
+                        "billing_id": "sub_123"
                     }
                 }
             })
@@ -344,8 +405,11 @@ async fn test_get_subscription_plan_accepts_wrapped_user_profile() {
     let client = UserServiceClient::new_public(&server.url());
     let plan = client.get_subscription_plan("test_token").await.unwrap();
 
-    assert_eq!(plan.name.as_deref(), Some("Free"));
-    assert_eq!(plan.code.as_deref(), Some("plan-free-periodically"));
+    assert_eq!(plan.name.as_deref(), Some("Team"));
+    assert_eq!(plan.code.as_deref(), Some("plan-individual-monthly"));
+    assert_eq!(plan.price.as_deref(), Some("79.00"));
+    assert_eq!(plan.currency.as_deref(), Some("USD"));
+    assert_eq!(plan.period.as_deref(), Some("month"));
     assert!(plan.includes.unwrap().is_array());
 }
 
@@ -420,6 +484,34 @@ fn test_user_profile_deserialization() {
     assert_eq!(profile.products.len(), 2);
     assert_eq!(profile.products[0].code, "professional");
     assert_eq!(profile.products[1].external_id, Some(42));
+}
+
+/// Regression test: the user service returns `{"user": {...}}`. The HTTP
+/// layer must unwrap that envelope before deserializing into `UserProfile`.
+#[test]
+fn test_parse_user_profile_unwraps_user_envelope() {
+    use super::client::parse_user_profile_response;
+    let body = r#"{
+        "user": {
+            "email": "alice@example.com",
+            "plan": {"name": "Free"},
+            "products": []
+        }
+    }"#;
+    let profile = parse_user_profile_response(body).unwrap();
+    assert_eq!(profile.email, "alice@example.com");
+}
+
+#[test]
+fn test_parse_user_profile_accepts_unwrapped_body() {
+    use super::client::parse_user_profile_response;
+    let body = r#"{
+        "email": "bob@example.com",
+        "plan": null,
+        "products": []
+    }"#;
+    let profile = parse_user_profile_response(body).unwrap();
+    assert_eq!(profile.email, "bob@example.com");
 }
 
 /// Test ProductInfo with optional fields

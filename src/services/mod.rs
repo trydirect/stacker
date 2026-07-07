@@ -11,7 +11,9 @@ pub mod explain;
 pub mod grpc_pipe;
 pub mod handoff;
 pub mod log_cache;
+pub mod marketplace_access;
 pub mod marketplace_assets;
+pub mod payout_provider;
 pub mod project;
 pub mod project_app_service;
 mod rating;
@@ -52,10 +54,15 @@ pub use explain::{
 };
 pub use handoff::InMemoryHandoffStore;
 pub use log_cache::LogCacheService;
+pub use marketplace_access::{validate_marketplace_template_access, MarketplaceAccessError};
 pub use marketplace_assets::{
     build_asset_key, presign_asset_download, presign_asset_upload, MarketplaceAssetStorageError,
     MarketplaceAssetUploadRequest, PresignedMarketplaceAssetResponse,
     MARKETPLACE_ASSET_STORAGE_PROVIDER,
+};
+pub use payout_provider::{
+    init_payout_provider, MockPayoutProvider, PayoutOnboardingCompletion, PayoutOnboardingLink,
+    PayoutProvider, PayoutProviderError, PayoutWebhookUpdate, StripeConnectPayoutProvider,
 };
 pub use project_app_service::{ProjectAppError, ProjectAppService, SyncSummary};
 pub use typed_error::{

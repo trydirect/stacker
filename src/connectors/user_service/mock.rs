@@ -103,6 +103,7 @@ impl UserServiceConnector for MockUserServiceConnector {
 
     async fn get_user_profile(&self, _user_token: &str) -> Result<UserProfile, ConnectorError> {
         Ok(UserProfile {
+            id: "mock-user-id".to_string(),
             email: "test@example.com".to_string(),
             plan: Some(serde_json::json!({
                 "name": "professional",
@@ -182,5 +183,63 @@ impl UserServiceConnector for MockUserServiceConnector {
                 priority: Some(5),
             },
         ])
+    }
+
+    async fn search_marketplace_templates(
+        &self,
+        _user_token: &str,
+        query: Option<&str>,
+        category: Option<&str>,
+        is_marketplace: Option<bool>,
+        _page: Option<u32>,
+        max_results: Option<u32>,
+    ) -> Result<Vec<serde_json::Value>, ConnectorError> {
+        let mut items = vec![
+            serde_json::json!({
+                "name": "Dify",
+                "code": "dify",
+                "description": "Dify AI application platform",
+                "category": "AI",
+                "is_from_marketplace": true
+            }),
+            serde_json::json!({
+                "name": "Stackdog",
+                "code": "stackdog",
+                "description": "Security monitoring",
+                "category": "Security",
+                "is_from_marketplace": true
+            }),
+        ];
+
+        if let Some(expected) = is_marketplace {
+            items.retain(|item| {
+                item.get("is_from_marketplace")
+                    .and_then(|value| value.as_bool())
+                    == Some(expected)
+            });
+        }
+        if let Some(query) = query.map(|query| query.to_ascii_lowercase()) {
+            items.retain(|item| {
+                ["name", "code", "description"].iter().any(|field| {
+                    item.get(field)
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_ascii_lowercase().contains(&query))
+                        .unwrap_or(false)
+                })
+            });
+        }
+        if let Some(category) = category.map(|category| category.to_ascii_lowercase()) {
+            items.retain(|item| {
+                item.get("category")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_ascii_lowercase() == category)
+                    .unwrap_or(false)
+            });
+        }
+        if let Some(limit) = max_results {
+            items.truncate(limit as usize);
+        }
+
+        Ok(items)
     }
 }

@@ -1,5 +1,6 @@
 use crate::configuration::VaultSettings;
 use reqwest::Client;
+use reqwest::Identity;
 use serde_json::json;
 
 pub struct VaultClient {
@@ -25,8 +26,21 @@ impl std::fmt::Debug for VaultClient {
 
 impl VaultClient {
     pub fn new(settings: &VaultSettings) -> Self {
+        let mut client_builder = Client::builder();
+        if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
+            match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
+                Ok(identity) => {
+                    client_builder = client_builder.identity(identity);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load mTLS identity for Vault client: {}", e);
+                }
+            }
+        }
+        let client = client_builder.build().unwrap_or_else(|_| Client::new());
+
         Self {
-            client: Client::new(),
+            client,
             address: settings.address.clone(),
             token: settings.token.clone(),
             agent_path_prefix: settings.agent_path_prefix.clone(),
@@ -700,6 +714,8 @@ mod tests {
             agent_path_prefix: prefix.clone(),
             api_prefix: "v1".to_string(),
             ssh_key_path_prefix: None,
+            client_cert: None,
+            client_key: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_test_abc";
@@ -751,6 +767,8 @@ mod tests {
             agent_path_prefix: "agent".to_string(),
             api_prefix: "v1".to_string(),
             ssh_key_path_prefix: None,
+            client_cert: None,
+            client_key: None,
         };
         let client = VaultClient::new(&settings);
         let dh = "dep_runtime_test";
@@ -799,6 +817,8 @@ mod tests {
             agent_path_prefix: "agent".to_string(),
             api_prefix: "v1".to_string(),
             ssh_key_path_prefix: None,
+            client_cert: None,
+            client_key: None,
         };
         let client = VaultClient::new(&settings);
 
@@ -833,6 +853,8 @@ mod tests {
             agent_path_prefix: "agent".to_string(),
             api_prefix: "v1".to_string(),
             ssh_key_path_prefix: None,
+            client_cert: None,
+            client_key: None,
         };
         let client = VaultClient::new(&settings);
 

@@ -70,3 +70,25 @@ pub async fn try_cookie(req: &mut ServiceRequest) -> Result<bool, String> {
 
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::try_cookie;
+    use actix_web::test::TestRequest;
+
+    #[actix_web::test]
+    async fn no_cookie_header_skips() {
+        let mut req = TestRequest::default().to_srv_request();
+        let result = try_cookie(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn cookie_without_access_token_skips() {
+        let mut req = TestRequest::default()
+            .insert_header(("cookie", "session=abc; csrf=xyz"))
+            .to_srv_request();
+        let result = try_cookie(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+}

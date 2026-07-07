@@ -221,6 +221,14 @@ pub struct AppSource {
     /// section (app-level wins on conflict).
     #[serde(default)]
     pub environment: HashMap<String, String>,
+
+    /// Override the container CMD.  Maps to `command:` in docker-compose.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Docker compose healthcheck for this service.
+    #[serde(default)]
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 fn default_app_path() -> PathBuf {
@@ -241,6 +249,29 @@ fn default_build_context() -> String {
     ".".to_string()
 }
 
+fn default_health_timeout_compose() -> String {
+    "30s".to_string()
+}
+
+fn default_health_retries_compose() -> u32 {
+    3
+}
+
+/// Docker compose healthcheck definition for a service.
+///
+/// This is distinct from `MonitoringConfig::healthcheck`, which is an
+/// app-level HTTP endpoint polling configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComposeHealthcheck {
+    pub test: String,
+    #[serde(default = "default_health_interval")]
+    pub interval: String,
+    #[serde(default = "default_health_timeout_compose")]
+    pub timeout: String,
+    #[serde(default = "default_health_retries_compose")]
+    pub retries: u32,
+}
+
 /// Additional container service alongside the app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
@@ -258,6 +289,14 @@ pub struct ServiceDefinition {
 
     #[serde(default)]
     pub depends_on: Vec<String>,
+
+    /// Override the container CMD.  Maps to `command:` in docker-compose.
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Docker compose healthcheck for this service.
+    #[serde(default)]
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ServiceDefinition>, D::Error>
@@ -531,6 +570,12 @@ pub struct EnvironmentConfig {
     pub env_file: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallConfig {
+    #[serde(default)]
+    pub inputs: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Cloud provider settings for cloud deployments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudConfig {
@@ -565,6 +610,12 @@ pub struct CloudConfig {
     /// When set, the CLI passes the server_id to the deploy form so it is reused.
     #[serde(default)]
     pub server: Option<String>,
+
+    /// Public ports to open in the cloud provider firewall after deployment.
+    /// Each entry is a port number or "port/protocol" string (e.g. "8000" or "8000/tcp").
+    /// These are sent to the Install Service to configure provider-level firewall rules.
+    #[serde(default)]
+    pub public_ports: Vec<String>,
 }
 
 /// Remote server settings for server deployments.
@@ -706,6 +757,36 @@ pub struct TargetConfigContract {
 // StackerConfig — the root configuration type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Marker comment written to the top of any stacker.yml that was generated
+/// or rendered by the marketplace (rather than authored by the user). Its
+/// presence flips `StackerConfig::origin` to `MarketplaceGenerated`, which
+/// gates hook execution — see `HookPolicy` and `run_hook`.
+///
+/// The user can safely delete this comment after reviewing the file; once
+/// gone, the file is treated as user-authored (trusted) again.
+pub const MARKETPLACE_ORIGIN_MARKER: &str = "# @stacker-origin: marketplace";
+
+/// Provenance of a `StackerConfig`. Used by hook execution to decide whether
+/// to require the `--allow-untrusted-hooks` flag before running any shell
+/// hook (`pre_build`, `post_deploy`, `on_failure`).
+///
+/// `UserAuthored` is the default because programmatic construction and
+/// hand-written stacker.yml files represent code the user reviewed.
+/// `MarketplaceGenerated` is set explicitly by `from_file`/`from_str` when
+/// the file contains [`MARKETPLACE_ORIGIN_MARKER`], and by the marketplace
+/// install command when it writes a fresh file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigOrigin {
+    UserAuthored,
+    MarketplaceGenerated,
+}
+
+impl Default for ConfigOrigin {
+    fn default() -> Self {
+        Self::UserAuthored
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
 pub struct StackerConfig {
     #[validate(min_length = 1)]
@@ -734,6 +815,9 @@ pub struct StackerConfig {
     pub deploy: DeployConfig,
 
     #[serde(default)]
+    pub install: InstallConfig,
+
+    #[serde(default)]
     pub environments: BTreeMap<String, EnvironmentConfig>,
 
     #[serde(default)]
@@ -753,9 +837,23 @@ pub struct StackerConfig {
 
     #[serde(default)]
     pub config_contract: ConfigContract,
+
+    /// Provenance of this config. Not serialized — computed at load time.
+    ///
+    /// Defaults to `UserAuthored`. `from_file`/`from_str` flip to
+    /// `MarketplaceGenerated` if the raw text starts with
+    /// [`MARKETPLACE_ORIGIN_MARKER`].
+    #[serde(skip)]
+    pub origin: ConfigOrigin,
 }
 
 impl StackerConfig {
+    /// Whether hooks in this config may be executed without an explicit
+    /// `--allow-untrusted-hooks` flag.
+    pub fn is_trusted(&self) -> bool {
+        matches!(self.origin, ConfigOrigin::UserAuthored)
+    }
+
     /// Load config from a file path, resolving `${VAR}` environment variable
     /// references and validating the result.
     ///
@@ -771,10 +869,13 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
+        let origin = detect_origin_from_raw(&raw_content);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
         resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
-        deserialize_config_value(parsed)
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        Ok(config)
     }
 
     /// Load config from a file path **without** resolving `${VAR}` placeholders.
@@ -791,15 +892,21 @@ impl StackerConfig {
         }
 
         let raw_content = std::fs::read_to_string(path)?;
+        let origin = detect_origin_from_raw(&raw_content);
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
-        deserialize_config_value(parsed)
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        Ok(config)
     }
 
     /// Load config from a YAML string (useful for tests).
     pub fn from_str(yaml: &str) -> Result<Self, CliError> {
+        let origin = detect_origin_from_raw(yaml);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
-        deserialize_config_value(parsed)
+        let mut config = deserialize_config_value(parsed)?;
+        config.origin = origin;
+        Ok(config)
     }
 
     /// Return a cloned config with `deploy` flattened to one selected target.
@@ -975,6 +1082,35 @@ impl StackerConfig {
     }
 }
 
+/// Inspect the raw text of a stacker.yml (or a `from_str` input) and decide
+/// whether it was authored by the user or generated by the marketplace.
+///
+/// A file counts as marketplace-generated if any of the leading comment
+/// lines contains [`MARKETPLACE_ORIGIN_MARKER`]. Blank lines are skipped so
+/// the marker can appear after a shebang-style banner. Once the scan hits
+/// a non-comment non-blank line, further lines are ignored — the marker
+/// must live at the top of the file.
+fn detect_origin_from_raw(raw: &str) -> ConfigOrigin {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            if rest.trim().eq_ignore_ascii_case(
+                MARKETPLACE_ORIGIN_MARKER
+                    .trim_start_matches('#')
+                    .trim(),
+            ) {
+                return ConfigOrigin::MarketplaceGenerated;
+            }
+            continue;
+        }
+        break;
+    }
+    ConfigOrigin::UserAuthored
+}
+
 fn deserialize_config_value(parsed: serde_yaml::Value) -> Result<StackerConfig, CliError> {
     let rendered = serde_yaml::to_string(&parsed)?;
     let deserializer = serde_yaml::Deserializer::from_str(&rendered);
@@ -1068,6 +1204,24 @@ fn validate_deploy_semantics(
                         code: "I001".to_string(),
                         message: "project.identity is not set; remote deploy will use default stack_code 'custom-stack'".to_string(),
                         field: Some("project.identity".to_string()),
+                    });
+                }
+            }
+
+            // Validate public_ports format up front so invalid entries are
+            // surfaced by `stacker config validate` instead of being silently
+            // dropped during cloud firewall provisioning. Bare numbers and
+            // "port/proto" specs are both accepted.
+            for port in &cloud.public_ports {
+                if let Err(err) = crate::forms::firewall::normalize_public_port(port) {
+                    issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        code: "E005".to_string(),
+                        message: format!(
+                            "Invalid public_ports entry '{}': {}. Expected a port number or \"port/protocol\" (e.g. \"8000\" or \"8000/tcp\").",
+                            port, err
+                        ),
+                        field: Some(field("cloud.public_ports")),
                     });
                 }
             }
@@ -1216,6 +1370,7 @@ pub struct ConfigBuilder {
     app_path: Option<PathBuf>,
     app_image: Option<String>,
     app_dockerfile: Option<PathBuf>,
+    app_volumes: Vec<String>,
     build_args: HashMap<String, String>,
     services: Vec<ServiceDefinition>,
     proxy: Option<ProxyConfig>,
@@ -1272,6 +1427,11 @@ impl ConfigBuilder {
 
     pub fn app_dockerfile<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.app_dockerfile = Some(path.into());
+        self
+    }
+
+    pub fn app_volumes(mut self, volumes: Vec<String>) -> Self {
+        self.app_volumes = volumes;
         self
     }
 
@@ -1364,8 +1524,10 @@ impl ConfigBuilder {
                 image: self.app_image,
                 build: build_config,
                 ports: Vec::new(),
-                volumes: Vec::new(),
+                volumes: self.app_volumes,
                 environment: HashMap::new(),
+                command: None,
+                healthcheck: None,
             },
             services: self.services,
             proxy: self.proxy.unwrap_or_default(),
@@ -1380,6 +1542,7 @@ impl ConfigBuilder {
                 default_target: None,
                 targets: BTreeMap::new(),
             },
+            install: InstallConfig::default(),
             environments: BTreeMap::new(),
             ai: self.ai.unwrap_or_default(),
             monitoring: self.monitoring.unwrap_or_default(),
@@ -1387,6 +1550,7 @@ impl ConfigBuilder {
             env_file: self.env_file,
             env: self.env,
             config_contract: ConfigContract::default(),
+            origin: ConfigOrigin::UserAuthored,
         })
     }
 }
@@ -1419,6 +1583,30 @@ app:
         assert_eq!(config.deploy.target, DeployTarget::Local);
         assert!(!config.ai.enabled);
         assert!(!config.monitoring.status_panel);
+    }
+
+    #[test]
+    fn test_parse_install_inputs() {
+        let yaml = r#"
+name: wordpress-site
+install:
+  inputs:
+    commonDomain: example.com
+    admin_email: admin@example.com
+deploy:
+  target: cloud
+"#;
+
+        let config = StackerConfig::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.install.inputs.get("commonDomain"),
+            Some(&serde_json::json!("example.com"))
+        );
+        assert_eq!(
+            config.install.inputs.get("admin_email"),
+            Some(&serde_json::json!("admin@example.com"))
+        );
     }
 
     #[test]
@@ -2056,6 +2244,7 @@ deploy:
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -2078,6 +2267,66 @@ deploy:
                 .iter()
                 .any(|e| e.field.as_deref() == Some("project.identity")),
             "Expected project.identity informational hint"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_cloud_public_ports_accepts_bare_number() {
+        let config = ConfigBuilder::new()
+            .name("ports-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cpx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+                public_ports: vec!["8000".to_string(), "443/tcp".to_string()],
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error && i.code == "E005")
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "Bare port numbers and port/proto specs must be valid, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_semantics_cloud_public_ports_rejects_invalid() {
+        let config = ConfigBuilder::new()
+            .name("ports-app")
+            .deploy_target(DeployTarget::Cloud)
+            .cloud(CloudConfig {
+                provider: CloudProvider::Hetzner,
+                orchestrator: CloudOrchestrator::Local,
+                region: Some("fsn1".to_string()),
+                size: Some("cpx21".to_string()),
+                install_image: None,
+                remote_payload_file: None,
+                ssh_key: None,
+                key: None,
+                server: None,
+                public_ports: vec!["80/icmp".to_string(), "not-a-port".to_string()],
+            })
+            .build()
+            .unwrap();
+
+        let issues = config.validate_semantics();
+        let e005: Vec<_> = issues.iter().filter(|i| i.code == "E005").collect();
+        assert_eq!(
+            e005.len(),
+            2,
+            "Expected two E005 issues for invalid public_ports, got: {e005:?}"
         );
     }
 
@@ -2121,6 +2370,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
@@ -2133,6 +2384,7 @@ deploy:
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -2192,6 +2444,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "redis".to_string(),
@@ -2200,6 +2454,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "minio".to_string(),
@@ -2208,6 +2464,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             })
             .build()
             .unwrap();

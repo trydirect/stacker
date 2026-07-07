@@ -1,6 +1,8 @@
 use crate::configuration::Settings;
 use crate::db;
+use crate::helpers::redact::{redact_sensitive_json_values, redact_yaml_string};
 use crate::helpers::JsonResponse;
+use crate::models;
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 
@@ -12,9 +14,11 @@ pub async fn list_handler(
 ) -> Result<impl Responder> {
     let category = query.category.as_deref();
     let tag = query.tag.as_deref();
+    let search = query.q.as_deref();
     let sort = query.sort.as_deref();
+    let limit = query.limit.map(i64::from);
 
-    db::marketplace::list_approved(pg_pool.get_ref(), category, tag, sort)
+    db::marketplace::list_approved(pg_pool.get_ref(), category, tag, search, sort, limit)
         .await
         .map_err(|err| {
             JsonResponse::<Vec<crate::models::StackTemplate>>::build().internal_server_error(err)
@@ -133,7 +137,40 @@ pub async fn download_stack_handler(
 pub struct TemplateListQuery {
     pub category: Option<String>,
     pub tag: Option<String>,
+    pub q: Option<String>,
     pub sort: Option<String>, // recent|popular|rating
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VendorPageQuery {
+    pub sort: Option<String>, // recent|popular|rating
+}
+
+#[tracing::instrument(name = "Get public vendor page", skip_all)]
+#[get("/{vendor}")]
+pub async fn vendor_detail_handler(
+    path: web::Path<(String,)>,
+    query: web::Query<VendorPageQuery>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    let identifier = path.into_inner().0;
+    let vendor = db::marketplace::get_public_vendor_profile(pg_pool.get_ref(), &identifier)
+        .await
+        .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+        .ok_or_else(|| JsonResponse::<serde_json::Value>::build().not_found("Vendor not found"))?;
+
+    let templates = db::marketplace::list_approved_by_creator(
+        pg_pool.get_ref(),
+        &vendor.creator_user_id,
+        query.sort.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::build()
+        .set_item(models::PublicVendorPage { vendor, templates })
+        .ok("OK"))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -315,12 +352,27 @@ pub async fn detail_handler(
             let mut payload = serde_json::json!({
                 "template": template,
             });
-            if let Some(ver) = version {
+            if let Some(mut ver) = version {
+                if ver.definition_format.as_deref() == Some("yaml") {
+                    if let serde_json::Value::String(yaml) = &ver.stack_definition {
+                        ver.stack_definition =
+                            serde_json::Value::String(redact_yaml_string(yaml));
+                    }
+                } else {
+                    redact_sensitive_json_values(&mut ver.stack_definition);
+                }
                 payload["latest_version"] = serde_json::to_value(ver).unwrap();
             }
             Ok(JsonResponse::build().set_item(Some(payload)).ok("OK"))
         }
-        Err(err) => Err(JsonResponse::<serde_json::Value>::build().not_found(err)),
+        Err(db::marketplace::SlugLookupError::Internal) => {
+            Err(JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Internal Server Error"))
+        }
+        Err(db::marketplace::SlugLookupError::NotFound) => {
+            Err(JsonResponse::<serde_json::Value>::build()
+                .not_found(format!("Template '{}' not found", slug)))
+        }
     }
 }
 

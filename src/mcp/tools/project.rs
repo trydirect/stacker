@@ -230,7 +230,7 @@ impl ToolHandler for CreateProjectTool {
     fn schema(&self) -> Tool {
         Tool {
             name: "create_project".to_string(),
-            description: "Create a new application stack project with services and configuration"
+            description: "Create a new blank application stack project. Use this when the user wants to start a new project from scratch (e.g. 'create a new project', 'new draft project', 'start a new stack'). To copy an existing project use clone_project instead."
                 .to_string(),
             input_schema: json!({
                 "type": "object",

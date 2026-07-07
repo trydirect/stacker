@@ -25,7 +25,7 @@ pub const DEFAULT_STACKER_URL: &str = "https://stacker.try.direct";
 /// The Install Service Ansible role uses this to configure the agent's VAULT_ADDRESS
 /// environment variable on the remote server. Must be a publicly reachable address
 /// (not a Docker-internal IP) so deployed agents can connect to Vault.
-pub const DEFAULT_VAULT_URL: &str = "https://vault.try.direct";
+pub const DEFAULT_VAULT_URL: &str = "https://vault.try.direct:8443";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Response types (matching Stacker server JSON envelope)
@@ -70,12 +70,25 @@ fn stacker_api_failure_with_message(
     debug: bool,
 ) -> String {
     if debug {
-        format!("Stacker server {action} failed ({status}): {body}")
-    } else {
-        format!(
-            "{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details."
-        )
+        return format!("Stacker server {action} failed ({status}): {body}");
     }
+    // For client errors (4xx), the body usually contains an actionable
+    // message — include it (truncated) so users don't have to rerun with
+    // DEBUG=true just to see what went wrong.
+    if (400..500).contains(&status) {
+        let trimmed = body.trim();
+        let detail = if trimmed.is_empty() {
+            "<empty response body>".to_string()
+        } else if trimmed.len() > 600 {
+            format!("{}...", &trimmed[..600])
+        } else {
+            trimmed.to_string()
+        };
+        return format!("{summary} ({status}): {detail}");
+    }
+    format!(
+        "{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details."
+    )
 }
 
 /// Project as returned by `/project` endpoints
@@ -218,18 +231,33 @@ pub struct AuthorizePublicKeyResponse {
 // Marketplace response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Marketplace template summary as returned by `GET /marketplace`
+/// Marketplace template summary as returned by `GET /api/templates`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceTemplate {
     pub id: Option<serde_json::Value>,
+    #[serde(alias = "code")]
     pub slug: String,
     pub name: String,
+    #[serde(default, alias = "short_description")]
     pub description: Option<String>,
+    #[serde(alias = "category")]
     pub category_code: Option<String>,
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub tags: serde_json::Value,
     pub status: Option<String>,
+    pub required_plan_name: Option<String>,
+    pub price: Option<f64>,
+    pub billing_cycle: Option<String>,
+    pub is_from_marketplace: Option<bool>,
     pub stack_definition: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceInstallResponse {
+    pub project: ProjectInfo,
+    pub template: MarketplaceTemplate,
+    pub latest_version: serde_json::Value,
+    pub deployment_id: Option<i32>,
 }
 
 /// Marketplace template info as returned by `/api/templates/mine`
@@ -1725,13 +1753,31 @@ impl StackerClient {
         category: Option<&str>,
         tag: Option<&str>,
     ) -> Result<Vec<MarketplaceTemplate>, CliError> {
-        let mut url = format!("{}/marketplace", self.base_url);
+        self.search_marketplace_templates(None, category, tag, None)
+            .await
+    }
+
+    /// Search approved marketplace templates.
+    pub async fn search_marketplace_templates(
+        &self,
+        query: Option<&str>,
+        category: Option<&str>,
+        tag: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Vec<MarketplaceTemplate>, CliError> {
+        let mut url = format!("{}/api/v1/marketplace/applications", self.base_url);
         let mut params: Vec<String> = Vec::new();
+        if let Some(q) = query.map(str::trim).filter(|q| !q.is_empty()) {
+            params.push(format!("q={}", urlencoding::encode(q)));
+        }
         if let Some(c) = category {
-            params.push(format!("category={}", c));
+            params.push(format!("category={}", urlencoding::encode(c)));
         }
         if let Some(t) = tag {
-            params.push(format!("tag={}", t));
+            params.push(format!("tag={}", urlencoding::encode(t)));
+        }
+        if let Some(limit) = limit {
+            params.push(format!("limit={}", limit));
         }
         if !params.is_empty() {
             url = format!("{}?{}", url, params.join("&"));
@@ -1755,7 +1801,7 @@ impl StackerClient {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: stacker_api_failure_with_message(
                     "Marketplace listing failed",
-                    "GET /marketplace",
+                    "GET /api/v1/marketplace/applications",
                     status,
                     &body,
                     cli_debug_enabled(),
@@ -1777,7 +1823,7 @@ impl StackerClient {
         &self,
         slug: &str,
     ) -> Result<Option<MarketplaceTemplate>, CliError> {
-        let url = format!("{}/marketplace/{}", self.base_url, slug);
+        let url = format!("{}/api/templates/{}", self.base_url, slug);
         let resp = self
             .http
             .get(&url)
@@ -1800,7 +1846,7 @@ impl StackerClient {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: stacker_api_failure_with_message(
                     "Marketplace template fetch failed",
-                    &format!("GET /marketplace/{slug}"),
+                    &format!("GET /api/templates/{slug}"),
                     status,
                     &body,
                     cli_debug_enabled(),
@@ -1808,13 +1854,73 @@ impl StackerClient {
             });
         }
 
-        let api: ApiResponse<MarketplaceTemplate> =
+        let api: ApiResponse<serde_json::Value> =
             resp.json().await.map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid response from Stacker server: {}", e),
             })?;
 
-        Ok(api.item)
+        let Some(item) = api.item else {
+            return Ok(None);
+        };
+        let template = item.get("template").cloned().unwrap_or(item);
+        serde_json::from_value(template)
+            .map(Some)
+            .map_err(|e| CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Cloud,
+                reason: format!("Invalid marketplace template response: {}", e),
+            })
+    }
+
+    /// Create a Stacker project from a marketplace template.
+    pub async fn install_marketplace_template(
+        &self,
+        slug: &str,
+        name: Option<&str>,
+        deploy_form: Option<serde_json::Value>,
+        install_inputs: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<MarketplaceInstallResponse, CliError> {
+        let url = format!("{}/api/templates/{}/install", self.base_url, slug);
+        let mut body = serde_json::json!({ "name": name, "deploy": deploy_form });
+        if let Some(install_inputs) = install_inputs {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert(
+                    "install_inputs".to_string(),
+                    serde_json::Value::Object(install_inputs),
+                );
+            }
+        }
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::MarketplaceFailed(format!("Stacker server unreachable: {}", e))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::MarketplaceFailed(
+                stacker_api_failure_with_message(
+                    "Marketplace install failed",
+                    &format!("POST /api/templates/{slug}/install"),
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
+        }
+
+        let api: ApiResponse<MarketplaceInstallResponse> = resp.json().await.map_err(|e| {
+            CliError::MarketplaceFailed(format!("Invalid response from Stacker server: {}", e))
+        })?;
+
+        api.item
+            .ok_or_else(|| CliError::MarketplaceFailed("No install response returned".to_string()))
     }
 
     // ── Deploy ───────────────────────────────────────
@@ -2270,6 +2376,62 @@ impl StackerClient {
     /// Enqueue a command for the Status Panel agent on a deployment.
     ///
     /// `POST /api/v1/agent/commands/enqueue`
+    /// Link an agent to a deployment using the CLI's stored OAuth token.
+    ///
+    /// `POST /api/v1/agent/link`
+    ///
+    /// Returns `(agent_id, agent_token, deployment_hash)` — the credentials the
+    /// status-panel binary needs in its `.env` to start polling for commands.
+    pub async fn agent_link(
+        &self,
+        deployment_hash: &str,
+        server_fingerprint: serde_json::Value,
+    ) -> Result<(String, String, String), CliError> {
+        let url = format!("{}/api/v1/agent/link", self.base_url);
+
+        let body = serde_json::json!({
+            "session_token": self.token,
+            "deployment_id": deployment_hash,
+            "server_fingerprint": server_fingerprint,
+            "capabilities": ["status_panel", "compose_agent"],
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Stacker server unreachable: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CliError::ConfigValidation(stacker_api_failure_with_message(
+                "Agent link failed",
+                "POST /api/v1/agent/link",
+                status,
+                &body,
+                cli_debug_enabled(),
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct LinkResp {
+            agent_id: String,
+            agent_token: String,
+            deployment_hash: String,
+        }
+
+        let link: LinkResp = resp
+            .json()
+            .await
+            .map_err(|e| CliError::ConfigValidation(format!("Invalid link response: {}", e)))?;
+
+        Ok((link.agent_id, link.agent_token, link.deployment_hash))
+    }
+
     pub async fn agent_enqueue(
         &self,
         request: &AgentEnqueueRequest,
@@ -3172,6 +3334,9 @@ impl StackerClient {
             .http
             .post(&url)
             .bearer_auth(&self.token)
+            .json(&serde_json::json!({
+                "confirm_no_secrets": true
+            }))
             .send()
             .await
             .map_err(|e| {
@@ -3444,6 +3609,20 @@ fn service_to_app_json(svc: &ServiceDefinition, network_ids: &[String]) -> serde
     if let Some(tag) = dockerhub_tag {
         obj.insert("dockerhub_tag".to_string(), serde_json::json!(tag));
     }
+    if let Some(ref cmd) = svc.command {
+        obj.insert("command".to_string(), serde_json::json!(cmd));
+    }
+    if let Some(ref hc) = svc.healthcheck {
+        obj.insert(
+            "healthcheck".to_string(),
+            serde_json::json!({
+                "test": hc.test,
+                "interval": hc.interval,
+                "timeout": hc.timeout,
+                "retries": hc.retries,
+            }),
+        );
+    }
 
     app
 }
@@ -3535,6 +3714,20 @@ fn app_source_to_app_json(
     }
     if let Some(tag) = dockerhub_tag {
         obj.insert("dockerhub_tag".to_string(), serde_json::json!(tag));
+    }
+    if let Some(ref cmd) = config.app.command {
+        obj.insert("command".to_string(), serde_json::json!(cmd));
+    }
+    if let Some(ref hc) = config.app.healthcheck {
+        obj.insert(
+            "healthcheck".to_string(),
+            serde_json::json!({
+                "test": hc.test,
+                "interval": hc.interval,
+                "timeout": hc.timeout,
+                "retries": hc.retries,
+            }),
+        );
     }
 
     Some(app)
@@ -3774,6 +3967,40 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
         }
     });
 
+    // Surface saved-credential and saved-server selectors so the Stacker API
+    // can resolve them server-side. Without these, install/catalog deploys
+    // would fail credential validation even when the user has registered the
+    // cloud and reused the same names in stacker.yml.
+    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
+        if let Some(form_cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
+            if let Some(key) = cloud_cfg.key.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                form_cloud.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(key.to_string()),
+                );
+                // Don't re-insert a duplicate credential when the user is
+                // reusing a saved one.
+                form_cloud.insert(
+                    "save_token".to_string(),
+                    serde_json::Value::Bool(false),
+                );
+            }
+        }
+        if let Some(server_name) = cloud_cfg
+            .server
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if let Some(form_server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+                form_server.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(server_name.to_string()),
+                );
+            }
+        }
+    }
+
     // Inject Docker registry credentials if provided (env vars or stacker.yml).
     // These flow through the Stacker server to the Install Service, which passes
     // them as Ansible extra vars (docker_registry, docker_username, docker_password).
@@ -3849,6 +4076,35 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
                 "connection_mode".to_string(),
                 serde_json::Value::String("status_panel".to_string()),
             );
+        }
+    }
+
+    if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
+        if !cloud_cfg.public_ports.is_empty() {
+            // Normalize each entry to canonical "port/protocol" form so the
+            // Install Service and cloud-provider firewall always receive a
+            // fully-qualified spec. Bare numbers ("8000") become "8000/tcp";
+            // invalid entries are dropped with a warning rather than silently
+            // swallowed downstream.
+            let normalized: Vec<serde_json::Value> = cloud_cfg
+                .public_ports
+                .iter()
+                .filter_map(|p| match crate::forms::firewall::normalize_public_port(p) {
+                    Ok(spec) => Some(serde_json::Value::String(spec)),
+                    Err(err) => {
+                        eprintln!("  warning: skipping invalid public_port '{}': {}", p, err);
+                        None
+                    }
+                })
+                .collect();
+            if !normalized.is_empty() {
+                if let Some(obj) = form.as_object_mut() {
+                    obj.insert(
+                        "public_ports".to_string(),
+                        serde_json::Value::Array(normalized),
+                    );
+                }
+            }
         }
     }
 
@@ -3994,7 +4250,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn stacker_api_failure_hides_endpoint_and_body_without_debug() {
+    fn stacker_api_failure_hides_endpoint_but_surfaces_body_for_4xx() {
         let message = stacker_api_failure_with_debug(
             "GET /cloud",
             400,
@@ -4002,10 +4258,26 @@ mod tests {
             false,
         );
 
+        // 4xx body is intentionally surfaced inline so users don't have to
+        // rerun with DEBUG=true to see the actual server message. The
+        // internal endpoint path stays hidden.
         assert!(message.contains("Stacker server request failed (400)"));
         assert!(!message.contains("GET /cloud"));
-        assert!(!message.contains("401 Unauthorized"));
-        assert!(!message.contains(r#"{"message""#));
+        assert!(message.contains("401 Unauthorized"));
+    }
+
+    #[test]
+    fn stacker_api_failure_hides_endpoint_and_body_for_5xx_without_debug() {
+        let message = stacker_api_failure_with_debug(
+            "GET /cloud",
+            502,
+            "upstream timeout",
+            false,
+        );
+
+        assert!(message.contains("Stacker server request failed (502)"));
+        assert!(!message.contains("GET /cloud"));
+        assert!(!message.contains("upstream timeout"));
         assert!(message.contains("DEBUG=true"));
         assert!(message.contains("RUST_LOG=debug"));
     }
@@ -4040,6 +4312,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -4205,6 +4478,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .project_identity("optimumcode")
             .build()
@@ -4229,6 +4503,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .monitoring(crate::cli::config_parser::MonitoringConfig {
                 status_panel: true,
@@ -4291,6 +4566,7 @@ mod tests {
                 ssh_key: None,
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .proxy(crate::cli::config_parser::ProxyConfig {
                 proxy_type: crate::cli::config_parser::ProxyType::Nginx,
@@ -4423,6 +4699,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec!["npm_data:/data".to_string()],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let redis_service = ServiceDefinition {
             name: "redis".to_string(),
@@ -4431,6 +4709,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4467,14 +4747,18 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec!["npm_data:/data".to_string()],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let statuspanel_service = ServiceDefinition {
             name: "statuspanel".to_string(),
-            image: "ghcr.io/trydirect/statuspanel:latest".to_string(),
+            image: "trydirect/status:latest".to_string(),
             ports: vec!["5000:5000".to_string()],
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let smtp_service = ServiceDefinition {
             name: "smtp".to_string(),
@@ -4483,6 +4767,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4536,6 +4822,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("Device API")

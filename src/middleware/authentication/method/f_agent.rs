@@ -12,9 +12,9 @@ async fn fetch_agent_by_id(db_pool: &PgPool, agent_id: Uuid) -> Result<models::A
 
     sqlx::query_as::<_, models::Agent>(
         r#"
-        SELECT id, deployment_hash, capabilities, version, system_info, 
+        SELECT id, deployment_hash, capabilities, version, system_info,
                last_heartbeat, status, created_at, updated_at
-        FROM agents 
+        FROM agents
         WHERE id = $1
         "#,
     )
@@ -196,4 +196,51 @@ pub async fn try_agent(req: &mut ServiceRequest) -> Result<bool, String> {
     );
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_agent;
+    use actix_web::test::TestRequest;
+
+    #[actix_web::test]
+    async fn no_x_agent_id_header_skips_agent_auth() {
+        let mut req = TestRequest::default().to_srv_request();
+        let result = try_agent(&mut req).await;
+        assert_eq!(result, Ok(false));
+    }
+
+    #[actix_web::test]
+    async fn invalid_uuid_in_x_agent_id_returns_error() {
+        let mut req = TestRequest::default()
+            .insert_header(("x-agent-id", "not-a-uuid"))
+            .to_srv_request();
+        let result = try_agent(&mut req).await;
+        assert_eq!(result, Err("Invalid agent ID format".to_string()));
+    }
+
+    #[actix_web::test]
+    async fn valid_uuid_but_no_authorization_header_returns_error() {
+        let mut req = TestRequest::default()
+            .insert_header(("x-agent-id", "550e8400-e29b-41d4-a716-446655440000"))
+            .to_srv_request();
+        let result = try_agent(&mut req).await;
+        assert_eq!(
+            result,
+            Err("Authorization header required for agent".to_string())
+        );
+    }
+
+    #[actix_web::test]
+    async fn valid_uuid_non_bearer_authorization_returns_error() {
+        let mut req = TestRequest::default()
+            .insert_header(("x-agent-id", "550e8400-e29b-41d4-a716-446655440000"))
+            .insert_header(("authorization", "Basic abc123"))
+            .to_srv_request();
+        let result = try_agent(&mut req).await;
+        assert_eq!(
+            result,
+            Err("Invalid Authorization header format".to_string())
+        );
+    }
 }

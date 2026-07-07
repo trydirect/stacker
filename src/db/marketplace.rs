@@ -1,7 +1,8 @@
 use crate::models::{
-    AnalyticsPeriod, AnalyticsSummary, CloudBreakdown, MarketplaceVendorProfile, SeriesBucket,
-    StackCategory, StackTemplate, StackTemplateReview, StackTemplateVersion, TemplateAnalytics,
-    TemplatePerformance, VendorAnalytics,
+    AnalyticsPeriod, AnalyticsSummary, CloudBreakdown, MarketplaceVendorProfile,
+    PublicVendorProfile, PublicVendorTemplate, SeriesBucket, StackCategory, StackTemplate,
+    StackTemplateReview, StackTemplateVersion, TemplateAnalytics, TemplatePerformance,
+    VendorAnalytics,
 };
 use chrono::{Duration, Utc};
 use serde_json::{Map, Value};
@@ -16,14 +17,135 @@ pub enum CreateDraftError {
     Internal,
 }
 
+pub async fn get_public_vendor_profile(
+    pool: &PgPool,
+    identifier: &str,
+) -> Result<Option<PublicVendorProfile>, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_public_vendor_profile", identifier = %identifier);
+    let vendor_rating_sql =
+        crate::db::rating::visible_average_subquery_for_creator("mvp.creator_user_id");
+    let vendor_rating_count_sql =
+        crate::db::rating::visible_count_subquery_for_creator("mvp.creator_user_id");
+    let query = format!(
+        r#"SELECT
+            mvp.creator_user_id,
+            mvp.public_slug AS slug,
+            mvp.display_name,
+            mvp.bio,
+            mvp.avatar_url,
+            mvp.website_url,
+            mvp.verification_status = 'verified' AS verified,
+            {vendor_rating_sql} AS rating,
+            {vendor_rating_count_sql} AS rating_count,
+            5 AS rating_scale,
+            jsonb_strip_nulls(jsonb_build_object(
+                'country', mvp.metadata->'country',
+                'support_email', mvp.metadata->'support_email',
+                'socials', mvp.metadata->'socials'
+            )) AS metadata,
+            mvp.created_at
+        FROM marketplace_vendor_profile mvp
+        WHERE LOWER(TRIM(mvp.public_slug)) = LOWER(TRIM($1)) OR LOWER(TRIM(mvp.creator_user_id)) = LOWER(TRIM($1))
+        LIMIT 1"#
+    );
+
+    sqlx::query_as::<_, PublicVendorProfile>(&query)
+        .bind(identifier)
+        .fetch_optional(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_public_vendor_profile error: {:?}", e);
+            "Internal Server Error".to_string()
+        })
+}
+
+pub async fn list_approved_by_creator(
+    pool: &PgPool,
+    creator_user_id: &str,
+    sort: Option<&str>,
+) -> Result<Vec<PublicVendorTemplate>, String> {
+    let template_rating_sql =
+        crate::db::rating::visible_average_subquery_for_obj_id("t.product_id");
+    let template_rating_count_sql =
+        crate::db::rating::visible_count_subquery_for_obj_id("t.product_id");
+    let mut base = format!(
+        r#"SELECT
+            t.id,
+            t.creator_user_id,
+            t.creator_name,
+            mvp.public_slug AS vendor_slug,
+            t.name,
+            t.slug,
+            t.short_description,
+            t.long_description,
+            c.name AS category_code,
+            t.product_id,
+            t.tags,
+            t.tech_stack,
+            t.status,
+            t.is_configurable,
+            t.view_count,
+            t.deploy_count,
+            t.required_plan_name,
+            t.price,
+            t.billing_cycle,
+            t.currency,
+            t.created_at,
+            t.updated_at,
+            t.approved_at,
+            t.verifications,
+            t.infrastructure_requirements,
+            t.public_ports,
+            t.vendor_url,
+            {template_rating_sql} AS rating,
+            {template_rating_count_sql} AS rating_count,
+            5 AS rating_scale
+        FROM stack_template t
+        LEFT JOIN stack_category c ON t.category_id = c.id
+        LEFT JOIN marketplace_vendor_profile mvp ON LOWER(TRIM(mvp.creator_user_id)) = LOWER(TRIM(t.creator_user_id))
+        WHERE t.status = 'approved' AND t.creator_user_id = $1"#,
+    );
+
+    match sort.unwrap_or("recent") {
+        "popular" => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
+        ),
+        "rating" => base.push_str(&format!(
+            " ORDER BY (t.verifications @> '{{\"hardened_images\":true}}') DESC, {} DESC NULLS LAST",
+            template_rating_sql
+        )),
+        _ => base.push_str(
+            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.approved_at DESC NULLS LAST, t.created_at DESC",
+        ),
+    }
+
+    let query_span = tracing::info_span!("marketplace_list_approved_by_creator", creator_user_id = %creator_user_id);
+
+    sqlx::query_as::<_, PublicVendorTemplate>(&base)
+        .bind(creator_user_id)
+        .fetch_all(pool)
+        .instrument(query_span)
+        .await
+        .map_err(|e| {
+            tracing::error!("list_approved_by_creator error: {:?}", e);
+            "Internal Server Error".to_string()
+        })
+}
+
 pub async fn list_approved(
     pool: &PgPool,
     category: Option<&str>,
     tag: Option<&str>,
+    query: Option<&str>,
     sort: Option<&str>,
+    limit: Option<i64>,
 ) -> Result<Vec<StackTemplate>, String> {
+    let template_rating_sql =
+        crate::db::rating::visible_average_subquery_for_obj_id("t.product_id");
     let mut base = String::from(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -55,11 +177,25 @@ pub async fn list_approved(
         WHERE t.status = 'approved'"#,
     );
 
-    match (category.is_some(), tag.is_some()) {
-        (true, true) => base.push_str(" AND c.name = $1 AND t.tags ? $2"),
-        (true, false) => base.push_str(" AND c.name = $1"),
-        (false, true) => base.push_str(" AND t.tags ? $1"),
-        (false, false) => {}
+    let mut bind_index = 1;
+    if category.is_some() {
+        base.push_str(&format!(" AND c.name = ${}", bind_index));
+        bind_index += 1;
+    }
+    if tag.is_some() {
+        base.push_str(&format!(" AND t.tags ? ${}", bind_index));
+        bind_index += 1;
+    }
+    if query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        base.push_str(&format!(
+            " AND (t.slug ILIKE ${0} OR t.name ILIKE ${0} OR COALESCE(t.short_description, '') ILIKE ${0} OR COALESCE(t.long_description, '') ILIKE ${0} OR t.tags::text ILIKE ${0})",
+            bind_index
+        ));
+        bind_index += 1;
     }
 
     match sort.unwrap_or("recent") {
@@ -67,41 +203,36 @@ pub async fn list_approved(
         "popular" => base.push_str(
             " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.deploy_count DESC, t.view_count DESC",
         ),
-        "rating" => base.push_str(
-            " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, (SELECT AVG(rate) FROM rating WHERE rating.product_id = t.product_id) DESC NULLS LAST",
-        ),
+        "rating" => base.push_str(&format!(
+            " ORDER BY (t.verifications @> '{{\"hardened_images\":true}}') DESC, {} DESC NULLS LAST",
+            template_rating_sql
+        )),
         _ => base.push_str(
             " ORDER BY (t.verifications @> '{\"hardened_images\":true}') DESC, t.approved_at DESC NULLS LAST, t.created_at DESC",
         ),
     }
 
+    if limit.is_some() {
+        base.push_str(&format!(" LIMIT ${}", bind_index));
+    }
+
     let query_span = tracing::info_span!("marketplace_list_approved");
 
-    let res = if category.is_some() && tag.is_some() {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .bind(category.unwrap())
-            .bind(tag.unwrap())
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    } else if category.is_some() {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .bind(category.unwrap())
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    } else if tag.is_some() {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .bind(tag.unwrap())
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    } else {
-        sqlx::query_as::<_, StackTemplate>(&base)
-            .fetch_all(pool)
-            .instrument(query_span)
-            .await
-    };
+    let mut sql_query = sqlx::query_as::<_, StackTemplate>(&base);
+    if let Some(category) = category {
+        sql_query = sql_query.bind(category);
+    }
+    if let Some(tag) = tag {
+        sql_query = sql_query.bind(tag);
+    }
+    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        sql_query = sql_query.bind(format!("%{}%", query));
+    }
+    if let Some(limit) = limit {
+        sql_query = sql_query.bind(limit.clamp(1, 100));
+    }
+
+    let res = sql_query.fetch_all(pool).instrument(query_span).await;
 
     res.map_err(|e| {
         tracing::error!("list_approved error: {:?}", e);
@@ -118,7 +249,7 @@ pub async fn get_by_slug_and_user(
         tracing::info_span!("marketplace_get_by_slug_and_user", slug = %slug, user_id = %user_id);
 
     sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -160,14 +291,19 @@ pub async fn get_by_slug_and_user(
     })
 }
 
+pub enum SlugLookupError {
+    NotFound,
+    Internal,
+}
+
 pub async fn get_by_slug_with_latest(
     pool: &PgPool,
     slug: &str,
-) -> Result<(StackTemplate, Option<StackTemplateVersion>), String> {
+) -> Result<(StackTemplate, Option<StackTemplateVersion>), SlugLookupError> {
     let query_span = tracing::info_span!("marketplace_get_by_slug_with_latest", slug = %slug);
 
     let template = sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -193,9 +329,11 @@ pub async fn get_by_slug_with_latest(
             t.verifications,
             t.infrastructure_requirements,
             t.public_ports,
-            t.vendor_url
+            t.vendor_url,
+            mvp.public_slug AS vendor_slug
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
+        LEFT JOIN marketplace_vendor_profile mvp ON LOWER(TRIM(mvp.creator_user_id)) = LOWER(TRIM(t.creator_user_id))
         WHERE t.slug = $1 AND t.status = 'approved'"#,
     )
     .bind(slug)
@@ -204,11 +342,14 @@ pub async fn get_by_slug_with_latest(
     .await
     .map_err(|e| {
         tracing::error!("get_by_slug template error: {:?}", e);
-        "Not Found".to_string()
+        match e {
+            sqlx::Error::RowNotFound => SlugLookupError::NotFound,
+            _ => SlugLookupError::Internal,
+        }
     })?;
 
     let version = sqlx::query_as::<_, StackTemplateVersion>(
-        r#"SELECT 
+        r#"SELECT
             id,
             template_id,
             version,
@@ -230,7 +371,7 @@ pub async fn get_by_slug_with_latest(
     .await
     .map_err(|e| {
         tracing::error!("get_by_slug version error: {:?}", e);
-        "Internal Server Error".to_string()
+        SlugLookupError::Internal
     })?;
 
     Ok((template, version))
@@ -243,7 +384,7 @@ pub async fn get_by_id(
     let query_span = tracing::info_span!("marketplace_get_by_id", id = %template_id);
 
     let template = sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -328,7 +469,7 @@ pub async fn create_draft(
             tags, tech_stack, infrastructure_requirements, status, price, billing_cycle, required_plan_name, currency,
             public_ports, vendor_url
         ) VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM stack_category WHERE name = $7),$8,$9,$10,'draft',$11,$12,$13,$14,$15,$16)
-        RETURNING 
+        RETURNING
             id,
             creator_user_id,
             creator_name,
@@ -604,7 +745,7 @@ pub async fn update_metadata(
     }
 
     let res = sqlx::query(
-        r#"UPDATE stack_template SET 
+        r#"UPDATE stack_template SET
             name = COALESCE($2, name),
             short_description = COALESCE($3, short_description),
             long_description = COALESCE($4, long_description),
@@ -1019,7 +1160,7 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
     let query_span = tracing::info_span!("marketplace_list_mine", user = %user_id);
 
     sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -1069,11 +1210,46 @@ pub async fn list_mine(pool: &PgPool, user_id: &str) -> Result<Vec<StackTemplate
     })
 }
 
+/// Return every marketplace_vendor_profile row ordered newest-first.
+/// Used by the admin vendor list to surface all vendors regardless of whether
+/// they have entries in the PostgREST products table.
+pub async fn admin_list_vendor_profiles(
+    pool: &PgPool,
+) -> Result<Vec<crate::models::MarketplaceVendorProfile>, String> {
+    let query_span = tracing::info_span!("marketplace_admin_list_vendor_profiles");
+    sqlx::query_as::<_, crate::models::MarketplaceVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            COALESCE(verification_status, 'unverified') AS verification_status,
+            COALESCE(onboarding_status, 'not_started')  AS onboarding_status,
+            COALESCE(payouts_enabled, false)             AS payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            COALESCE(metadata, '{}'::jsonb)              AS metadata,
+            created_at,
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url
+        FROM marketplace_vendor_profile
+        ORDER BY created_at DESC NULLS LAST"#,
+    )
+    .fetch_all(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("admin_list_vendor_profiles error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
 pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, String> {
     let query_span = tracing::info_span!("marketplace_admin_list_submitted");
 
     sqlx::query_as::<_, StackTemplate>(
-        r#"SELECT 
+        r#"SELECT
             t.id,
             t.creator_user_id,
             t.creator_name,
@@ -1103,7 +1279,7 @@ pub async fn admin_list_submitted(pool: &PgPool) -> Result<Vec<StackTemplate>, S
         FROM stack_template t
         LEFT JOIN stack_category c ON t.category_id = c.id
         WHERE t.status IN ('submitted', 'approved')
-        ORDER BY 
+        ORDER BY
             CASE t.status
                 WHEN 'submitted' THEN 0
                 WHEN 'approved' THEN 1
@@ -1559,7 +1735,12 @@ pub async fn get_vendor_profile_by_creator(
             payout_account_ref,
             metadata,
             created_at,
-            updated_at
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url
         FROM marketplace_vendor_profile
         WHERE creator_user_id = $1"#,
     )
@@ -1622,7 +1803,12 @@ pub async fn upsert_vendor_profile(
             payout_account_ref,
             metadata,
             created_at,
-            updated_at"#,
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url"#,
     )
     .bind(creator_user_id)
     .bind(verification_status)
@@ -1637,6 +1823,49 @@ pub async fn upsert_vendor_profile(
     .map_err(|e| {
         tracing::error!("upsert_vendor_profile error: {:?}", e);
         "Internal Server Error".to_string()
+    })
+}
+
+pub async fn update_vendor_public_profile(
+    pool: &PgPool,
+    creator_user_id: &str,
+    public_slug: Option<&str>,
+    display_name: Option<&str>,
+    bio: Option<&str>,
+    avatar_url: Option<&str>,
+    website_url: Option<&str>,
+) -> Result<(), String> {
+    let query_span =
+        tracing::info_span!("update_vendor_public_profile", creator_user_id = %creator_user_id);
+
+    sqlx::query(
+        r#"INSERT INTO marketplace_vendor_profile (creator_user_id, public_slug, display_name, bio, avatar_url, website_url)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (creator_user_id) DO UPDATE SET
+            public_slug   = COALESCE($2, marketplace_vendor_profile.public_slug),
+            display_name  = COALESCE($3, marketplace_vendor_profile.display_name),
+            bio           = COALESCE($4, marketplace_vendor_profile.bio),
+            avatar_url    = COALESCE($5, marketplace_vendor_profile.avatar_url),
+            website_url   = COALESCE($6, marketplace_vendor_profile.website_url),
+            updated_at    = NOW()"#,
+    )
+    .bind(creator_user_id)
+    .bind(public_slug)
+    .bind(display_name)
+    .bind(bio)
+    .bind(avatar_url)
+    .bind(website_url)
+    .execute(pool)
+    .instrument(query_span)
+    .await
+    .map(|_| ())
+    .map_err(|e| {
+        tracing::error!("update_vendor_public_profile error: {:?}", e);
+        if e.to_string().contains("public_slug") {
+            "Slug is already taken — choose a different one".to_string()
+        } else {
+            "Internal Server Error".to_string()
+        }
     })
 }
 
@@ -1705,10 +1934,14 @@ pub async fn ensure_vendor_onboarding_link(
     generated_account_ref: &str,
 ) -> Result<(MarketplaceVendorProfile, bool), String> {
     let existing = get_vendor_profile_by_creator(pool, creator_user_id).await?;
-    let linkage_created = existing
+    let reusable_existing_linkage = existing
         .as_ref()
-        .map(|profile| profile.payout_provider.is_none() || profile.payout_account_ref.is_none())
-        .unwrap_or(true);
+        .map(|profile| {
+            profile.payout_provider.as_deref() == Some(payout_provider)
+                && profile.payout_account_ref.is_some()
+        })
+        .unwrap_or(false);
+    let linkage_created = !reusable_existing_linkage;
 
     let verification_status = existing
         .as_ref()
@@ -1721,18 +1954,30 @@ pub async fn ensure_vendor_onboarding_link(
         Some("not_started") | None => "in_progress",
         Some(status) => status,
     };
-    let payouts_enabled = existing
-        .as_ref()
-        .map(|profile| profile.payouts_enabled)
-        .unwrap_or(false);
-    let payout_provider = existing
-        .as_ref()
-        .and_then(|profile| profile.payout_provider.as_deref())
-        .unwrap_or(payout_provider);
-    let payout_account_ref = existing
-        .as_ref()
-        .and_then(|profile| profile.payout_account_ref.as_deref())
-        .unwrap_or(generated_account_ref);
+    let payouts_enabled = if reusable_existing_linkage {
+        existing
+            .as_ref()
+            .map(|profile| profile.payouts_enabled)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let payout_provider = if reusable_existing_linkage {
+        existing
+            .as_ref()
+            .and_then(|profile| profile.payout_provider.as_deref())
+            .unwrap_or(payout_provider)
+    } else {
+        payout_provider
+    };
+    let payout_account_ref = if reusable_existing_linkage {
+        existing
+            .as_ref()
+            .and_then(|profile| profile.payout_account_ref.as_deref())
+            .unwrap_or(generated_account_ref)
+    } else {
+        generated_account_ref
+    };
     let existing_metadata = existing
         .as_ref()
         .map(|profile| profile.metadata.clone())
@@ -1758,6 +2003,7 @@ pub async fn complete_vendor_onboarding(
     pool: &PgPool,
     creator_user_id: &str,
     source: &str,
+    payouts_enabled: bool,
 ) -> Result<Option<(MarketplaceVendorProfile, bool)>, String> {
     let existing = match get_vendor_profile_by_creator(pool, creator_user_id).await? {
         Some(profile) => profile,
@@ -1773,7 +2019,22 @@ pub async fn complete_vendor_onboarding(
     }
 
     if existing.onboarding_status == "completed" {
-        return Ok(Some((existing, false)));
+        if existing.payouts_enabled == payouts_enabled {
+            return Ok(Some((existing, false)));
+        }
+
+        let profile = upsert_vendor_profile(
+            pool,
+            creator_user_id,
+            Some(&existing.verification_status),
+            Some("completed"),
+            Some(payouts_enabled),
+            existing.payout_provider.as_deref(),
+            existing.payout_account_ref.as_deref(),
+            Some(existing.metadata.clone()),
+        )
+        .await?;
+        return Ok(Some((profile, false)));
     }
 
     let metadata = merge_onboarding_completion_metadata(&existing.metadata, source);
@@ -1782,7 +2043,7 @@ pub async fn complete_vendor_onboarding(
         creator_user_id,
         Some(&existing.verification_status),
         Some("completed"),
-        Some(existing.payouts_enabled),
+        Some(payouts_enabled),
         existing.payout_provider.as_deref(),
         existing.payout_account_ref.as_deref(),
         Some(metadata),
@@ -1790,6 +2051,52 @@ pub async fn complete_vendor_onboarding(
     .await?;
 
     Ok(Some((profile, true)))
+}
+
+pub async fn complete_vendor_onboarding_by_payout_account_ref(
+    pool: &PgPool,
+    payout_provider: &str,
+    payout_account_ref: &str,
+    source: &str,
+    payouts_enabled: bool,
+) -> Result<Option<(MarketplaceVendorProfile, bool)>, String> {
+    let profile = sqlx::query_as::<_, MarketplaceVendorProfile>(
+        r#"SELECT
+            creator_user_id,
+            verification_status,
+            onboarding_status,
+            payouts_enabled,
+            payout_provider,
+            payout_account_ref,
+            metadata,
+            created_at,
+            updated_at,
+            public_slug,
+            display_name,
+            bio,
+            avatar_url,
+            website_url
+        FROM marketplace_vendor_profile
+        WHERE payout_provider = $1 AND payout_account_ref = $2
+        LIMIT 1"#,
+    )
+    .bind(payout_provider)
+    .bind(payout_account_ref)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!(
+            "complete_vendor_onboarding_by_payout_account_ref lookup error: {:?}",
+            err
+        );
+        "Internal Server Error".to_string()
+    })?;
+
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+
+    complete_vendor_onboarding(pool, &profile.creator_user_id, source, payouts_enabled).await
 }
 
 /// Save a security scan result as a review record with security_checklist populated

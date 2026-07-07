@@ -24,8 +24,63 @@ pub const CONTAINER_COMPOSE_PATH: &str = "/app/docker-compose.yml";
 pub const CONTAINER_SSH_KEY_PATH: &str = "/root/.ssh/id_rsa";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// HookPolicy — user-controlled hook execution guard rails
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Runtime policy for shell hook execution during deploy.
+///
+/// Separates two concerns:
+///   * `no_hooks`         — skip all hooks unconditionally (CI-safe deploys).
+///   * `allow_untrusted`  — permit hooks even when `StackerConfig::origin`
+///                           is `MarketplaceGenerated`. Default is to refuse
+///                           so a hostile marketplace template can't drive
+///                           local execution just because the user typed
+///                           `stacker deploy` after `stacker install`.
+///
+/// Both flags default to `false`. `run_hook` reads this policy together with
+/// the config's origin and either runs, skips, or errors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HookPolicy {
+    pub no_hooks: bool,
+    pub allow_untrusted: bool,
+}
+
+impl HookPolicy {
+    pub fn trusted() -> Self {
+        Self::default()
+    }
+
+    pub fn allow_untrusted() -> Self {
+        Self {
+            no_hooks: false,
+            allow_untrusted: true,
+        }
+    }
+
+    pub fn no_hooks() -> Self {
+        Self {
+            no_hooks: true,
+            allow_untrusted: false,
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CommandExecutor — abstraction for running shell commands (DIP)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Byte cap enforced at the OS pipe level by `ShellExecutor::execute_with_timeout`.
+///
+/// This is the OOM-defence layer: even if a hostile hook emits gigabytes on
+/// stdout / stderr, at most this many bytes are ever held in the CLI's
+/// memory. Anything beyond the cap is drained straight to a sink so the
+/// child does not block on a full pipe.
+///
+/// Slightly larger than `HOOK_OUTPUT_MAX_BYTES` in `deploy.rs` (which caps
+/// the *displayed* output at 1 MiB) so callers can distinguish "output
+/// hit the pipe cap" from "output hit the display cap". Both layers are
+/// necessary — pipe-level guards memory, display-level guards the terminal.
+pub const HOOK_PIPE_OUTPUT_MAX_BYTES: usize = 1_048_576 + 1024;
 
 /// Result of executing a command.
 #[derive(Debug, Clone)]
@@ -47,6 +102,23 @@ impl CommandOutput {
 /// Tests: `MockExecutor` records commands for assertion without side effects.
 pub trait CommandExecutor: Send + Sync {
     fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError>;
+
+    /// Execute with a hard timeout.  The default implementation (used by
+    /// `MockExecutor`) delegates to [`execute`](CommandExecutor::execute)
+    /// and ignores the timeout + current_dir — mocks never block.
+    ///
+    /// `ShellExecutor` overrides this with a real timeout that uses
+    /// [`Command::spawn`] + [`try_wait`] + [`kill`], clears the environment,
+    /// and sets the working directory to `current_dir` when provided.
+    fn execute_with_timeout(
+        &self,
+        program: &str,
+        args: &[&str],
+        _timeout: std::time::Duration,
+        _current_dir: Option<&Path>,
+    ) -> Result<CommandOutput, CliError> {
+        self.execute(program, args)
+    }
 }
 
 /// Production executor — actually runs docker commands.
@@ -67,6 +139,136 @@ impl CommandExecutor for ShellExecutor {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
+    }
+
+    fn execute_with_timeout(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: std::time::Duration,
+        current_dir: Option<&Path>,
+    ) -> Result<CommandOutput, CliError> {
+        let program_owned = program.to_string();
+        let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
+        let mut cmd = std::process::Command::new(&program_owned);
+        cmd.args(&args_owned);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        // Security: clear environment to prevent secret leakage (H2)
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin:/usr/local/bin");
+        if let Some(home) = std::env::var_os("HOME") {
+            cmd.env("HOME", home);
+        }
+        if let Some(dir) = current_dir {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| CliError::CommandFailed {
+            command: format!("{} {} — {}", program, args.join(" "), e),
+            exit_code: -1,
+        })?;
+
+        // Phase 8b OOM defence: drain each pipe in its own thread with a
+        // hard byte cap. Anything past the cap is discarded — but the
+        // drain CONTINUES so the child never blocks on a full pipe.
+        //
+        // Both threads must be spawned before `try_wait` sees `Some`,
+        // otherwise the child can fill its pipe buffer and block on
+        // write while we sit polling.
+        let stdout_pipe = child.stdout.take().ok_or_else(|| CliError::CommandFailed {
+            command: format!("{} {}", program, args.join(" ")),
+            exit_code: -1,
+        })?;
+        let stderr_pipe = child.stderr.take().ok_or_else(|| CliError::CommandFailed {
+            command: format!("{} {}", program, args.join(" ")),
+            exit_code: -1,
+        })?;
+
+        let stdout_handle = std::thread::spawn(move || {
+            drain_capped(stdout_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES)
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            drain_capped(stderr_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES)
+        });
+
+        let deadline = std::time::Instant::now() + timeout;
+        let poll_interval = std::time::Duration::from_millis(100);
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Reap the drainer threads — they exit on EOF once
+                    // the child closes its pipes at exit.
+                    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+                    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+                    return Ok(CommandOutput {
+                        exit_code: status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
+                        stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
+                    });
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        // Drainers will now see EOF and finish; joining
+                        // them here is bounded by the OS pipe buffer size.
+                        let _ = stdout_handle.join();
+                        let _ = stderr_handle.join();
+                        return Err(CliError::DeployFailed {
+                            target: crate::cli::config_parser::DeployTarget::Local,
+                            reason: format!(
+                                "Command '{} {}' timed out after {}s",
+                                program,
+                                args.join(" "),
+                                timeout.as_secs()
+                            ),
+                        });
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+                Err(_e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    return Err(CliError::CommandFailed {
+                        command: format!("{} {}", program, args.join(" ")),
+                        exit_code: -1,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Read from `reader` and return up to `max_bytes` in a `Vec<u8>`. Anything
+/// past the cap is discarded to a sink so the writer never blocks on a
+/// full pipe. Returns on EOF or on the first read error.
+fn drain_capped<R: std::io::Read>(mut reader: R, max_bytes: usize) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(4096.min(max_bytes));
+    let mut chunk = [0u8; 8192];
+    let mut sink_only = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return kept,
+            Ok(n) => {
+                if sink_only {
+                    continue;
+                }
+                let remaining = max_bytes.saturating_sub(kept.len());
+                let take = n.min(remaining);
+                if take > 0 {
+                    kept.extend_from_slice(&chunk[..take]);
+                }
+                if kept.len() >= max_bytes {
+                    sink_only = true;
+                }
+            }
+            Err(_) => return kept,
+        }
     }
 }
 
@@ -170,6 +372,309 @@ pub fn strategy_for(target: &DeployTarget) -> Box<dyn DeployStrategy> {
 // LocalDeploy — docker compose up/down
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Parse the host-port side of a single compose port entry.
+///
+/// Handles both string form (`"127.0.0.1:3000:3000"`, `"3000:3000"`) and
+/// mapping form (`{ published: 3000, target: 3000 }`).
+fn parse_compose_host_port(entry: &serde_yaml::Value) -> Option<String> {
+    match entry {
+        serde_yaml::Value::String(spec) => {
+            let trimmed = spec.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let without_proto = trimmed.split('/').next().unwrap_or(trimmed);
+            let parts: Vec<&str> = without_proto.split(':').collect();
+            if parts.len() < 2 {
+                return None;
+            }
+            let port = parts[parts.len() - 2].trim();
+            if port.is_empty() {
+                None
+            } else {
+                Some(port.to_string())
+            }
+        }
+        serde_yaml::Value::Mapping(m) => {
+            let key = serde_yaml::Value::String("published".to_string());
+            m.get(&key).and_then(|v| match v {
+                serde_yaml::Value::String(s) => Some(s.clone()),
+                serde_yaml::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Return all `(host_port, service_name)` pairs declared in a compose file.
+fn collect_compose_host_port_services(compose_path: &Path) -> Vec<(String, String)> {
+    let raw = match std::fs::read_to_string(compose_path) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+    let doc: serde_yaml::Value = match serde_yaml::from_str(&raw) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    let services = match doc
+        .as_mapping()
+        .and_then(|m| m.get(&serde_yaml::Value::String("services".to_string())))
+        .and_then(|v| v.as_mapping())
+    {
+        Some(s) => s,
+        None => return vec![],
+    };
+
+    let mut result = Vec::new();
+    for (svc_key, svc_val) in services {
+        let svc_name = svc_key.as_str().unwrap_or("<unknown>").to_string();
+        let svc_map = match svc_val.as_mapping() {
+            Some(m) => m,
+            None => continue,
+        };
+        let ports_key = serde_yaml::Value::String("ports".to_string());
+        let ports = match svc_map.get(&ports_key).and_then(|v| v.as_sequence()) {
+            Some(p) => p,
+            None => continue,
+        };
+        for port in ports {
+            if let Some(host_port) = parse_compose_host_port(port) {
+                if !host_port.is_empty() {
+                    result.push((host_port, svc_name.clone()));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Parse `0.0.0.0:3000->3000/tcp` → `"3000"` from `docker ps` port strings.
+fn extract_port_from_docker_ps_entry(spec: &str) -> Option<String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    // e.g. "0.0.0.0:3000->3000/tcp" or ":::3000->3000/tcp" or "3000/tcp"
+    let host_part = if let Some(arrow) = spec.find("->") {
+        &spec[..arrow]
+    } else {
+        return None; // no host binding, container-only port
+    };
+    // host_part is e.g. "0.0.0.0:3000" or ":::3000"
+    host_part
+        .rsplit(':')
+        .next()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+}
+
+/// Ask Docker for the host ports currently bound by THIS compose project's containers.
+///
+/// Uses `docker compose -f <path> ps --format "{{.Ports}}"`.
+/// Returns an empty set if Docker is unavailable or the project has no running containers.
+fn get_own_compose_running_ports(
+    compose_path: &Path,
+    executor: &dyn CommandExecutor,
+) -> std::collections::HashSet<String> {
+    let compose_str = compose_path.to_string_lossy();
+    let out = match executor.execute(
+        "docker",
+        &[
+            "compose",
+            "-f",
+            &compose_str,
+            "ps",
+            "--format",
+            "{{.Ports}}",
+        ],
+    ) {
+        Ok(o) if o.success() => o,
+        _ => return Default::default(),
+    };
+    let mut ports = std::collections::HashSet::new();
+    for line in out.stdout.lines() {
+        for segment in line.split(',') {
+            if let Some(p) = extract_port_from_docker_ps_entry(segment.trim()) {
+                ports.insert(p);
+            }
+        }
+    }
+    ports
+}
+
+/// Check the remote server for port conflicts before `docker compose up`.
+///
+/// SSHs to the server and collects occupied ports from both system listeners
+/// (`ss` or `netstat` fallback) and Docker containers (`docker ps`). Returns
+/// a list of port conflicts that would prevent `docker compose up` from
+/// succeeding.
+///
+/// Returns an empty vec if SSH fails (network issue, no key, etc.) so the
+/// deployment can still proceed — the pre-check is best-effort.
+fn check_remote_host_port_conflicts(
+    compose_path: &Path,
+    user_at_host: &str,
+    ssh_args: &[&str],
+) -> Vec<String> {
+    let port_services = collect_compose_host_port_services(compose_path);
+    if port_services.is_empty() {
+        return vec![];
+    }
+
+    let check_cmd = r#"( ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null ) | awk '/LISTEN/{print $4}' | sed 's/.*://'; docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | sed -n 's/.*:\([0-9]*\)->.*/\1/p'"#;
+
+    let output = match std::process::Command::new("ssh")
+        .args(ssh_args)
+        .arg(user_at_host)
+        .arg(check_cmd)
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let occupied: std::collections::HashSet<String> = stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+
+    let mut conflicts = Vec::new();
+    for (port, svc) in &port_services {
+        if occupied.contains(port) {
+            conflicts.push(format!(
+                "port {} (service '{}') is already occupied on remote {} — \
+                 find the owning process with: ssh -t {} 'ss -tlnp sport = :{} || netstat -tlnp | grep :{}'",
+                port, svc, user_at_host, user_at_host, port, port
+            ));
+        }
+    }
+    conflicts
+}
+
+/// Detect port-conflict error patterns in install-container output and return
+/// human-readable hints to help the user diagnose and fix them.
+fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
+    use std::sync::LazyLock;
+
+    static BIND_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"Bind for [\d.]+:(\d+) failed").unwrap());
+    static ALLOCATED_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"port (\d+) is already allocated").unwrap());
+
+    let combined = format!("{}\n{}", stderr, stdout);
+    let lower = combined.to_lowercase();
+
+    if !lower.contains("is already allocated")
+        && !lower.contains("bind for 0.0.0.0")
+        && !lower.contains("failed programming external connectivity")
+    {
+        return vec![];
+    }
+
+    let mut hints = vec![
+        "Port conflict detected on the deployment target.".to_string(),
+        "A process or container on the remote server is already using a port that this deploy requires.".to_string(),
+    ];
+
+    let port: Option<String> = {
+        let full = format!("{} {}", stderr, stdout);
+        let mut found = None;
+        for line in full.lines() {
+            if let Some(caps) = BIND_RE.captures(line) {
+                if let Some(port_match) = caps.get(1) {
+                    found = Some(port_match.as_str().to_string());
+                    break;
+                }
+            }
+        }
+        if found.is_none() {
+            for line in full.lines() {
+                if let Some(caps) = ALLOCATED_RE.captures(line) {
+                    if let Some(port_match) = caps.get(1) {
+                        found = Some(port_match.as_str().to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        found
+    };
+
+    if let Some(ref port) = port {
+        hints.push(format!(
+            "Conflicting port: {} — use `ssh <host> 'ss -tlnp sport = :{} || netstat -tlnp | grep :{}'` to identify the owner.",
+            port, port, port
+        ));
+    }
+
+    hints.push("Check for leftover containers from previous deploys below and clean them up:".to_string());
+    hints.push("  ssh <host> 'docker ps --format \"table {{.Names}}\\t{{.Ports}}\"'".to_string());
+    hints.push("  ssh <host> 'docker rm -f <container>'".to_string());
+    hints.push("Alternatively, change the conflicting port in stacker.yml and redeploy.".to_string());
+
+    hints
+}
+
+/// Return a human-readable message listing port conflicts found before deploy.
+fn format_preflight_port_conflicts(target: &str, conflicts: &[String]) -> String {
+    format!(
+        "Host port conflict detected before deploy to {}:\n  • {}\n\
+         Stop the conflicting process or change the port in stacker.yml, then retry.",
+        target,
+        conflicts.join("\n  • ")
+    )
+}
+
+/// Pre-flight check: detect host ports that are already occupied by something
+/// OTHER than the current compose project's own running containers.
+///
+/// Returns a list of human-readable conflict descriptions (empty = no conflicts).
+/// Silently skips any port it cannot inspect so that environments without full
+/// Docker access still work.
+fn check_local_host_port_conflicts(
+    compose_path: &Path,
+    executor: &dyn CommandExecutor,
+) -> Vec<String> {
+    use std::net::TcpListener;
+
+    let port_services = collect_compose_host_port_services(compose_path);
+    if port_services.is_empty() {
+        return vec![];
+    }
+
+    // Find which ports are already bound on the local machine.
+    let occupied: Vec<(String, String)> = port_services
+        .into_iter()
+        .filter(|(port, _)| {
+            let addr = format!("0.0.0.0:{}", port);
+            TcpListener::bind(&addr).is_err()
+        })
+        .collect();
+
+    if occupied.is_empty() {
+        return vec![];
+    }
+
+    // Exclude ports that belong to OUR own currently-running project containers —
+    // docker compose up will stop-and-restart them without a conflict.
+    let own_ports = get_own_compose_running_ports(compose_path, executor);
+
+    occupied
+        .into_iter()
+        .filter(|(port, _)| !own_ports.contains(port))
+        .map(|(port, svc)| {
+            format!(
+                "port {} (service '{}') is already allocated on this host — \
+                 find the owner with: lsof -nP -iTCP:{} -sTCP:LISTEN",
+                port, svc, port
+            )
+        })
+        .collect()
+}
+
 /// Detect which compose invocation is available on this host.
 ///
 /// Returns `("docker", vec!["compose"])` when the Docker Compose plugin is
@@ -214,6 +719,19 @@ impl DeployStrategy for LocalDeploy {
         }
 
         let compose_path = context.compose_path.to_string_lossy().to_string();
+
+        // Pre-flight: catch host port conflicts before docker compose up so the
+        // error is actionable rather than buried in Docker daemon output.
+        let port_conflicts = check_local_host_port_conflicts(&context.compose_path, executor);
+        if !port_conflicts.is_empty() {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Local,
+                reason: format!(
+                    "Host port conflict detected before deploy:\n  • {}\nStop the conflicting process or change the port in stacker.yml, then retry.",
+                    port_conflicts.join("\n  • ")
+                ),
+            });
+        }
 
         let (cmd, base_args) = resolve_compose_cmd(executor);
         let mut args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
@@ -830,9 +1348,15 @@ impl DeployStrategy for CloudDeploy {
         let output = executor.execute("docker", &args_refs)?;
 
         if !output.success() {
+            let mut reason = format!("Install container failed: {}", output.stderr.trim());
+            let port_hints = detect_port_conflicts_in_output(&output.stderr, &output.stdout);
+            if !port_hints.is_empty() {
+                reason.push_str("\n\nPort conflict details:\n  • ");
+                reason.push_str(&port_hints.join("\n  • "));
+            }
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Cloud,
-                reason: format!("Install container failed: {}", output.stderr.trim()),
+                reason,
             });
         }
 
@@ -1167,7 +1691,19 @@ async fn fetch_live_containers(
             CliError::ConfigValidation(format!("Invalid list_containers parameters: {}", error))
         })?;
 
-    let completed = client.agent_poll_result(&request, 120, 2).await?;
+    let completed = client
+        .agent_poll_result(&request, 120, 2)
+        .await
+        .map_err(|err| match err {
+            CliError::AgentCommandTimeout {
+                ref last_status,
+                ref deployment_hash,
+                ..
+            } if last_status == "queued" => CliError::AgentNotFound {
+                deployment_hash: deployment_hash.clone(),
+            },
+            other => other,
+        })?;
     if completed.status != "completed" {
         let detail = completed
             .error
@@ -1571,6 +2107,272 @@ fn persist_remote_payload_snapshot(
 
 pub struct ServerDeploy;
 
+/// Deploy to an intranet server directly from the CLI using the system `ssh`/`rsync`.
+///
+/// The Stacker cloud install service cannot reach private-IP servers, so this
+/// path bypasses it entirely:
+///   1. `rsync` the project directory to `~/stacker/<project>/` on the remote
+///   2. `docker compose up -d --build` on the remote
+///
+/// The home-directory path avoids any permission issues — the SSH user can always
+/// write there without sudo.  Falls back to `tar+ssh` if `rsync` is not found.
+fn deploy_to_intranet_server(
+    config: &StackerConfig,
+    context: &DeployContext,
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+) -> Result<DeployResult, CliError> {
+    let project_name = context
+        .project_name_override
+        .clone()
+        .or_else(|| config.project.identity.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| config.name.clone());
+
+    let ssh_key_path = server_cfg
+        .ssh_key
+        .as_ref()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home).join(&s[2..])
+            } else {
+                p.clone()
+            }
+        })
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "deploy.server.ssh_key is required for intranet server deploy.\n\
+                 Set it in stacker.yml: deploy.server.ssh_key: ~/.ssh/id_ed25519"
+                    .to_string(),
+            )
+        })?;
+
+    if !ssh_key_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "SSH key not found: {}",
+            ssh_key_path.display()
+        )));
+    }
+
+    // Use ~/stacker/<project> so the SSH user can write without sudo.
+    // The shell expands ~ on the remote, so no hardcoded home path needed.
+    let remote_dir = format!("$HOME/stacker/{}", project_name);
+    let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
+    let ssh_args = [
+        "-i", ssh_key_path.to_str().unwrap_or(""),
+        "-p", &server_cfg.port.to_string(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+    ];
+
+    // 1. Resolve the remote home directory so rsync gets an absolute path.
+    let remote_home = {
+        let out = std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg("echo $HOME")
+            .output()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("Failed to run ssh: {}", e),
+            })?;
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    let remote_dir_abs = if remote_home.is_empty() {
+        // Fallback: keep the $HOME token; mkdir/compose will still expand it
+        remote_dir.clone()
+    } else {
+        format!("{}/stacker/{}", remote_home, project_name)
+    };
+
+    eprintln!("  Creating remote directory {}...", remote_dir_abs);
+    let mkdir_status = std::process::Command::new("ssh")
+        .args(&ssh_args)
+        .arg(&user_at_host)
+        .arg(format!("mkdir -p {}", remote_dir_abs))
+        .status()
+        .map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("Failed to run ssh: {}", e),
+        })?;
+
+    if !mkdir_status.success() {
+        return Err(CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "Could not create remote directory {}.\n\
+                 Check that the SSH user '{}' has write access to their home directory.",
+                remote_dir_abs, server_cfg.user
+            ),
+        });
+    }
+
+    // 2. Sync project files to remote (rsync preferred, tar+ssh fallback)
+    let project_src = format!("{}/", context.project_dir.display());
+    let remote_dest = format!("{}:{}/", user_at_host, remote_dir_abs);
+    let rsync_ssh_opt = format!(
+        "ssh -i {} -p {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+        ssh_key_path.display(),
+        server_cfg.port
+    );
+    let rsync_excludes = &["--exclude=.git", "--exclude=target", "--exclude=node_modules"];
+
+    eprintln!("  Syncing project files to {}...", user_at_host);
+    let rsync_available = std::process::Command::new("rsync")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if rsync_available {
+        let mut rsync = std::process::Command::new("rsync");
+        rsync
+            .arg("-az")
+            .arg("--progress")
+            .args(rsync_excludes)
+            .arg("-e")
+            .arg(&rsync_ssh_opt)
+            .arg(&project_src)
+            .arg(&remote_dest);
+
+        let status = rsync.status().map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("rsync failed: {}", e),
+        })?;
+        if !status.success() {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: "rsync exited with error — check SSH key and server connectivity".to_string(),
+            });
+        }
+    } else {
+        // Fallback: tar over SSH (pipe tar → ssh, no shell -c to avoid injection)
+        eprintln!("  (rsync not found, using tar+ssh fallback)");
+        let mut tar_child = std::process::Command::new("tar")
+            .arg("czf")
+            .arg("-")
+            .arg("--exclude=.git")
+            .arg("--exclude=target")
+            .arg("--exclude=node_modules")
+            .arg("-C")
+            .arg(context.project_dir.as_os_str())
+            .arg(".")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("tar failed: {}", e),
+            })?;
+
+        let tar_stdout = tar_child.stdout.take().ok_or_else(|| {
+            CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: "Could not capture tar stdout".to_string(),
+            }
+        })?;
+
+        let ssh_status = std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg(format!("tar xzf - -C {}", remote_dir_abs))
+            .stdin(tar_stdout)
+            .status()
+            .map_err(|e| CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: format!("ssh (tar extract) failed: {}", e),
+            })?;
+
+        // Reap the tar child
+        let tar_status = tar_child.wait().map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("tar wait failed: {}", e),
+        })?;
+
+        if !ssh_status.success() || !tar_status.success() {
+            return Err(CliError::DeployFailed {
+                target: DeployTarget::Server,
+                reason: "tar+ssh transfer failed — check SSH key and server connectivity".to_string(),
+            });
+        }
+    }
+
+    // 3. Pre-flight: check remote port availability before docker compose up.
+    //    This catches "port is already allocated" errors before they become
+    //    opaque Docker daemon failures on the remote server.
+    let remote_ssh_args = [
+        "-i", ssh_key_path.to_str().unwrap_or(""),
+        "-p", &server_cfg.port.to_string(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+    ];
+    let port_conflicts =
+        check_remote_host_port_conflicts(&context.compose_path, &user_at_host, &remote_ssh_args);
+    if !port_conflicts.is_empty() {
+        return Err(CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format_preflight_port_conflicts(
+                &format!("remote server {}", server_cfg.host),
+                &port_conflicts,
+            ),
+        });
+    }
+
+    let compose_file = context
+        .compose_path
+        .strip_prefix(&context.project_dir)
+        .unwrap_or(&context.compose_path)
+        .display()
+        .to_string();
+
+    let compose_cmd = format!(
+        "cd {} && docker compose -f {} up -d --build 2>&1",
+        remote_dir_abs, compose_file
+    );
+
+    eprintln!("  Running docker compose on {}...", server_cfg.host);
+    let output = std::process::Command::new("ssh")
+        .args(&ssh_args)
+        .arg(&user_at_host)
+        .arg(&compose_cmd)
+        .output()
+        .map_err(|e| CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!("SSH docker compose failed: {}", e),
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().chain(stderr.lines()) {
+        eprintln!("  │ {}", line);
+    }
+
+    if !output.status.success() {
+        return Err(CliError::DeployFailed {
+            target: DeployTarget::Server,
+            reason: format!(
+                "docker compose failed on remote (exit {}). See output above.",
+                output.status.code().unwrap_or(-1)
+            ),
+        });
+    }
+
+    eprintln!("  ✓ Deployed '{}' to {} ({})", project_name, server_cfg.host, remote_dir_abs);
+
+    Ok(DeployResult {
+        target: DeployTarget::Server,
+        message: format!(
+            "Deployed '{}' to {} via local SSH (rsync + docker compose, remote: {})",
+            project_name, server_cfg.host, remote_dir_abs
+        ),
+        server_ip: Some(server_cfg.host.clone()),
+        deployment_id: None,
+        project_id: None,
+        server_name: None,
+    })
+}
+
 impl DeployStrategy for ServerDeploy {
     fn validate(&self, config: &StackerConfig) -> Result<(), CliError> {
         if config.deploy.server.is_none() {
@@ -1595,9 +2397,16 @@ impl DeployStrategy for ServerDeploy {
             let output = executor.execute("docker", &args_refs)?;
 
             if !output.success() {
+                let mut reason = format!("Server deployment failed: {}", output.stderr.trim());
+                let port_hints =
+                    detect_port_conflicts_in_output(&output.stderr, &output.stdout);
+                if !port_hints.is_empty() {
+                    reason.push_str("\n\nPort conflict details:\n  • ");
+                    reason.push_str(&port_hints.join("\n  • "));
+                }
                 return Err(CliError::DeployFailed {
                     target: DeployTarget::Server,
-                    reason: format!("Server deployment failed: {}", output.stderr.trim()),
+                    reason,
                 });
             }
 
@@ -1613,6 +2422,23 @@ impl DeployStrategy for ServerDeploy {
             });
         }
 
+        // For private/intranet hosts, the Stacker cloud install service cannot
+        // reach the server via SSH. Deploy directly from the CLI using rsync +
+        // docker compose over the local SSH key.
+        let server_cfg = config
+            .deploy
+            .server
+            .as_ref()
+            .ok_or(CliError::ServerHostMissing)?;
+
+        if crate::helpers::ip::is_private_host(&server_cfg.host) {
+            eprintln!(
+                "  Server {} is on a private network — deploying via local SSH.",
+                server_cfg.host
+            );
+            return deploy_to_intranet_server(config, context, server_cfg);
+        }
+
         let creds =
             CredentialsManager::with_default_store().require_valid_token("server deploy")?;
         let base_url = normalize_stacker_server_url(
@@ -1621,11 +2447,6 @@ impl DeployStrategy for ServerDeploy {
                 .as_deref()
                 .unwrap_or(stacker_client::DEFAULT_STACKER_URL),
         );
-        let server_cfg = config
-            .deploy
-            .server
-            .as_ref()
-            .ok_or(CliError::ServerHostMissing)?;
         let project_name = resolve_remote_project_name(config, context);
         let project_config = compose_targets::config_with_compose_secret_target_services(
             config,
@@ -1992,6 +2813,7 @@ mod tests {
                 ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap()
@@ -2171,6 +2993,7 @@ mod tests {
                 ssh_key: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
                 key: None,
                 server: None,
+                public_ports: Vec::new(),
             })
             .build()
             .unwrap();
@@ -2815,5 +3638,462 @@ mod tests {
         let cmd = InstallContainerCommand::new(None).remove_after(false);
         let args = cmd.build_args();
         assert!(!args.contains(&"--rm".to_string()));
+    }
+
+    // ── Port-conflict preflight helpers ─────────────────
+
+    #[test]
+    fn test_parse_compose_host_port_string_host_container() {
+        let v = serde_yaml::Value::String("3000:3000".to_string());
+        assert_eq!(parse_compose_host_port(&v), Some("3000".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_string_ip_host_container() {
+        let v = serde_yaml::Value::String("127.0.0.1:8080:80".to_string());
+        assert_eq!(parse_compose_host_port(&v), Some("8080".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_mapping() {
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("published".to_string()),
+            serde_yaml::Value::Number(serde_yaml::Number::from(3000u64)),
+        );
+        m.insert(
+            serde_yaml::Value::String("target".to_string()),
+            serde_yaml::Value::Number(serde_yaml::Number::from(3000u64)),
+        );
+        let v = serde_yaml::Value::Mapping(m);
+        assert_eq!(parse_compose_host_port(&v), Some("3000".to_string()));
+    }
+
+    #[test]
+    fn test_parse_compose_host_port_container_only() {
+        // Port without host binding: "3000" → no host port to parse
+        let v = serde_yaml::Value::String("3000".to_string());
+        assert_eq!(parse_compose_host_port(&v), None);
+    }
+
+    #[test]
+    fn test_collect_compose_host_port_services() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+  api:
+    image: myapp
+    ports:
+      - "127.0.0.1:9000:9000"
+"#
+        )
+        .unwrap();
+        let pairs = collect_compose_host_port_services(tmp.path());
+        let ports: Vec<&str> = pairs.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(ports.contains(&"8080"), "expected 8080");
+        assert!(ports.contains(&"9000"), "expected 9000");
+    }
+
+    #[test]
+    fn test_extract_port_from_docker_ps_entry_standard() {
+        assert_eq!(
+            extract_port_from_docker_ps_entry("0.0.0.0:3000->3000/tcp"),
+            Some("3000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_port_from_docker_ps_entry_ipv6() {
+        assert_eq!(
+            extract_port_from_docker_ps_entry(":::8080->8080/tcp"),
+            Some("8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_port_from_docker_ps_entry_container_only() {
+        assert_eq!(extract_port_from_docker_ps_entry("3000/tcp"), None);
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_free_port() {
+        use std::io::Write;
+        // Pick an ephemeral port that should be free
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let free_port = listener.local_addr().unwrap().port();
+        drop(listener); // release it
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+            free_port
+        )
+        .unwrap();
+
+        let executor = MockExecutor::success();
+        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        assert!(
+            conflicts.is_empty(),
+            "expected no conflicts for free port {}: {:?}",
+            free_port,
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_own_container_excluded() {
+        use std::io::Write;
+
+        // Occupy a port to simulate an existing container
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep listener alive — port IS occupied
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+            port
+        )
+        .unwrap();
+
+        // Simulate `docker compose ps` reporting the same port as owned by us
+        let ps_output = format!("0.0.0.0:{}->80/tcp", port);
+        let executor = MockExecutor::success_with_stdout(&ps_output);
+
+        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        drop(listener);
+        assert!(
+            conflicts.is_empty(),
+            "port owned by our own compose project should not be flagged: {:?}",
+            conflicts
+        );
+    }
+
+    #[test]
+    fn test_check_local_host_port_conflicts_external_conflict() {
+        use std::io::Write;
+
+        // Occupy a port to simulate an external process
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep listener alive — port IS occupied by external
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"{}:80\"\n",
+            port
+        )
+        .unwrap();
+
+        // Simulate `docker compose ps` returning empty (no own containers on this port)
+        let executor = MockExecutor::success_with_stdout("");
+
+        let conflicts = check_local_host_port_conflicts(tmp.path(), &executor);
+        drop(listener);
+        assert!(
+            !conflicts.is_empty(),
+            "external port conflict should be reported"
+        );
+        assert!(
+            conflicts[0].contains(&port.to_string()),
+            "conflict message should mention the port"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Port conflict detection in install-container output
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_bind_error() {
+        let stderr = "Error response from daemon: driver failed programming external connectivity on endpoint nginx-proxy-manager (abc123): Bind for 0.0.0.0:80 failed: port is already allocated";
+        let hints = detect_port_conflicts_in_output(stderr, "");
+        assert!(!hints.is_empty(), "should detect port conflict from Bind error");
+        assert!(
+            hints.iter().any(|h| h.contains("80")),
+            "should include port 80 in hints: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_already_allocated() {
+        let stderr = "Error: failed to start container: port 443 is already allocated";
+        let hints = detect_port_conflicts_in_output(stderr, "");
+        assert!(!hints.is_empty(), "should detect port conflict");
+        assert!(
+            hints.iter().any(|h| h.contains("443")),
+            "should include port 443 in hints: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_stdout() {
+        // Docker sometimes emits port errors on stdout instead of stderr
+        let stdout = "Container nginx-proxy-manager  Starting\nError response from daemon: driver failed programming external connectivity on endpoint nginx-proxy-manager: Bind for 0.0.0.0:8080 failed: port is already allocated";
+        let hints = detect_port_conflicts_in_output("", stdout);
+        assert!(!hints.is_empty(), "should detect port conflict from stdout");
+        assert!(
+            hints.iter().any(|h| h.contains("8080")),
+            "should include port 8080: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn test_detect_port_conflicts_in_output_no_conflict() {
+        let stderr = "Build failed: could not resolve dependency";
+        let hints = detect_port_conflicts_in_output(stderr, "");
+        assert!(hints.is_empty(), "should not flag non-port errors");
+    }
+
+    #[test]
+    fn test_format_preflight_port_conflicts() {
+        let conflicts = vec![
+            "port 80 (service 'nginx') is already occupied".to_string(),
+            "port 443 (service 'nginx') is already occupied".to_string(),
+        ];
+        let msg = format_preflight_port_conflicts("server", &conflicts);
+        assert!(msg.contains("server"), "should mention target: {}", msg);
+        assert!(msg.contains("port 80"), "should mention port 80: {}", msg);
+        assert!(msg.contains("port 443"), "should mention port 443: {}", msg);
+        assert!(msg.contains("stacker.yml"), "should refer to stacker.yml: {}", msg);
+    }
+
+    #[test]
+    fn test_check_remote_host_port_conflicts_empty_compose() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "version: '3'\n# no services with ports\n").unwrap();
+        // No SSH should be called since there are no ports to check
+        let conflicts = check_remote_host_port_conflicts(
+            tmp.path(),
+            "user@fakehost",
+            &["-i", "/dev/null", "-p", "22"],
+        );
+        assert!(conflicts.is_empty(), "empty compose should have no conflicts");
+    }
+
+    #[test]
+    fn test_check_remote_host_port_conflicts_ssh_unreachable_is_silent() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n"
+        )
+        .unwrap();
+        // Use an unreachable host — function MUST NOT panic, just return empty
+        let conflicts = check_remote_host_port_conflicts(
+            tmp.path(),
+            "nobody@nonexistent.invalid",
+            &[
+                "-i",
+                "/dev/null",
+                "-p",
+                "22",
+                "-o",
+                "ConnectTimeout=1",
+            ],
+        );
+        assert!(
+            conflicts.is_empty(),
+            "unreachable SSH should return empty (best-effort): {:?}",
+            conflicts
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Security-audit follow-up tests — CommandExecutor timeout.
+    //
+    // These tests are written FIRST (TDD). They MUST fail against the
+    // current `execute_with_timeout` default impl, which uses
+    // `std::thread::scope` around a blocking `Command::output()` — the
+    // scope joins on exit, so even when `recv_timeout` fires the closure
+    // does not return until the child process exits. Net effect: the
+    // "300-second timeout" is cosmetic.
+    //
+    // After the fix (Phase 4 of the plan), `execute_with_timeout` (or its
+    // successor `execute_hook`) must spawn a `Child`, poll deadline with
+    // `try_wait`, and `child.kill()` on miss — these tests then turn green
+    // in ~3 seconds for a 30-second sleep with a 2-second budget.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// C2: a real timeout must actually terminate the child process and
+    /// return within the timeout budget — NOT block until the child
+    /// finishes naturally.
+    ///
+    /// Marked `#[ignore]` because it spawns a real `sleep 30`. Run with:
+    ///     cargo test -p stacker --lib test_execute_with_timeout_actually_terminates_child -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_actually_terminates_child() {
+        use std::time::{Duration, Instant};
+
+        let executor = ShellExecutor;
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let result = executor.execute_with_timeout("sleep", &["30"], timeout, None);
+        let elapsed = started.elapsed();
+
+        // The call must error on timeout.
+        assert!(
+            result.is_err(),
+            "execute_with_timeout must return Err on timeout, got Ok"
+        );
+
+        // Wall-clock must be within ~3s — significantly less than the
+        // 30s sleep. With the buggy `thread::scope` implementation this
+        // assertion fires because elapsed ≈ 30s.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "execute_with_timeout must terminate the child within timeout budget; \
+             actual elapsed = {:?} (sleep child should have been killed)",
+            elapsed
+        );
+    }
+
+    /// Phase 8b: a hook that emits far more stdout than the pipe-level
+    /// OOM cap must NOT be captured verbatim into memory. After the
+    /// bounded-pipe-reader lands, captured stdout is at or under the
+    /// pipe cap regardless of how much the child wrote.
+    ///
+    /// Marked `#[ignore]` because it spawns a real shell child that
+    /// dumps ~10 MiB of data. Run with:
+    ///     cargo test -p stacker --lib test_execute_with_timeout_caps_large_stdout -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_caps_large_stdout() {
+        use std::time::Duration;
+
+        let executor = ShellExecutor;
+        // Emit ~10 MiB of ASCII bytes on stdout — well above the 1 MiB+slack
+        // pipe cap the bounded reader enforces.
+        let result = executor
+            .execute_with_timeout(
+                "sh",
+                &[
+                    "-c",
+                    // 10 * 1024 * 1024 = 10485760 bytes of 'A' + newline.
+                    "yes A | head -c 10485760",
+                ],
+                Duration::from_secs(20),
+                None,
+            )
+            .expect("execute_with_timeout should complete despite large stdout");
+
+        assert_eq!(result.exit_code, 0, "child must exit 0");
+        assert!(
+            result.stdout.len() <= HOOK_PIPE_OUTPUT_MAX_BYTES,
+            "captured stdout must be capped at or below HOOK_PIPE_OUTPUT_MAX_BYTES ({}), \
+             got {} bytes — bounded pipe reader is not enforcing the OOM defence",
+            HOOK_PIPE_OUTPUT_MAX_BYTES,
+            result.stdout.len(),
+        );
+    }
+
+    /// Phase 8b sibling: same guarantee for stderr. A hostile hook can
+    /// pick either channel; both must be bounded.
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_caps_large_stderr() {
+        use std::time::Duration;
+
+        let executor = ShellExecutor;
+        let result = executor
+            .execute_with_timeout(
+                "sh",
+                &["-c", "yes A | head -c 10485760 >&2"],
+                Duration::from_secs(20),
+                None,
+            )
+            .expect("execute_with_timeout should complete despite large stderr");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result.stderr.len() <= HOOK_PIPE_OUTPUT_MAX_BYTES,
+            "captured stderr must be capped at or below HOOK_PIPE_OUTPUT_MAX_BYTES ({}), \
+             got {} bytes",
+            HOOK_PIPE_OUTPUT_MAX_BYTES,
+            result.stderr.len(),
+        );
+    }
+
+    /// Phase 8b hang-defence: writing past the OS pipe buffer without a
+    /// concurrent reader hangs the child on write. This test proves the
+    /// bounded reader drains both pipes concurrently so the child can
+    /// exit even when its output exceeds the cap by orders of magnitude.
+    ///
+    /// If this test hangs (rather than fails), the fix is missing the
+    /// "keep reading past the cap into /dev/null" drain step.
+    #[test]
+    #[ignore]
+    fn test_execute_with_timeout_drains_past_cap_so_child_exits() {
+        use std::time::{Duration, Instant};
+
+        let executor = ShellExecutor;
+        // ~50 MiB — well past any reasonable pipe cap and past the OS
+        // pipe buffer (usually 64 KiB), so without concurrent draining
+        // the child would block on write forever.
+        let started = Instant::now();
+        let result = executor
+            .execute_with_timeout(
+                "sh",
+                &["-c", "yes A | head -c 52428800"],
+                Duration::from_secs(30),
+                None,
+            )
+            .expect("child must complete even with 50 MiB of stdout");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.exit_code, 0);
+        // 50 MiB / plausible RAM bandwidth should be seconds, not
+        // minutes. If we ever get close to the 30s timeout, the drain
+        // is not happening concurrently.
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "child took {:?} to complete a 50 MiB dump — drain is not \
+             running concurrently with try_wait",
+            elapsed
+        );
+    }
+
+    /// C2 sibling: when a child process is timed out, a follow-up call
+    /// to the same executor must succeed promptly — no zombie state,
+    /// no thread leak that holds resources.
+    ///
+    /// Marked `#[ignore]` for the same reason.
+    #[test]
+    #[ignore]
+    fn test_executor_remains_usable_after_timeout() {
+        use std::time::{Duration, Instant};
+
+        let executor = ShellExecutor;
+        let _ = executor.execute_with_timeout("sleep", &["10"], Duration::from_secs(1), None);
+
+        // Now run a quick command and assert it completes quickly.
+        let started = Instant::now();
+        let result = executor.execute("/bin/sh", &["-c", "echo ok"]);
+        let elapsed = started.elapsed();
+
+        assert!(result.is_ok(), "Follow-up exec must succeed: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output.exit_code, 0);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Follow-up exec must run promptly, elapsed = {:?}",
+            elapsed
+        );
     }
 }

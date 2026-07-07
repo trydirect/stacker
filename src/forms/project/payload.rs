@@ -13,6 +13,12 @@ pub struct Payload {
     pub(crate) deployment_hash: Option<String>,
     pub(crate) user_token: Option<String>,
     pub(crate) user_email: Option<String>,
+    #[serde(
+        default,
+        rename = "commonDomain",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) common_domain: Option<String>,
     #[serde(flatten)]
     pub cloud: Option<forms::CloudForm>,
     #[serde(flatten)]
@@ -45,6 +51,7 @@ impl std::fmt::Debug for Payload {
             .field("deployment_hash", &self.deployment_hash)
             .field("user_token", &self.user_token)
             .field("user_email", &self.user_email)
+            .field("commonDomain", &self.common_domain)
             .field("cloud", &self.cloud)
             .field("server", &self.server)
             .field("stack", &self.stack)

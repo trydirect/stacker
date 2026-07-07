@@ -71,12 +71,26 @@ connectors:
 #   USER_SERVICE_AUTH_TOKEN, PAYMENT_SERVICE_AUTH_TOKEN
 #   STACKER_AUTH_REQUEST_TIMEOUT_SECS, STACKER_AUTH_CONNECT_TIMEOUT_SECS
 #   DEFAULT_DEPLOY_DIR - Base directory for deployments (default: /home/trydirect)
+#   STACKER_PAYOUT_PROVIDER=mock|stripe_connect
+#   STRIPE_SECRET_KEY or PAYOUT_STRIPE_SECRET_KEY
+#   STRIPE_WEBHOOK_SECRET or PAYOUT_STRIPE_WEBHOOK_SECRET
+#   PAYOUT_ONBOARDING_RETURN_URL, PAYOUT_ONBOARDING_REFRESH_URL
 
 # Deployment settings
 # deployment:
 #   # Base path for app config files on the deployment server
 #   # Can also be set via DEFAULT_DEPLOY_DIR environment variable
 #   config_base_path: /home/trydirect
+
+# Vendor payout provider. Defaults to mock for local/dev/test.
+# For production Stripe Connect, set provider: stripe_connect and provide STRIPE_SECRET_KEY
+# via environment variable rather than committing it here.
+# payouts:
+#   provider: mock
+#   stripe_api_base_url: https://api.stripe.com
+#   onboarding_return_url: https://stacker.try.direct/marketplace/vendor/onboarding/return
+#   onboarding_refresh_url: https://stacker.try.direct/marketplace/vendor/onboarding/refresh
+#   timeout_secs: 15
 
 # Marketplace asset storage (Hetzner Object Storage / S3-compatible)
 # marketplace_assets:

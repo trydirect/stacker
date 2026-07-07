@@ -50,17 +50,32 @@ pub(crate) fn resolve_deployment_hash(
     }
 
     let project_dir = std::env::current_dir().map_err(CliError::Io)?;
-
-    // 2. stacker.yml project → active agent (takes priority over lock file)
-    // The lock file records the deployment_id at deploy time but the agent may
-    // have been redeployed since, leaving the lock pointing at a stale hash.
     let config_path = project_dir.join("stacker.yml");
+
+    // 2. stacker.yml deploy.deployment_hash — written by `stacker agent install`
+    // and `stacker deploy` after a successful remote deploy.
     if config_path.exists() {
         if let Ok(config) = crate::cli::config_parser::StackerConfig::from_file(&config_path)
-            .and_then(|config| config.with_resolved_deploy_target(None))
+            .and_then(|c| c.with_resolved_deploy_target(None))
         {
-            if let Some(ref project_name) = config.project.identity {
-                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(project_name))
+            if let Some(ref hash) = config.deploy.deployment_hash {
+                if !hash.trim().is_empty() {
+                    return Ok(hash.clone());
+                }
+            }
+
+            // 3. stacker.yml project identity → active agent
+            // Falls back to config.name when project.identity is null.
+            let project_name = config
+                .project
+                .identity
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| config.name.clone());
+
+            if !project_name.trim().is_empty() {
+                if let Ok(Some(proj)) =
+                    ctx.block_on(ctx.client.find_project_by_name(&project_name))
                 {
                     match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
                         Ok((_, hash)) => {
@@ -70,8 +85,15 @@ pub(crate) fn resolve_deployment_hash(
                             );
                             return Ok(hash);
                         }
-                        Err(_) => {
-                            // No active agent for this project; fall through to lock
+                        Err(_) => {}
+                    }
+
+                    // No active agent yet; try most recent deployment for the project
+                    if let Ok(deployments) =
+                        ctx.block_on(ctx.client.list_deployments(Some(proj.id), Some(1)))
+                    {
+                        if let Some(dep) = deployments.into_iter().next() {
+                            return Ok(dep.deployment_hash);
                         }
                     }
                 }
@@ -79,7 +101,7 @@ pub(crate) fn resolve_deployment_hash(
         }
     }
 
-    // 3. Deployment lock (fallback when no stacker.yml or no active project agent)
+    // 4. Deployment lock → integer ID → API lookup
     if let Some(lock) = crate::cli::deployment_lock::DeploymentLock::load(&project_dir)? {
         if let Some(dep_id) = lock.deployment_id {
             let info = ctx.block_on(ctx.client.get_deployment_status(dep_id as i32))?;
@@ -452,8 +474,14 @@ fn print_health_result(info: &AgentCommandInfo) {
             if let Some(containers) = result.get("containers").and_then(|v| v.as_array()) {
                 println!("{:<28} {:<10} {}", "CONTAINER", "STATE", "STATUS");
                 for c in containers {
-                    let name = c.get("container_name").and_then(|v| v.as_str()).unwrap_or("-");
-                    let state = c.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+                    let name = c
+                        .get("container_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let state = c
+                        .get("container_state")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
                     let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
                     println!(
                         "{:<28} {} {:<8} {}",
@@ -469,9 +497,15 @@ fn print_health_result(info: &AgentCommandInfo) {
 
         // Single-container health
         if result_type == "health" {
-            let state = result.get("container_state").and_then(|v| v.as_str()).unwrap_or("-");
+            let state = result
+                .get("container_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
             let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("-");
-            let app = result.get("app_code").and_then(|v| v.as_str()).unwrap_or("-");
+            let app = result
+                .get("app_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
             println!(
                 "{}: {} {} ({})",
                 app,
@@ -508,7 +542,10 @@ fn print_all_container_health(containers: &[serde_json::Value]) {
     println!("Overall: {} {}", progress::status_icon(overall), overall);
     println!();
 
-    println!("{:<28} {:<12} {:<8} {:<8} {}", "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE");
+    println!(
+        "{:<28} {:<12} {:<8} {:<8} {}",
+        "CONTAINER", "STATE", "CPU%", "MEM%", "IMAGE"
+    );
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c.get("status").and_then(|v| v.as_str()).unwrap_or("-");
@@ -656,8 +693,7 @@ impl CallableTrait for AgentHealthCommand {
         // No specific app requested → list all containers with health metrics.
         // This avoids sending app_code="all" to older agents that don't handle it.
         if self.app_code.is_none() && !self.include_system {
-            let containers = fetch_live_containers(&ctx, &hash)?
-                .unwrap_or_default();
+            let containers = fetch_live_containers(&ctx, &hash)?.unwrap_or_default();
             if self.json {
                 println!("{}", serde_json::to_string_pretty(&containers)?);
             } else {
@@ -1757,14 +1793,25 @@ fn print_apps_summary(apps: &[serde_json::Value]) {
 }
 
 fn print_containers_summary(containers: &[serde_json::Value]) {
+    print_containers_summary_with_apps(containers, None)
+}
+
+fn print_containers_summary_with_apps(
+    containers: &[serde_json::Value],
+    apps: Option<&[serde_json::Value]>,
+) {
     let containers = visible_containers(containers);
+    let port_lookup = apps.map(build_app_port_lookup).unwrap_or_default();
 
     if containers.is_empty() {
         println!("Containers: none");
         return;
     }
 
-    println!("{:<24} {:<12} {:<22} {:<30}", "CONTAINER", "STATE", "PORTS", "IMAGE");
+    println!(
+        "{:<24} {:<12} {:<22} {:<30}",
+        "CONTAINER", "STATE", "PORTS", "IMAGE"
+    );
     for c in containers {
         let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("-");
         let state = c
@@ -1773,17 +1820,7 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
             .and_then(|v| v.as_str())
             .unwrap_or("-");
         let image = c.get("image").and_then(|v| v.as_str()).unwrap_or("-");
-        let ports = c
-            .get("ports")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|p| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "-".to_string());
+        let ports = format_container_ports_with_lookup(c, name, &port_lookup);
         println!(
             "{:<24} {} {:<10} {:<22} {:<30}",
             fmt::truncate(name, 22),
@@ -1792,6 +1829,129 @@ fn print_containers_summary(containers: &[serde_json::Value]) {
             fmt::truncate(&ports, 20),
             fmt::truncate(image, 28),
         );
+    }
+}
+
+fn build_app_port_lookup(apps: &[serde_json::Value]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for app in apps {
+        let code = match app.get("code").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => continue,
+        };
+        let ports = match app.get("ports").and_then(|v| v.as_array()) {
+            Some(arr) if !arr.is_empty() => arr,
+            _ => continue,
+        };
+        let parts: Vec<String> = ports
+            .iter()
+            .filter_map(|p| {
+                let host = p
+                    .get("host_port")
+                    .or_else(|| p.get("hostPort"))
+                    .and_then(|v| v.as_str());
+                let container = p
+                    .get("container_port")
+                    .or_else(|| p.get("containerPort"))
+                    .and_then(|v| v.as_str());
+                match (host, container) {
+                    (Some(h), Some(c)) if h == c => Some(format!("{}", c)),
+                    (Some(h), Some(c)) => Some(format!("{}:{}", h, c)),
+                    (None, Some(c)) => Some(c.to_string()),
+                    (Some(h), None) => Some(h.to_string()),
+                    (None, None) => None,
+                }
+            })
+            .collect();
+        if !parts.is_empty() {
+            map.insert(code.to_string(), parts.join(", "));
+        }
+    }
+    map
+}
+
+fn container_app_code<'a>(name: &'a str) -> Option<&'a str> {
+    let name = name.trim_start_matches('/');
+    let prefix = if name.starts_with("project-") {
+        "project-"
+    } else if name.starts_with("project_") {
+        "project_"
+    } else {
+        return None;
+    };
+    let after_prefix = &name[prefix.len()..];
+    if let Some(idx) = after_prefix.rfind(|c: char| c == '-' || c == '_') {
+        let candidate = &after_prefix[..idx];
+        let suffix = &after_prefix[idx + 1..];
+        if suffix.chars().all(|c| c.is_numeric()) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn format_container_ports_with_lookup(
+    container: &serde_json::Value,
+    name: &str,
+    port_lookup: &std::collections::HashMap<String, String>,
+) -> String {
+    let from_container = format_container_ports(container);
+    if from_container != "-" {
+        return from_container;
+    }
+    if let Some(code) = container_app_code(name) {
+        if let Some(ports) = port_lookup.get(code) {
+            return ports.clone();
+        }
+    }
+    "-".to_string()
+}
+
+fn format_container_ports(container: &serde_json::Value) -> String {
+    let arr = match container.get("ports").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return "-".to_string(),
+    };
+
+    let parts: Vec<String> = arr
+        .iter()
+        .filter_map(|p| {
+            if let Some(s) = p.as_str() {
+                Some(s.to_string())
+            } else if let Some(n) = p.as_u64() {
+                Some(n.to_string())
+            } else if let Some(obj) = p.as_object() {
+                let host = obj
+                    .get("hostPort")
+                    .or_else(|| obj.get("host_port"))
+                    .or_else(|| obj.get("PublicPort"))
+                    .and_then(|v| v.as_u64());
+                let container = obj
+                    .get("containerPort")
+                    .or_else(|| obj.get("container_port"))
+                    .or_else(|| obj.get("PrivatePort"))
+                    .and_then(|v| v.as_u64());
+                let proto = obj
+                    .get("protocol")
+                    .or_else(|| obj.get("Type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tcp");
+                match (host, container) {
+                    (Some(h), Some(c)) => Some(format!("{}:{}/{}", h, c, proto)),
+                    (None, Some(c)) => Some(format!("{}/{}", c, proto)),
+                    (Some(h), None) => Some(h.to_string()),
+                    (None, None) => None,
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(", ")
     }
 }
 
@@ -1943,10 +2103,11 @@ fn print_snapshot_summary(
     println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Containers
+    let apps = snap.get("apps").and_then(|v| v.as_array()).map(|v| v.as_slice());
     if let Some(containers) = live_containers {
-        print_containers_summary(containers);
+        print_containers_summary_with_apps(containers, apps);
     } else if let Some(containers) = snap.get("containers").and_then(|v| v.as_array()) {
-        print_containers_summary(containers);
+        print_containers_summary_with_apps(containers, apps);
     }
 
     println!("{}", fmt::separator(STATUS_SEP_WIDTH));
@@ -2226,16 +2387,22 @@ impl CallableTrait for AgentHistoryCommand {
 
 // ── Install (deploy Status Panel to existing server) ─
 
-/// `stacker agent install [--file <path>] [--persist-config] [--json]`
+/// `stacker agent install [--file <path>] [--persist-config] [--json] [--local]`
 ///
-/// Deploys the Status Panel agent to an existing server that was previously
-/// deployed without it. Reads the project identity from stacker.yml, finds
-/// the corresponding project and server on the Stacker API, and triggers
-/// a deploy with only the statuspanel feature enabled.
+/// Deploys the Status Panel agent.
+///
+/// For cloud / public-IP servers the command routes through the Stacker install
+/// service (Ansible over cloud-initiated SSH). For intranet servers — detected
+/// automatically when `deploy.server.host` is a private RFC1918 address, or
+/// forced with `--local` — the CLI itself SSHes to the host, runs the status
+/// panel install script, and links the agent via the Stacker API. No inbound
+/// connection from the cloud is needed.
 pub struct AgentInstallCommand {
     pub file: Option<String>,
     pub persist_config: bool,
     pub json: bool,
+    /// Force the local-SSH path even for public-IP servers.
+    pub local: bool,
 }
 
 impl AgentInstallCommand {
@@ -2244,8 +2411,152 @@ impl AgentInstallCommand {
             file,
             persist_config,
             json,
+            local: false,
         }
     }
+
+    pub fn with_local(mut self, local: bool) -> Self {
+        self.local = local;
+        self
+    }
+}
+
+use crate::helpers::ip::is_private_host;
+
+/// Install the Status Panel agent directly from the CLI over local SSH.
+///
+/// Used when the target server is on an intranet and the Stacker cloud install
+/// service cannot reach it. Uses the system `ssh` binary (not russh) to avoid
+/// macOS routing stack issues (EHOSTUNREACH) with private IPs. Steps:
+///   1. Call `POST /api/v1/agent/link` to mint agent credentials
+///   2. Run the status panel install script on the remote via system `ssh`
+///   3. Write `~/stacker/.agent.env` with `AGENT_ID`, `AGENT_TOKEN`, `DASHBOARD_URL`
+///   4. Start the agent in daemon mode
+async fn install_agent_via_local_ssh(
+    server_cfg: &crate::cli::config_parser::ServerConfig,
+    deployment_hash: &str,
+    ctx: &CliRuntime,
+    stacker_url: &str,
+) -> Result<(), CliError> {
+    let key_path = server_cfg
+        .ssh_key
+        .as_ref()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home).join(&s[2..])
+            } else {
+                p.clone()
+            }
+        })
+        .ok_or_else(|| {
+            CliError::ConfigValidation(
+                "deploy.server.ssh_key is required for local agent install.\n\
+                 Set it in stacker.yml or run `stacker config setup server`."
+                    .to_string(),
+            )
+        })?;
+
+    if !key_path.exists() {
+        return Err(CliError::ConfigValidation(format!(
+            "SSH key not found: {}",
+            key_path.display()
+        )));
+    }
+
+    let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
+    let ssh_args = [
+        "-i", key_path.to_str().unwrap_or(""),
+        "-p", &server_cfg.port.to_string(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+    ];
+
+    // Helper: run a command on the remote, stream output, return exit code.
+    let ssh_run = |cmd: &str| -> Result<std::process::Output, CliError> {
+        std::process::Command::new("ssh")
+            .args(&ssh_args)
+            .arg(&user_at_host)
+            .arg(cmd)
+            .output()
+            .map_err(|e| CliError::ConfigValidation(format!("ssh exec failed: {}", e)))
+    };
+
+    // 1. Mint agent credentials via the Stacker API (outbound, always works)
+    eprintln!("  Linking agent to deployment {}...", deployment_hash);
+    let fingerprint = serde_json::json!({ "host": server_cfg.host, "source": "cli_local_install" });
+    let (agent_id, agent_token, linked_hash) =
+        ctx.client.agent_link(deployment_hash, fingerprint).await?;
+    eprintln!("  Agent linked (id: {}).", agent_id);
+
+    // 2. Install the status panel binary into ~/.local/bin (no sudo needed).
+    // The install.sh respects INSTALL_DIR; we avoid /usr/local/bin which
+    // requires sudo and prompts for a TTY we don't have in BatchMode.
+    eprintln!("  Running status panel install script on {}...", server_cfg.host);
+    let install_out = ssh_run(
+        "mkdir -p $HOME/.local/bin && \
+         curl -sSfL https://raw.githubusercontent.com/trydirect/status/master/install.sh \
+         | INSTALL_DIR=$HOME/.local/bin sh",
+    )?;
+    if !install_out.status.success() {
+        let stderr = String::from_utf8_lossy(&install_out.stderr);
+        return Err(CliError::ConfigValidation(format!(
+            "Install script failed (exit {}):\n{}",
+            install_out.status.code().unwrap_or(-1),
+            stderr.trim()
+        )));
+    }
+    eprintln!("  Binary installed.");
+
+    // 3. Write .env into the agent's working directory.
+    // The status panel binary loads .env from its current working directory
+    // via dotenvy::dotenv() at startup.  We use ~/stacker/ as the working dir.
+    let env_content = format!(
+        "AGENT_ID={}\nAGENT_TOKEN={}\nDASHBOARD_URL={}\nDEPLOYMENT_HASH={}\nCOMPOSE_AGENT_ENABLED=true\n",
+        agent_id, agent_token, stacker_url, linked_hash
+    );
+    use base64::Engine as _;
+    let env_b64 = base64::engine::general_purpose::STANDARD.encode(&env_content);
+    let write_cmd = format!(
+        "mkdir -p ~/stacker && printf '%s' '{}' | base64 -d > ~/stacker/.env && chmod 600 ~/stacker/.env",
+        env_b64
+    );
+    let write_out = ssh_run(&write_cmd)?;
+    if !write_out.status.success() {
+        let stderr = String::from_utf8_lossy(&write_out.stderr);
+        return Err(CliError::ConfigValidation(format!(
+            "Failed to write ~/stacker/.env: {}",
+            stderr.trim()
+        )));
+    }
+
+    // 4. Generate config.json (required by the daemon) then start it.
+    // `status init` creates config.json with defaults; without --force it
+    // won't overwrite the .env we already wrote.
+    //
+    // Do NOT use `status --daemon`: that flag triggers POSIX daemonize() which
+    // forks and redirects its own stdout/stderr to /dev/null — the polling loop
+    // runs silently and the log file only ever gets the banner.
+    //
+    // Instead run `status` in foreground mode and use setsid+nohup to detach
+    // from the SSH session. This keeps all log output going to status.log.
+    let start_cmd = "cd ~/stacker && \
+        $HOME/.local/bin/status init 2>/dev/null; \
+        pkill -f '$HOME/.local/bin/status' 2>/dev/null; \
+        setsid nohup $HOME/.local/bin/status > ~/stacker/status.log 2>&1 &";
+    let _ = ssh_run(start_cmd)?;
+
+    eprintln!();
+    eprintln!("✓ Status Panel agent installed on {}.", server_cfg.host);
+    eprintln!("  Agent ID:         {}", agent_id);
+    eprintln!("  Deployment:       {}", linked_hash);
+    eprintln!("  Working dir:      ~/stacker/");
+    eprintln!("  Config:           ~/stacker/.env");
+    eprintln!("  The agent is now polling {} for deploy commands.", stacker_url);
+    eprintln!("  Run `stacker agent status` to verify connectivity.");
+
+    Ok(())
 }
 
 fn fallback_server_config_for_agent_install(
@@ -2499,7 +2810,96 @@ impl CallableTrait for AgentInstallCommand {
             .clone()
             .unwrap_or_else(|| config.name.clone());
 
+        // Detect intranet server: use local SSH path when the host is a private IP
+        // (or --local is explicitly set) so the cloud install service is bypassed.
+        // If there's no deploy.server at all (e.g. cloud-deployed project), always
+        // use the cloud install path.
+        let use_local_ssh = match config.deploy.server.as_ref() {
+            Some(s) => self.local || is_private_host(s.host.as_str()),
+            None => self.local,
+        };
+
         let ctx = CliRuntime::new("agent install")?;
+
+        if use_local_ssh {
+            let server_cfg = config.deploy.server.clone().ok_or_else(|| {
+                CliError::ConfigValidation(
+                    "deploy.server must be configured for local agent install.\n\
+                     Run `stacker config setup server` first."
+                        .to_string(),
+                )
+            })?;
+
+            let stacker_url = std::env::var("STACKER_URL")
+                .unwrap_or_else(|_| stacker_client::DEFAULT_STACKER_URL.to_string());
+
+            eprintln!(
+                "Server {} is on a private network — using local SSH to install agent.",
+                server_cfg.host
+            );
+            eprintln!("(Use --local to force this path for public-IP servers.)");
+            eprintln!();
+
+            // Find the deployment hash for this project
+            let pb = progress::spinner("Resolving deployment...");
+            let deployment_hash: Result<String, CliError> = ctx.block_on(async {
+                let project = ctx
+                    .client
+                    .find_project_by_name(&project_name)
+                    .await?
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "Project '{}' not found on the Stacker server.\n\
+                             Deploy the project first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })?;
+
+                let deployments = ctx.client.list_deployments(Some(project.id), Some(1)).await?;
+                deployments
+                    .into_iter()
+                    .next()
+                    .map(|d| d.deployment_hash)
+                    .ok_or_else(|| {
+                        CliError::ConfigValidation(format!(
+                            "No active deployment found for project '{}'.\n\
+                             Deploy first with: stacker deploy --target server",
+                            project_name
+                        ))
+                    })
+            });
+            progress::finish_success(&pb, "Deployment resolved");
+
+            let deployment_hash = deployment_hash?;
+
+            ctx.block_on(install_agent_via_local_ssh(
+                &server_cfg,
+                &deployment_hash,
+                &ctx,
+                &stacker_url,
+            ))?;
+
+            // Persist the deployment hash into stacker.yml so that subsequent
+            // `stacker agent status/logs` commands can find it without --deployment.
+            if config_path.exists() {
+                if let Ok(mut cfg) =
+                    crate::cli::config_parser::StackerConfig::from_file_raw(&config_path)
+                {
+                    cfg.deploy.deployment_hash = Some(deployment_hash.clone());
+                    if let Ok(yaml) = serde_yaml::to_string(&cfg) {
+                        let _ = std::fs::write(&config_path, yaml);
+                    }
+                }
+            }
+
+            persist_agent_install_config_if_requested(&config_path, self.persist_config)?
+                .as_ref()
+                .map(print_agent_install_config_persistence);
+
+            return Ok(());
+        }
+
+        // ── Cloud install path (public-IP servers) ────────────────────────────
         let pb = progress::spinner("Installing Status Panel agent");
 
         let result: Result<stacker_client::DeployResponse, CliError> = ctx.block_on(async {

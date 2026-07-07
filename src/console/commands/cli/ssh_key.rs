@@ -232,6 +232,10 @@ fn default_backup_ssh_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("stacker").join("ssh"))
 }
 
+pub fn local_backup_private_key_path(server_id: i32) -> PathBuf {
+    backup_key_paths_for_server(server_id, &default_backup_ssh_dir()).0
+}
+
 fn backup_key_paths_for_server(server_id: i32, ssh_dir: &Path) -> (PathBuf, PathBuf) {
     let private_key_path = ssh_dir.join(format!("server-{}_ed25519", server_id));
     let public_key_path = PathBuf::from(format!("{}.pub", private_key_path.display()));
@@ -341,7 +345,7 @@ fn set_private_file_permissions(_path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn format_ssh_command(private_key_path: &Path, user: &str, host: &str, port: u16) -> String {
+pub fn format_ssh_command(private_key_path: &Path, user: &str, host: &str, port: u16) -> String {
     format!(
         "ssh -i {} -p {} {}@{}",
         private_key_path.display(),

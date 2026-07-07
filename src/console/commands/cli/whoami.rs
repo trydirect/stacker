@@ -2,6 +2,10 @@ use std::path::Path;
 
 use crate::cli::credentials::{CredentialsManager, StoredCredentials};
 use crate::cli::deployment_lock::DeploymentLock;
+use crate::cli::user_config::UserConfig;
+use crate::connectors::user_service::plan::{
+    get_subscription_plan_blocking, subscription_plan_lines, user_service_url_from_sources,
+};
 use crate::console::commands::CallableTrait;
 
 pub struct WhoamiCommand;
@@ -70,10 +74,53 @@ fn describe_project_lock(lock: Option<&DeploymentLock>) -> Vec<String> {
     }
 }
 
+fn resolve_user_service_url(creds: &StoredCredentials) -> Option<String> {
+    let cfg = UserConfig::load();
+    user_service_url_from_sources(
+        std::env::var("STACKER_AUTH_URL").ok(),
+        std::env::var("STACKER_API_URL").ok(),
+        creds.server_url.clone(),
+        cfg.auth_url,
+    )
+}
+
+fn describe_subscription_unavailable(reason: &str) -> Vec<String> {
+    vec![
+        "Subscription: unavailable".to_string(),
+        format!("  Reason:        {}", reason),
+    ]
+}
+
+fn load_subscription_plan(creds: Option<&StoredCredentials>) -> Vec<String> {
+    let Some(creds) = creds else {
+        return describe_subscription_unavailable("not logged in");
+    };
+
+    if creds.is_expired() {
+        return describe_subscription_unavailable("login expired; run `stacker login`");
+    }
+
+    let Some(user_service_url) = resolve_user_service_url(creds) else {
+        return describe_subscription_unavailable(
+            "missing User Service URL; set STACKER_AUTH_URL or configure auth_url",
+        );
+    };
+
+    match get_subscription_plan_blocking(&user_service_url, &creds.access_token) {
+        Ok(plan) => subscription_plan_lines(&plan),
+        Err(error) => describe_subscription_unavailable(&format!("failed to fetch plan: {error}")),
+    }
+}
+
 impl CallableTrait for WhoamiCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let creds = CredentialsManager::with_default_store().load()?;
         for line in describe_saved_login(creds.as_ref()) {
+            println!("{}", line);
+        }
+
+        println!();
+        for line in load_subscription_plan(creds.as_ref()) {
             println!("{}", line);
         }
 
@@ -123,5 +170,13 @@ mod tests {
         let lines = describe_project_lock(Some(&lock));
         assert!(lines.iter().any(|line| line.contains("owner@example.com")));
         assert!(lines.iter().any(|line| line.contains("demo")));
+    }
+
+    #[test]
+    fn load_subscription_plan_reports_missing_login() {
+        let lines = load_subscription_plan(None);
+
+        assert_eq!(lines[0], "Subscription: unavailable");
+        assert!(lines.iter().any(|line| line.contains("not logged in")));
     }
 }

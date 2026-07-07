@@ -1,6 +1,6 @@
 use super::InstallServiceConnector;
 use crate::forms::cloud_firewall;
-use crate::forms::project::{RegistryForm, Stack};
+use crate::forms::project::{RegistryForm, Stack, Var};
 use crate::forms::{CloudFirewallOperationMessage, ConfigureCloudFirewallResponse};
 use crate::helpers::{compressor::compress, MqManager};
 use crate::models;
@@ -28,6 +28,18 @@ fn normalize_server_region_for_installer(provider: &str, server: &mut crate::for
     };
 
     server.region = Some(location.to_string());
+}
+
+fn stack_var_string(vars: &Option<Vec<Var>>, key: &str) -> Option<String> {
+    vars.as_ref()?.iter().find_map(|var| {
+        if var.key.as_deref() == Some(key) {
+            var.value
+                .as_ref()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]
@@ -123,6 +135,9 @@ impl InstallServiceConnector for InstallServiceClient {
         }
         payload.cloud = Some(cloud_creds.into());
         payload.stack = form_stack.clone().into();
+        if payload.common_domain.is_none() {
+            payload.common_domain = stack_var_string(&form_stack.vars, "commonDomain");
+        }
         payload.user_token = Some(user_id);
         payload.user_email = Some(user_email);
         payload.docker_compose = Some(compress(fc.as_str()));

@@ -70,6 +70,7 @@ async fn test_docker_hub_successful_login() {
         dockerhub_name: Some(String::from("nginx-waf")),
         dockerhub_image: None,
         dockerhub_password: Some(String::from(DOCKER_PASSWORD)),
+        dockerhub_tag: None,
     };
     assert!(di.is_active().await.unwrap());
 }
@@ -85,6 +86,7 @@ async fn test_docker_private_exists() {
         dockerhub_name: Some(String::from("nginx-waf")),
         dockerhub_image: None,
         dockerhub_password: Some(String::from(DOCKER_PASSWORD)),
+        dockerhub_tag: None,
     };
     assert!(di.is_active().await.unwrap());
 }
@@ -99,6 +101,7 @@ async fn test_public_repo_is_accessible() {
         dockerhub_name: Some(String::from("nginx")),
         dockerhub_image: None,
         dockerhub_password: Some(String::from("")),
+        dockerhub_tag: None,
     };
     assert!(di.is_active().await.unwrap());
 }
@@ -112,6 +115,7 @@ async fn test_docker_non_existent_repo() {
         dockerhub_name: Some(String::from("nonexistent")), //repo
         dockerhub_image: None, // namesps/reponame:tag full docker image string
         dockerhub_password: Some(String::from("")),
+        dockerhub_tag: None,
     };
     println!("{}", di.is_active().await.unwrap());
     assert!(!di.is_active().await.unwrap());
@@ -127,6 +131,7 @@ async fn test_docker_non_existent_repo_empty_namespace() {
         dockerhub_name: Some(String::from("nonexistent")), //repo
         dockerhub_image: None, // namesps/reponame:tag full docker image string
         dockerhub_password: Some(String::from("")),
+        dockerhub_tag: None,
     };
     assert!(di.is_active().await.unwrap());
 }

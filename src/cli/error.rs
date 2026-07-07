@@ -39,6 +39,20 @@ pub enum CliError {
         target: DeployTarget,
         reason: String,
     },
+    /// A deploy hook (`pre_build`, `post_deploy`, `on_failure`) was
+    /// rejected BEFORE execution by the security scanner or the trust
+    /// policy — path traversal, malicious content pattern, or
+    /// marketplace-untrusted origin without `--allow-untrusted-hooks`.
+    ///
+    /// This is distinct from `DeployFailed` on purpose: the deploy
+    /// pipeline treats runtime hook failures (non-zero exit code) as
+    /// best-effort warnings, but security rejections MUST propagate so
+    /// a hostile stacker.yml can't turn a successful deploy into a
+    /// silent security-check bypass. See `Phase 6b` in the audit.
+    HookRejected {
+        hook_name: String,
+        reason: String,
+    },
     LoginRequired {
         feature: String,
     },
@@ -142,6 +156,12 @@ impl fmt::Display for CliError {
             }
             Self::DeployFailed { target, reason } => {
                 write!(f, "Deployment to {target} failed: {reason}")
+            }
+            Self::HookRejected { hook_name, reason } => {
+                write!(
+                    f,
+                    "Hook '{hook_name}' rejected before execution: {reason}"
+                )
             }
             Self::LoginRequired { feature } => {
                 write!(f, "Login required for {feature}. Run: stacker login")

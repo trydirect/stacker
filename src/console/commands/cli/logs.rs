@@ -254,7 +254,12 @@ fn run_remote_logs(
         let request = AgentEnqueueRequest::new(&hash, "list_containers")
             .with_parameters(&params)
             .map_err(|e| CliError::ConfigValidation(format!("Invalid parameters: {}", e)))?;
-        let info = run_remote_agent_command(&ctx, &request, "Discovering containers", REMOTE_TIMEOUT_SECS)?;
+        let info = run_remote_agent_command(
+            &ctx,
+            &request,
+            "Discovering containers",
+            REMOTE_TIMEOUT_SECS,
+        )?;
         if info.status != "completed" {
             let (summary, tip) = no_containers_messages(&hash);
             eprintln!("{}", summary);
@@ -406,10 +411,7 @@ fn print_logs_result(app_code: &str, info: &AgentCommandInfo, multi: bool) {
                 println!("(no log output)");
             } else {
                 for line in lines {
-                    let msg = line
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let msg = line.get("message").and_then(|v| v.as_str()).unwrap_or("");
                     println!("{}", msg);
                 }
             }

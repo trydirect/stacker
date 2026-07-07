@@ -118,8 +118,8 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<(), CliError> {
     Ok(())
 }
 
-impl CallableTrait for ExplainEnvCommand {
-    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+impl ExplainEnvCommand {
+    fn run(&self) -> Result<(), CliError> {
         let project_dir = std::env::current_dir()?;
         let config = load_config(&project_dir)?;
         let deployment_hash = config
@@ -151,6 +151,22 @@ impl CallableTrait for ExplainEnvCommand {
         }
 
         Ok(())
+    }
+}
+
+impl CallableTrait for ExplainEnvCommand {
+    fn call(&self) -> Result<(), Box<dyn std::error::Error>> {
+        match self.run() {
+            Ok(()) => Ok(()),
+            // In human (non-JSON) mode, surface typed errors as their plain message
+            // instead of the raw JSON envelope. JSON mode preserves the envelope so
+            // programmatic consumers (CI, MCP) can keep parsing it.
+            Err(CliError::Typed(envelope)) if !self.json => {
+                eprintln!("Error: {}", envelope.message);
+                std::process::exit(1);
+            }
+            Err(err) => Err(Box::new(err)),
+        }
     }
 }
 

@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Remote project initialization via `--from-github`
+
+- Added `stacker init --from-github <url>` (short flag: `-g`) to automatically
+  generate a `stacker.yml` by cloning a GitHub repository into a temp directory,
+  detecting the project type and compose-defined services, inferring healthchecks
+  for infrastructure images (postgres, redis, mysql, mongo, rabbitmq,
+  elasticsearch), and writing the config to the current directory.
+  Accepts `owner/repo` shorthand and full `https://github.com/owner/repo` URLs,
+  with optional `.git` suffix.
+- `stacker init --from-github` also generates `.env.example` from detected
+  environment variables, marking secret-looking keys (password, secret, key,
+  token) as empty, and creates `scripts/generate-secrets.sh` for one-command
+  local secret generation via `openssl rand -hex`.
+- The remote init path reuses the existing local detection and config generation
+  pipeline (`detect_workspace`, `ConfigBuilder`, `DockerfileBuilder`) unchanged —
+  the GitHub clone is the only net-new I/O step.
+- `.stacker/` artifact generation and cloud setup wizard are skipped for
+  `--from-github` to avoid stale temporary-paths in generated artifacts.
+
 ### Added — Onboarding setup helpers
 
 - Added `stacker config setup ai` to enable and update `ai.*` settings from the

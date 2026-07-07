@@ -1483,6 +1483,8 @@ mod tests {
             )]),
             volumes: vec!["upload-data:/data".to_string()],
             depends_on: vec!["postgres".to_string()],
+            command: None,
+            healthcheck: None,
         }
     }
 
@@ -1519,6 +1521,7 @@ mod tests {
             services: vec![service_definition("upload")],
             proxy: Default::default(),
             deploy: Default::default(),
+            install: Default::default(),
             environments: Default::default(),
             ai: Default::default(),
             monitoring: Default::default(),
@@ -1526,6 +1529,7 @@ mod tests {
             env_file: None,
             env: Default::default(),
             config_contract: Default::default(),
+            origin: Default::default(),
         };
 
         assert_eq!(

@@ -20,6 +20,7 @@ pub mod deployment_lock;
 pub mod detector;
 pub mod error;
 pub mod field_matcher;
+pub mod github_fetcher;
 pub mod fmt;
 pub mod generator;
 pub mod install_runner;

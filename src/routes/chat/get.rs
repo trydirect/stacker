@@ -26,6 +26,6 @@ pub async fn item(
         .map_err(|err| JsonResponse::internal_server_error(err.to_string()))
         .and_then(|conv| match conv {
             Some(c) => Ok(JsonResponse::build().set_item(Some(c)).ok("OK")),
-            None => Err(JsonResponse::not_found("No chat history found")),
+            None => Ok(JsonResponse::build().ok("OK")),
         })
 }

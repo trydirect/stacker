@@ -50,11 +50,11 @@ pub async fn login_handler(
     user_service: web::Data<Arc<dyn UserServiceConnector>>,
     _req: HttpRequest,
 ) -> Result<HttpResponse> {
-    // 1. Authenticate user against TryDirect OAuth server
-    let auth_base = settings
-        .auth_url
-        .trim_end_matches("/me")
-        .trim_end_matches('/');
+    // 1. Authenticate user against the TryDirect user service.
+    // /auth/login lives at the user-service root, not under /oauth_server/api/,
+    // so we use normalize_user_service_base_url() which strips the full tail.
+    let auth_base =
+        crate::connectors::user_service::plan::normalize_user_service_base_url(&settings.auth_url);
     let login_url = format!("{}/auth/login", auth_base);
 
     let http_client = reqwest::Client::builder()
@@ -114,8 +114,11 @@ pub async fn login_handler(
                 .internal_server_error(format!("Failed to fetch user profile: {}", e))
         })?;
 
-    // 3. Fetch user's deployments from Stacker DB
-    let deployments = db::deployment::fetch_by_user(api_pool.get_ref(), &profile.email, 50)
+    // 3. Fetch user's deployments from Stacker DB.
+    // deployment.user_id holds the user's cross-service identity (queue_key,
+    // exposed as `_id` on the user service wire), not the email — querying
+    // by email returns zero rows even when the user has deployments.
+    let deployments = db::deployment::fetch_by_user(api_pool.get_ref(), &profile.id, 50)
         .await
         .map_err(|e| {
             helpers::JsonResponse::<AgentLoginResponse>::build()
@@ -157,7 +160,42 @@ pub async fn login_handler(
 
     Ok(HttpResponse::Ok().json(AgentLoginResponse {
         session_token: access_token,
-        user_id: profile.email,
+        user_id: profile.id,
         deployments: deployment_infos,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::connectors::user_service::plan::normalize_user_service_base_url;
+
+    /// Regression test: the production `auth_url` points at the user service
+    /// `/me` endpoint, but `/auth/login` lives at the user-service root, not
+    /// nested under `/oauth_server/api/`. The derivation must strip the full
+    /// `/oauth_server/api/me` tail, not just `/me`.
+    #[test]
+    fn login_url_is_derived_from_me_endpoint_correctly() {
+        let auth_url = "https://dev.try.direct/server/user/oauth_server/api/me";
+        let base = normalize_user_service_base_url(auth_url);
+        let login_url = format!("{}/auth/login", base);
+        assert_eq!(login_url, "https://dev.try.direct/server/user/auth/login");
+    }
+
+    #[test]
+    fn login_url_is_idempotent_when_auth_url_already_points_at_login() {
+        // If an operator misconfigures auth_url to already point at /auth/login,
+        // we must not produce a doubled path like /auth/login/auth/login.
+        let auth_url = "https://dev.try.direct/server/user/auth/login";
+        let base = normalize_user_service_base_url(auth_url);
+        let login_url = format!("{}/auth/login", base);
+        assert_eq!(login_url, "https://dev.try.direct/server/user/auth/login");
+    }
+
+    #[test]
+    fn login_url_handles_trailing_slash_in_auth_url() {
+        let auth_url = "https://dev.try.direct/server/user/oauth_server/api/me/";
+        let base = normalize_user_service_base_url(auth_url);
+        let login_url = format!("{}/auth/login", base);
+        assert_eq!(login_url, "https://dev.try.direct/server/user/auth/login");
+    }
 }

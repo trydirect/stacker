@@ -5,8 +5,9 @@ use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     emit_git_short_hash();
+    configure_protoc()?;
 
-    let proto_includes = collect_proto_include_paths();
+    let proto_includes = collect_proto_include_paths()?;
 
     tonic_build::configure()
         .build_server(false)
@@ -15,8 +16,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn collect_proto_include_paths() -> Vec<PathBuf> {
+fn configure_protoc() -> Result<(), Box<dyn std::error::Error>> {
+    if env::var_os("PROTOC").is_none() {
+        env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);
+    }
+
+    if env::var_os("PROTOC_INCLUDE").is_none() {
+        env::set_var("PROTOC_INCLUDE", protoc_bin_vendored::include_path()?);
+    }
+
+    println!("cargo:rerun-if-env-changed=PROTOC");
+    println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
+
+    Ok(())
+}
+
+fn collect_proto_include_paths() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut includes = vec![PathBuf::from("proto")];
+
+    let vendored_include = PathBuf::from(protoc_bin_vendored::include_path()?);
+    if vendored_include
+        .join("google/protobuf/struct.proto")
+        .exists()
+    {
+        includes.push(vendored_include);
+    }
 
     for candidate in [
         PathBuf::from("/usr/include"),
@@ -28,7 +52,7 @@ fn collect_proto_include_paths() -> Vec<PathBuf> {
         }
     }
 
-    includes
+    Ok(includes)
 }
 
 fn emit_git_short_hash() {

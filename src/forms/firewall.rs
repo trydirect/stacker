@@ -49,6 +49,22 @@ pub fn parse_public_port(input: &str) -> Result<FirewallPortRule, String> {
     Ok(rule)
 }
 
+/// Normalize a public port spec into its canonical `port/protocol` form.
+///
+/// Accepts bare numbers ("8000") and suffixed forms ("8000/tcp", "53/udp"),
+/// validates them, and returns the canonical string ("8000/tcp", "53/udp").
+/// This guarantees downstream consumers (Install Service, cloud-provider
+/// firewall APIs) always receive a fully-qualified port/protocol pair instead
+/// of silently dropping bare port numbers.
+pub fn normalize_public_port(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("public port cannot be empty".to_string());
+    }
+    let rule = parse_public_port(trimmed)?;
+    Ok(format!("{}/{}", rule.port, rule.protocol))
+}
+
 pub fn parse_private_port(input: &str) -> Result<FirewallPortRule, String> {
     let (port_proto, source) = input.split_once(':').ok_or_else(|| {
         format!(
@@ -135,6 +151,26 @@ mod tests {
 
         assert_eq!(rule.port, 53);
         assert_eq!(rule.protocol, "udp");
+    }
+
+    #[test]
+    fn normalize_public_port_adds_tcp_suffix_to_bare_port() {
+        assert_eq!(normalize_public_port("8000").unwrap(), "8000/tcp");
+        assert_eq!(normalize_public_port(" 80 ").unwrap(), "80/tcp");
+    }
+
+    #[test]
+    fn normalize_public_port_preserves_explicit_protocol() {
+        assert_eq!(normalize_public_port("53/udp").unwrap(), "53/udp");
+        assert_eq!(normalize_public_port("443/tcp").unwrap(), "443/tcp");
+    }
+
+    #[test]
+    fn normalize_public_port_rejects_invalid() {
+        assert!(normalize_public_port("").is_err());
+        assert!(normalize_public_port("0").is_err());
+        assert!(normalize_public_port("65536").is_err());
+        assert!(normalize_public_port("80/icmp").is_err());
     }
 
     #[test]

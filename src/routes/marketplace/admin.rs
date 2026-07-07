@@ -622,6 +622,102 @@ pub async fn update_vendor_profile_handler(
     Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
 }
 
+/// `PATCH /api/admin/vendors/{creator_user_id}/vendor-profile`
+///
+/// Same as the template-scoped endpoint but addressed directly by `creator_user_id`,
+/// allowing vendor profile updates when the vendor has no approved template yet
+/// or when the product-bridge mapping is unavailable in the admin UI.
+#[tracing::instrument(name = "Admin update vendor profile by creator id", skip_all)]
+#[patch("/{creator_user_id}/vendor-profile")]
+pub async fn update_vendor_profile_by_creator_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    path: web::Path<(String,)>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<AdminVendorProfileRequest>,
+) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
+    let creator_user_id = path.into_inner().0;
+    let req = body.into_inner();
+
+    if req.verification_status.is_none()
+        && req.onboarding_status.is_none()
+        && req.payouts_enabled.is_none()
+        && req.payout_provider.is_none()
+        && req.payout_account_ref.is_none()
+        && req.metadata.is_none()
+    {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .bad_request("No vendor profile fields provided"));
+    }
+
+    validate_vendor_status(
+        "verification_status",
+        req.verification_status.as_deref(),
+        ALLOWED_VENDOR_VERIFICATION_STATUSES,
+    )?;
+    validate_vendor_status(
+        "onboarding_status",
+        req.onboarding_status.as_deref(),
+        ALLOWED_VENDOR_ONBOARDING_STATUSES,
+    )?;
+
+    if let Some(metadata) = req.metadata.as_ref() {
+        if !metadata.is_object() {
+            return Err(JsonResponse::<serde_json::Value>::build()
+                .bad_request("metadata must be a JSON object"));
+        }
+    }
+
+    db::marketplace::upsert_vendor_profile(
+        pg_pool.get_ref(),
+        &creator_user_id,
+        req.verification_status.as_deref(),
+        req.onboarding_status.as_deref(),
+        req.payouts_enabled,
+        req.payout_provider.as_deref(),
+        req.payout_account_ref.as_deref(),
+        req.metadata,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor profile updated"))
+}
+
+/// List all marketplace vendor profiles for the admin vendor overview.
+/// Returns every profile row regardless of whether the vendor has published products,
+/// so the admin UI can surface vendors who are onboarding or have only submitted templates.
+#[tracing::instrument(name = "Admin list vendor profiles", skip_all)]
+#[get("")]
+pub async fn list_vendor_profiles_handler(
+    _admin: web::ReqData<Arc<models::User>>,
+    pg_pool: web::Data<PgPool>,
+) -> Result<impl Responder> {
+    db::marketplace::admin_list_vendor_profiles(pg_pool.get_ref())
+        .await
+        .map_err(|err| {
+            JsonResponse::<Vec<models::MarketplaceVendorProfile>>::build()
+                .internal_server_error(err)
+        })
+        .map(|profiles| {
+            let items: Vec<serde_json::Value> = profiles
+                .into_iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "creator_user_id":     p.creator_user_id,
+                        "public_slug":         p.public_slug,
+                        "display_name":        p.display_name,
+                        "verification_status": p.verification_status,
+                        "onboarding_status":   p.onboarding_status,
+                        "payouts_enabled":     p.payouts_enabled,
+                        "created_at":          p.created_at,
+                        "updated_at":          p.updated_at,
+                    })
+                })
+                .collect();
+            JsonResponse::build().set_list(items).ok("OK")
+        })
+}
+
 /// Request body for PATCH /{id}/verifications.
 /// Each key is a boolean flag. Unknown keys are accepted and stored as-is.
 /// Omitted keys are not touched (partial update via JSONB `||`).

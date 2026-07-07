@@ -22,8 +22,8 @@ pub const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
 pub fn default_model(provider: AiProviderType) -> &'static str {
     match provider {
         AiProviderType::Openai => "gpt-4o",
-        AiProviderType::Anthropic => "claude-sonnet-4-20250514",
-        AiProviderType::Ollama => "llama3",
+        AiProviderType::Anthropic => "claude-haiku-4-5-20251001",
+        AiProviderType::Ollama => "qwen2.5-coder",
         AiProviderType::Custom => "default",
     }
 }
@@ -1539,8 +1539,8 @@ mod tests {
     #[test]
     fn test_default_models() {
         assert_eq!(default_model(AiProviderType::Openai), "gpt-4o");
-        assert_eq!(default_model(AiProviderType::Ollama), "llama3");
-        assert!(default_model(AiProviderType::Anthropic).contains("claude"));
+        assert_eq!(default_model(AiProviderType::Ollama), "qwen2.5-coder");
+        assert!(default_model(AiProviderType::Anthropic).starts_with("claude"));
     }
 
     #[test]

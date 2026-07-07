@@ -69,10 +69,7 @@ fn inject_external_network(
                 }
             }
             None => {
-                svc.insert(
-                    networks_key,
-                    serde_yaml::Value::Sequence(vec![network_val]),
-                );
+                svc.insert(networks_key, serde_yaml::Value::Sequence(vec![network_val]));
                 changed = true;
             }
             _ => {}
@@ -243,6 +240,35 @@ fn service_to_compose_value(
     );
     insert_string_sequence(&mut map, "ports", &service.ports);
     insert_environment(&mut map, &service.environment);
+    if let Some(ref cmd) = service.command {
+        map.insert(
+            serde_yaml::Value::String("command".to_string()),
+            serde_yaml::Value::String(cmd.clone()),
+        );
+    }
+    if let Some(ref hc) = service.healthcheck {
+        let mut hc_map = serde_yaml::Mapping::new();
+        hc_map.insert(
+            serde_yaml::Value::String("test".to_string()),
+            serde_yaml::Value::String(hc.test.clone()),
+        );
+        hc_map.insert(
+            serde_yaml::Value::String("interval".to_string()),
+            serde_yaml::Value::String(hc.interval.clone()),
+        );
+        hc_map.insert(
+            serde_yaml::Value::String("timeout".to_string()),
+            serde_yaml::Value::String(hc.timeout.clone()),
+        );
+        hc_map.insert(
+            serde_yaml::Value::String("retries".to_string()),
+            serde_yaml::Value::Number(hc.retries.into()),
+        );
+        map.insert(
+            serde_yaml::Value::String("healthcheck".to_string()),
+            serde_yaml::Value::Mapping(hc_map),
+        );
+    }
     insert_string_sequence(&mut map, "volumes", &service.volumes);
     insert_string_sequence(&mut map, "depends_on", &service.depends_on);
     if !project_networks.is_empty() {
@@ -387,7 +413,9 @@ fn push_unique_network(networks: &mut Vec<String>, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::config_parser::{AppSource, DeployConfig, DomainConfig, ProjectConfig, SslMode};
+    use crate::cli::config_parser::{
+        AppSource, DeployConfig, DomainConfig, ProjectConfig, SslMode,
+    };
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -499,7 +527,7 @@ mod tests {
 
     // ── sync_configured_compose_services proxy-inject tests ──────────────────
 
-    fn npm_stacker_config(dir: &std::path::Path, service_name: &str) -> StackerConfig {
+    fn npm_stacker_config(_dir: &std::path::Path, service_name: &str) -> StackerConfig {
         StackerConfig {
             project: ProjectConfig::default(),
             app: AppSource::default(),
@@ -524,6 +552,8 @@ mod tests {
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
+            command: None,
+            healthcheck: None,
             }],
             ..Default::default()
         }
@@ -572,6 +602,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         }];
 
         let result =
@@ -636,6 +668,8 @@ volumes:
                 ]),
                 volumes: vec!["smtp_data:/data".to_string()],
                 depends_on: Vec::new(),
+            command: None,
+            healthcheck: None,
             }],
             ..Default::default()
         };

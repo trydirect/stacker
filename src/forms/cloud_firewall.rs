@@ -279,6 +279,134 @@ pub fn default_firewall_name(target: &CloudFirewallTarget) -> String {
         .unwrap_or_else(|| format!("frw-server-{}", target.server_id))
 }
 
+/// Publish cloud firewall add rules for a set of public ports.
+///
+/// Intended for automatic firewall configuration triggered from:
+/// - `execute_deployment` (when the server already has an IP)
+/// - the MQ listener (when a new deployment transitions to "completed")
+///
+/// This is a lighter version of the manual route at `routes/server/cloud_firewall.rs`
+/// — it skips the live cloud-provider firewall listing/attachment and just publishes
+/// the operation, letting the Install Service handle firewall resolution.
+pub async fn publish_public_firewall_rules(
+    mq_manager: &crate::helpers::MqManager,
+    server: &crate::models::Server,
+    cloud: &crate::models::Cloud,
+    public_ports: &[String],
+    deployment_hash: &str,
+    user_id: &str,
+) -> Result<ConfigureCloudFirewallResponse, String> {
+    let provider = normalize_provider(&cloud.provider)
+        .ok_or_else(|| format!("Unsupported cloud provider: {}", cloud.provider))?;
+    let routing_key = routing_key(&cloud.provider)
+        .ok_or_else(|| format!("Unsupported cloud provider: {}", cloud.provider))?;
+
+    let cloud = if cloud.save_token == Some(true) {
+        crate::forms::CloudForm::decode_model(cloud.clone(), true)
+    } else {
+        cloud.clone()
+    };
+
+    let credentials = CloudFirewallCredentials {
+        provider: provider.to_string(),
+        token: cloud.cloud_token.clone().filter(|t| !t.trim().is_empty()),
+        key: cloud.cloud_key.clone().filter(|k| !k.trim().is_empty()),
+        secret: cloud.cloud_secret.clone().filter(|s| !s.trim().is_empty()),
+    };
+
+    let mut rules = parse_public_ports_to_firewall_rules(public_ports, server.id)?;
+
+    let target = CloudFirewallTarget {
+        provider: provider.to_string(),
+        cloud_id: cloud.id,
+        server_id: server.id,
+        project_id: server.project_id,
+        deployment_hash: Some(deployment_hash.to_string()),
+        server_public_ip: server
+            .srv_ip
+            .clone()
+            .unwrap_or_default(),
+        provider_server_id: None,
+        server_name: server.name.clone().or_else(|| server.server.clone()),
+        region: server.region.clone(),
+        zone: server.zone.clone(),
+        firewall_id: None,
+        firewall_name: Some(default_firewall_name(&CloudFirewallTarget {
+            provider: provider.to_string(),
+            cloud_id: cloud.id,
+            server_id: server.id,
+            project_id: server.project_id,
+            deployment_hash: Some(deployment_hash.to_string()),
+            server_public_ip: String::new(),
+            provider_server_id: None,
+            server_name: server.name.clone().or_else(|| server.server.clone()),
+            region: server.region.clone(),
+            zone: server.zone.clone(),
+            firewall_id: None,
+            firewall_name: None,
+        })),
+    };
+
+    let operation_id = format!("cfw_auto_{}", uuid::Uuid::new_v4());
+    for rule in &mut rules {
+        rule.labels
+            .insert("stacker.operation_id".to_string(), operation_id.clone());
+    }
+
+    let message = CloudFirewallOperationMessage {
+        protocol_version: CLOUD_FIREWALL_PROTOCOL_VERSION.to_string(),
+        operation_id: operation_id.clone(),
+        idempotency_key: idempotency_key(server.id, &CloudFirewallAction::Add, &rules),
+        action: CloudFirewallAction::Add,
+        dry_run: false,
+        target,
+        rules,
+        credentials,
+        provider_context: BTreeMap::new(),
+        requested_by: CloudFirewallRequestedBy {
+            user_id: user_id.to_string(),
+            user_email: None,
+        },
+    };
+
+    mq_manager.publish("install".to_string(), routing_key.clone(), &message)
+        .await
+        .map_err(|e| format!("Failed to publish cloud firewall message: {}", e))?;
+
+    Ok(ConfigureCloudFirewallResponse {
+        operation_id,
+        accepted: true,
+        protocol_version: CLOUD_FIREWALL_PROTOCOL_VERSION.to_string(),
+        provider: provider.to_string(),
+        server_id: server.id,
+        action: CloudFirewallAction::Add,
+        rules: Vec::new(),
+        routing_key,
+        message: "Cloud firewall auto-configuration accepted".to_string(),
+        firewall_name: None,
+        firewall: None,
+    })
+}
+
+/// Parse port strings like "8000", "53/tcp", "53/udp" into cloud firewall rules.
+fn parse_public_ports_to_firewall_rules(
+    ports: &[String],
+    server_id: i32,
+) -> Result<Vec<CloudFirewallRule>, String> {
+    let managed_scope = format!("server:{}", server_id);
+    ports
+        .iter()
+        .map(|p| {
+            let rule = crate::forms::firewall::parse_public_port(p)?;
+            Ok(CloudFirewallRule::from_port_rule(
+                rule,
+                FirewallRuleDirection::Inbound,
+                managed_scope.clone(),
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

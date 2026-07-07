@@ -4,7 +4,7 @@ use crate::db;
 use crate::helpers::JsonResponse;
 use crate::models;
 use crate::services;
-use actix_web::{get, post, put, web, Responder, Result};
+use actix_web::{get, patch, post, put, web, HttpResponse, Responder, Result};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -40,6 +40,11 @@ fn build_vendor_profile_status_item(
             "onboarding_status": vendor_profile.onboarding_status,
             "payouts_enabled": vendor_profile.payouts_enabled,
             "payout_provider": vendor_profile.payout_provider,
+            "public_slug": vendor_profile.public_slug,
+            "display_name": vendor_profile.display_name,
+            "bio": vendor_profile.bio,
+            "avatar_url": vendor_profile.avatar_url,
+            "website_url": vendor_profile.website_url,
             "metadata": vendor_profile.metadata,
             "created_at": vendor_profile.created_at,
             "updated_at": vendor_profile.updated_at
@@ -1077,7 +1082,55 @@ pub async fn vendor_profile_status_handler(
         .ok("OK"))
 }
 
-#[tracing::instrument(name = "Get my self vendor profile", skip_all)]
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateVendorPublicProfileRequest {
+    /// URL-safe slug for the vendor's public page, e.g. "acme-cloud"
+    pub public_slug: Option<String>,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub website_url: Option<String>,
+}
+
+#[tracing::instrument(name = "Update my vendor public profile", skip_all)]
+#[patch("/mine/vendor-profile")]
+pub async fn update_vendor_public_profile_handler(
+    user: Option<web::ReqData<Arc<models::User>>>,
+    pg_pool: web::Data<PgPool>,
+    body: web::Json<UpdateVendorPublicProfileRequest>,
+) -> Result<impl Responder> {
+    let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
+    let req = body.into_inner();
+
+    if let Some(ref slug) = req.public_slug {
+        let valid = !slug.is_empty()
+            && slug.len() <= 100
+            && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !slug.starts_with('-')
+            && !slug.ends_with('-');
+        if !valid {
+            return Err(JsonResponse::<serde_json::Value>::build().bad_request(
+                "public_slug must be 1–100 characters, lowercase alphanumeric and hyphens only, no leading/trailing hyphens",
+            ));
+        }
+    }
+
+    db::marketplace::update_vendor_public_profile(
+        pg_pool.get_ref(),
+        &user.id,
+        req.public_slug.as_deref(),
+        req.display_name.as_deref(),
+        req.bio.as_deref(),
+        req.avatar_url.as_deref(),
+        req.website_url.as_deref(),
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err))?;
+
+    Ok(JsonResponse::<serde_json::Value>::build().ok("Vendor public profile updated"))
+}
+
+#[tracing::instrument(name = "Get my vendor profile", skip_all)]
 #[get("/mine/vendor-profile")]
 pub async fn self_vendor_profile_handler(
     user: Option<web::ReqData<Arc<models::User>>>,
@@ -1103,21 +1156,64 @@ pub async fn self_vendor_profile_handler(
 pub async fn create_onboarding_link_handler(
     user: Option<web::ReqData<Arc<models::User>>>,
     pg_pool: web::Data<PgPool>,
+    payout_provider: web::Data<Arc<dyn services::PayoutProvider>>,
 ) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
     let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
 
-    let generated_account_ref = format!("acct_mock_{}", uuid::Uuid::new_v4().simple());
+    let existing_profile =
+        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &user.id)
+            .await
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+    let existing_account_ref = existing_profile.as_ref().and_then(|profile| {
+        (profile.payout_provider.as_deref() == Some(payout_provider.provider_code()))
+            .then(|| profile.payout_account_ref.as_deref())
+            .flatten()
+    });
+
+    let onboarding_link = payout_provider
+        .create_onboarding_link(&user, existing_account_ref)
+        .await
+        .map_err(|err| {
+            let user_msg = err.user_message();
+            let is_platform = err.is_platform_setup_error();
+            tracing::error!(
+                platform_setup = is_platform,
+                raw_error = %err,
+                "Payout provider onboarding-link failed"
+            );
+            // 503 for platform-setup issues (vendor cannot act); 422 for vendor issues.
+            let http_status = if is_platform { 503u16 } else { 422 };
+            let body = serde_json::json!({
+                "message": user_msg,
+                "code": if is_platform { "platform_setup_required" } else { "vendor_action_required" },
+            });
+            let status_code = actix_web::http::StatusCode::from_u16(http_status)
+                .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR);
+            let response = HttpResponse::build(status_code).json(body);
+            actix_web::Error::from(
+                actix_web::error::InternalError::from_response(err, response)
+            )
+        })?;
+
     let (vendor_profile, linkage_created) = db::marketplace::ensure_vendor_onboarding_link(
         pg_pool.get_ref(),
         &user.id,
-        "mock",
-        &generated_account_ref,
+        &onboarding_link.provider,
+        &onboarding_link.account_ref,
     )
     .await
     .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     let mut result = build_vendor_profile_status_item(&user.id, None, vendor_profile);
     result["linkage_created"] = serde_json::Value::Bool(linkage_created);
+    result["onboarding_url"] = onboarding_link
+        .onboarding_url
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null);
+    result["onboarding_expires_at"] = onboarding_link
+        .expires_at
+        .map(|expires_at| serde_json::Value::Number(expires_at.into()))
+        .unwrap_or(serde_json::Value::Null);
 
     Ok(JsonResponse::<serde_json::Value>::build()
         .set_item(result)
@@ -1129,13 +1225,58 @@ pub async fn create_onboarding_link_handler(
 pub async fn complete_onboarding_handler(
     user: Option<web::ReqData<Arc<models::User>>>,
     pg_pool: web::Data<PgPool>,
+    payout_provider: web::Data<Arc<dyn services::PayoutProvider>>,
 ) -> Result<web::Json<crate::helpers::json::JsonResponse<serde_json::Value>>> {
     let user = user.ok_or_else(|| JsonResponse::<String>::forbidden("Authentication required"))?;
 
-    let completion =
-        db::marketplace::complete_vendor_onboarding(pg_pool.get_ref(), &user.id, "creator_api")
+    let existing_profile =
+        db::marketplace::get_vendor_profile_by_creator(pg_pool.get_ref(), &user.id)
             .await
-            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
+            .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?
+            .ok_or_else(|| {
+                JsonResponse::<serde_json::Value>::build()
+                    .conflict("Onboarding link must exist before completion")
+            })?;
+
+    let account_ref = existing_profile
+        .payout_account_ref
+        .as_deref()
+        .ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .conflict("Onboarding link must exist before completion")
+        })?;
+    let linked_provider = existing_profile
+        .payout_provider
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
+    if linked_provider != payout_provider.provider_code() {
+        return Err(JsonResponse::<serde_json::Value>::build().conflict(format!(
+            "Vendor profile is linked to payout provider '{}', but active provider is '{}'",
+            linked_provider,
+            payout_provider.provider_code()
+        )));
+    }
+
+    let provider_completion = payout_provider
+        .complete_onboarding(account_ref)
+        .await
+        .map_err(|err| {
+            JsonResponse::<serde_json::Value>::build().internal_server_error(err.to_string())
+        })?;
+    if !provider_completion.completed {
+        return Err(JsonResponse::<serde_json::Value>::build()
+            .conflict("Payout provider onboarding is not complete"));
+    }
+
+    let completion = db::marketplace::complete_vendor_onboarding(
+        pg_pool.get_ref(),
+        &user.id,
+        "creator_api",
+        provider_completion.payouts_enabled,
+    )
+    .await
+    .map_err(|err| JsonResponse::<serde_json::Value>::build().internal_server_error(err))?;
 
     let (vendor_profile, completion_recorded) = match completion {
         Some(result) => result,

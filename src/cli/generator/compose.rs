@@ -3,7 +3,9 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
 
-use crate::cli::config_parser::{AppType, DomainConfig, ProxyType, ServiceDefinition, StackerConfig};
+use crate::cli::config_parser::{
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
+};
 use crate::cli::error::CliError;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -25,6 +27,10 @@ pub struct ComposeService {
     pub labels: HashMap<String, String>,
     /// Container runtime (e.g., "kata"). None or "runc" means default.
     pub runtime: Option<String>,
+    /// Override the container CMD (docker-compose `command:`).
+    pub command: Option<String>,
+    /// Docker compose healthcheck for this service.
+    pub healthcheck: Option<ComposeHealthcheck>,
 }
 
 impl Default for ComposeService {
@@ -42,6 +48,8 @@ impl Default for ComposeService {
             networks: vec!["app-network".to_string()],
             labels: HashMap::new(),
             runtime: None,
+            command: None,
+            healthcheck: None,
         }
     }
 }
@@ -56,6 +64,8 @@ impl From<&ServiceDefinition> for ComposeService {
             environment: svc.environment.clone(),
             volumes: svc.volumes.clone(),
             depends_on: svc.depends_on.clone(),
+            command: svc.command.clone(),
+            healthcheck: svc.healthcheck.clone(),
             ..Default::default()
         };
         crate::helpers::stacker_labels::insert_runtime_labels(
@@ -106,6 +116,13 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 
         // --- Main app service ---
         let app_service = build_app_service(config);
+        for vol in &app_service.volumes {
+            if let Some(named) = extract_named_volume(vol) {
+                if !named_volumes.contains(&named) {
+                    named_volumes.push(named);
+                }
+            }
+        }
         compose.services.push(app_service);
 
         // --- Additional services (databases, caches, etc.) ---
@@ -153,7 +170,9 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
                 }
             }
             if injected {
-                compose.external_networks.push("default_network".to_string());
+                compose
+                    .external_networks
+                    .push("default_network".to_string());
             }
         }
 
@@ -200,6 +219,12 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
 
     // Volumes from app section
     svc.volumes.extend(config.app.volumes.clone());
+
+    // Command override from app section
+    svc.command = config.app.command.clone();
+
+    // Healthcheck from app section
+    svc.healthcheck = config.app.healthcheck.clone();
 
     // Merge environment: top-level env first, then app-level (app wins)
     for (k, v) in &config.env {
@@ -304,6 +329,14 @@ fn extract_named_volume(vol_str: &str) -> Option<String> {
     None
 }
 
+/// Quote a value for YAML output by wrapping it in double quotes.
+///
+/// This handles strings that contain spaces, colons, or special characters
+/// that would otherwise break YAML parsing (e.g. `command:`, `healthcheck.test:`).
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Rendering — produce docker-compose YAML string
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -352,6 +385,10 @@ impl ComposeDefinition {
                 }
             }
 
+            if let Some(ref cmd) = svc.command {
+                out.push_str(&format!("    command: {}\n", yaml_quote(cmd)));
+            }
+
             if !svc.volumes.is_empty() {
                 out.push_str("    volumes:\n");
                 for v in &svc.volumes {
@@ -364,6 +401,14 @@ impl ComposeDefinition {
                 for d in &svc.depends_on {
                     out.push_str(&format!("      - {}\n", d));
                 }
+            }
+
+            if let Some(ref hc) = svc.healthcheck {
+                out.push_str("    healthcheck:\n");
+                out.push_str(&format!("      test: {}\n", yaml_quote(&hc.test)));
+                out.push_str(&format!("      interval: {}\n", hc.interval));
+                out.push_str(&format!("      timeout: {}\n", hc.timeout));
+                out.push_str(&format!("      retries: {}\n", hc.retries));
             }
 
             out.push_str(&format!("    restart: {}\n", svc.restart));
@@ -506,6 +551,8 @@ mod tests {
             environment: HashMap::from([("POSTGRES_PASSWORD".into(), "secret".into())]),
             volumes: vec!["pg-data:/var/lib/postgresql/data".into()],
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -607,6 +654,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec!["redis-data:/data".into()],
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -685,6 +734,8 @@ mod tests {
             environment: HashMap::from([("MYSQL_ROOT_PASSWORD".into(), "pass".into())]),
             volumes: vec!["mysql-data:/var/lib/mysql".into()],
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -709,6 +760,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: Vec::new(),
             depends_on: Vec::new(),
+        command: None,
+        healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -733,6 +786,50 @@ mod tests {
                 .get(crate::helpers::stacker_labels::DNS)
                 .map(String::as_str),
             Some("smtp")
+        );
+    }
+
+    #[test]
+    fn app_named_volumes_appear_in_top_level_volumes_block() {
+        let config = ConfigBuilder::new()
+            .name("rustfs")
+            .app_type(AppType::Custom)
+            .app_image("rustfs/rustfs:latest")
+            .app_volumes(vec![
+                "rustfs_data:/data".into(),
+                "rustfs_logs:/app/logs".into(),
+                "./local-config:/etc/config:ro".into(), // bind mount — must NOT appear
+            ])
+            .build()
+            .unwrap();
+
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+
+        assert!(
+            compose.volumes.contains(&"rustfs_data".to_string()),
+            "rustfs_data should be in top-level volumes"
+        );
+        assert!(
+            compose.volumes.contains(&"rustfs_logs".to_string()),
+            "rustfs_logs should be in top-level volumes"
+        );
+        assert!(
+            !compose.volumes.contains(&"./local-config".to_string()),
+            "bind mount should not appear in top-level volumes"
+        );
+
+        let yaml = compose.render();
+        assert!(
+            yaml.contains("volumes:"),
+            "top-level volumes: block must exist"
+        );
+        assert!(
+            yaml.contains("  rustfs_data:"),
+            "rustfs_data entry must appear"
+        );
+        assert!(
+            yaml.contains("  rustfs_logs:"),
+            "rustfs_logs entry must appear"
         );
     }
 
@@ -842,6 +939,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("npm-proxied")
@@ -868,11 +967,16 @@ mod tests {
             api_svc.networks
         );
         assert!(
-            compose.external_networks.contains(&"default_network".to_string()),
+            compose
+                .external_networks
+                .contains(&"default_network".to_string()),
             "default_network should be declared as external"
         );
         let yaml = compose.render();
-        assert!(yaml.contains("external: true"), "rendered YAML should declare default_network external:\n{yaml}");
+        assert!(
+            yaml.contains("external: true"),
+            "rendered YAML should declare default_network external:\n{yaml}"
+        );
     }
 
     #[test]
@@ -884,6 +988,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("partial-proxy")
@@ -919,6 +1025,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
+        command: None,
+        healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("traefik-app")

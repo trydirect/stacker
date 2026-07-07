@@ -42,6 +42,10 @@ pub struct Custom {
     pub marketplace_post_deploy_hooks: JsonValue,
     #[serde(default)]
     pub deployment_artifacts: JsonValue,
+    #[serde(default)]
+    pub catalog_application: JsonValue,
+    #[serde(default)]
+    pub install_inputs: JsonValue,
     #[serde(flatten)]
     pub networks: forms::project::ComposeNetworks, // all networks
 }

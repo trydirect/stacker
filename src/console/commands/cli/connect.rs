@@ -248,7 +248,7 @@ fn bootstrap_account_project_dir(
         return Ok(AccountBootstrapOutcome::Skipped);
     }
 
-    let created_path = generate_config(project_dir, None, false, false)?;
+    let created_path = generate_config(project_dir, None, false, false, false)?;
     Ok(AccountBootstrapOutcome::CreatedConfig(created_path))
 }
 

@@ -361,3 +361,155 @@ pub async fn execute_dag(
         step_results,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{topological_sort, validate_dag};
+    use crate::models::dag::{DagEdge, DagStep};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn step(step_type: &str) -> DagStep {
+        DagStep::new(Uuid::new_v4(), format!("{step_type}-node"), step_type.to_string(), json!({}))
+    }
+
+    fn edge(from: &DagStep, to: &DagStep) -> DagEdge {
+        DagEdge::new(from.pipe_template_id, from.id, to.id)
+    }
+
+    // ── topological_sort ──────────────────────────────────────────────
+
+    #[test]
+    fn topological_sort_rejects_empty_dag() {
+        let err = topological_sort(&[], &[]).unwrap_err();
+        assert!(err.contains("at least one step"), "{err}");
+    }
+
+    #[test]
+    fn topological_sort_orders_linear_chain() {
+        // a -> b -> c : three sequential levels of one node each.
+        let a = step("source");
+        let b = step("transform");
+        let c = step("target");
+        let steps = vec![a.clone(), b.clone(), c.clone()];
+        let edges = vec![edge(&a, &b), edge(&b, &c)];
+
+        let levels = topological_sort(&steps, &edges).expect("valid DAG");
+
+        assert_eq!(levels.len(), 3, "linear chain must produce three levels");
+        assert_eq!(levels[0], vec![a.id]);
+        assert_eq!(levels[1], vec![b.id]);
+        assert_eq!(levels[2], vec![c.id]);
+    }
+
+    #[test]
+    fn topological_sort_groups_parallel_steps_in_same_level() {
+        // a -> b, a -> c : b and c are independent and share level 1.
+        let a = step("source");
+        let b = step("transform");
+        let c = step("transform");
+        let steps = vec![a.clone(), b.clone(), c.clone()];
+        let edges = vec![edge(&a, &b), edge(&a, &c)];
+
+        let levels = topological_sort(&steps, &edges).expect("valid DAG");
+
+        assert_eq!(levels.len(), 2, "should collapse to two levels");
+        assert_eq!(levels[0], vec![a.id]);
+        let mut parallel = levels[1].clone();
+        parallel.sort();
+        let mut expected = vec![b.id, c.id];
+        expected.sort();
+        assert_eq!(parallel, expected, "b and c must run in parallel at level 1");
+    }
+
+    #[test]
+    fn topological_sort_detects_cycle() {
+        // a -> b -> a : no node ever reaches in-degree 0 fully → cycle.
+        let a = step("source");
+        let b = step("target");
+        let steps = vec![a.clone(), b.clone()];
+        let edges = vec![edge(&a, &b), edge(&b, &a)];
+
+        let err = topological_sort(&steps, &edges).unwrap_err();
+        assert!(err.contains("cycle"), "cycle must be reported: {err}");
+    }
+
+    #[test]
+    fn topological_sort_detects_self_loop() {
+        let a = step("source");
+        let steps = vec![a.clone()];
+        let edges = vec![edge(&a, &a)];
+
+        let err = topological_sort(&steps, &edges).unwrap_err();
+        assert!(err.contains("cycle"), "self-loop is a cycle: {err}");
+    }
+
+    #[test]
+    fn topological_sort_ignores_edges_to_unknown_steps() {
+        // An edge referencing a step id that isn't in `steps` must be skipped,
+        // not counted as a dependency (otherwise a valid DAG would appear cyclic
+        // or leave a node permanently blocked).
+        let a = step("source");
+        let b = step("target");
+        let dangling = step("transform"); // not included in steps
+        let steps = vec![a.clone(), b.clone()];
+        let edges = vec![edge(&a, &b), edge(&dangling, &b)];
+
+        let levels = topological_sort(&steps, &edges).expect("dangling edge should be ignored");
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0], vec![a.id]);
+        assert_eq!(levels[1], vec![b.id]);
+    }
+
+    #[test]
+    fn topological_sort_handles_disconnected_nodes_in_first_level() {
+        // Two independent nodes with no edges both start at level 0.
+        let a = step("source");
+        let b = step("target");
+        let steps = vec![a.clone(), b.clone()];
+
+        let levels = topological_sort(&steps, &[]).expect("no edges is valid");
+        assert_eq!(levels.len(), 1, "all roots share the first level");
+        let mut first = levels[0].clone();
+        first.sort();
+        let mut expected = vec![a.id, b.id];
+        expected.sort();
+        assert_eq!(first, expected);
+    }
+
+    // ── validate_dag ──────────────────────────────────────────────────
+
+    #[test]
+    fn validate_dag_rejects_empty() {
+        let err = validate_dag(&[], &[]).unwrap_err();
+        assert!(err.contains("at least one step"), "{err}");
+    }
+
+    #[test]
+    fn validate_dag_requires_a_source() {
+        // transform + target but no source.
+        let steps = vec![step("transform"), step("target")];
+        let err = validate_dag(&steps, &[]).unwrap_err();
+        assert!(err.contains("source step"), "{err}");
+    }
+
+    #[test]
+    fn validate_dag_requires_a_target() {
+        let steps = vec![step("source"), step("transform")];
+        let err = validate_dag(&steps, &[]).unwrap_err();
+        assert!(err.contains("target step"), "{err}");
+    }
+
+    #[test]
+    fn validate_dag_accepts_source_and_target() {
+        let steps = vec![step("source"), step("target")];
+        assert!(validate_dag(&steps, &[]).is_ok());
+    }
+
+    #[test]
+    fn validate_dag_accepts_alternate_source_and_target_types() {
+        // ws_source / grpc_target are in the recognised source/target sets.
+        let steps = vec![step("ws_source"), step("grpc_target")];
+        assert!(validate_dag(&steps, &[]).is_ok());
+    }
+}

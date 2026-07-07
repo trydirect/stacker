@@ -384,47 +384,95 @@ fn discover_local_pipe_hints(
 
 /// System prompt that instructs the AI how to generate stacker.yml.
 const SYSTEM_PROMPT: &str = "\
-You are an expert DevOps engineer integrated into the `stacker` CLI tool. \
-Your job is to generate a complete, production-ready `stacker.yml` configuration \
-based on the project files and context provided.
+You are an expert DevOps engineer. Generate a `stacker.yml` configuration file.
 
-The `stacker.yml` schema supports these top-level keys:
+IMPORTANT: You are generating stacker.yml, NOT docker-compose.yml.
+- stacker.yml has top-level keys: `name:`, `app:`, `services:`, `proxy:`, `deploy:`, `monitoring:`
+- docker-compose has top-level keys: `version:`, `services:`, `networks:`, `volumes:`
+- DO NOT output docker-compose format. DO NOT include `version:`, top-level `networks:`, or top-level `volumes:`.
+- Convert any docker-compose you see into stacker.yml format: the main app goes in `app:`, infra databases go in `services:`.
+
+CORRECT example of a stacker.yml with a public image:
+---
+name: myapp
+deploy:
+  target: local
+app:
+  type: custom
+  image: myapp/myapp:latest
+  ports:
+    - \"8080:8080\"
+  environment:
+    APP_PORT: \"8080\"
+services:
+  - name: postgres
+    image: postgres:16-alpine
+    ports:
+      - \"127.0.0.1:5432:5432\"
+    environment:
+      POSTGRES_PASSWORD: \"${DB_PASSWORD}\"
+    healthcheck:
+      test: \"CMD-SHELL pg_isready -U postgres\"
+      interval: 5s
+      timeout: 2s
+      retries: 10
+---
+
+stacker.yml schema:
 - name: (string, required) Project name
 - version: (string) Version label
 - app: Application source config
   - type: static|node|python|rust|go|php|custom
   - path: Source directory (default '.')
-  - dockerfile: Path to custom Dockerfile
-  - image: Pre-built Docker image
+  - image: Pre-built Docker image (preferred when available)
+  - dockerfile: Path to custom Dockerfile (only when no public image exists)
   - build: { context: '.', args: { KEY: VALUE } }
-- services: Array of sidecar containers
-  - name, image, ports[], environment{}, volumes[], depends_on[]
-- proxy: Reverse proxy config
-  - type: nginx|nginx-proxy-manager|traefik|none
-  - auto_detect: bool
-  - domains: [{ domain, ssl: auto|manual|off, upstream }]
-- deploy:
-  - target: local|cloud|server
-  - cloud: { provider: hetzner|digitalocean|aws|linode|vultr, orchestrator: local|remote, region, size, ssh_key }
-  - server: { host (REQUIRED), user (default 'root'), port (default 22), ssh_key }
-  - registry: { username, password, server } — Docker registry credentials for private images
-  - compose_file: path to existing docker-compose (skips generation)
+  - ports: [\"host:container\"] port mappings
+  - volumes: [\"./host:/container\"] volume mounts
+  - environment: { KEY: VALUE } env vars
+  - command: Override the container CMD
+  - healthcheck: { test, interval, timeout, retries }
+- services: Array of INFRASTRUCTURE containers ONLY (never the main app)
+  - name, image (REQUIRED), ports[], environment{}, volumes[], depends_on[], healthcheck
+- proxy: { type: nginx|nginx-proxy-manager|traefik|none, auto_detect: bool, domains: [...] }
+- deploy: { target: local|cloud|server, compose_file, cloud: {...}, server: {...} }
 - monitoring: { status_panel: bool, healthcheck: { endpoint, interval }, metrics: { enabled, telegraf } }
-- hooks: { pre_build, post_deploy, on_failure } (paths to scripts)
+- hooks: { pre_build, post_deploy, on_failure }
 - env_file: Path to .env file
-- env: { KEY: VALUE } inline environment variables
+- env: { KEY: VALUE }
+- install: { inputs: { commonDomain: example.com } }
+- config_contract: { services: { name: { required: [VAR], secret: [VAR] } } }
 
 Rules:
-1. Output ONLY valid YAML — no markdown fences, no explanations, no comments except brief inline ones.
-2. Use ${VAR_NAME} syntax for secrets and sensitive values (DB passwords, API keys).
-3. Include appropriate services (databases, caches, queues) based on detected dependencies.
-4. Set proper port mappings avoiding conflicts.
-5. Add volumes for data persistence.
-6. Use depends_on for service ordering.
-7. Add healthcheck and monitoring when appropriate.
-8. If a Dockerfile already exists, set app.type to 'custom' and reference it via app.dockerfile.
-9. If a docker-compose already exists, set deploy.compose_file to reference it.
-10. Keep the configuration practical and deployable — don't add services that aren't needed.";
+1. Output ONLY valid YAML — no markdown fences, no explanations, no comments.
+2. THE MAIN APPLICATION goes in the `app:` block with ALL its config:
+   ports, volumes, environment, command, healthcheck — NEVER put it in `services:`.
+   `services:` is ONLY for infrastructure: databases, caches, queues, proxies.
+3. Image selection (app block) — in priority order:
+   a. Prefer `app.image` when a public Docker image exists for this project
+      (check compose files and README for image references like owner/project:tag).
+   b. Use `app.dockerfile` only when NO public image exists and the project
+      needs a custom build (e.g. `build: .` in compose with no image).
+   c. NEVER set both image and dockerfile — they are mutually exclusive.
+   d. When using image, set app.type to 'custom'.
+4. Use ${VAR_NAME} syntax for secrets and sensitive values (DB passwords, API keys).
+5. Bind infrastructure service ports to 127.0.0.1 (e.g. 127.0.0.1:5432:5432)
+   unless the service needs to be accessed externally.
+6. Add healthchecks to infrastructure services:
+   - postgres: pg_isready -U postgres (interval 5s, timeout 2s, retries 10)
+   - redis: redis-cli ping (interval 5s, timeout 2s, retries 10)
+   - mysql/mariadb: mysqladmin ping -h localhost (interval 5s, timeout 2s, retries 10)
+   - mongo: mongosh --eval 'db.adminCommand(\"ping\")' (interval 5s, timeout 2s, retries 10)
+7. Add volumes for data persistence on infrastructure services.
+8. Use depends_on to order startup (app depends on infra services).
+9. Do NOT set deploy.compose_file unless the project has a complex multi-file
+   compose setup that cannot be expressed in stacker.yml.
+10. Detect env vars from compose files and documentation; include them in the
+    app.environment or service.environment blocks.
+11. Keep the config deployable: local target, no cloud config unless requested.
+12. Add monitoring.status_panel: true for production stacks.
+13. Set deploy.target: local by default — this is a local development config.";
+
 
 /// Expose the system prompt used for AI-based stacker.yml generation.
 pub fn generation_system_prompt() -> &'static str {

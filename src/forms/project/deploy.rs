@@ -75,6 +75,11 @@ pub struct Deploy {
     /// Safe metadata for Stack Builder artifact/config-file visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) config_bundle: Option<Value>,
+
+    /// Public ports to open in the cloud provider firewall after deployment.
+    /// Each string is a port number or "port/protocol" (e.g. "8000" or "8000/tcp").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) public_ports: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for Deploy {
@@ -101,4 +106,78 @@ pub struct Stack {
     pub extended_features: Option<Vec<Value>>,
     pub subscriptions: Option<Vec<String>>,
     pub form_app: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_cloud_instance_config, Deploy};
+    use crate::forms::{CloudForm, ServerForm};
+
+    /// Build a Deploy with a given cloud provider and optional server instance fields.
+    fn deploy_with(
+        provider: &str,
+        region: Option<&str>,
+        server: Option<&str>,
+        os: Option<&str>,
+    ) -> Deploy {
+        Deploy {
+            cloud: CloudForm {
+                provider: provider.to_string(),
+                ..Default::default()
+            },
+            server: ServerForm {
+                region: region.map(str::to_string),
+                server: server.map(str::to_string),
+                os: os.map(str::to_string),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn own_provider_skips_instance_validation() {
+        // "own" server deployments carry no cloud instance config — must pass
+        // even with every instance field empty.
+        let deploy = deploy_with("own", None, None, None);
+        assert!(validate_cloud_instance_config(&deploy).is_ok());
+    }
+
+    #[test]
+    fn cloud_provider_with_all_instance_fields_passes() {
+        let deploy = deploy_with("hetzner", Some("fsn1"), Some("cpx21"), Some("ubuntu-22.04"));
+        assert!(validate_cloud_instance_config(&deploy).is_ok());
+    }
+
+    #[test]
+    fn cloud_provider_missing_all_instance_fields_is_rejected() {
+        let deploy = deploy_with("hetzner", None, None, None);
+        let err = validate_cloud_instance_config(&deploy)
+            .expect_err("cloud deploy without instance config must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("region"), "should list region: {msg}");
+        assert!(msg.contains("server"), "should list server: {msg}");
+        assert!(msg.contains("os"), "should list os: {msg}");
+    }
+
+    #[test]
+    fn cloud_provider_missing_single_field_is_rejected() {
+        // region + server present, os missing → only os is reported.
+        let deploy = deploy_with("digitalocean", Some("nyc1"), Some("s-1vcpu-1gb"), None);
+        let err = validate_cloud_instance_config(&deploy)
+            .expect_err("missing os must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("os"), "should list os: {msg}");
+        assert!(!msg.contains("region"), "region is present, must not be listed: {msg}");
+        assert!(!msg.contains("server,"), "server is present, must not be listed: {msg}");
+    }
+
+    #[test]
+    fn empty_string_instance_field_counts_as_missing() {
+        // An empty string must be treated the same as None.
+        let deploy = deploy_with("aws", Some(""), Some("t3.micro"), Some("ubuntu"));
+        let err = validate_cloud_instance_config(&deploy)
+            .expect_err("empty region must fail");
+        assert!(err.to_string().contains("region"), "{}", err);
+    }
 }

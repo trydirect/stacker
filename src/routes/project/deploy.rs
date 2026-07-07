@@ -11,6 +11,7 @@ use crate::models;
 use crate::services;
 use actix_web::{post, web, web::Data, Responder, Result};
 use serde::Deserialize;
+use serde_json;
 use serde_valid::Validate;
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -39,6 +40,22 @@ fn parse_template_requirements(
         );
         "Template infrastructure requirements are invalid".to_string()
     })
+}
+
+fn map_marketplace_access_error(err: services::MarketplaceAccessError) -> actix_web::Error {
+    match err {
+        services::MarketplaceAccessError::ValidationFailed(reason) => {
+            tracing::error!("Failed to validate marketplace access: {}", reason);
+            JsonResponse::<models::Project>::build()
+                .internal_server_error("Failed to validate marketplace access")
+        }
+        services::MarketplaceAccessError::MissingUserToken
+        | services::MarketplaceAccessError::InsufficientFeaturePlan
+        | services::MarketplaceAccessError::InsufficientTemplatePlan { .. }
+        | services::MarketplaceAccessError::TemplateNotOwned => {
+            JsonResponse::<models::Project>::build().forbidden(err.to_string())
+        }
+    }
 }
 
 fn validate_template_target_requirements(
@@ -188,6 +205,25 @@ fn is_hetzner_provider(provider: &str) -> bool {
     matches!(normalized_provider(provider).as_str(), "htz" | "hetzner")
 }
 
+fn cloud_credentials_missing(cloud: &crate::forms::CloudForm) -> bool {
+    let token_empty = cloud.cloud_token.as_ref().map_or(true, |t| t.is_empty());
+    let key_empty = cloud.cloud_key.as_ref().map_or(true, |k| k.is_empty());
+    let secret_empty = cloud.cloud_secret.as_ref().map_or(true, |s| s.is_empty());
+    token_empty && key_empty && secret_empty
+}
+
+async fn resolve_saved_cloud_for_user(
+    pg_pool: &PgPool,
+    user_id: &str,
+    name: &str,
+) -> Result<Option<models::Cloud>, String> {
+    let clouds = db::cloud::fetch_by_user(pg_pool, user_id).await?;
+    let needle = name.to_ascii_lowercase();
+    Ok(clouds
+        .into_iter()
+        .find(|cloud| cloud.name.to_ascii_lowercase() == needle))
+}
+
 fn server_display_name(server: &models::Server) -> String {
     server
         .name
@@ -231,6 +267,20 @@ struct HetznerPublicNet {
 #[derive(Debug, Deserialize)]
 struct HetznerIpv4 {
     ip: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypesResponse {
+    #[serde(default)]
+    server_types: Vec<HetznerServerTypeEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HetznerServerTypeEntry {
+    name: String,
+    /// Non-null when Hetzner has deprecated this type; value is an ISO-8601 timestamp.
+    #[serde(default)]
+    deprecated: Option<String>,
 }
 
 fn hetzner_api_base_url() -> String {
@@ -395,6 +445,113 @@ async fn validate_reused_cloud_server(
         cloud.provider
     );
     Ok(())
+}
+
+async fn validate_hetzner_server_type(
+    cloud: &models::Cloud,
+    server_type: &str,
+    region: Option<&str>,
+) -> Result<(), String> {
+    let server_type = server_type.trim();
+    if server_type.is_empty() || !is_hetzner_provider(&cloud.provider) {
+        return Ok(());
+    }
+
+    let cloud = reveal_cloud_credentials(cloud);
+    let token = match cloud
+        .cloud_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(t) => t.to_string(),
+        None => return Ok(()),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("Could not initialize Hetzner API client: {}", err))?;
+
+    let url = match region {
+        Some(loc) => format!("{}/server_types?location={}", hetzner_api_base_url(), loc),
+        None => format!("{}/server_types", hetzner_api_base_url()),
+    };
+
+    let response = match client.get(&url).bearer_auth(&token).send().await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                "Could not reach Hetzner API to validate server type '{}': {}; proceeding",
+                server_type,
+                err
+            );
+            return Ok(());
+        }
+    };
+
+    if !response.status().is_success() {
+        tracing::warn!(
+            "Hetzner server_types API returned HTTP {}; skipping server type validation",
+            response.status().as_u16()
+        );
+        return Ok(());
+    }
+
+    let body = match response.json::<HetznerServerTypesResponse>().await {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::warn!(
+                "Invalid Hetzner server types response: {}; skipping validation",
+                err
+            );
+            return Ok(());
+        }
+    };
+
+    // Check if the requested type is deprecated before checking availability.
+    if let Some(entry) = body
+        .server_types
+        .iter()
+        .find(|t| t.name.eq_ignore_ascii_case(server_type))
+    {
+        if entry.deprecated.is_some() {
+            let active: Vec<&str> = body
+                .server_types
+                .iter()
+                .filter(|t| t.deprecated.is_none())
+                .map(|t| t.name.as_str())
+                .collect();
+            return Err(format!(
+                "Server type '{}' is deprecated in Hetzner and can no longer be used to create new servers. \
+                 Set `deploy.cloud.size` in stacker.yml to an active type: {}",
+                server_type,
+                if active.is_empty() {
+                    "none found".to_string()
+                } else {
+                    active.join(", ")
+                }
+            ));
+        }
+        return Ok(());
+    }
+
+    let available: Vec<&str> = body
+        .server_types
+        .iter()
+        .filter(|t| t.deprecated.is_none())
+        .map(|t| t.name.as_str())
+        .collect();
+
+    Err(format!(
+        "Server type '{}' is not available in Hetzner. Available types: {}",
+        server_type,
+        if available.is_empty() {
+            "none found".to_string()
+        } else {
+            available.join(", ")
+        }
+    ))
 }
 
 async fn validate_template_server_capacity_requirements(
@@ -1199,7 +1356,40 @@ async fn execute_deployment(
         ));
     }
 
-    let json_request = dc.project.metadata.clone();
+    let mut json_request = dc.project.metadata.clone();
+    // Normalize public_ports to canonical "port/protocol" form so downstream
+    // consumers (deployment metadata, MQ auto-firewall, Install Service) never
+    // see a bare port number that could be silently dropped. Invalid entries
+    // are rejected up front with a 400 rather than swallowed.
+    let normalized_public_ports: Option<Vec<String>> = form
+        .public_ports
+        .as_ref()
+        .map(|ports| {
+            ports
+                .iter()
+                .map(|p| crate::forms::firewall::normalize_public_port(p))
+                .collect::<Result<Vec<String>, String>>()
+        })
+        .transpose()
+        .map_err(|err| {
+            JsonResponse::<models::Project>::build()
+                .bad_request(format!("Invalid public_ports: {err}"))
+        })?
+        .filter(|ports| !ports.is_empty());
+
+    if let Some(ref public_ports) = normalized_public_ports {
+        if let Some(obj) = json_request.as_object_mut() {
+            obj.insert(
+                "public_ports".to_string(),
+                serde_json::Value::Array(
+                    public_ports
+                        .iter()
+                        .map(|p| serde_json::Value::String(p.clone()))
+                        .collect(),
+                ),
+            );
+        }
+    }
     let deployment_hash = format!("deployment_{}", Uuid::new_v4());
     let deployment = models::Deployment::new(
         dc.project.id,
@@ -1242,6 +1432,13 @@ async fn execute_deployment(
         None
     };
 
+    // Capture server and cloud references before they move into deploy().
+    let has_server_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.trim().is_empty());
+    let should_configure_firewall =
+        has_server_ip && normalized_public_ports.as_ref().map_or(false, |p| !p.is_empty());
+    let firewall_server = server.clone();
+    let firewall_cloud = cloud.clone();
+
     let deploy_result = install_service
         .deploy(
             user.id.clone(),
@@ -1271,24 +1468,43 @@ async fn execute_deployment(
         .await;
     }
 
+    // When deploying to an existing server (has IP), configure cloud firewall immediately.
+    if should_configure_firewall {
+        if let Some(ref ports) = normalized_public_ports {
+            if let Err(e) = crate::forms::cloud_firewall::publish_public_firewall_rules(
+                mq_manager,
+                &firewall_server,
+                &firewall_cloud,
+                ports,
+                &deployment_hash,
+                &user.id,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to auto-configure cloud firewall for deployment {}: {}",
+                    deployment_hash,
+                    e
+                );
+            }
+        }
+    }
+
     Ok((deploy_result, deployment_id))
 }
 
-#[tracing::instrument(name = "Deploy for every user", skip_all)]
-#[post("/{id}/deploy")]
-pub async fn item(
-    user: web::ReqData<Arc<models::User>>,
-    path: web::Path<(i32,)>,
-    mut form: web::Json<forms::project::Deploy>,
-    pg_pool: Data<PgPool>,
-    mq_manager: Data<MqManager>,
-    sets: Data<Settings>,
-    user_service: Data<Arc<dyn UserServiceConnector>>,
-    install_service: Data<Arc<dyn InstallServiceConnector>>,
-    vault_client: Data<VaultClient>,
-) -> Result<impl Responder> {
-    let id = path.0;
-    tracing::debug!("User {} is deploying project: {}", user.id, id);
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn deploy_project(
+    user: &models::User,
+    project: models::Project,
+    mut form: forms::project::Deploy,
+    pg_pool: &PgPool,
+    mq_manager: &MqManager,
+    settings: &Settings,
+    user_service: &Arc<dyn UserServiceConnector>,
+    install_service: &Arc<dyn InstallServiceConnector>,
+    vault_client: &VaultClient,
+) -> Result<(i32, i32)> {
     form.cloud.provider = form.cloud.provider.trim().to_string();
 
     if !form.validate().is_ok() {
@@ -1299,47 +1515,18 @@ pub async fn item(
         return Err(JsonResponse::<models::Project>::build().form_error(errors));
     }
 
-    // Validate project
-    let project = db::project::fetch(pg_pool.get_ref(), id)
-        .await
-        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
-        .and_then(|project| match project {
-            Some(project) => Ok(project),
-            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
-        })?;
-
     validate_project_locked_cloud_provider(&project, &form.cloud.provider)
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
     let marketplace_template = if let Some(template_id) = project.source_template_id {
-        let template = db::marketplace::get_by_id(pg_pool.get_ref(), template_id)
+        let template = db::marketplace::get_by_id(pg_pool, template_id)
             .await
             .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
         if let Some(template) = template {
-            if let Some(required_plan) = template.required_plan_name.as_deref() {
-                let has_plan = user_service
-                    .user_has_plan(&user.id, required_plan, user.access_token.as_deref())
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to validate plan: {:?}", err);
-                        JsonResponse::<models::Project>::build()
-                            .internal_server_error("Failed to validate subscription plan")
-                    })?;
-
-                if !has_plan {
-                    tracing::warn!(
-                        "User {} lacks required plan {} to deploy template {}",
-                        user.id,
-                        required_plan,
-                        template_id
-                    );
-                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
-                        "You require a '{}' subscription to deploy this template",
-                        required_plan
-                    )));
-                }
-            }
+            services::validate_marketplace_template_access(user_service, user, &template)
+                .await
+                .map_err(map_marketplace_access_error)?;
 
             Some(template)
         } else {
@@ -1353,6 +1540,53 @@ pub async fn item(
 
     form.cloud.user_id = Some(user.id.clone());
     form.cloud.project_id = Some(id);
+
+    // Resolve saved cloud credentials by name when the inbound form did not
+    // carry inline credentials. This makes the install/catalog flow honor
+    // `deploy.cloud.key` / `deploy.cloud.name` just like the explicit
+    // `POST /project/{id}/deploy/{cloud_id}` route honors its path param.
+    // We hold on to the resolved saved cloud so the new server gets linked
+    // back to the saved cloud's DB id (otherwise `server.cloud_id` would
+    // stay NULL and the Install Service has no credentials to use).
+    let mut resolved_saved_cloud: Option<models::Cloud> = None;
+    if form.cloud.provider != "own" && cloud_credentials_missing(&form.cloud) {
+        if let Some(name) = form
+            .cloud
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            match resolve_saved_cloud_for_user(pg_pool, &user.id, name).await {
+                Ok(Some(saved)) => {
+                    let decoded = forms::cloud::CloudForm::decode_model(saved.clone(), true);
+                    form.cloud.cloud_token = decoded.cloud_token;
+                    form.cloud.cloud_key = decoded.cloud_key;
+                    form.cloud.cloud_secret = decoded.cloud_secret;
+                    form.cloud.save_token = Some(false);
+                    resolved_saved_cloud = Some(saved);
+                }
+                Ok(None) => {
+                    return Err(JsonResponse::<models::Project>::build().bad_request(
+                        format!(
+                            "Saved cloud credential '{}' was not found. Run `stacker list clouds` to see available names or omit `deploy.cloud.key` to attach a new one.",
+                            name
+                        ),
+                    ));
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "Failed to load saved cloud credential '{}' for user {}: {}",
+                        name,
+                        user.id,
+                        err
+                    );
+                    return Err(JsonResponse::<models::Project>::build()
+                        .internal_server_error("Failed to load saved cloud credentials"));
+                }
+            }
+        }
+    }
 
     // Validate cloud credentials before encrypting/saving.
     // For cloud providers ("htz", "do", "lin", "aws", etc.) we need valid credentials.
@@ -1376,29 +1610,34 @@ pub async fn item(
             );
             return Err(JsonResponse::<models::Project>::build().bad_request(
                 "Cloud API credentials are required for cloud deployments. \
-                 Please provide your cloud provider API token.",
+                 Please provide your cloud provider API token, or set `deploy.cloud.key` to the name of a saved credential (see `stacker list clouds`).",
             ));
         }
     }
 
-    // Save cloud credentials if requested, capturing the returned cloud with its DB id
-    let cloud_creds: models::Cloud = (&form.cloud).into();
-
-    let cloud_creds = if Some(true) == cloud_creds.save_token {
-        db::cloud::insert(pg_pool.get_ref(), cloud_creds.clone())
-            .await
-            .map_err(|_| {
-                JsonResponse::<models::Cloud>::build()
-                    .internal_server_error("Internal Server Error")
-            })?
+    // Save cloud credentials if requested, capturing the returned cloud with its DB id.
+    // When the user is reusing a saved cloud (resolved above by name), keep
+    // that cloud's DB id so `server.cloud_id` is set correctly downstream.
+    let cloud_creds: models::Cloud = if let Some(saved) = resolved_saved_cloud.take() {
+        saved
     } else {
-        cloud_creds
+        let cloud_creds: models::Cloud = (&form.cloud).into();
+        if Some(true) == cloud_creds.save_token {
+            db::cloud::insert(pg_pool, cloud_creds.clone())
+                .await
+                .map_err(|_| {
+                    JsonResponse::<models::Cloud>::build()
+                        .internal_server_error("Internal Server Error")
+                })?
+        } else {
+            cloud_creds
+        }
     };
 
     // Handle server: if server_id provided, update existing; otherwise create new
     let server = if let Some(server_id) = form.server.server_id {
         // Update existing server
-        let existing = db::server::fetch(pg_pool.get_ref(), server_id)
+        let existing = db::server::fetch(pg_pool, server_id)
             .await
             .map_err(|_| {
                 JsonResponse::<models::Server>::build()
@@ -1427,12 +1666,9 @@ pub async fn item(
             server.connection_mode = form.server.connection_mode.clone().unwrap();
         }
 
-        db::server::update(pg_pool.get_ref(), server)
-            .await
-            .map_err(|_| {
-                JsonResponse::<models::Server>::build()
-                    .internal_server_error("Failed to update server")
-            })?
+        db::server::update(pg_pool, server).await.map_err(|_| {
+            JsonResponse::<models::Server>::build().internal_server_error("Failed to update server")
+        })?
     } else {
         // Create new server
         let mut server: models::Server = (&form.server).into();
@@ -1443,27 +1679,26 @@ pub async fn item(
             server.cloud_id = Some(cloud_creds.id);
         }
 
-        db::server::insert(pg_pool.get_ref(), server)
-            .await
-            .map_err(|_| {
-                JsonResponse::<models::Server>::build()
-                    .internal_server_error("Internal Server Error")
-            })?
+        db::server::insert(pg_pool, server).await.map_err(|_| {
+            JsonResponse::<models::Server>::build().internal_server_error("Internal Server Error")
+        })?
     };
 
     validate_reused_cloud_server(&cloud_creds, &server)
         .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
-    ensure_default_status_panel_npm_credentials(
-        user.as_ref(),
-        &form,
-        pg_pool.get_ref(),
-        sets.get_ref(),
-        &server,
+    validate_hetzner_server_type(
+        &cloud_creds,
+        server.server.as_deref().unwrap_or(""),
+        server.region.as_deref(),
     )
     .await
-    .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
+    ensure_default_status_panel_npm_credentials(user, &form, pg_pool, settings, &server)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
     if let Some(template) = marketplace_template.as_ref() {
         let requirements = parse_template_requirements(template)
@@ -1493,17 +1728,56 @@ pub async fn item(
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
     }
 
-    let (project_id, deployment_id) = execute_deployment(
-        user.as_ref(),
+    execute_deployment(
+        user,
         project,
         &form,
-        pg_pool.get_ref(),
-        mq_manager.get_ref(),
-        install_service.get_ref(),
-        vault_client.get_ref(),
-        sets.get_ref(),
+        pg_pool,
+        mq_manager,
+        install_service,
+        vault_client,
+        settings,
         cloud_creds,
         server,
+    )
+    .await
+}
+
+#[tracing::instrument(name = "Deploy for every user", skip_all)]
+#[post("/{id}/deploy")]
+pub async fn item(
+    user: web::ReqData<Arc<models::User>>,
+    path: web::Path<(i32,)>,
+    form: web::Json<forms::project::Deploy>,
+    pg_pool: Data<PgPool>,
+    mq_manager: Data<MqManager>,
+    sets: Data<Settings>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
+    install_service: Data<Arc<dyn InstallServiceConnector>>,
+    vault_client: Data<VaultClient>,
+) -> Result<impl Responder> {
+    let id = path.0;
+    tracing::debug!("User {} is deploying project: {}", user.id, id);
+
+    // Validate project
+    let project = db::project::fetch(pg_pool.get_ref(), id)
+        .await
+        .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        .and_then(|project| match project {
+            Some(project) => Ok(project),
+            None => Err(JsonResponse::<models::Project>::build().not_found("not found")),
+        })?;
+
+    let (project_id, deployment_id) = deploy_project(
+        user.as_ref(),
+        project,
+        form.into_inner(),
+        pg_pool.get_ref(),
+        mq_manager.get_ref(),
+        sets.get_ref(),
+        user_service.get_ref(),
+        install_service.get_ref(),
+        vault_client.get_ref(),
     )
     .await?;
 
@@ -1550,29 +1824,13 @@ pub async fn saved_item(
             .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
         if let Some(template) = template {
-            if let Some(required_plan) = template.required_plan_name.as_deref() {
-                let has_plan = user_service
-                    .user_has_plan(&user.id, required_plan, user.access_token.as_deref())
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to validate plan: {:?}", err);
-                        JsonResponse::<models::Project>::build()
-                            .internal_server_error("Failed to validate subscription plan")
-                    })?;
-
-                if !has_plan {
-                    tracing::warn!(
-                        "User {} lacks required plan {} to deploy template {}",
-                        user.id,
-                        required_plan,
-                        template_id
-                    );
-                    return Err(JsonResponse::<models::Project>::build().forbidden(format!(
-                        "You require a '{}' subscription to deploy this template",
-                        required_plan
-                    )));
-                }
-            }
+            services::validate_marketplace_template_access(
+                user_service.get_ref(),
+                user.as_ref(),
+                &template,
+            )
+            .await
+            .map_err(map_marketplace_access_error)?;
 
             Some(template)
         } else {
@@ -1702,6 +1960,14 @@ pub async fn saved_item(
         .await
         .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
 
+    validate_hetzner_server_type(
+        &cloud,
+        server.server.as_deref().unwrap_or(""),
+        server.region.as_deref(),
+    )
+    .await
+    .map_err(|msg| JsonResponse::<models::Project>::build().bad_request(msg))?;
+
     ensure_default_status_panel_npm_credentials(
         user.as_ref(),
         &form,
@@ -1766,6 +2032,7 @@ pub async fn rollback(
     mq_manager: Data<MqManager>,
     sets: Data<Settings>,
     install_service: Data<Arc<dyn InstallServiceConnector>>,
+    user_service: Data<Arc<dyn UserServiceConnector>>,
     vault_client: Data<VaultClient>,
 ) -> Result<impl Responder> {
     let id = path.0;
@@ -1789,6 +2056,13 @@ pub async fn rollback(
         .await
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?
         .ok_or_else(|| JsonResponse::<models::Project>::build().not_found("Template not found"))?;
+    services::validate_marketplace_template_access(
+        user_service.get_ref(),
+        user.as_ref(),
+        &template,
+    )
+    .await
+    .map_err(map_marketplace_access_error)?;
 
     let target_version = db::marketplace::list_versions_by_template(pg_pool.get_ref(), template_id)
         .await
@@ -1921,6 +2195,7 @@ mod tests {
             infrastructure_requirements: json!({}),
             public_ports: None,
             vendor_url: None,
+            vendor_slug: None,
             version: None,
             changelog: None,
             config_files: json!(null),
