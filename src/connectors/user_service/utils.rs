@@ -10,7 +10,12 @@ fn normalize_plan_to_tier(plan: &str) -> String {
         "team" => "professional",
         "enterprise" => "enterprise",
         // Plan codes (legacy / from User Service)
-        "plan-individual-monthly" => "professional",
+        "plan-individual-monthly" => "enterprise",
+        "plan-individual-annualy" => "enterprise",
+        "plan-plus-monthly" => "professional",
+        "plan-plus-annualy" => "professional",
+        "plan-basic-monthly" => "basic",
+        "plan-basic-annualy" => "basic",
         "plan-pro-monthly" | "plan-professional-monthly" => "professional",
         "plan-enterprise-monthly" | "plan-enterprise-yearly" => "enterprise",
         // Unknown — pass through as-is so the caller can decide

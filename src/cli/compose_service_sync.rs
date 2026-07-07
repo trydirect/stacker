@@ -527,7 +527,7 @@ mod tests {
 
     // ── sync_configured_compose_services proxy-inject tests ──────────────────
 
-    fn npm_stacker_config(dir: &std::path::Path, service_name: &str) -> StackerConfig {
+    fn npm_stacker_config(_dir: &std::path::Path, service_name: &str) -> StackerConfig {
         StackerConfig {
             project: ProjectConfig::default(),
             app: AppSource::default(),
