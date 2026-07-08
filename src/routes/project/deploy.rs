@@ -2175,8 +2175,8 @@ pub async fn rollback(
 mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
-        default_status_panel_npm_credentials, find_matching_hetzner_server, hetzner_server_ip,
-        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
+        default_status_panel_npm_credentials, ensure_trailing_newline, find_matching_hetzner_server,
+        hetzner_server_ip, preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
         should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
         validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
         HetznerIpv4, HetznerPublicNet, HetznerServer,
@@ -2788,5 +2788,42 @@ mod tests {
 
         assert_eq!(resolved.0, public_key);
         assert_eq!(resolved.1.trim(), private_key.trim());
+    }
+
+    #[test]
+    fn ensure_trailing_newline_appends_when_missing() {
+        assert_eq!(ensure_trailing_newline("abc".to_string()), "abc\n");
+    }
+
+    #[test]
+    fn ensure_trailing_newline_is_noop_when_present() {
+        // Already terminated — must not double up the newline.
+        assert_eq!(ensure_trailing_newline("abc\n".to_string()), "abc\n");
+    }
+
+    // BUGFIX (2026-07-08) regression guard — OpenSSH rejects a key file that
+    // lacks a trailing newline (`error in libcrypto` → `Permission denied`).
+    // A provided key whose newline was stripped upstream must be restored
+    // before it leaves this service.
+    #[test]
+    fn resolve_provided_ssh_keypair_restores_trailing_newline() {
+        let (_public_key, private_key) =
+            crate::helpers::vault::VaultClient::generate_ssh_keypair().expect("test keypair");
+        // Simulate the upstream trim that stripped the trailing newline.
+        let trimmed = private_key.trim_end().to_string();
+        assert!(!trimmed.ends_with('\n'), "precondition: key has no trailing newline");
+        let form = forms::server::ServerForm {
+            ssh_private_key: Some(trimmed),
+            ..Default::default()
+        };
+
+        let resolved = resolve_provided_ssh_keypair(&form)
+            .expect("valid keypair")
+            .expect("keypair should be present");
+
+        assert!(
+            resolved.1.ends_with('\n'),
+            "resolved private key must end with a trailing newline"
+        );
     }
 }
