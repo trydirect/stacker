@@ -425,10 +425,20 @@ impl VaultClient {
         let private_key = PrivateKey::random(&mut rand::thread_rng(), Algorithm::Ed25519)
             .map_err(|e| format!("Failed to generate SSH key: {}", e))?;
 
-        let private_key_pem = private_key
+        let mut private_key_pem = private_key
             .to_openssh(LineEnding::LF)
             .map_err(|e| format!("Failed to encode private key: {}", e))?
             .to_string();
+
+        // BUGFIX (2026-07-08) — DO NOT REMOVE.
+        // OpenSSH's key loader (libcrypto) rejects a private-key file that does
+        // not end in a newline (`error in libcrypto` → `Permission denied`).
+        // Guarantee the trailing newline so the key is valid wherever it is
+        // later written to disk (Vault fetch → /var/tmp/own_<id>.pem). This is
+        // NOT a format issue — do not convert to PKCS8.
+        if !private_key_pem.ends_with('\n') {
+            private_key_pem.push('\n');
+        }
 
         let public_key = private_key.public_key();
         let public_key_openssh = public_key
@@ -863,5 +873,39 @@ mod tests {
             .await
             .expect("fetch org policy");
         assert_eq!(policy, None);
+    }
+
+    #[test]
+    fn generated_ssh_keypair_is_valid_openssh_format() {
+        let (public_key, private_key) =
+            VaultClient::generate_ssh_keypair().expect("keypair generation should succeed");
+
+        // Private key must be a valid OpenSSH-format ed25519 key.
+        // NOTE: keys are emitted in OpenSSH format (BEGIN OPENSSH PRIVATE KEY),
+        // NOT PKCS8. OpenSSH's own loader reads this format natively — no
+        // PKCS8 conversion is needed or wanted. See the SSH bugfix (2026-07-08).
+        let parsed = ssh_key::PrivateKey::from_openssh(&private_key)
+            .expect("private key should parse as OpenSSH");
+        assert_eq!(parsed.algorithm(), ssh_key::Algorithm::Ed25519);
+
+        // BUGFIX (2026-07-08) — DO NOT REMOVE.
+        // The private key MUST end with a trailing newline. Without it, OpenSSH
+        // fails with `error in libcrypto` → `Permission denied`. This guards the
+        // exact regression that broke `stacker deploy --target server`.
+        assert!(
+            private_key.ends_with('\n'),
+            "private key must end with a trailing newline (OpenSSH libcrypto requirement)"
+        );
+
+        // Public key must be OpenSSH ed25519 format.
+        assert!(
+            public_key.starts_with("ssh-ed25519"),
+            "public key should start with ssh-ed25519, got: {}",
+            &public_key[..public_key.len().min(40)]
+        );
+
+        // Derived public key from private must match the generated public key.
+        let derived = parsed.public_key().to_openssh().expect("derive public key");
+        assert_eq!(derived, public_key);
     }
 }

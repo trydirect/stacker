@@ -771,7 +771,28 @@ fn resolve_provided_ssh_keypair(
         }
     };
 
+    // BUGFIX (2026-07-08) — DO NOT REMOVE.
+    // OpenSSH's key loader (libcrypto) rejects a private-key file that does not
+    // end in a newline, failing with `Load key "...": error in libcrypto` and
+    // then `Permission denied (publickey)`. `normalize_optional_secret` above
+    // trims surrounding whitespace (needed for the empty check), which strips
+    // the trailing "\n". The install service writes this value verbatim to
+    // /var/tmp/own_<id>.pem, so we must restore exactly one trailing newline
+    // before it leaves this service. This is NOT a key-format problem — do not
+    // "fix" it by converting to PKCS8.
+    let private_key = ensure_trailing_newline(private_key);
+
     Ok(Some((public_key, private_key)))
+}
+
+/// Ensure a PEM/OpenSSH private key ends with exactly one trailing newline.
+/// See the bugfix note in `resolve_provided_ssh_keypair` — OpenSSH refuses to
+/// load a key file without a final newline (`error in libcrypto`).
+fn ensure_trailing_newline(mut key: String) -> String {
+    if !key.ends_with('\n') {
+        key.push('\n');
+    }
+    key
 }
 
 fn ensure_root_object(
