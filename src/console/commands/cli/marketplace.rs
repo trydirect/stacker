@@ -1,9 +1,12 @@
-use crate::cli::config_parser::{StackerConfig, MARKETPLACE_ORIGIN_MARKER};
+use crate::cli::config_parser::{DeployTarget, StackerConfig, MARKETPLACE_ORIGIN_MARKER};
 use crate::cli::credentials::CredentialsManager;
 use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 use crate::cli::runtime::CliRuntime;
-use crate::cli::stacker_client::{build_deploy_form, MarketplaceTemplate, StackerClient};
+use crate::cli::stacker_client::{
+    build_deploy_form, build_server_deploy_form, generate_server_name, MarketplaceTemplate,
+    StackerClient,
+};
 use crate::console::commands::CallableTrait;
 use dialoguer::Confirm;
 use serde_json::{Map, Value};
@@ -219,7 +222,23 @@ impl CallableTrait for MarketplaceInstallCommand {
 
         let (mut deploy_form, config_inputs, generated_stacker_yml) = if self.file.exists() {
             let config = StackerConfig::from_file(&self.file)?;
-            let mut form = build_deploy_form(&config);
+            let mut form = if config.deploy.target == DeployTarget::Server {
+                if let Some(server_cfg) = config.deploy.server.as_ref() {
+                    let project_name = config
+                        .project
+                        .identity
+                        .clone()
+                        .unwrap_or_else(|| config.name.clone());
+                    let server_name = generate_server_name(&project_name);
+                    build_server_deploy_form(&config, server_cfg, &server_name, false)
+                } else {
+                    return Err(Box::new(CliError::ConfigValidation(
+                        "Server deploy target requires deploy.server configuration (host, user, port, ssh_key)".to_string(),
+                    )));
+                }
+            } else {
+                build_deploy_form(&config)
+            };
             if let Some(stack) = form
                 .get_mut("stack")
                 .and_then(|value| value.as_object_mut())

@@ -4432,6 +4432,54 @@ mod tests {
     }
 
     #[test]
+    fn test_build_deploy_form_defaults_to_htz_when_no_cloud_config() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "root".to_string(),
+                ssh_key: None,
+                port: 22,
+            })
+            .build()
+            .unwrap();
+
+        let form = build_deploy_form(&config);
+        assert_eq!(
+            form["cloud"]["provider"], "htz",
+            "build_deploy_form defaults to htz when no cloud config — marketplace install \
+             should use build_server_deploy_form instead for server targets"
+        );
+    }
+
+    #[test]
+    fn test_build_server_deploy_form_sets_provider_own_for_server_targets() {
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("myproject")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Server)
+            .server(crate::cli::config_parser::ServerConfig {
+                host: "203.0.113.10".to_string(),
+                user: "root".to_string(),
+                ssh_key: None,
+                port: 22,
+            })
+            .build()
+            .unwrap();
+        let server_cfg = config.deploy.server.as_ref().unwrap();
+
+        let form = build_server_deploy_form(&config, server_cfg, "myproject-box", false);
+        assert_eq!(
+            form["cloud"]["provider"], "own",
+            "server deploy form must set provider to own"
+        );
+        assert_eq!(form["server"]["srv_ip"], "203.0.113.10");
+        assert_eq!(form["server"]["ssh_user"], "root");
+        assert_eq!(form["server"]["ssh_port"], 22);
+        assert_eq!(form["cloud"]["save_token"], false);
+    }
+
+    #[test]
     fn test_build_server_deploy_form_with_status_panel_monitoring_uses_connection_mode() {
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
