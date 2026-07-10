@@ -2939,17 +2939,9 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
                         if !check.docker_installed {
                             eprintln!("  ⚠ Docker is NOT installed on the server.");
-                            eprintln!("    Install Docker first:  ssh {}@{} 'curl -fsSL https://get.docker.com | sh'",
-                            server_cfg.user, server_cfg.host);
-                            return Err(CliError::DeployFailed {
-                            target: DeployTarget::Server,
-                            reason: format!(
-                                "Server {} is reachable but Docker is not installed. \
-                                 Install Docker and retry, or remove the 'server' section from stacker.yml \
-                                 to provision a new cloud server.",
-                                server_cfg.host
-                            ),
-                        });
+                            eprintln!(
+                                "    Continuing anyway — the setup/bootstrap role is expected to install Docker."
+                            );
                         }
 
                         eprintln!(
@@ -3062,13 +3054,10 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                         );
 
                         if !check.docker_installed {
-                            return Err(CliError::DeployFailed {
-                                target: DeployTarget::Server,
-                                reason: format!(
-                                    "Server {} is reachable but Docker is not installed. Install Docker and Docker Compose, then retry.",
-                                    server_cfg.host
-                                ),
-                            });
+                            eprintln!("  ⚠ Docker is NOT installed on {}.", server_cfg.host);
+                            eprintln!(
+                                "    Continuing anyway — the setup/bootstrap role is expected to install Docker."
+                            );
                         }
                     }
                     Some(check) => {

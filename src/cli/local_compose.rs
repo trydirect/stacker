@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::config_parser::{DeployTarget, StackerConfig};
+use crate::cli::deployment_lock::DeploymentLock;
 use crate::cli::error::CliError;
 
 const OUTPUT_DIR: &str = ".stacker";
@@ -40,6 +41,16 @@ pub fn resolve_local_compose_path(project_dir: &Path) -> Result<PathBuf, CliErro
     }
 
     if generated.exists() {
+        // Even when a generated compose file exists, if the deployment lock
+        // says the last deploy was to cloud/server, don't treat it as local.
+        if let Ok(Some(lock)) = DeploymentLock::load_active(project_dir) {
+            if lock.target != "local" {
+                return Err(CliError::ConfigValidation(format!(
+                    "This project was deployed to '{}'. Use 'stacker agent logs' or switch to the local target.",
+                    lock.target
+                )));
+            }
+        }
         return Ok(generated);
     }
 
