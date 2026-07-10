@@ -190,14 +190,12 @@ async fn anonymous_user_cannot_see_password_values_in_template_detail() {
 
     // Nested sensitive field must also be redacted
     assert_eq!(
-        "***REDACTED***",
-        sd["deploy"]["nested"]["credentials"]["passwd"],
+        "***REDACTED***", sd["deploy"]["nested"]["credentials"]["passwd"],
         "nested passwd must be redacted"
     );
     // Non-sensitive sibling must survive
     assert_eq!(
-        "root",
-        sd["deploy"]["nested"]["credentials"]["username"],
+        "root", sd["deploy"]["nested"]["credentials"]["username"],
         "nested username must not be redacted"
     );
 }

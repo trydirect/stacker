@@ -370,7 +370,12 @@ mod tests {
     use uuid::Uuid;
 
     fn step(step_type: &str) -> DagStep {
-        DagStep::new(Uuid::new_v4(), format!("{step_type}-node"), step_type.to_string(), json!({}))
+        DagStep::new(
+            Uuid::new_v4(),
+            format!("{step_type}-node"),
+            step_type.to_string(),
+            json!({}),
+        )
     }
 
     fn edge(from: &DagStep, to: &DagStep) -> DagEdge {
@@ -419,7 +424,10 @@ mod tests {
         parallel.sort();
         let mut expected = vec![b.id, c.id];
         expected.sort();
-        assert_eq!(parallel, expected, "b and c must run in parallel at level 1");
+        assert_eq!(
+            parallel, expected,
+            "b and c must run in parallel at level 1"
+        );
     }
 
     #[test]

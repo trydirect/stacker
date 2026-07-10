@@ -554,6 +554,7 @@ mod tests {
             server_ip: Some("203.0.113.10".to_string()),
             ssh_user: Some("root".to_string()),
             ssh_port: Some(22),
+            ssh_key: None,
             server_name: Some("demo".to_string()),
             deployment_id: Some(42),
             project_id: Some(7),

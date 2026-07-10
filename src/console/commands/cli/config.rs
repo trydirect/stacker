@@ -1136,7 +1136,13 @@ impl ConfigSetupServerCommand {
         port: Option<u16>,
         key: Option<String>,
     ) -> Self {
-        Self { file, ip, user, port, key }
+        Self {
+            file,
+            ip,
+            user,
+            port,
+            key,
+        }
     }
 }
 
@@ -1209,7 +1215,12 @@ impl CallableTrait for ConfigSetupServerCommand {
             Some(PathBuf::from(&key_input))
         };
 
-        let server_cfg = ServerConfig { host, user, ssh_key, port };
+        let server_cfg = ServerConfig {
+            host,
+            user,
+            ssh_key,
+            port,
+        };
 
         eprintln!();
         eprintln!("Server details:");

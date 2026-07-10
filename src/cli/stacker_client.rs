@@ -86,9 +86,7 @@ fn stacker_api_failure_with_message(
         };
         return format!("{summary} ({status}): {detail}");
     }
-    format!(
-        "{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details."
-    )
+    format!("{summary} ({status}). Rerun with DEBUG=true or RUST_LOG=debug for endpoint details.")
 }
 
 /// Project as returned by `/project` endpoints
@@ -2403,18 +2401,22 @@ impl StackerClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| CliError::ConfigValidation(format!("Stacker server unreachable: {}", e)))?;
+            .map_err(|e| {
+                CliError::ConfigValidation(format!("Stacker server unreachable: {}", e))
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(CliError::ConfigValidation(stacker_api_failure_with_message(
-                "Agent link failed",
-                "POST /api/v1/agent/link",
-                status,
-                &body,
-                cli_debug_enabled(),
-            )));
+            return Err(CliError::ConfigValidation(
+                stacker_api_failure_with_message(
+                    "Agent link failed",
+                    "POST /api/v1/agent/link",
+                    status,
+                    &body,
+                    cli_debug_enabled(),
+                ),
+            ));
         }
 
         #[derive(serde::Deserialize)]
@@ -3973,17 +3975,19 @@ pub fn build_deploy_form(config: &StackerConfig) -> serde_json::Value {
     // cloud and reused the same names in stacker.yml.
     if let Some(cloud_cfg) = config.deploy.cloud.as_ref() {
         if let Some(form_cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
-            if let Some(key) = cloud_cfg.key.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if let Some(key) = cloud_cfg
+                .key
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
                 form_cloud.insert(
                     "name".to_string(),
                     serde_json::Value::String(key.to_string()),
                 );
                 // Don't re-insert a duplicate credential when the user is
                 // reusing a saved one.
-                form_cloud.insert(
-                    "save_token".to_string(),
-                    serde_json::Value::Bool(false),
-                );
+                form_cloud.insert("save_token".to_string(), serde_json::Value::Bool(false));
             }
         }
         if let Some(server_name) = cloud_cfg
@@ -4268,12 +4272,7 @@ mod tests {
 
     #[test]
     fn stacker_api_failure_hides_endpoint_and_body_for_5xx_without_debug() {
-        let message = stacker_api_failure_with_debug(
-            "GET /cloud",
-            502,
-            "upstream timeout",
-            false,
-        );
+        let message = stacker_api_failure_with_debug("GET /cloud", 502, "upstream timeout", false);
 
         assert!(message.contains("Stacker server request failed (502)"));
         assert!(!message.contains("GET /cloud"));
@@ -4747,8 +4746,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec!["npm_data:/data".to_string()],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let redis_service = ServiceDefinition {
             name: "redis".to_string(),
@@ -4757,8 +4756,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4795,8 +4794,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec!["npm_data:/data".to_string()],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let statuspanel_service = ServiceDefinition {
             name: "statuspanel".to_string(),
@@ -4805,8 +4804,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let smtp_service = ServiceDefinition {
             name: "smtp".to_string(),
@@ -4815,8 +4814,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("myproject")
@@ -4870,8 +4869,8 @@ mod tests {
             environment: std::collections::HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = crate::cli::config_parser::ConfigBuilder::new()
             .name("Device API")

@@ -96,8 +96,7 @@ impl VaultService {
     pub fn from_settings(
         settings: &crate::configuration::VaultSettings,
     ) -> Result<Self, VaultError> {
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+        let mut builder = Client::builder().timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
         if let (Some(cert), Some(key)) = (&settings.client_cert, &settings.client_key) {
             match Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes()) {
@@ -145,8 +144,8 @@ impl VaultService {
 
         match (base_url, token, prefix) {
             (Some(base), Some(tok), Some(pref)) => {
-                let mut builder = Client::builder()
-                    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+                let mut builder =
+                    Client::builder().timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
                 let client_cert = std::env::var("VAULT_CLIENT_CERT").ok();
                 let client_key = std::env::var("VAULT_CLIENT_KEY").ok();
@@ -156,16 +155,17 @@ impl VaultService {
                             builder = builder.identity(identity);
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to load mTLS identity for Vault service from env: {}", e);
+                            tracing::warn!(
+                                "Failed to load mTLS identity for Vault service from env: {}",
+                                e
+                            );
                         }
                     }
                 }
 
-                let http_client = builder
-                    .build()
-                    .map_err(|e| {
-                        VaultError::Other(format!("Failed to create HTTP client: {}", e))
-                    })?;
+                let http_client = builder.build().map_err(|e| {
+                    VaultError::Other(format!("Failed to create HTTP client: {}", e))
+                })?;
 
                 tracing::debug!("Vault service initialized with base_url={}", base);
 

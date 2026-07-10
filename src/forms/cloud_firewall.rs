@@ -322,10 +322,7 @@ pub async fn publish_public_firewall_rules(
         server_id: server.id,
         project_id: server.project_id,
         deployment_hash: Some(deployment_hash.to_string()),
-        server_public_ip: server
-            .srv_ip
-            .clone()
-            .unwrap_or_default(),
+        server_public_ip: server.srv_ip.clone().unwrap_or_default(),
         provider_server_id: None,
         server_name: server.name.clone().or_else(|| server.server.clone()),
         region: server.region.clone(),
@@ -369,7 +366,8 @@ pub async fn publish_public_firewall_rules(
         },
     };
 
-    mq_manager.publish("install".to_string(), routing_key.clone(), &message)
+    mq_manager
+        .publish("install".to_string(), routing_key.clone(), &message)
         .await
         .map_err(|e| format!("Failed to publish cloud firewall message: {}", e))?;
 

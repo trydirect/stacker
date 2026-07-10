@@ -328,10 +328,8 @@ mod tests {
 
     #[tokio::test]
     async fn allows_free_templates_without_ownership() {
-        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
-            &[("professional", true)],
-            &[],
-        ));
+        let user_service: Arc<dyn UserServiceConnector> =
+            Arc::new(TestUserService::new(&[("professional", true)], &[]));
 
         let template = models::StackTemplate {
             slug: "free-template".to_string(),
@@ -349,10 +347,8 @@ mod tests {
 
     #[tokio::test]
     async fn allows_zero_price_templates_without_ownership() {
-        let user_service: Arc<dyn UserServiceConnector> = Arc::new(TestUserService::new(
-            &[("professional", true)],
-            &[],
-        ));
+        let user_service: Arc<dyn UserServiceConnector> =
+            Arc::new(TestUserService::new(&[("professional", true)], &[]));
 
         let template = models::StackTemplate {
             slug: "zero-price-template".to_string(),
@@ -480,9 +476,9 @@ mod tests {
 
     #[tokio::test]
     async fn propagates_connector_error_as_validation_failed() {
-        let user_service: Arc<dyn UserServiceConnector> =
-            Arc::new(TestUserService::new(&[("professional", true)], &["100"])
-                .with_plan_check_failure());
+        let user_service: Arc<dyn UserServiceConnector> = Arc::new(
+            TestUserService::new(&[("professional", true)], &["100"]).with_plan_check_failure(),
+        );
 
         let result =
             validate_marketplace_template_access(&user_service, &test_user(), &test_template())

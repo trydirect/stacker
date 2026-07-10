@@ -115,9 +115,9 @@ impl ServiceCatalog {
                                     })
                                     .unwrap_or_default(),
                                 depends_on: Vec::new(),
-                            command: None,
-                healthcheck: None,
-            };
+                                command: None,
+                                healthcheck: None,
+                            };
 
                             return Ok(Some(CatalogEntry {
                                 code: slug.to_string(),
@@ -396,8 +396,8 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 ]),
                 volumes: vec!["wordpress_data:/var/www/html".into()],
                 depends_on: vec!["mysql".into()],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             },
             related: vec!["mysql".into(), "redis".into(), "traefik".into()],
         },
@@ -438,8 +438,8 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 )]),
                 volumes: vec![],
                 depends_on: vec!["elasticsearch".into()],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             },
             related: vec!["elasticsearch".into()],
         },
@@ -495,8 +495,8 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 ]),
                 volumes: vec![],
                 depends_on: vec!["mysql".into()],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             },
             related: vec!["mysql".into()],
         },

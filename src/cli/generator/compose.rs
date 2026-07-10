@@ -551,8 +551,8 @@ mod tests {
             environment: HashMap::from([("POSTGRES_PASSWORD".into(), "secret".into())]),
             volumes: vec!["pg-data:/var/lib/postgresql/data".into()],
             depends_on: Vec::new(),
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-db")
@@ -654,8 +654,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec!["redis-data:/data".into()],
             depends_on: Vec::new(),
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("with-vol")
@@ -734,8 +734,8 @@ mod tests {
             environment: HashMap::from([("MYSQL_ROOT_PASSWORD".into(), "pass".into())]),
             volumes: vec!["mysql-data:/var/lib/mysql".into()],
             depends_on: Vec::new(),
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -760,8 +760,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: Vec::new(),
             depends_on: Vec::new(),
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
 
         let compose_svc = ComposeService::from(&svc_def);
@@ -939,8 +939,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("npm-proxied")
@@ -988,8 +988,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("partial-proxy")
@@ -1025,8 +1025,8 @@ mod tests {
             environment: Default::default(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         };
         let config = ConfigBuilder::new()
             .name("traefik-app")

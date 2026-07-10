@@ -24,7 +24,11 @@ pub struct MarketplaceTemplatesCommand {
 
 impl MarketplaceTemplatesCommand {
     pub fn new(category: Option<String>, tag: Option<String>, json: bool) -> Self {
-        Self { category, tag, json }
+        Self {
+            category,
+            tag,
+            json,
+        }
     }
 }
 
@@ -206,7 +210,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                 .unwrap_or_else(|| Path::new("."));
             if DeploymentLock::exists(project_dir) {
                 return Err(Box::new(CliError::ConfigValidation(
-                     "This directory already contains a deployed project.\n\
+                    "This directory already contains a deployed project.\n\
                      'stacker install' creates a new project from a template — it cannot \
                      be used inside an existing project directory.\n\n\
                      To extend your current project, use:\n  \
@@ -454,9 +458,11 @@ fn prepend_marketplace_marker(yaml: &str) -> String {
         .map(|line| {
             line.trim()
                 .strip_prefix('#')
-                .map(|rest| rest.trim().eq_ignore_ascii_case(
-                    MARKETPLACE_ORIGIN_MARKER.trim_start_matches('#').trim(),
-                ))
+                .map(|rest| {
+                    rest.trim().eq_ignore_ascii_case(
+                        MARKETPLACE_ORIGIN_MARKER.trim_start_matches('#').trim(),
+                    )
+                })
                 .unwrap_or(false)
         })
         .unwrap_or(false);
@@ -493,7 +499,9 @@ fn response_stack_definition(
 
         let mut svc_map = serde_yaml::Mapping::new();
         for (svc_name, svc_opt) in &compose.services.0 {
-            let Some(service) = svc_opt.as_ref() else { continue };
+            let Some(service) = svc_opt.as_ref() else {
+                continue;
+            };
             let mut out = serde_yaml::Mapping::new();
 
             // image
@@ -525,10 +533,8 @@ fn response_stack_definition(
                     .collect(),
             };
             if !ports.is_empty() {
-                let yaml_ports: Vec<serde_yaml::Value> = ports
-                    .into_iter()
-                    .map(serde_yaml::Value::String)
-                    .collect();
+                let yaml_ports: Vec<serde_yaml::Value> =
+                    ports.into_iter().map(serde_yaml::Value::String).collect();
                 out.insert("ports".into(), serde_yaml::Value::Sequence(yaml_ports));
             }
 
@@ -546,10 +552,8 @@ fn response_stack_definition(
                 })
                 .collect();
             if !volumes.is_empty() {
-                let yaml_vols: Vec<serde_yaml::Value> = volumes
-                    .into_iter()
-                    .map(serde_yaml::Value::String)
-                    .collect();
+                let yaml_vols: Vec<serde_yaml::Value> =
+                    volumes.into_iter().map(serde_yaml::Value::String).collect();
                 out.insert("volumes".into(), serde_yaml::Value::Sequence(yaml_vols));
             }
 
@@ -587,28 +591,18 @@ fn response_stack_definition(
                     .collect(),
             };
             if !env_map.is_empty() {
-                out.insert(
-                    "environment".into(),
-                    serde_yaml::Value::Mapping(env_map),
-                );
+                out.insert("environment".into(), serde_yaml::Value::Mapping(env_map));
             }
 
             // depends_on: simple list of strings
             let depends: Vec<String> = match &service.depends_on {
                 dctypes::DependsOnOptions::Simple(list) => list.clone(),
-                dctypes::DependsOnOptions::Conditional(map) => {
-                    map.keys().cloned().collect()
-                }
+                dctypes::DependsOnOptions::Conditional(map) => map.keys().cloned().collect(),
             };
             if !depends.is_empty() {
-                let yaml_dep: Vec<serde_yaml::Value> = depends
-                    .into_iter()
-                    .map(serde_yaml::Value::String)
-                    .collect();
-                out.insert(
-                    "depends_on".into(),
-                    serde_yaml::Value::Sequence(yaml_dep),
-                );
+                let yaml_dep: Vec<serde_yaml::Value> =
+                    depends.into_iter().map(serde_yaml::Value::String).collect();
+                out.insert("depends_on".into(), serde_yaml::Value::Sequence(yaml_dep));
             }
 
             svc_map.insert(
@@ -1026,15 +1020,16 @@ impl CallableTrait for MarketplaceLogsCommand {
 /// Shows `required_plan_name` if set, otherwise formats `price` with currency,
 /// or "free" if neither indicates a paid template.
 fn display_plan(template: &MarketplaceTemplate) -> String {
-    if let Some(plan) = template.required_plan_name.as_deref().filter(|p| !p.is_empty()) {
+    if let Some(plan) = template
+        .required_plan_name
+        .as_deref()
+        .filter(|p| !p.is_empty())
+    {
         return plan.to_string();
     }
     if let Some(price) = template.price {
         if price > 0.0 {
-            let cycle = template
-                .billing_cycle
-                .as_deref()
-                .unwrap_or("/mo");
+            let cycle = template.billing_cycle.as_deref().unwrap_or("/mo");
             let cycle = match cycle {
                 "one_time" | "one-time" | "once" | "free" => "",
                 "monthly" | "month" | "/mo" => "/mo",

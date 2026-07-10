@@ -2007,7 +2007,13 @@ fn get_command(
                 Box::new(stacker::console::commands::cli::config::ConfigUnlockCommand::new(file))
             }
             ConfigCommands::Setup { command } => match command {
-                ConfigSetupCommands::Server { file, ip, user, port, key } => Box::new(
+                ConfigSetupCommands::Server {
+                    file,
+                    ip,
+                    user,
+                    port,
+                    key,
+                } => Box::new(
                     stacker::console::commands::cli::config::ConfigSetupServerCommand::new(
                         file, ip, user, port, key,
                     ),
@@ -2612,7 +2618,9 @@ fn get_command(
                     persist_config,
                     json,
                     local,
-                } => Box::new(agent::AgentInstallCommand::new(file, persist_config, json).with_local(local)),
+                } => Box::new(
+                    agent::AgentInstallCommand::new(file, persist_config, json).with_local(local),
+                ),
             }
         }
         StackerCommands::Cloud { command } => match command {
@@ -2681,7 +2689,11 @@ fn get_command(
                 query, json, limit,
             ),
         ),
-        StackerCommands::Templates { category, tag, json } => Box::new(
+        StackerCommands::Templates {
+            category,
+            tag,
+            json,
+        } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceTemplatesCommand::new(
                 category, tag, json,
             ),

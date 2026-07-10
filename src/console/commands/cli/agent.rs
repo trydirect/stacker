@@ -74,8 +74,7 @@ pub(crate) fn resolve_deployment_hash(
                 .unwrap_or_else(|| config.name.clone());
 
             if !project_name.trim().is_empty() {
-                if let Ok(Some(proj)) =
-                    ctx.block_on(ctx.client.find_project_by_name(&project_name))
+                if let Ok(Some(proj)) = ctx.block_on(ctx.client.find_project_by_name(&project_name))
                 {
                     match ctx.block_on(ctx.client.agent_snapshot_by_project(proj.id)) {
                         Ok((_, hash)) => {
@@ -2103,7 +2102,10 @@ fn print_snapshot_summary(
     println!("{}", fmt::separator(STATUS_SEP_WIDTH));
 
     // Containers
-    let apps = snap.get("apps").and_then(|v| v.as_array()).map(|v| v.as_slice());
+    let apps = snap
+        .get("apps")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice());
     if let Some(containers) = live_containers {
         print_containers_summary_with_apps(containers, apps);
     } else if let Some(containers) = snap.get("containers").and_then(|v| v.as_array()) {
@@ -2467,10 +2469,14 @@ async fn install_agent_via_local_ssh(
 
     let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
     let ssh_args = [
-        "-i", key_path.to_str().unwrap_or(""),
-        "-p", &server_cfg.port.to_string(),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
+        "-i",
+        key_path.to_str().unwrap_or(""),
+        "-p",
+        &server_cfg.port.to_string(),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
     ];
 
     // Helper: run a command on the remote, stream output, return exit code.
@@ -2493,7 +2499,10 @@ async fn install_agent_via_local_ssh(
     // 2. Install the status panel binary into ~/.local/bin (no sudo needed).
     // The install.sh respects INSTALL_DIR; we avoid /usr/local/bin which
     // requires sudo and prompts for a TTY we don't have in BatchMode.
-    eprintln!("  Running status panel install script on {}...", server_cfg.host);
+    eprintln!(
+        "  Running status panel install script on {}...",
+        server_cfg.host
+    );
     let install_out = ssh_run(
         "mkdir -p $HOME/.local/bin && \
          curl -sSfL https://raw.githubusercontent.com/trydirect/status/master/install.sh \
@@ -2553,7 +2562,10 @@ async fn install_agent_via_local_ssh(
     eprintln!("  Deployment:       {}", linked_hash);
     eprintln!("  Working dir:      ~/stacker/");
     eprintln!("  Config:           ~/stacker/.env");
-    eprintln!("  The agent is now polling {} for deploy commands.", stacker_url);
+    eprintln!(
+        "  The agent is now polling {} for deploy commands.",
+        stacker_url
+    );
     eprintln!("  Run `stacker agent status` to verify connectivity.");
 
     Ok(())
@@ -2855,7 +2867,10 @@ impl CallableTrait for AgentInstallCommand {
                         ))
                     })?;
 
-                let deployments = ctx.client.list_deployments(Some(project.id), Some(1)).await?;
+                let deployments = ctx
+                    .client
+                    .list_deployments(Some(project.id), Some(1))
+                    .await?;
                 deployments
                     .into_iter()
                     .next()

@@ -122,6 +122,24 @@ fn resolve_ai_from_env_or_config(
     Ok(ai)
 }
 
+fn hydrate_server_deploy_config_from_lock(
+    project_dir: &Path,
+    config: &mut StackerConfig,
+    deploy_target: DeployTarget,
+) -> Result<(), CliError> {
+    if deploy_target != DeployTarget::Server || config.deploy.server.is_some() {
+        return Ok(());
+    }
+
+    if let Some(lock) = DeploymentLock::load_for_target(project_dir, "server")? {
+        if let Some(server_cfg) = lock.to_server_config() {
+            config.deploy.server = Some(server_cfg);
+        }
+    }
+
+    Ok(())
+}
+
 fn fallback_troubleshooting_hints(reason: &str) -> Vec<String> {
     let lower = reason.to_lowercase();
     let mut hints = Vec::new();
@@ -1633,7 +1651,9 @@ fn extract_host_port_from_string(spec: &str) -> Option<String> {
         return None;
     }
 
-    let protocol = trimmed.rsplit_once('/').map(|(_, proto)| proto.trim().to_lowercase());
+    let protocol = trimmed
+        .rsplit_once('/')
+        .map(|(_, proto)| proto.trim().to_lowercase());
     let without_protocol = trimmed.split('/').next().unwrap_or(trimmed);
     let parts: Vec<&str> = without_protocol.split(':').collect();
 
@@ -2646,7 +2666,9 @@ fn run_hook(
         eprintln!("  Hook ({}) running: {}", hook_name, canonical.display());
 
         // Security: validate script content for malicious patterns (L3: cap size at 1 MB)
-        let script_content = std::fs::read(&script_path).ok().filter(|b| b.len() <= 1_048_576)
+        let script_content = std::fs::read(&script_path)
+            .ok()
+            .filter(|b| b.len() <= 1_048_576)
             .and_then(|b| String::from_utf8(b).ok());
         match script_content {
             Some(content) => {
@@ -2667,24 +2689,26 @@ fn run_hook(
                             ),
                         });
                     }
-                    for warning in validation.details.iter().filter(|d| d.starts_with("[WARNING]"))
+                    for warning in validation
+                        .details
+                        .iter()
+                        .filter(|d| d.starts_with("[WARNING]"))
                     {
                         eprintln!("  [WARN] Hook '{}': {}", hook_name, warning);
                     }
                 }
             }
             None => {
-                eprintln!("  [WARN] Could not read (or too large) '{}' for validation", script_path.display());
+                eprintln!(
+                    "  [WARN] Could not read (or too large) '{}' for validation",
+                    script_path.display()
+                );
             }
         }
 
         let script_str = canonical.to_string_lossy().to_string();
-        let output = executor.execute_with_timeout(
-            "sh",
-            &[&script_str],
-            HOOK_TIMEOUT,
-            Some(project_dir),
-        )?;
+        let output =
+            executor.execute_with_timeout("sh", &[&script_str], HOOK_TIMEOUT, Some(project_dir))?;
 
         // Phase 8 defence (audit M4 + M5): a hostile hook can dump
         // gigabytes of stdout to OOM the CLI, or emit ANSI escape
@@ -2877,6 +2901,7 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
 
     // 2. Resolve deploy target/profile (flag > config default)
     let mut deploy_target = config.deploy.target;
+    hydrate_server_deploy_config_from_lock(project_dir, &mut config, deploy_target)?;
 
     // 2b. Server pre-check: when target is Cloud but deploy.server section
     //     is defined with a host, try SSH connectivity first.
@@ -2896,29 +2921,27 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                     "  Found deploy.server section (host={}). Intranet address — skipping SSH pre-check.",
                     server_cfg.host
                 );
-                eprintln!(
-                    "  Switching deploy target from 'cloud' → 'server' (intranet server)."
-                );
+                eprintln!("  Switching deploy target from 'cloud' → 'server' (intranet server).");
                 deploy_target = DeployTarget::Server;
             } else {
-            eprintln!(
-                "  Found deploy.server section (host={}). Checking SSH connectivity...",
-                server_cfg.host
-            );
+                eprintln!(
+                    "  Found deploy.server section (host={}). Checking SSH connectivity...",
+                    server_cfg.host
+                );
 
-            match try_ssh_server_check(server_cfg) {
-                Some(check) if check.connected && check.authenticated => {
-                    eprintln!(
-                        "  ✓ Server {} is reachable ({})",
-                        server_cfg.host,
-                        check.summary()
-                    );
+                match try_ssh_server_check(server_cfg) {
+                    Some(check) if check.connected && check.authenticated => {
+                        eprintln!(
+                            "  ✓ Server {} is reachable ({})",
+                            server_cfg.host,
+                            check.summary()
+                        );
 
-                    if !check.docker_installed {
-                        eprintln!("  ⚠ Docker is NOT installed on the server.");
-                        eprintln!("    Install Docker first:  ssh {}@{} 'curl -fsSL https://get.docker.com | sh'",
+                        if !check.docker_installed {
+                            eprintln!("  ⚠ Docker is NOT installed on the server.");
+                            eprintln!("    Install Docker first:  ssh {}@{} 'curl -fsSL https://get.docker.com | sh'",
                             server_cfg.user, server_cfg.host);
-                        return Err(CliError::DeployFailed {
+                            return Err(CliError::DeployFailed {
                             target: DeployTarget::Server,
                             reason: format!(
                                 "Server {} is reachable but Docker is not installed. \
@@ -2927,17 +2950,17 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                                 server_cfg.host
                             ),
                         });
-                    }
+                        }
 
-                    eprintln!(
+                        eprintln!(
                         "  Switching deploy target from 'cloud' → 'server' (using existing server)"
                     );
-                    deploy_target = DeployTarget::Server;
-                }
-                Some(check) => {
-                    // Server defined but not reachable — abort with helpful hints
-                    print_server_unreachable_hint(server_cfg, &check);
-                    return Err(CliError::DeployFailed {
+                        deploy_target = DeployTarget::Server;
+                    }
+                    Some(check) => {
+                        // Server defined but not reachable — abort with helpful hints
+                        print_server_unreachable_hint(server_cfg, &check);
+                        return Err(CliError::DeployFailed {
                         target: DeployTarget::Cloud,
                         reason: format!(
                             "deploy.server section defines host {} but the server is not reachable: {}. \
@@ -2946,13 +2969,13 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                             check.error.as_deref().unwrap_or("unknown error")
                         ),
                     });
-                }
-                None => {
-                    // Could not perform SSH check (missing key, etc.) — warn and abort
-                    eprintln!("  ⚠ Could not verify server connectivity (see above).");
-                    eprintln!("    Remove the 'server' section from stacker.yml to provision a new cloud server,");
-                    eprintln!("    or fix the SSH key configuration and retry.");
-                    return Err(CliError::DeployFailed {
+                    }
+                    None => {
+                        // Could not perform SSH check (missing key, etc.) — warn and abort
+                        eprintln!("  ⚠ Could not verify server connectivity (see above).");
+                        eprintln!("    Remove the 'server' section from stacker.yml to provision a new cloud server,");
+                        eprintln!("    or fix the SSH key configuration and retry.");
+                        return Err(CliError::DeployFailed {
                         target: DeployTarget::Cloud,
                         reason: format!(
                             "deploy.server section defines host {} but SSH connectivity check could not be performed. \
@@ -2960,8 +2983,8 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
                             server_cfg.host
                         ),
                     });
+                    }
                 }
-            }
             }
         } else if DeploymentLock::exists_for_target(project_dir, "cloud")
             || DeploymentLock::exists(project_dir)
@@ -3522,11 +3545,12 @@ impl CallableTrait for DeployCommand {
                 // Show platform features available to the user
                 let creds_path = std::env::var("XDG_CONFIG_HOME")
                     .map(std::path::PathBuf::from)
-                    .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+                    .or_else(|_| {
+                        std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+                    })
                     .map(|b| b.join("stacker/credentials.json"))
                     .unwrap_or_default();
-                let logged_in = std::env::var("STACKER_TOKEN").is_ok()
-                    || creds_path.exists();
+                let logged_in = std::env::var("STACKER_TOKEN").is_ok() || creds_path.exists();
 
                 if !logged_in {
                     eprintln!(
@@ -5005,7 +5029,10 @@ services:
         let dir = setup_local_project(&[
             ("index.html", "<h1>hello</h1>"),
             ("stacker.yml", config),
-            ("build.sh", "#!/bin/sh\necho pre-build\necho done > done.txt"),
+            (
+                "build.sh",
+                "#!/bin/sh\necho pre-build\necho done > done.txt",
+            ),
         ]);
         let executor = MockExecutor::success();
 
@@ -5026,9 +5053,14 @@ services:
         // Verify the hook script was invoked through the executor
         let calls = executor.calls.lock().unwrap();
         let hook_calls: Vec<_> = calls.iter().filter(|(prog, _)| prog == "sh").collect();
-        assert!(!hook_calls.is_empty(), "Expected at least one sh call for the hook");
         assert!(
-            hook_calls.iter().any(|(_, args)| args.iter().any(|a| a.contains("build.sh"))),
+            !hook_calls.is_empty(),
+            "Expected at least one sh call for the hook"
+        );
+        assert!(
+            hook_calls
+                .iter()
+                .any(|(_, args)| args.iter().any(|a| a.contains("build.sh"))),
             "Expected a sh call with build.sh in args"
         );
     }
@@ -5060,9 +5092,14 @@ services:
         // Verify the hook script was invoked through the executor
         let calls = executor.calls.lock().unwrap();
         let hook_calls: Vec<_> = calls.iter().filter(|(prog, _)| prog == "sh").collect();
-        assert!(!hook_calls.is_empty(), "Expected at least one sh call for post_deploy");
         assert!(
-            hook_calls.iter().any(|(_, args)| args.iter().any(|a| a.contains("post.sh"))),
+            !hook_calls.is_empty(),
+            "Expected at least one sh call for post_deploy"
+        );
+        assert!(
+            hook_calls
+                .iter()
+                .any(|(_, args)| args.iter().any(|a| a.contains("post.sh"))),
             "Expected a sh call with post.sh in args"
         );
     }
@@ -5085,7 +5122,10 @@ services:
             &RemoteDeployOverrides::default(),
             "runc",
         );
-        assert!(result.is_err(), "Deploy should fail when hook script is missing");
+        assert!(
+            result.is_err(),
+            "Deploy should fail when hook script is missing"
+        );
         let err = result.unwrap_err();
         let err_str = format!("{}", err);
         assert!(
@@ -5655,6 +5695,56 @@ services:
     }
 
     #[test]
+    fn test_hydrate_server_deploy_config_from_lock_uses_server_lock() {
+        let dir = TempDir::new().unwrap();
+        let mut config = StackerConfig::from_str(
+            "name: demo\napp:\n  type: custom\n  image: ghcr.io/example/demo:latest\ndeploy:\n  target: server\n",
+        )
+        .unwrap();
+        let server_lock = DeploymentLock::for_server(&ServerConfig {
+            host: "192.0.2.20".to_string(),
+            user: "deploy".to_string(),
+            ssh_key: Some(PathBuf::from("/tmp/id_ed25519")),
+            port: 2200,
+        });
+        server_lock.save(dir.path()).unwrap();
+
+        hydrate_server_deploy_config_from_lock(dir.path(), &mut config, DeployTarget::Server)
+            .unwrap();
+
+        let server_cfg = config.deploy.server.expect("server config from lock");
+        assert_eq!(server_cfg.host, "192.0.2.20");
+        assert_eq!(server_cfg.user, "deploy");
+        assert_eq!(server_cfg.port, 2200);
+        assert_eq!(server_cfg.ssh_key, Some(PathBuf::from("/tmp/id_ed25519")));
+    }
+
+    #[test]
+    fn test_hydrate_server_deploy_config_from_lock_keeps_existing_config() {
+        let dir = TempDir::new().unwrap();
+        let mut config = StackerConfig::from_str(
+            "name: demo\napp:\n  type: custom\n  image: ghcr.io/example/demo:latest\ndeploy:\n  target: server\n  server:\n    host: 198.51.100.10\n    user: root\n    port: 22\n",
+        )
+        .unwrap();
+        let server_lock = DeploymentLock::for_server(&ServerConfig {
+            host: "192.0.2.20".to_string(),
+            user: "deploy".to_string(),
+            ssh_key: Some(PathBuf::from("/tmp/id_ed25519")),
+            port: 2200,
+        });
+        server_lock.save(dir.path()).unwrap();
+
+        hydrate_server_deploy_config_from_lock(dir.path(), &mut config, DeployTarget::Server)
+            .unwrap();
+
+        let server_cfg = config.deploy.server.expect("existing server config");
+        assert_eq!(server_cfg.host, "198.51.100.10");
+        assert_eq!(server_cfg.user, "root");
+        assert_eq!(server_cfg.port, 22);
+        assert!(server_cfg.ssh_key.is_none());
+    }
+
+    #[test]
     fn test_coolify_project_compose_ports_define_cloud_firewall_ports() {
         let dir = TempDir::new().unwrap();
         let compose_dir = dir.path().join("docker/production");
@@ -6104,10 +6194,7 @@ monitoring:
     #[test]
     fn test_hook_path_relative_traversal_rejected() {
         let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ../../../../etc/passwd\n";
-        let dir = setup_local_project(&[
-            ("index.html", "<h1>hi</h1>"),
-            ("stacker.yml", config),
-        ]);
+        let dir = setup_local_project(&[("index.html", "<h1>hi</h1>"), ("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
         let result = run_deploy(
@@ -6137,11 +6224,9 @@ monitoring:
     /// inside the project directory.
     #[test]
     fn test_hook_path_absolute_rejected() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: /etc/passwd\n";
-        let dir = setup_local_project(&[
-            ("index.html", "<h1>hi</h1>"),
-            ("stacker.yml", config),
-        ]);
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: /etc/passwd\n";
+        let dir = setup_local_project(&[("index.html", "<h1>hi</h1>"), ("stacker.yml", config)]);
         let executor = MockExecutor::success();
 
         let result = run_deploy(
@@ -6176,11 +6261,9 @@ monitoring:
     fn test_hook_path_symlink_to_outside_project_rejected() {
         use std::os::unix::fs::symlink;
 
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
-        let dir = setup_local_project(&[
-            ("index.html", "<h1>hi</h1>"),
-            ("stacker.yml", config),
-        ]);
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let dir = setup_local_project(&[("index.html", "<h1>hi</h1>"), ("stacker.yml", config)]);
         // Create a symlink build.sh → /etc/passwd (a file outside the project).
         symlink("/etc/passwd", dir.path().join("build.sh")).unwrap();
 
@@ -6215,7 +6298,8 @@ monitoring:
     /// so the hook would execute.
     #[test]
     fn test_hook_content_curl_pipe_sh_rejected_pre_build() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6252,7 +6336,8 @@ monitoring:
     /// C1: same for a crypto-miner reference in the pre_build hook.
     #[test]
     fn test_hook_content_crypto_miner_rejected_pre_build() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6289,7 +6374,8 @@ monitoring:
     /// C1: same for reverse-shell construction in the pre_build hook.
     #[test]
     fn test_hook_content_reverse_shell_rejected_pre_build() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  pre_build: ./build.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6438,7 +6524,8 @@ monitoring:
         // path to provoke a deploy failure. (When the LocalDeploy path
         // doesn't fail synthetically we still expect on_failure to be
         // wired up.)
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6486,7 +6573,10 @@ monitoring:
             "runc",
         );
 
-        assert!(result.is_err(), "Expected deploy to fail (synthetic docker error)");
+        assert!(
+            result.is_err(),
+            "Expected deploy to fail (synthetic docker error)"
+        );
         let calls = executor.calls.lock().unwrap();
         let on_failure_invoked = calls
             .iter()
@@ -6506,7 +6596,8 @@ monitoring:
     /// original cause.
     #[test]
     fn test_on_failure_security_rejection_chained_into_error() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6584,7 +6675,8 @@ monitoring:
     /// mirroring `test_post_deploy_hook_runtime_failure_stays_ok`.
     #[test]
     fn test_on_failure_hook_runtime_failure_preserves_original_error() {
-        let config = "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
+        let config =
+            "name: test-app\napp:\n  type: static\n  path: .\nhooks:\n  on_failure: ./fail.sh\n";
         let dir = setup_local_project(&[
             ("index.html", "<h1>hi</h1>"),
             ("stacker.yml", config),
@@ -6706,7 +6798,11 @@ monitoring:
         // ESC c is full terminal reset; ESC 7 saves cursor.
         let raw = "before\x1bcAFTER\x1b7END\n";
         let out = sanitize_hook_output(raw);
-        assert!(!out.contains('\x1b'), "ESC byte must be gone, got: {:?}", out);
+        assert!(
+            !out.contains('\x1b'),
+            "ESC byte must be gone, got: {:?}",
+            out
+        );
         assert!(
             out.contains("before") && out.contains("AFTER") && out.contains("END"),
             "Literal payload text must survive, got: {:?}",
@@ -6885,7 +6981,11 @@ monitoring:
             C4HookPolicy::no_hooks(),
         );
 
-        assert!(result.is_ok(), "Deploy must succeed with --no-hooks: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Deploy must succeed with --no-hooks: {:?}",
+            result
+        );
         assert!(
             sh_calls_of(&executor).is_empty(),
             "--no-hooks must suppress every sh invocation, got: {:?}",
@@ -6996,7 +7096,11 @@ monitoring:
             "runc",
         );
 
-        assert!(result.is_ok(), "Clean hook must still pass validation: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Clean hook must still pass validation: {:?}",
+            result
+        );
         let sh_args: Vec<_> = sh_calls_of(&executor)
             .into_iter()
             .flat_map(|(_, args)| args.into_iter())

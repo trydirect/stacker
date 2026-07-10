@@ -1097,11 +1097,10 @@ fn detect_origin_from_raw(raw: &str) -> ConfigOrigin {
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix('#') {
-            if rest.trim().eq_ignore_ascii_case(
-                MARKETPLACE_ORIGIN_MARKER
-                    .trim_start_matches('#')
-                    .trim(),
-            ) {
+            if rest
+                .trim()
+                .eq_ignore_ascii_case(MARKETPLACE_ORIGIN_MARKER.trim_start_matches('#').trim())
+            {
                 return ConfigOrigin::MarketplaceGenerated;
             }
             continue;
@@ -2370,8 +2369,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             })
             .deploy_target(DeployTarget::Cloud)
             .cloud(CloudConfig {
@@ -2444,8 +2443,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "redis".to_string(),
@@ -2454,8 +2453,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             })
             .add_service(ServiceDefinition {
                 name: "minio".to_string(),
@@ -2464,8 +2463,8 @@ deploy:
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             })
             .build()
             .unwrap();

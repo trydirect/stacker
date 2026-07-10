@@ -186,12 +186,10 @@ impl CommandExecutor for ShellExecutor {
             exit_code: -1,
         })?;
 
-        let stdout_handle = std::thread::spawn(move || {
-            drain_capped(stdout_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES)
-        });
-        let stderr_handle = std::thread::spawn(move || {
-            drain_capped(stderr_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES)
-        });
+        let stdout_handle =
+            std::thread::spawn(move || drain_capped(stdout_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES));
+        let stderr_handle =
+            std::thread::spawn(move || drain_capped(stderr_pipe, HOOK_PIPE_OUTPUT_MAX_BYTES));
 
         let deadline = std::time::Instant::now() + timeout;
         let poll_interval = std::time::Duration::from_millis(100);
@@ -610,10 +608,14 @@ fn detect_port_conflicts_in_output(stderr: &str, stdout: &str) -> Vec<String> {
         ));
     }
 
-    hints.push("Check for leftover containers from previous deploys below and clean them up:".to_string());
+    hints.push(
+        "Check for leftover containers from previous deploys below and clean them up:".to_string(),
+    );
     hints.push("  ssh <host> 'docker ps --format \"table {{.Names}}\\t{{.Ports}}\"'".to_string());
     hints.push("  ssh <host> 'docker rm -f <container>'".to_string());
-    hints.push("Alternatively, change the conflicting port in stacker.yml and redeploy.".to_string());
+    hints.push(
+        "Alternatively, change the conflicting port in stacker.yml and redeploy.".to_string(),
+    );
 
     hints
 }
@@ -2160,10 +2162,14 @@ fn deploy_to_intranet_server(
     let remote_dir = format!("$HOME/stacker/{}", project_name);
     let user_at_host = format!("{}@{}", server_cfg.user, server_cfg.host);
     let ssh_args = [
-        "-i", ssh_key_path.to_str().unwrap_or(""),
-        "-p", &server_cfg.port.to_string(),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
+        "-i",
+        ssh_key_path.to_str().unwrap_or(""),
+        "-p",
+        &server_cfg.port.to_string(),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
     ];
 
     // 1. Resolve the remote home directory so rsync gets an absolute path.
@@ -2217,7 +2223,11 @@ fn deploy_to_intranet_server(
         ssh_key_path.display(),
         server_cfg.port
     );
-    let rsync_excludes = &["--exclude=.git", "--exclude=target", "--exclude=node_modules"];
+    let rsync_excludes = &[
+        "--exclude=.git",
+        "--exclude=target",
+        "--exclude=node_modules",
+    ];
 
     eprintln!("  Syncing project files to {}...", user_at_host);
     let rsync_available = std::process::Command::new("rsync")
@@ -2244,7 +2254,8 @@ fn deploy_to_intranet_server(
         if !status.success() {
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Server,
-                reason: "rsync exited with error — check SSH key and server connectivity".to_string(),
+                reason: "rsync exited with error — check SSH key and server connectivity"
+                    .to_string(),
             });
         }
     } else {
@@ -2266,12 +2277,13 @@ fn deploy_to_intranet_server(
                 reason: format!("tar failed: {}", e),
             })?;
 
-        let tar_stdout = tar_child.stdout.take().ok_or_else(|| {
-            CliError::DeployFailed {
+        let tar_stdout = tar_child
+            .stdout
+            .take()
+            .ok_or_else(|| CliError::DeployFailed {
                 target: DeployTarget::Server,
                 reason: "Could not capture tar stdout".to_string(),
-            }
-        })?;
+            })?;
 
         let ssh_status = std::process::Command::new("ssh")
             .args(&ssh_args)
@@ -2293,7 +2305,8 @@ fn deploy_to_intranet_server(
         if !ssh_status.success() || !tar_status.success() {
             return Err(CliError::DeployFailed {
                 target: DeployTarget::Server,
-                reason: "tar+ssh transfer failed — check SSH key and server connectivity".to_string(),
+                reason: "tar+ssh transfer failed — check SSH key and server connectivity"
+                    .to_string(),
             });
         }
     }
@@ -2302,10 +2315,14 @@ fn deploy_to_intranet_server(
     //    This catches "port is already allocated" errors before they become
     //    opaque Docker daemon failures on the remote server.
     let remote_ssh_args = [
-        "-i", ssh_key_path.to_str().unwrap_or(""),
-        "-p", &server_cfg.port.to_string(),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
+        "-i",
+        ssh_key_path.to_str().unwrap_or(""),
+        "-p",
+        &server_cfg.port.to_string(),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
     ];
     let port_conflicts =
         check_remote_host_port_conflicts(&context.compose_path, &user_at_host, &remote_ssh_args);
@@ -2358,7 +2375,10 @@ fn deploy_to_intranet_server(
         });
     }
 
-    eprintln!("  ✓ Deployed '{}' to {} ({})", project_name, server_cfg.host, remote_dir_abs);
+    eprintln!(
+        "  ✓ Deployed '{}' to {} ({})",
+        project_name, server_cfg.host, remote_dir_abs
+    );
 
     Ok(DeployResult {
         target: DeployTarget::Server,
@@ -2398,8 +2418,7 @@ impl DeployStrategy for ServerDeploy {
 
             if !output.success() {
                 let mut reason = format!("Server deployment failed: {}", output.stderr.trim());
-                let port_hints =
-                    detect_port_conflicts_in_output(&output.stderr, &output.stdout);
+                let port_hints = detect_port_conflicts_in_output(&output.stderr, &output.stdout);
                 if !port_hints.is_empty() {
                     reason.push_str("\n\nPort conflict details:\n  • ");
                     reason.push_str(&port_hints.join("\n  • "));
@@ -3818,7 +3837,10 @@ services:
     fn test_detect_port_conflicts_in_output_bind_error() {
         let stderr = "Error response from daemon: driver failed programming external connectivity on endpoint nginx-proxy-manager (abc123): Bind for 0.0.0.0:80 failed: port is already allocated";
         let hints = detect_port_conflicts_in_output(stderr, "");
-        assert!(!hints.is_empty(), "should detect port conflict from Bind error");
+        assert!(
+            !hints.is_empty(),
+            "should detect port conflict from Bind error"
+        );
         assert!(
             hints.iter().any(|h| h.contains("80")),
             "should include port 80 in hints: {:?}",
@@ -3868,7 +3890,11 @@ services:
         assert!(msg.contains("server"), "should mention target: {}", msg);
         assert!(msg.contains("port 80"), "should mention port 80: {}", msg);
         assert!(msg.contains("port 443"), "should mention port 443: {}", msg);
-        assert!(msg.contains("stacker.yml"), "should refer to stacker.yml: {}", msg);
+        assert!(
+            msg.contains("stacker.yml"),
+            "should refer to stacker.yml: {}",
+            msg
+        );
     }
 
     #[test]
@@ -3882,7 +3908,10 @@ services:
             "user@fakehost",
             &["-i", "/dev/null", "-p", "22"],
         );
-        assert!(conflicts.is_empty(), "empty compose should have no conflicts");
+        assert!(
+            conflicts.is_empty(),
+            "empty compose should have no conflicts"
+        );
     }
 
     #[test]
@@ -3898,14 +3927,7 @@ services:
         let conflicts = check_remote_host_port_conflicts(
             tmp.path(),
             "nobody@nonexistent.invalid",
-            &[
-                "-i",
-                "/dev/null",
-                "-p",
-                "22",
-                "-o",
-                "ConnectTimeout=1",
-            ],
+            &["-i", "/dev/null", "-p", "22", "-o", "ConnectTimeout=1"],
         );
         assert!(
             conflicts.is_empty(),

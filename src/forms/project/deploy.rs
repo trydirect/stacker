@@ -164,20 +164,24 @@ mod tests {
     fn cloud_provider_missing_single_field_is_rejected() {
         // region + server present, os missing → only os is reported.
         let deploy = deploy_with("digitalocean", Some("nyc1"), Some("s-1vcpu-1gb"), None);
-        let err = validate_cloud_instance_config(&deploy)
-            .expect_err("missing os must fail");
+        let err = validate_cloud_instance_config(&deploy).expect_err("missing os must fail");
         let msg = err.to_string();
         assert!(msg.contains("os"), "should list os: {msg}");
-        assert!(!msg.contains("region"), "region is present, must not be listed: {msg}");
-        assert!(!msg.contains("server,"), "server is present, must not be listed: {msg}");
+        assert!(
+            !msg.contains("region"),
+            "region is present, must not be listed: {msg}"
+        );
+        assert!(
+            !msg.contains("server,"),
+            "server is present, must not be listed: {msg}"
+        );
     }
 
     #[test]
     fn empty_string_instance_field_counts_as_missing() {
         // An empty string must be treated the same as None.
         let deploy = deploy_with("aws", Some(""), Some("t3.micro"), Some("ubuntu"));
-        let err = validate_cloud_instance_config(&deploy)
-            .expect_err("empty region must fail");
+        let err = validate_cloud_instance_config(&deploy).expect_err("empty region must fail");
         assert!(err.to_string().contains("region"), "{}", err);
     }
 }

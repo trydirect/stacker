@@ -153,6 +153,7 @@ fn build_payload(
         server_ip: server.and_then(|srv| srv.srv_ip.clone()),
         ssh_user: ssh_user.clone(),
         ssh_port,
+        ssh_key: None,
         server_name: server.and_then(|srv| srv.name.clone().or_else(|| srv.server.clone())),
         deployment_id: Some(deployment.id as i64),
         project_id: Some(project.id as i64),
@@ -228,6 +229,7 @@ fn build_legacy_payload(
         server_ip: server_ip.clone(),
         ssh_user: server_ip.as_ref().map(|_| "root".to_string()),
         ssh_port: server_ip.as_ref().map(|_| 22),
+        ssh_key: None,
         server_name: installation
             .domain
             .clone()

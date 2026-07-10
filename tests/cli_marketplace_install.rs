@@ -56,7 +56,9 @@ fn test_install_refuses_existing_deployed_project() {
         .args(["install", "some-template"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("already contains a deployed project"))
+        .stderr(predicate::str::contains(
+            "already contains a deployed project",
+        ))
         .stderr(predicate::str::contains("stacker service add"))
         .stderr(predicate::str::contains("stacker agent deploy-app"));
 }
@@ -79,7 +81,9 @@ deployed_at: 2026-07-01T12:00:00+00:00
         .args(["install", "some-template"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("already contains a deployed project"));
+        .stderr(predicate::str::contains(
+            "already contains a deployed project",
+        ));
 }
 
 #[test]

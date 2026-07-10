@@ -170,10 +170,13 @@ mod tests {
         ]);
         redact_sensitive_json_values(&mut v);
 
-        assert_eq!(v[0]["value"], "***REDACTED***", "DB_PASSWORD must be redacted");
-        assert_eq!(v[1]["value"], "db.internal",    "DB_HOST must not be redacted");
+        assert_eq!(
+            v[0]["value"], "***REDACTED***",
+            "DB_PASSWORD must be redacted"
+        );
+        assert_eq!(v[1]["value"], "db.internal", "DB_HOST must not be redacted");
         assert_eq!(v[2]["value"], "***REDACTED***", "api_key must be redacted");
-        assert_eq!(v[3]["value"], "3000",           "APP_PORT must not be redacted");
+        assert_eq!(v[3]["value"], "3000", "APP_PORT must not be redacted");
 
         // Key names must survive unchanged
         assert_eq!(v[0]["key"], "DB_PASSWORD");
@@ -193,21 +196,42 @@ mod tests {
     fn yaml_redacts_docker_compose_env_mapping() {
         let yaml = "services:\n  app:\n    environment:\n      FLOWISE_PASSWORD: admin123\n      DATABASE_PASSWORD: Qwerty123\n      SECRETKEY: change-me\n      PORT: '3000'\n      HOST: localhost\n";
         let result = redact_yaml_string(yaml);
-        assert!(result.contains("***REDACTED***"), "should contain REDACTED marker");
-        assert!(!result.contains("admin123"),   "FLOWISE_PASSWORD value must be gone");
-        assert!(!result.contains("Qwerty123"),  "DATABASE_PASSWORD value must be gone");
-        assert!(!result.contains("change-me"),  "SECRETKEY value must be gone");
-        assert!(result.contains("'3000'") || result.contains("3000"), "PORT must survive");
-        assert!(result.contains("localhost"),   "HOST must survive");
+        assert!(
+            result.contains("***REDACTED***"),
+            "should contain REDACTED marker"
+        );
+        assert!(
+            !result.contains("admin123"),
+            "FLOWISE_PASSWORD value must be gone"
+        );
+        assert!(
+            !result.contains("Qwerty123"),
+            "DATABASE_PASSWORD value must be gone"
+        );
+        assert!(
+            !result.contains("change-me"),
+            "SECRETKEY value must be gone"
+        );
+        assert!(
+            result.contains("'3000'") || result.contains("3000"),
+            "PORT must survive"
+        );
+        assert!(result.contains("localhost"), "HOST must survive");
     }
 
     #[test]
     fn yaml_redacts_env_list_format() {
         let yaml = "services:\n  app:\n    environment:\n    - DB_PASSWORD=secret\n    - APP_PORT=8080\n    - API_KEY=sk-xxx\n";
         let result = redact_yaml_string(yaml);
-        assert!(result.contains("DB_PASSWORD=***REDACTED***"), "list-style DB_PASSWORD must be redacted");
-        assert!(result.contains("API_KEY=***REDACTED***"),     "list-style API_KEY must be redacted");
-        assert!(result.contains("APP_PORT=8080"),              "APP_PORT must survive");
+        assert!(
+            result.contains("DB_PASSWORD=***REDACTED***"),
+            "list-style DB_PASSWORD must be redacted"
+        );
+        assert!(
+            result.contains("API_KEY=***REDACTED***"),
+            "list-style API_KEY must be redacted"
+        );
+        assert!(result.contains("APP_PORT=8080"), "APP_PORT must survive");
     }
 
     #[test]

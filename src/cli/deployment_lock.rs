@@ -37,6 +37,10 @@ pub struct DeploymentLock {
     /// SSH port on the target server.
     pub ssh_port: Option<u16>,
 
+    /// SSH private key path for the target server when explicitly configured.
+    #[serde(default)]
+    pub ssh_key: Option<PathBuf>,
+
     /// Server name on the Stacker platform (for `--server` reuse).
     pub server_name: Option<String>,
 
@@ -69,6 +73,7 @@ impl DeploymentLock {
             server_ip: result.server_ip.clone(),
             ssh_user: None,
             ssh_port: None,
+            ssh_key: None,
             server_name: None,
             deployment_id: result.deployment_id,
             project_id: result.project_id,
@@ -86,6 +91,7 @@ impl DeploymentLock {
             server_ip: Some("127.0.0.1".to_string()),
             ssh_user: None,
             ssh_port: None,
+            ssh_key: None,
             server_name: None,
             deployment_id: None,
             project_id: None,
@@ -103,6 +109,7 @@ impl DeploymentLock {
             server_ip: Some(server_cfg.host.clone()),
             ssh_user: Some(server_cfg.user.clone()),
             ssh_port: Some(server_cfg.port),
+            ssh_key: server_cfg.ssh_key.clone(),
             server_name: None,
             deployment_id: None,
             project_id: None,
@@ -327,12 +334,21 @@ impl DeploymentLock {
                     lock.save(project_dir)?;
                 }
             }
-            "cloud" | "server" => {
+            "cloud" => {
                 if !Self::exists_for_target(project_dir, target) {
                     return Err(CliError::ConfigValidation(format!(
                         "No {} deployment lock found. Deploy to {} first before switching.",
                         target, target
                     )));
+                }
+            }
+            "server" => {
+                if !Self::exists_for_target(project_dir, "server")
+                    && Self::create_server_lock_from_default_config(project_dir)?.is_none()
+                {
+                    return Err(CliError::ConfigValidation(
+                        "No server deployment lock found and stacker.yml does not define deploy.server. Configure the server first with `stacker config setup server`, add deploy.server to stacker.yml, or deploy to the server once before switching.".to_string(),
+                    ));
                 }
             }
             _ => {
@@ -343,6 +359,48 @@ impl DeploymentLock {
             }
         }
         Self::write_active_target(project_dir, target)
+    }
+
+    /// Load server connection details from a server lock when they are complete
+    /// enough to stand in for `deploy.server` in stacker.yml.
+    pub fn to_server_config(&self) -> Option<ServerConfig> {
+        if self.target != "server" {
+            return None;
+        }
+
+        let host = self.server_ip.as_ref()?.trim();
+        if host.is_empty() || host == "127.0.0.1" {
+            return None;
+        }
+
+        Some(ServerConfig {
+            host: host.to_string(),
+            user: self
+                .ssh_user
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "root".to_string()),
+            ssh_key: self.ssh_key.clone(),
+            port: self.ssh_port.unwrap_or(22),
+        })
+    }
+
+    fn create_server_lock_from_default_config(
+        project_dir: &Path,
+    ) -> Result<Option<Self>, CliError> {
+        let config_path = project_dir.join("stacker.yml");
+        if !config_path.exists() {
+            return Ok(None);
+        }
+
+        let config = StackerConfig::from_file(&config_path)?;
+        let Some(server_cfg) = config.deploy.server.as_ref() else {
+            return Ok(None);
+        };
+
+        let lock = Self::for_server(server_cfg);
+        lock.save(project_dir)?;
+        Ok(Some(lock))
     }
 
     // ── Config update ────────────────────────────────
@@ -363,6 +421,7 @@ impl DeploymentLock {
                 .server
                 .as_ref()
                 .and_then(|s| s.ssh_key.clone())
+                .or_else(|| self.ssh_key.clone())
                 .or_else(|| config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone()));
 
             config.deploy.server = Some(ServerConfig {
@@ -410,6 +469,7 @@ mod tests {
             server_ip: Some("203.0.113.42".to_string()),
             ssh_user: Some("root".to_string()),
             ssh_port: Some(22),
+            ssh_key: None,
             server_name: Some("my-server".to_string()),
             deployment_id: Some(123),
             project_id: Some(456),
@@ -533,6 +593,7 @@ mod tests {
         assert_eq!(server.host, "203.0.113.42");
         assert_eq!(server.user, "root");
         assert_eq!(server.port, 22);
+        assert!(server.ssh_key.is_none());
     }
 
     #[test]
@@ -550,7 +611,7 @@ mod tests {
         let server_cfg = ServerConfig {
             host: "10.0.0.1".to_string(),
             user: "deploy".to_string(),
-            ssh_key: None,
+            ssh_key: Some(PathBuf::from("/tmp/id_ed25519")),
             port: 2222,
         };
 
@@ -558,6 +619,7 @@ mod tests {
         assert_eq!(lock.server_ip, Some("10.0.0.1".to_string()));
         assert_eq!(lock.ssh_user, Some("deploy".to_string()));
         assert_eq!(lock.ssh_port, Some(2222));
+        assert_eq!(lock.ssh_key, Some(PathBuf::from("/tmp/id_ed25519")));
         assert_eq!(lock.target, "server");
     }
 
@@ -637,6 +699,42 @@ mod tests {
         // Switch to cloud without a lock should fail
         let result = DeploymentLock::switch_target(tmp.path(), "cloud");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn switch_target_server_creates_lock_from_config() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("stacker.yml"),
+            r#"
+name: demo
+app:
+  type: custom
+  image: ghcr.io/example/demo:latest
+deploy:
+  target: local
+  server:
+    host: 192.0.2.10
+    user: deploy
+    port: 2222
+    ssh_key: ~/.ssh/demo
+"#,
+        )
+        .unwrap();
+
+        DeploymentLock::switch_target(tmp.path(), "server").unwrap();
+
+        let lock = DeploymentLock::load_for_target(tmp.path(), "server")
+            .unwrap()
+            .unwrap();
+        assert_eq!(lock.server_ip.as_deref(), Some("192.0.2.10"));
+        assert_eq!(lock.ssh_user.as_deref(), Some("deploy"));
+        assert_eq!(lock.ssh_port, Some(2222));
+        assert_eq!(lock.ssh_key, Some(PathBuf::from("~/.ssh/demo")));
+        assert_eq!(
+            DeploymentLock::read_active_target(tmp.path()).unwrap(),
+            Some("server".to_string())
+        );
     }
 
     #[test]

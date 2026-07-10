@@ -552,8 +552,8 @@ mod tests {
                 environment: HashMap::new(),
                 volumes: vec![],
                 depends_on: vec![],
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             }],
             ..Default::default()
         }
@@ -602,8 +602,8 @@ mod tests {
             environment: HashMap::new(),
             volumes: vec![],
             depends_on: vec![],
-        command: None,
-        healthcheck: None,
+            command: None,
+            healthcheck: None,
         }];
 
         let result =
@@ -668,8 +668,8 @@ volumes:
                 ]),
                 volumes: vec!["smtp_data:/data".to_string()],
                 depends_on: Vec::new(),
-            command: None,
-            healthcheck: None,
+                command: None,
+                healthcheck: None,
             }],
             ..Default::default()
         };

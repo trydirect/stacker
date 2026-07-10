@@ -473,7 +473,6 @@ Rules:
 12. Add monitoring.status_panel: true for production stacks.
 13. Set deploy.target: local by default — this is a local development config.";
 
-
 /// Expose the system prompt used for AI-based stacker.yml generation.
 pub fn generation_system_prompt() -> &'static str {
     SYSTEM_PROMPT

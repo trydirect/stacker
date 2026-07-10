@@ -492,8 +492,14 @@ impl std::fmt::Debug for VaultSettings {
             .field("agent_path_prefix", &self.agent_path_prefix)
             .field("api_prefix", &self.api_prefix)
             .field("ssh_key_path_prefix", &self.ssh_key_path_prefix)
-            .field("client_cert", &self.client_cert.as_ref().map(|_| "[REDACTED]"))
-            .field("client_key", &self.client_key.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "client_cert",
+                &self.client_cert.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "client_key",
+                &self.client_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }

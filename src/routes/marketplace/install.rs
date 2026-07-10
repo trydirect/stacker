@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use actix_web::{post, web, Responder, Result};
 use crate::helpers::redact::{redact_sensitive_json_values, redact_yaml_string};
+use actix_web::{post, web, Responder, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_valid::Validate;
@@ -65,15 +65,12 @@ fn build_project_form(
     let is_yaml = latest_version.definition_format.as_deref() == Some("yaml");
 
     let mut form: ProjectForm = if is_yaml {
-        let yaml_str = latest_version
-            .stack_definition
-            .as_str()
-            .ok_or_else(|| {
-                JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                    "Template '{}' has a YAML stack definition that is not a string",
-                    template.slug
-                ))
-            })?;
+        let yaml_str = latest_version.stack_definition.as_str().ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Template '{}' has a YAML stack definition that is not a string",
+                template.slug
+            ))
+        })?;
 
         let project_name = requested_name
             .map(str::trim)
@@ -366,7 +363,10 @@ fn redact_version_value(ver_value: &mut serde_json::Value, format: &str) {
         }
     }
 
-    if let Some(files) = ver_value.get_mut("config_files").and_then(|v| v.as_array_mut()) {
+    if let Some(files) = ver_value
+        .get_mut("config_files")
+        .and_then(|v| v.as_array_mut())
+    {
         for file in files {
             if let Some(content) = file
                 .get_mut("content")
@@ -435,9 +435,13 @@ async fn install_stack_template(
     )
     .await?;
 
-    let format = latest_version.definition_format.as_deref().unwrap_or("").to_string();
-    let mut ver_value = serde_json::to_value(latest_version)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let format = latest_version
+        .definition_format
+        .as_deref()
+        .unwrap_or("")
+        .to_string();
+    let mut ver_value =
+        serde_json::to_value(latest_version).unwrap_or_else(|_| serde_json::json!({}));
 
     redact_version_value(&mut ver_value, &format);
 
@@ -662,18 +666,9 @@ mod tests {
             Some("A monitoring tool".to_string())
         );
         assert!(form.custom.web.is_empty());
-        assert_eq!(
-            form.custom.service.as_ref().map(|v| v.len()),
-            Some(0)
-        );
-        assert_eq!(
-            form.custom.feature.as_ref().map(|v| v.len()),
-            Some(0)
-        );
-        assert_eq!(
-            form.custom.marketplace_version,
-            Some("1.0.0".to_string())
-        );
+        assert_eq!(form.custom.service.as_ref().map(|v| v.len()), Some(0));
+        assert_eq!(form.custom.feature.as_ref().map(|v| v.len()), Some(0));
+        assert_eq!(form.custom.marketplace_version, Some("1.0.0".to_string()));
     }
 
     #[test]
@@ -716,10 +711,7 @@ mod tests {
             .expect("YAML stack should produce a valid ProjectForm");
 
         assert_eq!(form.custom.custom_stack_code, "my-instance");
-        assert_eq!(
-            form.custom.project_name,
-            Some("Stackdog".to_string())
-        );
+        assert_eq!(form.custom.project_name, Some("Stackdog".to_string()));
     }
 
     #[test]
@@ -784,33 +776,42 @@ mod tests {
         let mut inputs = Map::new();
         inputs.insert("VAULT_TOKEN".to_string(), json!("secret-vault"));
         inputs.insert("STACKER_SECRET".to_string(), json!("stacker-internal"));
-        inputs.insert("DOCKER_HOST".to_string(), json!("unix:///var/run/docker.sock"));
+        inputs.insert(
+            "DOCKER_HOST".to_string(),
+            json!("unix:///var/run/docker.sock"),
+        );
         inputs.insert("AGENT_KEY".to_string(), json!("agent-secret"));
         inputs.insert("normal_key".to_string(), json!("safe-value"));
 
         super::apply_install_inputs_to_deploy(&mut deploy, &inputs);
 
-        let vars = deploy.stack.vars.as_ref().expect("vars should be populated");
-        let keys: Vec<&str> = vars.iter()
-            .filter_map(|v| v.key.as_deref())
-            .collect();
+        let vars = deploy
+            .stack
+            .vars
+            .as_ref()
+            .expect("vars should be populated");
+        let keys: Vec<&str> = vars.iter().filter_map(|v| v.key.as_deref()).collect();
 
         for key in &keys {
             assert!(
                 !key.starts_with("VAULT_"),
-                "VAULT_ key must be rejected but found: {}", key
+                "VAULT_ key must be rejected but found: {}",
+                key
             );
             assert!(
                 !key.starts_with("STACKER_"),
-                "STACKER_ key must be rejected but found: {}", key
+                "STACKER_ key must be rejected but found: {}",
+                key
             );
             assert!(
                 !key.starts_with("DOCKER_"),
-                "DOCKER_ key must be rejected but found: {}", key
+                "DOCKER_ key must be rejected but found: {}",
+                key
             );
             assert!(
                 !key.starts_with("AGENT_"),
-                "AGENT_ key must be rejected but found: {}", key
+                "AGENT_ key must be rejected but found: {}",
+                key
             );
         }
 
@@ -834,7 +835,11 @@ mod tests {
             json!("SECRET_KEY: supersecret\nservices:\n  app:\n    image: nginx");
         version.definition_format = Some("yaml".to_string());
 
-        let format = version.definition_format.as_deref().unwrap_or("").to_string();
+        let format = version
+            .definition_format
+            .as_deref()
+            .unwrap_or("")
+            .to_string();
         let mut ver_value = serde_json::to_value(&version).unwrap();
         super::redact_version_value(&mut ver_value, &format);
 
@@ -852,5 +857,4 @@ mod tests {
             }
         }
     }
-
 }

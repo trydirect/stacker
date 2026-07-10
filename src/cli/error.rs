@@ -158,10 +158,7 @@ impl fmt::Display for CliError {
                 write!(f, "Deployment to {target} failed: {reason}")
             }
             Self::HookRejected { hook_name, reason } => {
-                write!(
-                    f,
-                    "Hook '{hook_name}' rejected before execution: {reason}"
-                )
+                write!(f, "Hook '{hook_name}' rejected before execution: {reason}")
             }
             Self::LoginRequired { feature } => {
                 write!(f, "Login required for {feature}. Run: stacker login")

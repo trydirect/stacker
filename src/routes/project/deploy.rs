@@ -1454,9 +1454,14 @@ async fn execute_deployment(
     };
 
     // Capture server and cloud references before they move into deploy().
-    let has_server_ip = server.srv_ip.as_ref().map_or(false, |ip| !ip.trim().is_empty());
-    let should_configure_firewall =
-        has_server_ip && normalized_public_ports.as_ref().map_or(false, |p| !p.is_empty());
+    let has_server_ip = server
+        .srv_ip
+        .as_ref()
+        .map_or(false, |ip| !ip.trim().is_empty());
+    let should_configure_firewall = has_server_ip
+        && normalized_public_ports
+            .as_ref()
+            .map_or(false, |p| !p.is_empty());
     let firewall_server = server.clone();
     let firewall_cloud = cloud.clone();
 
@@ -2175,11 +2180,11 @@ pub async fn rollback(
 mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
-        default_status_panel_npm_credentials, ensure_trailing_newline, find_matching_hetzner_server,
-        hetzner_server_ip, preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
-        should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
-        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
-        HetznerIpv4, HetznerPublicNet, HetznerServer,
+        default_status_panel_npm_credentials, ensure_trailing_newline,
+        find_matching_hetzner_server, hetzner_server_ip, preserve_marketplace_runtime_artifacts,
+        resolve_provided_ssh_keypair, should_seed_default_status_panel_npm_credentials,
+        sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
+        validate_min_ram_requirement, HetznerIpv4, HetznerPublicNet, HetznerServer,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
@@ -2811,7 +2816,10 @@ mod tests {
             crate::helpers::vault::VaultClient::generate_ssh_keypair().expect("test keypair");
         // Simulate the upstream trim that stripped the trailing newline.
         let trimmed = private_key.trim_end().to_string();
-        assert!(!trimmed.ends_with('\n'), "precondition: key has no trailing newline");
+        assert!(
+            !trimmed.ends_with('\n'),
+            "precondition: key has no trailing newline"
+        );
         let form = forms::server::ServerForm {
             ssh_private_key: Some(trimmed),
             ..Default::default()

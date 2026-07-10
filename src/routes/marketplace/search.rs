@@ -25,10 +25,7 @@ struct TemplatePricing {
     required_plan_name: Option<String>,
 }
 
-async fn enrich_items_with_pricing(
-    pg_pool: &PgPool,
-    items: &mut [serde_json::Value],
-) {
+async fn enrich_items_with_pricing(pg_pool: &PgPool, items: &mut [serde_json::Value]) {
     let slugs: Vec<String> = items
         .iter()
         .filter_map(|item| {

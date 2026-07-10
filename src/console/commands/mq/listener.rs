@@ -145,10 +145,7 @@ fn build_public_firewall_message(
     } else {
         cloud
     };
-    let non_empty = |s: Option<String>| {
-        s.map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    };
+    let non_empty = |s: Option<String>| s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let credentials = CloudFirewallCredentials {
         provider: provider.to_string(),
         token: non_empty(cloud.cloud_token),
@@ -234,10 +231,7 @@ async fn configure_public_firewall_for_deployment(
     let server = servers
         .into_iter()
         .find(|s| {
-            s.cloud_id.is_some()
-                && s.srv_ip
-                    .as_ref()
-                    .map_or(false, |ip| !ip.trim().is_empty())
+            s.cloud_id.is_some() && s.srv_ip.as_ref().map_or(false, |ip| !ip.trim().is_empty())
         })
         .ok_or_else(|| {
             format!(
@@ -272,7 +266,8 @@ impl crate::console::commands::CallableTrait for ListenCommand {
                 .expect("Failed to connect to database.");
 
             let db_pool = web::Data::new(db_pool);
-            let install_service_data = crate::connectors::init_install_service(&settings.connectors);
+            let install_service_data =
+                crate::connectors::init_install_service(&settings.connectors);
             let install_service: Arc<dyn InstallServiceConnector> =
                 install_service_data.get_ref().clone();
             let queue_name = "stacker_listener";

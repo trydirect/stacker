@@ -110,7 +110,11 @@ mod tests {
             .insert_header(("authorization", header_value.as_str()))
             .to_srv_request();
         let result = try_jwt(&mut req).await;
-        assert!(result.is_err(), "expected Err for expired JWT, got {:?}", result);
+        assert!(
+            result.is_err(),
+            "expected Err for expired JWT, got {:?}",
+            result
+        );
     }
 
     #[actix_web::test]
@@ -123,10 +127,7 @@ mod tests {
             .to_srv_request();
         let result = try_jwt(&mut req).await;
         assert_eq!(result, Ok(true));
-        let user_present = req
-            .extensions()
-            .get::<Arc<crate::models::User>>()
-            .is_some();
+        let user_present = req.extensions().get::<Arc<crate::models::User>>().is_some();
         assert!(user_present, "expected User to be inserted into extensions");
     }
 }

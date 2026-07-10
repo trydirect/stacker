@@ -6,9 +6,9 @@ use crate::cli::error::CliError;
 use crate::cli::install_runner::{CommandExecutor, CommandOutput, ShellExecutor};
 use crate::cli::local_compose::resolve_local_compose_path;
 use crate::cli::stacker_client::{self, DeploymentStatusInfo, ServerInfo, StackerClient};
-use crate::services::{DeploymentEvent, DeploymentEventClassification, DeploymentEventFeed};
 use crate::console::commands::cli::ssh_key::{format_ssh_command, local_backup_private_key_path};
 use crate::console::commands::CallableTrait;
+use crate::services::{DeploymentEvent, DeploymentEventClassification, DeploymentEventFeed};
 
 const DEFAULT_CONFIG_FILE: &str = "stacker.yml";
 
@@ -103,7 +103,9 @@ fn clean_status_message(raw: &str) -> String {
         .filter(|line| {
             let trimmed = line.trim();
             !trimmed.is_empty()
-                && !noise_prefixes.iter().any(|prefix| trimmed.starts_with(prefix))
+                && !noise_prefixes
+                    .iter()
+                    .any(|prefix| trimmed.starts_with(prefix))
         })
         .collect();
 
@@ -172,7 +174,13 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
     if let Some(ref msg) = info.status_message {
         let cleaned = clean_status_message(msg);
         // For paused/failed show truncated summary here; full detail in the events section
-        let preview: String = cleaned.lines().next().unwrap_or("").chars().take(120).collect();
+        let preview: String = cleaned
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect();
         if !preview.is_empty() {
             println!("  Message:         {}", preview);
         }
@@ -348,7 +356,10 @@ fn print_deployment_status_rich(info: &DeploymentStatusInfo, json: bool, ctx: &S
                     ctx.server
                         .and_then(|s| s.srv_ip.as_deref())
                         .map(|ip| {
-                            let user = ctx.server.and_then(|s| s.ssh_user.as_deref()).unwrap_or("root");
+                            let user = ctx
+                                .server
+                                .and_then(|s| s.ssh_user.as_deref())
+                                .unwrap_or("root");
                             format!("ssh {}@{}", user, ip)
                         })
                         .unwrap_or_else(|| "see Server section above".to_string())
@@ -869,6 +880,7 @@ deploy:
             server_ip: Some("203.0.113.10".to_string()),
             ssh_user: Some("root".to_string()),
             ssh_port: Some(22),
+            ssh_key: None,
             server_name: Some("demo".to_string()),
             deployment_id: Some(42),
             project_id: Some(7),

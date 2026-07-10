@@ -164,10 +164,7 @@ async fn creator_patch_vendor_public_profile_creates_profile_when_missing() {
     };
 
     let response = reqwest::Client::new()
-        .patch(format!(
-            "{}/api/templates/mine/vendor-profile",
-            app.address
-        ))
+        .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
         .bearer_auth(USER_TOKEN)
         .json(&json!({
             "display_name": "Acme Cloud",
@@ -184,10 +181,7 @@ async fn creator_patch_vendor_public_profile_creates_profile_when_missing() {
 
     // Verify the profile was persisted by reading it back
     let get_response = reqwest::Client::new()
-        .get(format!(
-            "{}/api/templates/mine/vendor-profile",
-            app.address
-        ))
+        .get(format!("{}/api/templates/mine/vendor-profile", app.address))
         .bearer_auth(USER_TOKEN)
         .send()
         .await
@@ -208,10 +202,7 @@ async fn creator_patch_vendor_public_profile_creates_profile_when_missing() {
         "https://acme-cloud.example.com/avatar.png",
         profile["avatar_url"]
     );
-    assert_eq!(
-        "https://acme-cloud.example.com",
-        profile["website_url"]
-    );
+    assert_eq!("https://acme-cloud.example.com", profile["website_url"]);
 }
 
 #[tokio::test]
@@ -239,10 +230,7 @@ async fn creator_patch_vendor_public_profile_updates_existing_profile() {
 
     // Update only display_name and bio — slug and URLs should be preserved via COALESCE
     let response = reqwest::Client::new()
-        .patch(format!(
-            "{}/api/templates/mine/vendor-profile",
-            app.address
-        ))
+        .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
         .bearer_auth(USER_TOKEN)
         .json(&json!({
             "display_name": "New Name",
@@ -256,10 +244,7 @@ async fn creator_patch_vendor_public_profile_updates_existing_profile() {
 
     // Verify only the specified fields changed
     let get_response = reqwest::Client::new()
-        .get(format!(
-            "{}/api/templates/mine/vendor-profile",
-            app.address
-        ))
+        .get(format!("{}/api/templates/mine/vendor-profile", app.address))
         .bearer_auth(USER_TOKEN)
         .send()
         .await
@@ -274,10 +259,7 @@ async fn creator_patch_vendor_public_profile_updates_existing_profile() {
     assert_eq!("old-slug", profile["public_slug"]);
     assert_eq!("New Name", profile["display_name"]);
     assert_eq!("New bio", profile["bio"]);
-    assert_eq!(
-        "https://old.example.com/avatar.png",
-        profile["avatar_url"]
-    );
+    assert_eq!("https://old.example.com/avatar.png", profile["avatar_url"]);
     assert_eq!("https://old.example.com", profile["website_url"]);
 }
 
@@ -289,10 +271,7 @@ async fn creator_patch_vendor_public_profile_rejects_invalid_slug() {
     };
 
     let response = reqwest::Client::new()
-        .patch(format!(
-            "{}/api/templates/mine/vendor-profile",
-            app.address
-        ))
+        .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
         .bearer_auth(USER_TOKEN)
         .json(&json!({
             "public_slug": "-invalid-slug"
@@ -312,10 +291,7 @@ async fn creator_patch_vendor_public_profile_requires_authentication() {
     };
 
     let response = reqwest::Client::new()
-        .patch(format!(
-            "{}/api/templates/mine/vendor-profile",
-            app.address
-        ))
+        .patch(format!("{}/api/templates/mine/vendor-profile", app.address))
         .json(&json!({
             "display_name": "Should Not Work"
         }))

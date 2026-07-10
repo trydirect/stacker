@@ -490,14 +490,17 @@ pub async fn open_ssh(
     let config = Arc::new(Config::default());
     let addr = format!("{}:{}", host, port);
 
-    let handle = timeout(connection_timeout, connect_and_auth(config, &addr, username, key))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "SSH connection timed out after {} seconds",
-                connection_timeout.as_secs()
-            )
-        })??;
+    let handle = timeout(
+        connection_timeout,
+        connect_and_auth(config, &addr, username, key),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "SSH connection timed out after {} seconds",
+            connection_timeout.as_secs()
+        )
+    })??;
 
     Ok(SshSession(handle))
 }

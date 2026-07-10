@@ -355,8 +355,7 @@ pub async fn detail_handler(
             if let Some(mut ver) = version {
                 if ver.definition_format.as_deref() == Some("yaml") {
                     if let serde_json::Value::String(yaml) = &ver.stack_definition {
-                        ver.stack_definition =
-                            serde_json::Value::String(redact_yaml_string(yaml));
+                        ver.stack_definition = serde_json::Value::String(redact_yaml_string(yaml));
                     }
                 } else {
                     redact_sensitive_json_values(&mut ver.stack_definition);

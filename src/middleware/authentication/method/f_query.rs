@@ -83,9 +83,7 @@ mod tests {
 
     #[actix_web::test]
     async fn non_mcp_path_skips_query_auth() {
-        let mut req = TestRequest::get()
-            .uri("/api/v1/project")
-            .to_srv_request();
+        let mut req = TestRequest::get().uri("/api/v1/project").to_srv_request();
         let result = try_query(&mut req).await;
         assert_eq!(result, Ok(false));
     }
