@@ -830,6 +830,79 @@ fn custom_field(value: &serde_json::Value, field: &str) -> Option<serde_json::Va
         .cloned()
 }
 
+/// Cloud-firewall public ports implied by the stack's own app definitions.
+///
+/// Stack Builder (the web UI) stores an app's "public port" as a `shared_ports`
+/// entry that carries a `host_port`. docker-compose publishes those on the host,
+/// but the cloud provider firewall has to be opened separately or the app is
+/// unreachable — only SSH/22 is open by default. Historically only the CLI's
+/// top-level `public_ports` (from `deploy.cloud.public_ports` in stacker.yml)
+/// reached the firewall, so ports configured through the web UI were silently
+/// never published at the provider edge. We therefore derive firewall rules from
+/// every host-published `shared_ports` entry across the stack's web/service/
+/// feature apps.
+///
+/// Loopback-bound mappings (host_ip `127.0.0.1` / `::1` / `localhost`) are
+/// excluded on purpose: those are intentionally host-local (e.g. a database
+/// bound to localhost) and must never be exposed at the provider edge.
+///
+/// Returned specs are canonical `"port/protocol"` strings, de-duplicated.
+fn derive_public_ports_from_metadata(metadata: &serde_json::Value) -> Vec<String> {
+    const APP_GROUPS: [&str; 3] = ["web", "service", "feature"];
+
+    let Some(custom) = metadata.get("custom") else {
+        return Vec::new();
+    };
+
+    let mut ports: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for group in APP_GROUPS {
+        let Some(apps) = custom.get(group).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for app in apps {
+            let Some(shared_ports) = app
+                .get("shared_ports")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            for raw in shared_ports {
+                // Reuse the validated Port form + its docker-compose conversion so
+                // host_ip / host_port / protocol are parsed exactly as they are for
+                // the generated compose file (host_ip may be embedded in the
+                // container_port field, e.g. "127.0.0.1:1025:25").
+                let Ok(port) = serde_json::from_value::<forms::project::Port>(raw.clone()) else {
+                    continue;
+                };
+                let dc_port: docker_compose_types::Port = match (&port).try_into() {
+                    Ok(dc) => dc,
+                    Err(_) => continue,
+                };
+                // Only ports actually published to the host reach the edge.
+                let host_port = match dc_port.published {
+                    Some(docker_compose_types::PublishedPort::Single(p)) => p,
+                    _ => continue,
+                };
+                // Skip loopback-bound mappings — intentionally host-local.
+                if let Some(ip) = dc_port.host_ip.as_deref() {
+                    if matches!(ip, "127.0.0.1" | "::1" | "localhost") {
+                        continue;
+                    }
+                }
+                let protocol = dc_port.protocol.as_deref().unwrap_or("tcp");
+                let spec = format!("{host_port}/{protocol}");
+                if seen.insert(spec.clone()) {
+                    ports.push(spec);
+                }
+            }
+        }
+    }
+
+    ports
+}
+
 fn template_version_field(
     template_version: &models::StackTemplateVersion,
     field: &str,
@@ -1378,25 +1451,46 @@ async fn execute_deployment(
     }
 
     let mut json_request = dc.project.metadata.clone();
-    // Normalize public_ports to canonical "port/protocol" form so downstream
-    // consumers (deployment metadata, MQ auto-firewall, Install Service) never
-    // see a bare port number that could be silently dropped. Invalid entries
-    // are rejected up front with a 400 rather than swallowed.
-    let normalized_public_ports: Option<Vec<String>> = form
-        .public_ports
-        .as_ref()
-        .map(|ports| {
-            ports
-                .iter()
-                .map(|p| crate::forms::firewall::normalize_public_port(p))
-                .collect::<Result<Vec<String>, String>>()
-        })
-        .transpose()
-        .map_err(|err| {
-            JsonResponse::<models::Project>::build()
-                .bad_request(format!("Invalid public_ports: {err}"))
-        })?
-        .filter(|ports| !ports.is_empty());
+    // Firewall public ports come from two sources that must be merged:
+    //   1. explicit `public_ports` sent by the client — the CLI populates these
+    //      from `deploy.cloud.public_ports` in stacker.yml; and
+    //   2. ports configured per-app in the web UI (Stack Builder), stored as
+    //      host-published `shared_ports` on the stack's apps.
+    // Both are normalized to canonical "port/protocol" form and de-duplicated so
+    // downstream consumers (deployment metadata, MQ auto-firewall, Install
+    // Service) never see a bare port number that could be silently dropped.
+    // Invalid explicit entries are rejected up front with a 400 rather than
+    // swallowed; derived entries come from already-validated Port forms.
+    let normalized_public_ports: Option<Vec<String>> = {
+        let mut normalized: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        if let Some(explicit) = form.public_ports.as_ref() {
+            for port in explicit {
+                let canonical =
+                    crate::forms::firewall::normalize_public_port(port).map_err(|err| {
+                        JsonResponse::<models::Project>::build()
+                            .bad_request(format!("Invalid public_ports: {err}"))
+                    })?;
+                if seen.insert(canonical.clone()) {
+                    normalized.push(canonical);
+                }
+            }
+        }
+
+        for port in derive_public_ports_from_metadata(&dc.project.metadata) {
+            // Normalize again so both sources share identical canonical
+            // formatting; derived specs are already valid so failures are skipped
+            // rather than turned into a 400.
+            if let Ok(canonical) = crate::forms::firewall::normalize_public_port(&port) {
+                if seen.insert(canonical.clone()) {
+                    normalized.push(canonical);
+                }
+            }
+        }
+
+        (!normalized.is_empty()).then_some(normalized)
+    };
 
     if let Some(ref public_ports) = normalized_public_ports {
         if let Some(obj) = json_request.as_object_mut() {
@@ -2180,11 +2274,12 @@ pub async fn rollback(
 mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
-        default_status_panel_npm_credentials, ensure_trailing_newline,
-        find_matching_hetzner_server, hetzner_server_ip, preserve_marketplace_runtime_artifacts,
-        resolve_provided_ssh_keypair, should_seed_default_status_panel_npm_credentials,
-        sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
-        validate_min_ram_requirement, HetznerIpv4, HetznerPublicNet, HetznerServer,
+        default_status_panel_npm_credentials, derive_public_ports_from_metadata,
+        ensure_trailing_newline, find_matching_hetzner_server, hetzner_server_ip,
+        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
+        should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
+        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
+        HetznerIpv4, HetznerPublicNet, HetznerServer,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
@@ -2833,5 +2928,103 @@ mod tests {
             resolved.1.ends_with('\n'),
             "resolved private key must end with a trailing newline"
         );
+    }
+
+    // ---- derive_public_ports_from_metadata --------------------------------
+    // Regression guard: public ports set per-app in the web UI (Stack Builder)
+    // are stored as host-published `shared_ports`; they must be surfaced as
+    // cloud-firewall rules or the deployed app is unreachable at the provider.
+
+    #[test]
+    fn derive_public_ports_collects_host_published_ports_across_app_groups() {
+        let metadata = json!({
+            "custom": {
+                "web": [{
+                    "shared_ports": [
+                        {"host_port": "80", "container_port": "8080"},
+                        {"host_port": "443", "container_port": "8443", "protocol": "tcp"}
+                    ]
+                }],
+                "service": [{
+                    "shared_ports": [
+                        {"host_port": "53", "container_port": "53", "protocol": "udp"}
+                    ]
+                }],
+                "feature": [{
+                    "shared_ports": [
+                        {"host_port": "9000", "container_port": "9000"}
+                    ]
+                }]
+            }
+        });
+
+        let ports = derive_public_ports_from_metadata(&metadata);
+
+        assert_eq!(ports, vec!["80/tcp", "443/tcp", "53/udp", "9000/tcp"]);
+    }
+
+    #[test]
+    fn derive_public_ports_excludes_loopback_bound_mappings() {
+        // A database bound to 127.0.0.1 is intentionally host-local and must
+        // never be opened at the provider edge. host_ip may be embedded in the
+        // container_port field, exactly as the compose builder parses it.
+        let metadata = json!({
+            "custom": {
+                "service": [{
+                    "shared_ports": [
+                        {"host_port": "", "container_port": "127.0.0.1:5432:5432"},
+                        {"host_port": "127.0.0.1", "container_port": "6379:6379"},
+                        {"host_port": "8000", "container_port": "8000"}
+                    ]
+                }]
+            }
+        });
+
+        let ports = derive_public_ports_from_metadata(&metadata);
+
+        // Only the genuinely public 8000 survives.
+        assert_eq!(ports, vec!["8000/tcp"]);
+    }
+
+    #[test]
+    fn derive_public_ports_skips_unpublished_ports() {
+        // A shared_port without a host_port is internal-only (not published to
+        // the host) and therefore never opens a firewall rule.
+        let metadata = json!({
+            "custom": {
+                "service": [{
+                    "shared_ports": [
+                        {"host_port": "", "container_port": "6379"},
+                        {"container_port": "5672"}
+                    ]
+                }]
+            }
+        });
+
+        assert!(derive_public_ports_from_metadata(&metadata).is_empty());
+    }
+
+    #[test]
+    fn derive_public_ports_dedupes_repeated_ports() {
+        let metadata = json!({
+            "custom": {
+                "web": [{ "shared_ports": [{"host_port": "80", "container_port": "8080"}] }],
+                "service": [{ "shared_ports": [{"host_port": "80", "container_port": "80"}] }]
+            }
+        });
+
+        assert_eq!(derive_public_ports_from_metadata(&metadata), vec!["80/tcp"]);
+    }
+
+    #[test]
+    fn derive_public_ports_handles_missing_or_empty_custom() {
+        assert!(derive_public_ports_from_metadata(&json!({})).is_empty());
+        assert!(derive_public_ports_from_metadata(&json!({"custom": {}})).is_empty());
+        assert!(derive_public_ports_from_metadata(&json!({"custom": {"web": []}})).is_empty());
+        // Malformed shared_ports entries are tolerated, not panicked on.
+        let malformed = json!({
+            "custom": {"web": [{"shared_ports": [{"container_port": "not-a-number"}, 42]}]}
+        });
+        assert!(derive_public_ports_from_metadata(&malformed).is_empty());
     }
 }
