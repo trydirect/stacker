@@ -3828,10 +3828,15 @@ pub fn attach_config_bundle_to_deploy_form(
     artifacts: &crate::cli::config_bundle::ConfigBundleArtifacts,
 ) {
     if let Some(obj) = deploy_form.as_object_mut() {
-        obj.insert(
-            "environment".to_string(),
-            serde_json::Value::String(artifacts.environment.clone()),
-        );
+        // Only surface a real, user-selected environment. A synthesized fallback
+        // namespace (used when no environment profile is configured) must not leak
+        // into the deploy-time environment forwarded to the server and MQ.
+        if !artifacts.synthesized_environment {
+            obj.insert(
+                "environment".to_string(),
+                serde_json::Value::String(artifacts.environment.clone()),
+            );
+        }
         obj.insert(
             "config_files".to_string(),
             serde_json::Value::Array(artifacts.config_files.clone()),
@@ -4366,6 +4371,7 @@ mod tests {
                 "content": "RUST_LOG=warning\n",
                 "destination_path": "/opt/stacker/deployments/production/files/docker/production/.env",
             })],
+            synthesized_environment: false,
         };
 
         let config = crate::cli::config_parser::ConfigBuilder::new()
@@ -4395,6 +4401,49 @@ mod tests {
             project_body["custom"]["deployment_artifacts"]["config_bundle"]["config_files"][0]
                 .get("content")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn test_attach_config_bundle_with_synthesized_env_omits_environment() {
+        let artifacts = crate::cli::config_bundle::ConfigBundleArtifacts {
+            environment: "default".to_string(),
+            manifest_path: std::path::PathBuf::from(
+                ".stacker/deploy/default/config-bundle.manifest.json",
+            ),
+            archive_path: std::path::PathBuf::from(".stacker/deploy/default/config-bundle.tar.zst"),
+            remote_compose_path: std::path::PathBuf::from(
+                ".stacker/deploy/default/docker-compose.remote.yml",
+            ),
+            manifest: crate::cli::config_bundle::ConfigBundleManifest {
+                version: 1,
+                environment: "default".to_string(),
+                files: vec![],
+            },
+            config_files: vec![serde_json::json!({
+                "name": "app.conf",
+                "content": "key=value\n",
+                "destination_path": "config/app.conf",
+            })],
+            synthesized_environment: true,
+        };
+
+        let config = crate::cli::config_parser::ConfigBuilder::new()
+            .name("device-api")
+            .deploy_target(crate::cli::config_parser::DeployTarget::Cloud)
+            .build()
+            .unwrap();
+        let mut deploy_form = build_deploy_form(&config);
+
+        attach_config_bundle_to_deploy_form(&mut deploy_form, &artifacts);
+
+        // config_files/config_bundle are still attached ...
+        assert_eq!(deploy_form["config_files"][0]["name"], "app.conf");
+        assert!(deploy_form.get("config_bundle").is_some());
+        // ... but the synthesized namespace must not surface as the environment.
+        assert!(
+            deploy_form.get("environment").is_none(),
+            "synthesized environment must not be attached to the deploy form"
         );
     }
 

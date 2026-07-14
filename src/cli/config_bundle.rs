@@ -34,6 +34,10 @@ pub struct ConfigBundleArtifacts {
     pub remote_compose_path: PathBuf,
     pub manifest: ConfigBundleManifest,
     pub config_files: Vec<serde_json::Value>,
+    /// True when `environment` is a synthetic namespace fallback (no environment
+    /// profile was selected). Used only as an internal bundle namespace and must
+    /// not be surfaced as the deploy-time environment.
+    pub synthesized_environment: bool,
 }
 
 impl ConfigBundleArtifacts {
@@ -69,15 +73,26 @@ pub fn build_config_bundle(
     environment: &str,
     compose_path: &Path,
     env_file: Option<&Path>,
+    reference_base: &Path,
 ) -> Result<ConfigBundleArtifacts, CliError> {
     validate_environment_name(environment)?;
 
     let project_root = project_dir.canonicalize()?;
     let compose_canonical = compose_path.canonicalize()?;
     ensure_inside_project(&project_root, &compose_canonical)?;
-    let compose_dir = compose_canonical
-        .parent()
-        .ok_or_else(|| validation_error("compose file must have a parent directory"))?;
+    // Relative bind-mount / env_file references inside the compose resolve against
+    // `reference_base`. For a user-supplied compose this is the compose's own
+    // directory (standard Docker Compose semantics); for a generated compose living
+    // under `.stacker/`, the caller passes the project root, because the paths were
+    // authored in stacker.yml relative to the project root, not the output dir.
+    let reference_base = reference_base.canonicalize().map_err(|err| {
+        validation_error(format!(
+            "config bundle reference base directory does not exist or cannot be read: {} ({})",
+            reference_base.display(),
+            err
+        ))
+    })?;
+    ensure_inside_project(&project_root, &reference_base)?;
 
     let output_dir = project_root.join(".stacker/deploy").join(environment);
     std::fs::create_dir_all(&output_dir)?;
@@ -99,7 +114,7 @@ pub fn build_config_bundle(
 
     rewrite_compose_references(
         &project_root,
-        compose_dir,
+        &reference_base,
         environment,
         &mut compose_yaml,
         &mut collected,
@@ -194,6 +209,7 @@ pub fn build_config_bundle(
         remote_compose_path,
         manifest,
         config_files,
+        synthesized_environment: false,
     })
 }
 
@@ -582,6 +598,7 @@ services:
             "production",
             &compose_dir.join("compose.yml"),
             Some(&compose_dir.join(".env")),
+            &compose_dir,
         )
         .expect("bundle should be built");
 
@@ -654,6 +671,7 @@ services:
             "production",
             &dir.path().join("docker-compose.yml"),
             None,
+            dir.path(),
         )
         .expect("bundle should be built");
 
@@ -666,6 +684,52 @@ services:
                 .and_then(|value| value.as_str())
                 == Some(".env")
         }));
+    }
+
+    #[test]
+    fn build_config_bundle_resolves_generated_compose_refs_against_project_root() {
+        // A generated compose lives under .stacker/ but its bind-mount paths are
+        // authored relative to the project root (from stacker.yml app.volumes).
+        // With reference_base = project root, "./config.yaml" must resolve to
+        // <project>/config.yaml, not <project>/.stacker/config.yaml.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("config.yaml"), "key: value\n").unwrap();
+        let stacker_dir = dir.path().join(".stacker");
+        std::fs::create_dir_all(&stacker_dir).unwrap();
+        std::fs::write(
+            stacker_dir.join("docker-compose.yml"),
+            r#"
+services:
+  app:
+    image: example/app:latest
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+"#,
+        )
+        .unwrap();
+
+        let artifacts = build_config_bundle(
+            dir.path(),
+            "default",
+            &stacker_dir.join("docker-compose.yml"),
+            None,
+            dir.path(),
+        )
+        .expect("bundle should be built for generated compose");
+
+        let sources: Vec<&str> = artifacts
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.source_path.as_str())
+            .collect();
+        assert!(
+            sources.contains(&"config.yaml"),
+            "expected project-root config.yaml, got {sources:?}"
+        );
+
+        let remote_compose = std::fs::read_to_string(&artifacts.remote_compose_path).unwrap();
+        assert!(remote_compose.contains("config.yaml:/app/config.yaml:ro"));
     }
 
     #[test]
@@ -706,6 +770,7 @@ services:
             "production",
             &compose_dir.join("compose.yml"),
             None,
+            &compose_dir,
         )
         .unwrap_err();
 
@@ -738,6 +803,7 @@ services:
             "production",
             &compose_dir.join("compose.yml"),
             None,
+            &compose_dir,
         )
         .unwrap_err();
 
@@ -779,6 +845,7 @@ services:
             ),
             manifest,
             config_files: vec![],
+            synthesized_environment: false,
         };
 
         let metadata = artifacts.artifact_metadata();

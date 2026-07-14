@@ -1036,11 +1036,16 @@ fn local_config_files_for_agent_deploy(
     }
 
     let bundle = if compose_path == configured_compose_path.as_path() {
+        let reference_base = configured_compose_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project_dir.to_path_buf());
         let mut bundle = build_config_bundle(
             project_dir,
             &environment,
             &configured_compose_path,
             config.env_file.as_deref(),
+            &reference_base,
         )?;
         if materialize_stacker_service_in_bundle(&mut bundle, &config, app_code)? {
             result.notices.push(format!(
@@ -1050,7 +1055,17 @@ fn local_config_files_for_agent_deploy(
         }
         bundle
     } else {
-        let app_bundle = build_config_bundle(project_dir, &environment, compose_path, None)?;
+        let app_reference_base = compose_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project_dir.to_path_buf());
+        let app_bundle = build_config_bundle(
+            project_dir,
+            &environment,
+            compose_path,
+            None,
+            &app_reference_base,
+        )?;
         let project_compose = std::fs::read_to_string(&configured_compose_path).map_err(|err| {
             CliError::ConfigValidation(format!(
                 "failed to read project compose {}: {}",

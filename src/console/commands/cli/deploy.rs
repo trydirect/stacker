@@ -3264,24 +3264,40 @@ fn run_deploy_with_credentials_manager<S: CredentialStore>(
     }
 
     let config_bundle = if matches!(deploy_target, DeployTarget::Cloud | DeployTarget::Server) {
-        if let Some(environment) = selected_environment.as_deref() {
-            let bundle = build_config_bundle(
-                project_dir,
-                environment,
-                &compose_path,
-                config.env_file.as_deref(),
-            )?;
-            eprintln!("  Config bundle: {}", bundle.archive_path.display());
-            for file in &bundle.manifest.files {
-                eprintln!(
-                    "    Config file: {} -> {}",
-                    file.source_path, file.destination_path
-                );
-            }
-            Some(bundle)
+        // Bind-mount config files and the env file are not environment-specific,
+        // so bundle them on every cloud/server deploy. When no environment profile
+        // is selected, use a synthetic "default" namespace for the bundle output;
+        // this namespace is flagged so it never leaks as the deploy environment.
+        let synthesized_environment = selected_environment.is_none();
+        let bundle_env = selected_environment.as_deref().unwrap_or("default");
+        // A generated compose lives under .stacker/ but its bind-mount paths were
+        // authored in stacker.yml relative to the project root, so resolve them
+        // against project_dir. A user-supplied compose keeps standard Docker Compose
+        // semantics (relative to the compose file's own directory).
+        let reference_base: PathBuf = if compose_is_user_supplied {
+            compose_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| project_dir.to_path_buf())
         } else {
-            None
+            project_dir.to_path_buf()
+        };
+        let mut bundle = build_config_bundle(
+            project_dir,
+            bundle_env,
+            &compose_path,
+            config.env_file.as_deref(),
+            &reference_base,
+        )?;
+        bundle.synthesized_environment = synthesized_environment;
+        eprintln!("  Config bundle: {}", bundle.archive_path.display());
+        for file in &bundle.manifest.files {
+            eprintln!(
+                "    Config file: {} -> {}",
+                file.source_path, file.destination_path
+            );
         }
+        Some(bundle)
     } else {
         None
     };
