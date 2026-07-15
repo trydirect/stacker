@@ -55,6 +55,37 @@ All notable changes to this project will be documented in this file.
   contract so non-compose files such as `.env` are materialized before Docker
   Compose starts.
 
+## [0.3.1] — 2026-07-15
+
+### Fixed — CLI deploy & config bundling
+
+- Deploy-time config files (bind-mount files and the env file) are now bundled
+  on every cloud/server deploy, not only when a `deploy.environment` profile is
+  selected. Previously, deploys without an environment silently shipped no
+  config files.
+- A synthetic fallback environment used when no profile is selected is no longer
+  leaked into the deploy-time `environment` field sent to the server/installer.
+- Bind-mount and `env_file` references in a generated `.stacker/` compose now
+  resolve against the project root instead of the `.stacker/` output directory,
+  fixing `config bundle referenced file does not exist: .../.stacker/./<file>`.
+- Directory bind mounts (e.g. `./library`, `./assets`, `./config`) and sources
+  that don't exist locally no longer block the deploy — they pass through and
+  are created on the target host. `env_file:` entries remain strictly required.
+- `config setup server`, `config unlock`, and `config apply-lock` now perform
+  targeted, formatting-preserving edits of `stacker.yml`: they no longer reorder
+  sections, drop keys not modeled by the CLI (such as `config_contract`), or add
+  `null`/empty-collection noise. The `# @stacker-origin: marketplace` trust
+  marker is preserved across edits.
+- The `--lock` writeback and `config apply-lock` read `stacker.yml` raw, so
+  `${VAR}` placeholders in unrelated fields are no longer resolved and baked into
+  the written file.
+
+### Changed
+
+- `config setup server`, `config unlock`, and `config apply-lock` now ask for
+  confirmation before rewriting `stacker.yml` and refuse to modify it in a
+  non-interactive session rather than editing it silently.
+
 ## [0.2.8] — 2026-05-15
 ### Added — Configuration inventory, diff, check, and promotion planning
 
