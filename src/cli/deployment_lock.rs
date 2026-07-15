@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::config_parser::{ServerConfig, StackerConfig};
+use crate::cli::config_parser::{ServerConfig, StackerConfig, MARKETPLACE_ORIGIN_MARKER};
 use crate::cli::error::CliError;
 use crate::cli::install_runner::DeployResult;
 
@@ -405,51 +405,196 @@ impl DeploymentLock {
 
     // ── Config update ────────────────────────────────
 
-    /// Update a StackerConfig's `deploy.server` section from this lock.
+    /// Apply a targeted, formatting-preserving edit to a stacker.yml file.
     ///
-    /// Used by `--lock` flag and `stacker config lock` to persist
-    /// server details into stacker.yml for future SSH-based deploys.
-    pub fn apply_to_config(&self, config: &mut StackerConfig) {
-        if let Some(ref ip) = self.server_ip {
-            if ip == "127.0.0.1" {
-                // Local deploy — nothing to persist in server section
-                return;
-            }
-
-            let ssh_key = config
-                .deploy
-                .server
-                .as_ref()
-                .and_then(|s| s.ssh_key.clone())
-                .or_else(|| self.ssh_key.clone())
-                .or_else(|| config.deploy.cloud.as_ref().and_then(|c| c.ssh_key.clone()));
-
-            config.deploy.server = Some(ServerConfig {
-                host: ip.clone(),
-                user: self.ssh_user.clone().unwrap_or_else(|| "root".to_string()),
-                ssh_key,
-                port: self.ssh_port.unwrap_or(22),
-            });
-        }
-    }
-
-    /// Write a StackerConfig back to disk (used after `apply_to_config`).
+    /// Unlike [`write_config`], this parses the file into a `serde_yaml::Value`,
+    /// lets `mutate` change only the keys it cares about, and writes the result
+    /// back. Key order, scalar quoting, and — crucially — any keys not modeled
+    /// by `StackerConfig` (e.g. `config_contract`) are preserved untouched. A
+    /// `.yml.bak` backup is written before overwriting.
     ///
-    /// Creates a `.bak` backup before overwriting.
-    pub fn write_config(config: &StackerConfig, config_path: &Path) -> Result<(), CliError> {
-        // Backup existing file
+    /// This is the preferred path for in-place edits (`config setup server`,
+    /// `config unlock`); `write_config` round-trips the whole typed struct and
+    /// therefore reorders sections, drops unmodeled keys, and strips comments.
+    pub fn edit_config_value(
+        config_path: &Path,
+        mutate: impl FnOnce(&mut serde_yaml::Mapping) -> Result<(), CliError>,
+    ) -> Result<(), CliError> {
+        let raw = std::fs::read_to_string(config_path).map_err(CliError::Io)?;
+        // serde_yaml drops comments on round-trip. The `@stacker-origin`
+        // marker is a comment but carries trust semantics (it gates hook
+        // execution), so preserve it explicitly rather than silently
+        // downgrading a marketplace-origin file to "user-authored".
+        let had_origin_marker = raw.contains(MARKETPLACE_ORIGIN_MARKER);
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+            .map_err(|e| CliError::ConfigValidation(format!("Failed to parse config: {}", e)))?;
+        let root = doc.as_mapping_mut().ok_or_else(|| {
+            CliError::ConfigValidation("stacker.yml root must be a mapping".to_string())
+        })?;
+
+        mutate(root)?;
+
         if config_path.exists() {
             let backup_path = config_path.with_extension("yml.bak");
             std::fs::copy(config_path, &backup_path).map_err(CliError::Io)?;
         }
 
-        let yaml = serde_yaml::to_string(config).map_err(|e| {
+        let mut yaml = serde_yaml::to_string(&doc).map_err(|e| {
             CliError::ConfigValidation(format!("Failed to serialize config: {}", e))
         })?;
-
+        if had_origin_marker && !yaml.contains(MARKETPLACE_ORIGIN_MARKER) {
+            yaml = format!("{}\n{}", MARKETPLACE_ORIGIN_MARKER, yaml);
+        }
         std::fs::write(config_path, &yaml).map_err(CliError::Io)?;
 
         Ok(())
+    }
+
+    /// Set `deploy.target: server` and `deploy.server` in stacker.yml while
+    /// leaving every other section byte-for-byte intact. Used by
+    /// `config setup server`.
+    pub fn set_deploy_server(
+        config_path: &Path,
+        server_cfg: &ServerConfig,
+    ) -> Result<(), CliError> {
+        Self::edit_config_value(config_path, |root| {
+            let deploy = ensure_child_mapping(root, "deploy");
+            deploy.insert(
+                yaml_key("target"),
+                serde_yaml::Value::String("server".to_string()),
+            );
+
+            let mut server_value = serde_yaml::to_value(server_cfg).map_err(|e| {
+                CliError::ConfigValidation(format!("Failed to serialize server config: {}", e))
+            })?;
+            prune_value_noise(&mut server_value);
+            deploy.insert(yaml_key("server"), server_value);
+            Ok(())
+        })
+    }
+
+    /// Remove the `deploy.server` section from stacker.yml, preserving all other
+    /// content. Used by `config unlock`.
+    pub fn remove_deploy_server(config_path: &Path) -> Result<(), CliError> {
+        Self::edit_config_value(config_path, |root| {
+            if let Some(deploy) = root
+                .get_mut(&yaml_key("deploy"))
+                .and_then(|value| value.as_mapping_mut())
+            {
+                deploy.remove(&yaml_key("server"));
+            }
+            Ok(())
+        })
+    }
+
+    /// Persist this lock's server details into `deploy.server` in stacker.yml,
+    /// preserving all unrelated content. Value-based equivalent of
+    /// `apply_to_config` + `write_config`, used by `--lock` and `config
+    /// apply-lock`.
+    ///
+    /// No-op (returns `Ok(false)`) for local deploys — when `server_ip` is
+    /// missing or `127.0.0.1`. Reads the file raw, so `${VAR}` placeholders in
+    /// unrelated fields are never resolved/baked into the written file.
+    ///
+    /// `ssh_key` precedence mirrors `apply_to_config`: an existing
+    /// `deploy.server.ssh_key` wins, then this lock's `ssh_key`, then
+    /// `deploy.cloud.ssh_key`.
+    pub fn persist_server_to_config(&self, config_path: &Path) -> Result<bool, CliError> {
+        let Some(ip) = self.server_ip.as_deref() else {
+            return Ok(false);
+        };
+        if ip == "127.0.0.1" {
+            return Ok(false);
+        }
+
+        let host = ip.to_string();
+        let user = self.ssh_user.clone().unwrap_or_else(|| "root".to_string());
+        let port = self.ssh_port.unwrap_or(22);
+        let lock_ssh_key = self
+            .ssh_key
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string());
+
+        Self::edit_config_value(config_path, |root| {
+            let deploy = ensure_child_mapping(root, "deploy");
+
+            let existing_server_key = child_string(deploy, "server", "ssh_key");
+            let cloud_key = child_string(deploy, "cloud", "ssh_key");
+            let ssh_key = existing_server_key.or(lock_ssh_key).or(cloud_key);
+
+            let mut server = serde_yaml::Mapping::new();
+            server.insert(yaml_key("host"), serde_yaml::Value::String(host));
+            server.insert(yaml_key("user"), serde_yaml::Value::String(user));
+            if let Some(key) = ssh_key {
+                server.insert(yaml_key("ssh_key"), serde_yaml::Value::String(key));
+            }
+            server.insert(
+                yaml_key("port"),
+                serde_yaml::Value::Number(serde_yaml::Number::from(port)),
+            );
+
+            deploy.insert(yaml_key("server"), serde_yaml::Value::Mapping(server));
+            Ok(())
+        })?;
+
+        Ok(true)
+    }
+}
+
+/// Build a `serde_yaml::Value` string key.
+fn yaml_key(key: &str) -> serde_yaml::Value {
+    serde_yaml::Value::String(key.to_string())
+}
+
+/// Read `parent[section][field]` as a string, if present.
+fn child_string(parent: &serde_yaml::Mapping, section: &str, field: &str) -> Option<String> {
+    parent
+        .get(&yaml_key(section))
+        .and_then(|value| value.as_mapping())
+        .and_then(|map| map.get(&yaml_key(field)))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+/// Ensure `parent[key]` exists and is a mapping, returning a mutable reference
+/// to it. If the key is absent it is appended (preserving existing key order);
+/// if present but not a mapping it is replaced with an empty mapping.
+fn ensure_child_mapping<'a>(
+    parent: &'a mut serde_yaml::Mapping,
+    key: &str,
+) -> &'a mut serde_yaml::Mapping {
+    let k = yaml_key(key);
+    let is_mapping = parent.get(&k).map(|v| v.is_mapping()).unwrap_or(false);
+    if !is_mapping {
+        parent.insert(
+            k.clone(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+    }
+    parent
+        .get_mut(&k)
+        .and_then(|value| value.as_mapping_mut())
+        .expect("child mapping ensured above")
+}
+
+/// Drop null values and empty collections from the top level of a mapping so a
+/// freshly serialized section (e.g. `deploy.server`) doesn't carry `ssh_key:
+/// null` and similar noise into the file.
+fn prune_value_noise(value: &mut serde_yaml::Value) {
+    let serde_yaml::Value::Mapping(map) = value else {
+        return;
+    };
+    let keys: Vec<serde_yaml::Value> = map.keys().cloned().collect();
+    for key in keys {
+        let is_noise = match map.get(&key) {
+            Some(serde_yaml::Value::Null) => true,
+            Some(serde_yaml::Value::Sequence(items)) => items.is_empty(),
+            Some(serde_yaml::Value::Mapping(inner)) => inner.is_empty(),
+            _ => false,
+        };
+        if is_noise {
+            map.remove(&key);
+        }
     }
 }
 
@@ -583,27 +728,60 @@ mod tests {
     }
 
     #[test]
-    fn apply_to_config_sets_server_section() {
-        let lock = sample_lock();
-        let mut config = StackerConfig::default();
+    fn persist_server_to_config_writes_server_section() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        std::fs::write(&path, "name: ghost\ndeploy:\n  target: cloud\n").unwrap();
 
-        lock.apply_to_config(&mut config);
+        let wrote = sample_lock().persist_server_to_config(&path).unwrap();
+        assert!(wrote);
 
-        let server = config.deploy.server.unwrap();
-        assert_eq!(server.host, "203.0.113.42");
-        assert_eq!(server.user, "root");
-        assert_eq!(server.port, 22);
-        assert!(server.ssh_key.is_none());
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let server = &doc["deploy"]["server"];
+        assert_eq!(server["host"], "203.0.113.42");
+        assert_eq!(server["user"], "root");
+        assert_eq!(server["port"], 22);
+        assert!(server.get("ssh_key").is_none());
     }
 
     #[test]
-    fn apply_to_config_skips_local() {
-        let lock = DeploymentLock::for_local();
-        let mut config = StackerConfig::default();
+    fn persist_server_to_config_ssh_key_precedence_prefers_existing_server_key() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        // Both an existing deploy.server.ssh_key and deploy.cloud.ssh_key exist;
+        // the existing server key must win over the lock's and the cloud's.
+        std::fs::write(
+            &path,
+            "deploy:\n  cloud:\n    ssh_key: ~/.ssh/cloud\n  server:\n    host: old\n    ssh_key: ~/.ssh/existing\n",
+        )
+        .unwrap();
 
-        lock.apply_to_config(&mut config);
+        let mut lock = sample_lock();
+        lock.ssh_key = Some(PathBuf::from("~/.ssh/from_lock"));
+        lock.persist_server_to_config(&path).unwrap();
 
-        assert!(config.deploy.server.is_none());
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["deploy"]["server"]["ssh_key"], "~/.ssh/existing");
+        // Unrelated deploy.cloud section is preserved.
+        assert_eq!(doc["deploy"]["cloud"]["ssh_key"], "~/.ssh/cloud");
+    }
+
+    #[test]
+    fn persist_server_to_config_skips_local() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        std::fs::write(&path, "name: ghost\ndeploy:\n  target: local\n").unwrap();
+
+        let wrote = DeploymentLock::for_local()
+            .persist_server_to_config(&path)
+            .unwrap();
+        assert!(!wrote);
+
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["deploy"].get("server").is_none());
     }
 
     #[test]
@@ -754,5 +932,122 @@ deploy:
 
         let lock = DeploymentLock::load_active(tmp.path()).unwrap().unwrap();
         assert_eq!(lock.target, "local");
+    }
+
+    const RICH_CONFIG: &str = r#"# my project config
+name: ghost
+version: "1.0.0"
+app:
+  type: custom
+  ports:
+    - "8080:8080"
+config_contract:
+  services:
+    mysql:
+      required:
+        - MYSQL_ROOT_PASSWORD
+        - MYSQL_DATABASE
+      secret:
+        - MYSQL_ROOT_PASSWORD
+deploy:
+  target: cloud
+  cloud:
+    provider: hetzner
+    orchestrator: remote
+env:
+  PAT: "${PAT}"
+"#;
+
+    #[test]
+    fn set_deploy_server_preserves_unrelated_content() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        std::fs::write(&path, RICH_CONFIG).unwrap();
+
+        let server_cfg = ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+        DeploymentLock::set_deploy_server(&path, &server_cfg).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+
+        // Only deploy.target/server changed.
+        assert!(written.contains("target: server"));
+        assert!(written.contains("host: 203.0.113.10"));
+        // No null noise from the optional ssh_key field.
+        assert!(!written.contains("ssh_key: null"));
+
+        // Reparse and assert unrelated sections survive verbatim (this is the
+        // regression: previously config_contract was gutted to `mysql: {}`).
+        let doc: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let mysql = &doc["config_contract"]["services"]["mysql"];
+        assert_eq!(mysql["required"][0], "MYSQL_ROOT_PASSWORD");
+        assert_eq!(mysql["required"][1], "MYSQL_DATABASE");
+        assert_eq!(mysql["secret"][0], "MYSQL_ROOT_PASSWORD");
+        // Untouched deploy.cloud stays intact (no orchestrator injection, no drop).
+        assert_eq!(doc["deploy"]["cloud"]["provider"], "hetzner");
+        assert_eq!(doc["deploy"]["cloud"]["orchestrator"], "remote");
+
+        // Untouched scalar values keep their type (serde_yaml may normalize the
+        // quote *style*, but the string value must not be coerced to a number).
+        assert_eq!(doc["version"].as_str(), Some("1.0.0"));
+        assert_eq!(doc["app"]["ports"][0].as_str(), Some("8080:8080"));
+        assert_eq!(doc["env"]["PAT"].as_str(), Some("${PAT}"));
+
+        // A .bak backup was written.
+        assert!(tmp.path().join("stacker.yml.bak").exists());
+    }
+
+    #[test]
+    fn remove_deploy_server_drops_only_server_section() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        std::fs::write(&path, RICH_CONFIG).unwrap();
+
+        let server_cfg = ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+        DeploymentLock::set_deploy_server(&path, &server_cfg).unwrap();
+        DeploymentLock::remove_deploy_server(&path).unwrap();
+
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["deploy"].get("server").is_none());
+        // Sibling deploy keys and unrelated sections remain.
+        assert_eq!(doc["deploy"]["cloud"]["provider"], "hetzner");
+        assert_eq!(
+            doc["config_contract"]["services"]["mysql"]["required"][0],
+            "MYSQL_ROOT_PASSWORD"
+        );
+    }
+
+    #[test]
+    fn edit_config_value_preserves_origin_marker() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("stacker.yml");
+        std::fs::write(
+            &path,
+            format!("{}\n{}", MARKETPLACE_ORIGIN_MARKER, RICH_CONFIG),
+        )
+        .unwrap();
+
+        let server_cfg = ServerConfig {
+            host: "203.0.113.10".to_string(),
+            user: "root".to_string(),
+            ssh_key: None,
+            port: 22,
+        };
+        DeploymentLock::set_deploy_server(&path, &server_cfg).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        // The trust marker survives the edit (otherwise hooks would silently
+        // become untrusted-but-runnable on the next deploy).
+        assert!(written.contains(MARKETPLACE_ORIGIN_MARKER));
     }
 }

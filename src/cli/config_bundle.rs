@@ -313,9 +313,14 @@ fn rewrite_volumes(
             let Some((source, rest)) = parse_bind_mount(volume_spec) else {
                 continue;
             };
-            let remote =
-                collect_reference(project_root, compose_dir, environment, source, collected)?;
-            *volume_spec = format!("{remote}:{rest}");
+            // Only project-local files are bundled. Directory mounts, host
+            // paths, and not-present sources are runtime volumes managed on the
+            // target host, so leave the entry unchanged.
+            if let Some(remote) =
+                collect_volume_reference(project_root, compose_dir, environment, source, collected)?
+            {
+                *volume_spec = format!("{remote}:{rest}");
+            }
         } else if let serde_yaml::Value::Mapping(map) = volume {
             // Advanced mapping form: { type: bind, source: ..., target: ... }
             let vol_type = map
@@ -329,14 +334,15 @@ fn rewrite_volumes(
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            let remote = collect_reference(
+            if let Some(remote) = collect_volume_reference(
                 project_root,
                 compose_dir,
                 environment,
                 &source_val,
                 collected,
-            )?;
-            map.insert(source_key, serde_yaml::Value::String(remote));
+            )? {
+                map.insert(source_key, serde_yaml::Value::String(remote));
+            }
         }
     }
 
@@ -365,7 +371,69 @@ fn collect_reference(
 ) -> Result<String, CliError> {
     let resolved = resolve_reference_path(project_root, base_dir, Path::new(reference))?;
     let collected_file = collect_file(project_root, environment, resolved, collected)?;
-    Ok(collected_file.destination_path.clone())
+    let mut dest = collected_file.destination_path.clone();
+    // Docker Compose treats a bare name (no ./ or / prefix) as a named volume,
+    // not a bind mount. If the original reference was relative, re-prefix so
+    // the rewritten compose file still produces a bind mount.
+    if reference.starts_with("./") && !dest.starts_with("./") {
+        dest.insert_str(0, "./");
+    }
+    Ok(dest)
+}
+
+/// Resolve a bind-mount source for a config bundle. A source is bundled only
+/// when it is a **project-local file**; that file is collected and the rewritten
+/// remote path is returned as `Some`.
+///
+/// Everything else is a runtime volume the target host manages, so it is left
+/// untouched (returns `None`) instead of failing the deploy:
+///   - directory mounts (e.g. `./library`, `./config`) — created on the target,
+///   - absolute / host paths and `~`-relative paths,
+///   - sources that resolve outside the project directory,
+///   - sources that do not exist locally (created on the target).
+///
+/// This is intentionally more lenient than [`collect_reference`], which stays
+/// strict for `env_file:` entries (those must exist and be files).
+fn collect_volume_reference(
+    project_root: &Path,
+    base_dir: &Path,
+    environment: &str,
+    reference: &str,
+    collected: &mut BTreeMap<PathBuf, CollectedFile>,
+) -> Result<Option<String>, CliError> {
+    let path = Path::new(reference);
+    if path.is_absolute() || reference.starts_with('~') {
+        return Ok(None);
+    }
+
+    // Resolve without erroring on missing paths (missing = created on target).
+    let Ok(canonical) = base_dir.join(path).canonicalize() else {
+        return Ok(None);
+    };
+
+    if !canonical.starts_with(project_root) {
+        return Ok(None);
+    }
+
+    if canonical.is_dir() {
+        eprintln!(
+            "  Note: skipping directory bind mount '{}' — it is created on the target host, not uploaded.",
+            reference
+        );
+        return Ok(None);
+    }
+
+    if !canonical.is_file() {
+        return Ok(None);
+    }
+
+    Ok(Some(collect_reference(
+        project_root,
+        base_dir,
+        environment,
+        reference,
+        collected,
+    )?))
 }
 
 fn collect_file<'a>(
@@ -749,36 +817,51 @@ services:
     }
 
     #[test]
-    fn build_config_bundle_rejects_directory_mounts() {
+    fn build_config_bundle_passes_through_directory_and_missing_mounts() {
+        // romm-style app: data directories (existing + not-yet-created) and a
+        // real config file mounted alongside. Directory/missing mounts must be
+        // left untouched (created on the target), while the file is bundled.
         let dir = TempDir::new().unwrap();
         let compose_dir = dir.path().join("docker/production");
-        std::fs::create_dir_all(compose_dir.join("config")).unwrap();
+        std::fs::create_dir_all(compose_dir.join("library")).unwrap();
+        std::fs::write(compose_dir.join("romm.env"), "ROMM_DB=romm\n").unwrap();
         std::fs::write(
             compose_dir.join("compose.yml"),
             r#"
 services:
-  api:
-    image: device-api:latest
+  romm:
+    image: rommapp/romm:latest
     volumes:
-      - ./config:/app/config:ro
+      - ./library:/romm/library
+      - ./assets:/romm/assets:rw
+      - ./romm.env:/romm/config/romm.env:ro
 "#,
         )
         .unwrap();
 
-        let err = build_config_bundle(
+        let artifacts = build_config_bundle(
             dir.path(),
             "production",
             &compose_dir.join("compose.yml"),
             None,
             &compose_dir,
         )
-        .unwrap_err();
+        .expect("directory mounts should not block the bundle");
 
-        assert!(
-            err.to_string()
-                .contains("directory mounts are not supported"),
-            "unexpected error: {err}"
-        );
+        // Only the real file is collected.
+        let sources: Vec<&str> = artifacts
+            .manifest
+            .files
+            .iter()
+            .map(|file| file.source_path.as_str())
+            .collect();
+        assert_eq!(sources, vec!["docker/production/romm.env"]);
+
+        // Directory + missing mounts pass through verbatim; the file is rewritten.
+        let remote = std::fs::read_to_string(&artifacts.remote_compose_path).unwrap();
+        assert!(remote.contains("./library:/romm/library"));
+        assert!(remote.contains("./assets:/romm/assets:rw"));
+        assert!(remote.contains("docker/production/romm.env:/romm/config/romm.env:ro"));
     }
 
     #[test]

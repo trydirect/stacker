@@ -3870,22 +3870,19 @@ impl DeployCommand {
             };
 
             if lock.server_ip.is_some() && lock.server_ip.as_deref() != Some("127.0.0.1") {
-                match StackerConfig::from_file(&config_path) {
-                    Ok(mut config) => {
-                        lock.apply_to_config(&mut config);
-                        match DeploymentLock::write_config(&config, &config_path) {
-                            Ok(()) => {
-                                eprintln!("  ✓ stacker.yml updated with server details (backup: stacker.yml.bak)");
-                                eprintln!("    Next deploy will target this server directly.");
-                            }
-                            Err(e) => {
-                                eprintln!("  ⚠ Failed to update stacker.yml: {}", e);
-                                eprintln!("    Run `stacker config lock` to retry.");
-                            }
-                        }
+                // Formatting-preserving edit: only deploy.server is touched, and
+                // the file is read raw so ${VAR} placeholders are never resolved
+                // into the written stacker.yml.
+                match lock.persist_server_to_config(&config_path) {
+                    Ok(_) => {
+                        eprintln!(
+                            "  ✓ stacker.yml updated with server details (backup: stacker.yml.bak)"
+                        );
+                        eprintln!("    Next deploy will target this server directly.");
                     }
                     Err(e) => {
-                        eprintln!("  ⚠ Failed to read stacker.yml for update: {}", e);
+                        eprintln!("  ⚠ Failed to update stacker.yml: {}", e);
+                        eprintln!("    Run `stacker config lock` to retry.");
                     }
                 }
             } else {

@@ -195,6 +195,27 @@ fn prompt_line(prompt: &str) -> Result<String, CliError> {
     Ok(input.trim().to_string())
 }
 
+/// Ask the user to approve an in-place rewrite of a config file. Returns
+/// `Ok(true)` only on explicit confirmation. In a non-interactive session
+/// (no TTY) it refuses with a clear error rather than modifying the file
+/// silently — the user must re-run interactively to approve the change.
+fn confirm_config_overwrite(config_path: &str) -> Result<bool, CliError> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() {
+        return Err(CliError::ConfigValidation(format!(
+            "Refusing to modify {config_path} without confirmation in a non-interactive session. \
+             Re-run interactively to approve the change."
+        )));
+    }
+    dialoguer::Confirm::new()
+        .with_prompt(format!(
+            "Update {config_path}? A backup will be saved to {config_path}.bak"
+        ))
+        .default(false)
+        .interact()
+        .map_err(|e| CliError::ConfigValidation(format!("Confirmation prompt failed: {e}")))
+}
+
 fn prompt_with_default(prompt: &str, default: &str) -> Result<String, CliError> {
     let line = prompt_line(&format!("{} [{}]: ", prompt, default))?;
     if line.is_empty() {
@@ -1250,10 +1271,10 @@ impl CallableTrait for ConfigSetupServerCommand {
                 if !config_path.exists() {
                     return Err(Box::new(CliError::ConfigNotFound { path: config_path }));
                 }
-                let mut config = StackerConfig::from_file_raw(&config_path)?;
-                config.deploy.target = DeployTarget::Server;
-                config.deploy.server = Some(server_cfg);
-                DeploymentLock::write_config(&config, &config_path)?;
+                // Targeted, formatting-preserving edit: only deploy.target and
+                // deploy.server change; the rest of stacker.yml (key order,
+                // quoting, config_contract, comments-as-scalars) is left intact.
+                DeploymentLock::set_deploy_server(&config_path, &server_cfg)?;
                 eprintln!();
                 eprintln!("✓ stacker.yml updated (backup: {}.bak).", config_path_str);
                 eprintln!("  Run `stacker deploy` to deploy to this server.");
@@ -2028,10 +2049,13 @@ impl CallableTrait for ConfigLockCommand {
             return Err(Box::new(CliError::ConfigNotFound { path: config_path }));
         }
 
-        let mut config = StackerConfig::from_file_raw(&config_path)?;
-        lock.apply_to_config(&mut config);
+        if !confirm_config_overwrite(&config_path_str)? {
+            eprintln!("Aborted. stacker.yml was not modified.");
+            return Ok(());
+        }
 
-        DeploymentLock::write_config(&config, &config_path)?;
+        // Formatting-preserving in-place edit: only deploy.server is written.
+        lock.persist_server_to_config(&config_path)?;
 
         let ip = lock.server_ip.as_deref().unwrap_or("?");
         let user = lock.ssh_user.as_deref().unwrap_or("root");
@@ -2073,7 +2097,10 @@ impl CallableTrait for ConfigUnlockCommand {
             return Err(Box::new(CliError::ConfigNotFound { path: config_path }));
         }
 
-        let mut config = StackerConfig::from_file_raw(&config_path)?;
+        // Read-only load to inspect current state and report the old host.
+        // The actual write goes through the formatting-preserving primitive so
+        // unrelated sections are not reordered or dropped.
+        let config = StackerConfig::from_file_raw(&config_path)?;
 
         if config.deploy.server.is_none() {
             eprintln!("No deploy.server section found in stacker.yml — nothing to unlock.");
@@ -2087,9 +2114,12 @@ impl CallableTrait for ConfigUnlockCommand {
             .map(|s| s.host.clone())
             .unwrap_or_default();
 
-        config.deploy.server = None;
+        if !confirm_config_overwrite(&config_path_str)? {
+            eprintln!("Aborted. stacker.yml was not modified.");
+            return Ok(());
+        }
 
-        DeploymentLock::write_config(&config, &config_path)?;
+        DeploymentLock::remove_deploy_server(&config_path)?;
 
         eprintln!("✓ Removed deploy.server section (was: host={})", old_host);
         eprintln!("  Backup: {}.bak", config_path_str);
