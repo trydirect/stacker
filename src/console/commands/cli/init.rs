@@ -94,7 +94,7 @@ pub fn full_config_reference_example() -> &'static str {
 #     # orchestrator: local | remote
 #     orchestrator: "remote"
 #     region: "nbg1"
-#     size: "cpx11"
+#     size: "cx23"
 #     # install_image: "trydirect/install-service:latest" # local orchestrator only
 #     # remote_payload_file: "./stacker.remote.deploy.json" # remote orchestrator request payload
 #     # ssh_key: "~/.ssh/id_rsa"
@@ -307,12 +307,12 @@ fn default_cloud_region(provider: &str) -> &'static str {
 
 fn default_cloud_size(provider: &str) -> &'static str {
     match provider {
-        "hetzner" => "cpx11",
+        "hetzner" => "cx23",
         "digitalocean" => "s-1vcpu-1gb",
         "linode" => "g6-nanode-1",
         "vultr" => "vc2-1c-1gb",
         "aws" => "t3.micro",
-        _ => "cpx11",
+        _ => "cx23",
     }
 }
 
@@ -2025,7 +2025,9 @@ impl CallableTrait for InitCommand {
                 eprintln!("☁ Running cloud setup wizard...");
                 let path_str = config_path.to_string_lossy().to_string();
                 let applied =
-                    crate::console::commands::cli::config::run_setup_cloud_interactive(&path_str)?;
+                    crate::console::commands::cli::config::run_setup_cloud_interactive(
+                        &path_str, None,
+                    )?;
                 for item in applied {
                     eprintln!("  - {}", item);
                 }

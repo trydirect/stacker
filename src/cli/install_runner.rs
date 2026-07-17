@@ -1913,7 +1913,7 @@ fn build_remote_deploy_payload(config: &StackerConfig) -> serde_json::Value {
         .unwrap_or_else(|| "nbg1".to_string());
     let server = cloud
         .and_then(|c| c.size.clone())
-        .unwrap_or_else(|| "cpx11".to_string());
+        .unwrap_or_else(|| "cx23".to_string());
     let stack_code = config
         .project
         .identity
@@ -3059,7 +3059,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cpx11",
+            "server": "cx23",
             "os": "ubuntu-22.04",
             "stack_code": "demo",
             "selected_plan": "free",
@@ -3077,7 +3077,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cpx11",
+            "server": "cx23",
             "os": "ubuntu-22.04",
             "commonDomain": "example.com",
             "stack_code": "",
@@ -3098,7 +3098,7 @@ mod tests {
         let payload = serde_json::json!({
             "provider": "htz",
             "region": "nbg1",
-            "server": "cpx11",
+            "server": "cx23",
             "os": "ubuntu-22.04",
             "commonDomain": "localhost",
             "stack_code": "demo-stack",

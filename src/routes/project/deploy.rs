@@ -1307,6 +1307,20 @@ fn apply_deploy_bundle(
     Ok(compose_content)
 }
 
+/// Extract a compose file from `custom.marketplace_config_files` if present.
+///
+/// Marketplace templates with YAML-embed definitions (ComposeYaml, StackerConfig)
+/// store their compose YAML here rather than in the structured web/service/feature
+/// arrays that `DcBuilder` reads.  This helper lets `execute_deployment` fall
+/// back to the embedded compose before resorting to `DcBuilder::build()`.
+fn embedded_marketplace_compose(metadata: &serde_json::Value) -> Option<String> {
+    let cf = metadata
+        .get("custom")
+        .and_then(|c| c.get("marketplace_config_files"))
+        .filter(|v| is_non_empty_json(v))?;
+    compose_content_from_config_files(cf).ok().flatten()
+}
+
 async fn load_project_template_version(
     pg_pool: &PgPool,
     project: &models::Project,
@@ -1349,14 +1363,21 @@ async fn execute_deployment(
     sync_runtime_artifact_bundle(settings, &mut project)
         .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?;
 
+    // For marketplace templates with YAML-embed definitions (ComposeYaml,
+    // StackerConfig), the compose is stored in custom.marketplace_config_files
+    // rather than the structured web/service/feature arrays.  Extract it
+    // before DcBuilder::new() moves `project`.
+    let marketplace_compose = embedded_marketplace_compose(&project.metadata);
+
     let id = project.id;
     let dc = DcBuilder::new(project);
-    let fc = match deploy_compose {
-        Some(compose) => compose,
-        None => dc
-            .build()
-            .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))?,
-    };
+    let fc = deploy_compose
+        .or(marketplace_compose)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            dc.build()
+                .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
+        })?;
 
     let mut new_public_key: Option<String> = None;
     let mut bootstrap_private_key: Option<String> = None;
@@ -2275,8 +2296,8 @@ mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
         default_status_panel_npm_credentials, derive_public_ports_from_metadata,
-        ensure_trailing_newline, find_matching_hetzner_server, hetzner_server_ip,
-        preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
+        embedded_marketplace_compose, ensure_trailing_newline, find_matching_hetzner_server,
+        hetzner_server_ip, preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
         should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
         validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
         HetznerIpv4, HetznerPublicNet, HetznerServer,
@@ -3026,5 +3047,44 @@ mod tests {
             "custom": {"web": [{"shared_ports": [{"container_port": "not-a-number"}, 42]}]}
         });
         assert!(derive_public_ports_from_metadata(&malformed).is_empty());
+    }
+
+    #[test]
+    fn embedded_marketplace_compose_extracts_from_config_files() {
+        let compose_yaml = "version: '3.8'\nservices:\n  ghost:\n    image: ghost:5-alpine\n";
+        let metadata = json!({
+            "custom": {
+                "marketplace_config_files": [
+                    {"name": "docker-compose.yml", "content": compose_yaml}
+                ]
+            }
+        });
+        let result = embedded_marketplace_compose(&metadata);
+        assert_eq!(result.as_deref(), Some(compose_yaml));
+    }
+
+    #[test]
+    fn embedded_marketplace_compose_returns_none_when_empty() {
+        let metadata = json!({"custom": {"marketplace_config_files": []}});
+        assert!(embedded_marketplace_compose(&metadata).is_none());
+
+        let metadata = json!({"custom": {}});
+        assert!(embedded_marketplace_compose(&metadata).is_none());
+
+        let metadata = json!({});
+        assert!(embedded_marketplace_compose(&metadata).is_none());
+    }
+
+    #[test]
+    fn embedded_marketplace_compose_ignores_non_compose_files() {
+        let metadata = json!({
+            "custom": {
+                "marketplace_config_files": [
+                    {"name": ".env", "content": "KEY=value"},
+                    {"name": "nginx.conf", "content": "server {}"}
+                ]
+            }
+        });
+        assert!(embedded_marketplace_compose(&metadata).is_none());
     }
 }

@@ -175,6 +175,9 @@ pub struct MarketplaceInstallCommand {
     set_values: Vec<String>,
     key_name: Option<String>,
     key_id: Option<i32>,
+    region: Option<String>,
+    size: Option<String>,
+    provider: Option<String>,
 }
 
 impl MarketplaceInstallCommand {
@@ -188,6 +191,9 @@ impl MarketplaceInstallCommand {
         set_values: Vec<String>,
         key_name: Option<String>,
         key_id: Option<i32>,
+        region: Option<String>,
+        size: Option<String>,
+        provider: Option<String>,
     ) -> Self {
         Self {
             template,
@@ -199,6 +205,54 @@ impl MarketplaceInstallCommand {
             set_values,
             key_name,
             key_id,
+            region,
+            size,
+            provider,
+        }
+    }
+
+    /// Apply CLI overrides (--key, --key-id, --provider, --region, --size) to
+    /// the deploy form, regardless of whether the config was read from an
+    /// existing stacker.yml or auto-generated.
+    fn apply_cloud_overrides(&self, form: &mut serde_json::Value, ctx: &CliRuntime) {
+        // Resolve cloud credential name from --key or --key-id
+        let resolved_key_name: Option<String> = if let Some(id) = self.key_id {
+            ctx.block_on(async { ctx.client.list_clouds().await })
+                .ok()
+                .and_then(|cs| cs.into_iter().find(|c| c.id == id))
+                .map(|c| c.name)
+        } else {
+            self.key_name.clone().filter(|v| !v.trim().is_empty())
+        };
+
+        // Apply cloud credential name
+        if let Some(name) = resolved_key_name {
+            if let Some(cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
+                cloud.insert("name".into(), serde_json::json!(name));
+                cloud.insert("save_token".into(), serde_json::json!(false));
+            }
+        }
+
+        // Apply provider override
+        if let Some(provider) = self.provider.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if let Some(cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
+                let provider_code = crate::cli::install_runner::provider_code_for_remote(provider);
+                cloud.insert("provider".into(), serde_json::json!(provider_code));
+            }
+        }
+
+        // Apply region override
+        if let Some(region) = self.region.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+                server.insert("region".into(), serde_json::json!(region));
+            }
+        }
+
+        // Apply size override
+        if let Some(size) = self.size.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
+                server.insert("server".into(), serde_json::json!(size));
+            }
         }
     }
 }
@@ -258,6 +312,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     serde_json::Value::String(self.template.clone()),
                 );
             }
+            self.apply_cloud_overrides(&mut form, &ctx);
             (Some(form), config.install.inputs, false)
         } else {
             // No local stacker.yml. If this is a catalog application, we cannot
@@ -284,6 +339,9 @@ impl CallableTrait for MarketplaceInstallCommand {
                         self.domain.as_deref(),
                         self.key_name.as_deref(),
                         self.key_id,
+                        self.region.as_deref(),
+                        self.size.as_deref(),
+                        self.provider.as_deref(),
                     )
                     .await
                 })?;
@@ -301,19 +359,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                         serde_json::Value::String(self.template.clone()),
                     );
                 }
-                if let Some(cloud) = config.deploy.cloud.as_ref() {
-                    if let Some(key) = cloud.key.as_deref() {
-                        if let Some(form_cloud) = form
-                            .get_mut("cloud")
-                            .and_then(|value| value.as_object_mut())
-                        {
-                            form_cloud.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(key.to_string()),
-                            );
-                        }
-                    }
-                }
+                self.apply_cloud_overrides(&mut form, &ctx);
                 (Some(form), config.install.inputs, true)
             } else {
                 (None, Default::default(), false)
@@ -691,6 +737,9 @@ async fn generate_minimal_install_config(
     domain: Option<&str>,
     key_name: Option<&str>,
     key_id: Option<i32>,
+    region_override: Option<&str>,
+    size_override: Option<&str>,
+    provider_override: Option<&str>,
 ) -> Result<StackerConfig, CliError> {
     use crate::cli::config_parser::{CloudConfig, DeployTarget};
 
@@ -740,22 +789,27 @@ async fn generate_minimal_install_config(
             )
         })?
     };
-    let provider = cloud_provider_from_code(&cloud_info.provider).ok_or_else(|| {
+    // Resolve provider: --provider flag overrides the credential's provider
+    let provider_code = provider_override
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&cloud_info.provider);
+    let provider = cloud_provider_from_code(provider_code).ok_or_else(|| {
         CliError::ConfigValidation(format!(
-            "Unsupported cloud provider '{}' on default cloud '{}'.",
-            cloud_info.provider, cloud_info.name
+            "Unsupported cloud provider '{}'.",
+            provider_code
         ))
     })?;
     eprintln!(
         "Using cloud connection '{}' (provider: {}).",
-        cloud_info.name, cloud_info.provider
+        cloud_info.name, provider_code
     );
 
     let cloud_config = CloudConfig {
         provider,
         orchestrator: Default::default(),
-        region: None,
-        size: None,
+        region: region_override.map(str::trim).filter(|v| !v.is_empty()).map(String::from),
+        size: size_override.map(str::trim).filter(|v| !v.is_empty()).map(String::from),
         install_image: None,
         remote_payload_file: None,
         ssh_key: None,
@@ -763,6 +817,13 @@ async fn generate_minimal_install_config(
         server: None,
         public_ports: Vec::new(),
     };
+
+    if region_override.is_some() {
+        eprintln!("Using region '{}'.", region_override.unwrap());
+    }
+    if size_override.is_some() {
+        eprintln!("Using server size '{}'.", size_override.unwrap());
+    }
 
     // Auto-generated stacker.yml never reuses an existing server. A fresh
     // server is always provisioned on the resolved cloud. To reuse an

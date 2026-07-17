@@ -259,6 +259,15 @@ enum StackerCommands {
         /// ID of saved cloud credential to reuse (from `stacker list clouds`)
         #[arg(long, value_name = "CLOUD_ID")]
         key_id: Option<i32>,
+        /// Cloud region for the new server (e.g. nbg1, fsn1)
+        #[arg(long, value_name = "REGION")]
+        region: Option<String>,
+        /// Cloud server size/type (e.g. cx23, cpx21)
+        #[arg(long, value_name = "SIZE")]
+        size: Option<String>,
+        /// Cloud provider (hetzner|digitalocean|aws|linode|vultr). Overrides provider from saved credential.
+        #[arg(long, value_name = "PROVIDER")]
+        provider: Option<String>,
     },
     /// Show container logs
     Logs {
@@ -2714,9 +2723,12 @@ fn get_command(
             set_values,
             key,
             key_id,
+            region,
+            size,
+            provider,
         } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
-                template, name, file, force, json, domain, set_values, key, key_id,
+                template, name, file, force, json, domain, set_values, key, key_id, region, size, provider,
             ),
         ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {

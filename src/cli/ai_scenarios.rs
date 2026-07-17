@@ -738,7 +738,7 @@ mod tests {
             provider: crate::cli::config_parser::CloudProvider::Hetzner,
             orchestrator: crate::cli::config_parser::CloudOrchestrator::Remote,
             region: Some("nbg1".to_string()),
-            size: Some("cpx11".to_string()),
+            size: Some("cx23".to_string()),
             install_image: None,
             remote_payload_file: None,
             ssh_key: None,
