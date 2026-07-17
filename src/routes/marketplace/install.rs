@@ -62,73 +62,107 @@ fn build_project_form(
     latest_version: &models::StackTemplateVersion,
     requested_name: Option<&str>,
 ) -> Result<ProjectForm> {
-    let is_yaml = latest_version.definition_format.as_deref() == Some("yaml");
+    build_project_form_core(template, latest_version, requested_name)
+        .map_err(|msg| JsonResponse::<serde_json::Value>::build().bad_request(msg))
+}
 
-    let mut form: ProjectForm = if is_yaml {
-        let yaml_str = latest_version.stack_definition.as_str().ok_or_else(|| {
-            JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                "Template '{}' has a YAML stack definition that is not a string",
-                template.slug
-            ))
-        })?;
+/// Dry-run of the install-time project-form build. Used by `submit_handler`
+/// as a submission gate so a template that can't be installed never reaches
+/// the "approved" state and the marketplace listing. Errors here are the
+/// same errors the install path would raise later.
+pub(crate) fn validate_installable_form(
+    template: &models::StackTemplate,
+    latest_version: &models::StackTemplateVersion,
+) -> Result<(), String> {
+    build_project_form_core(template, latest_version, None).map(|_| ())
+}
 
-        let project_name = requested_name
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(&template.slug);
-        let stack_code = normalized_project_name(project_name);
+/// The three shapes we currently see for a stored `stack_definition`:
+///
+/// * `LegacyForm` — a JSON object with the `custom` wrapper, produced by
+///   older submission paths. Deserializes straight into `ProjectForm`.
+/// * `ComposeYaml` — a YAML string of a docker-compose file, indicated by
+///   `definition_format = "yaml"`. Embedded as `docker-compose.yml`.
+/// * `StackerConfig` — the shape `stacker submit` sends: the raw
+///   `stacker.yml` parsed to a JSON object (no `custom` wrapper). The CLI
+///   never sets `definition_format` for this shape, so we recognize it by
+///   the absence of `custom`. Serialized back to YAML and embedded as
+///   `stacker.yml`.
+enum DefinitionShape<'a> {
+    LegacyForm(&'a serde_json::Value),
+    ComposeYaml(&'a str),
+    StackerConfig(String),
+}
 
-        let mut config_files: Vec<serde_json::Value> =
-            serde_json::from_value(latest_version.config_files.clone()).unwrap_or_default();
-        let has_compose = config_files.iter().any(|f| {
-            f.get("name")
-                .and_then(|n| n.as_str())
-                .map(|n| n.contains("docker-compose") || n.contains("compose"))
-                .unwrap_or(false)
-        });
-        if !has_compose {
-            config_files.push(serde_json::json!({
-                "name": "docker-compose.yml",
-                "content": yaml_str
-            }));
+fn classify_definition(
+    latest_version: &models::StackTemplateVersion,
+) -> Result<DefinitionShape<'_>, String> {
+    let sd = &latest_version.stack_definition;
+    if latest_version.definition_format.as_deref() == Some("yaml") {
+        return sd
+            .as_str()
+            .map(DefinitionShape::ComposeYaml)
+            .ok_or_else(|| "YAML stack definition is not a string".to_string());
+    }
+    if let Some(obj) = sd.as_object() {
+        if obj.contains_key("custom") {
+            return Ok(DefinitionShape::LegacyForm(sd));
         }
+        let yaml = serde_yaml::to_string(sd).map_err(|err| {
+            format!("Failed to serialize stacker.yml stack definition: {}", err)
+        })?;
+        return Ok(DefinitionShape::StackerConfig(yaml));
+    }
+    Err(format!(
+        "Unsupported stack_definition type: expected string (compose YAML) or object (stacker.yml / legacy form), got {}",
+        match sd {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "boolean",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Object(_) => "object",
+        }
+    ))
+}
 
-        let form_value = serde_json::json!({
-            "custom": {
-                "custom_stack_code": stack_code,
-                "project_name": template.name.clone(),
-                "custom_stack_short_description": template.short_description,
-                "custom_stack_category": template.category_code.as_ref().map(|c| vec![c.clone()]),
-                "web": [],
-                "service": serde_json::Value::Array(vec![]),
-                "feature": serde_json::Value::Array(vec![]),
-                "networks": [],
-                "marketplace_config_files": config_files,
-                "marketplace_version": latest_version.version,
-                "marketplace_changelog": latest_version.changelog,
-                "marketplace_assets": latest_version.assets,
-                "marketplace_seed_jobs": latest_version.seed_jobs,
-                "marketplace_post_deploy_hooks": latest_version.post_deploy_hooks,
-                "marketplace_update_mode_capabilities": latest_version.update_mode_capabilities,
-            }
-        });
+fn build_project_form_core(
+    template: &models::StackTemplate,
+    latest_version: &models::StackTemplateVersion,
+    requested_name: Option<&str>,
+) -> Result<ProjectForm, String> {
+    let shape = classify_definition(latest_version)
+        .map_err(|err| format!("Template '{}': {}", template.slug, err))?;
 
-        serde_json::from_value(form_value).map_err(|err| {
-            JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                "Template '{}' has an invalid stack definition: {}",
-                template.slug, err
-            ))
-        })?
-    } else {
-        serde_json::from_value(latest_version.stack_definition.clone()).map_err(|err| {
-            JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                "Template '{}' cannot be installed because its stack definition is invalid: {}",
-                template.slug, err
-            ))
-        })?
+    let mut form: ProjectForm = match &shape {
+        DefinitionShape::LegacyForm(sd) => {
+            serde_json::from_value((*sd).clone()).map_err(|err| {
+                format!(
+                    "Template '{}' cannot be installed because its stack definition is invalid: {}",
+                    template.slug, err
+                )
+            })?
+        }
+        DefinitionShape::ComposeYaml(yaml_str) => build_form_from_yaml_embed(
+            template,
+            latest_version,
+            requested_name,
+            yaml_str,
+            "docker-compose.yml",
+        )?,
+        DefinitionShape::StackerConfig(yaml_str) => build_form_from_yaml_embed(
+            template,
+            latest_version,
+            requested_name,
+            yaml_str,
+            "stacker.yml",
+        )?,
     };
 
-    if !is_yaml {
+    // The YAML/stacker.yml branches already synthesize a fresh `custom`
+    // wrapper from the template + version; only the legacy branch needs
+    // us to backfill fields on top of the parsed form.
+    if matches!(shape, DefinitionShape::LegacyForm(_)) {
         if let Some(name) = requested_name
             .map(str::trim)
             .filter(|name| !name.is_empty())
@@ -152,10 +186,65 @@ fn build_project_form(
             .unwrap_or_default();
     }
 
-    form.validate()
-        .map_err(|err| JsonResponse::<serde_json::Value>::build().bad_request(err.to_string()))?;
+    form.validate().map_err(|err| err.to_string())?;
 
     Ok(form)
+}
+
+fn build_form_from_yaml_embed(
+    template: &models::StackTemplate,
+    latest_version: &models::StackTemplateVersion,
+    requested_name: Option<&str>,
+    yaml_str: &str,
+    embed_name: &str,
+) -> Result<ProjectForm, String> {
+    let project_name = requested_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&template.slug);
+    let stack_code = normalized_project_name(project_name);
+
+    let mut config_files: Vec<serde_json::Value> =
+        serde_json::from_value(latest_version.config_files.clone()).unwrap_or_default();
+    let already_embedded = config_files.iter().any(|f| {
+        f.get("name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == embed_name)
+            .unwrap_or(false)
+    });
+    if !already_embedded {
+        config_files.push(serde_json::json!({
+            "name": embed_name,
+            "content": yaml_str,
+        }));
+    }
+
+    let form_value = serde_json::json!({
+        "custom": {
+            "custom_stack_code": stack_code,
+            "project_name": template.name.clone(),
+            "custom_stack_short_description": template.short_description,
+            "custom_stack_category": template.category_code.as_ref().map(|c| vec![c.clone()]),
+            "web": [],
+            "service": serde_json::Value::Array(vec![]),
+            "feature": serde_json::Value::Array(vec![]),
+            "networks": [],
+            "marketplace_config_files": config_files,
+            "marketplace_version": latest_version.version,
+            "marketplace_changelog": latest_version.changelog,
+            "marketplace_assets": latest_version.assets,
+            "marketplace_seed_jobs": latest_version.seed_jobs,
+            "marketplace_post_deploy_hooks": latest_version.post_deploy_hooks,
+            "marketplace_update_mode_capabilities": latest_version.update_mode_capabilities,
+        }
+    });
+
+    serde_json::from_value(form_value).map_err(|err| {
+        format!(
+            "Template '{}' has an invalid stack definition: {}",
+            template.slug, err
+        )
+    })
 }
 
 fn catalog_application_project_form(
@@ -621,7 +710,7 @@ pub async fn install_handler(
 mod tests {
     use super::{
         build_project_form, catalog_application_project_form,
-        ensure_catalog_application_has_deploy_context,
+        ensure_catalog_application_has_deploy_context, validate_installable_form,
     };
     use crate::{forms::project::Payload, models};
     use serde_json::{json, Map};
@@ -769,6 +858,114 @@ mod tests {
         };
 
         assert!(ensure_catalog_application_has_deploy_context("dify", &request).is_err());
+    }
+
+    // Production's ghost: the exact shape `stacker submit` sends — the raw
+    // stacker.yml parsed to JSON (has `app`/`services`/`name`, no `custom`
+    // wrapper, `definition_format` unset). Install must accept this and
+    // embed the serialized YAML as `stacker.yml` in marketplace_config_files.
+    #[test]
+    fn build_project_form_accepts_stacker_yml_shape_from_submit() {
+        let template = models::StackTemplate {
+            slug: "ghost".to_string(),
+            name: "ghost".to_string(),
+            short_description: Some("Ghost blog".to_string()),
+            category_code: Some("cms".to_string()),
+            ..Default::default()
+        };
+        let version = models::StackTemplateVersion {
+            id: Uuid::new_v4(),
+            template_id: Uuid::new_v4(),
+            version: "1.0.0".to_string(),
+            stack_definition: json!({
+                "name": "ghost",
+                "app": { "type": "custom", "image": "ghost:5-alpine" },
+                "services": [],
+                "deploy": { "target": "local" }
+            }),
+            config_files: json!([]),
+            assets: json!([]),
+            seed_jobs: json!([]),
+            post_deploy_hooks: json!([]),
+            update_mode_capabilities: None,
+            definition_format: None,
+            changelog: None,
+            is_latest: Some(true),
+            created_at: None,
+        };
+
+        let form = build_project_form(&template, &version, None)
+            .expect("stacker.yml shape from `stacker submit` must build a ProjectForm");
+        assert_eq!(form.custom.custom_stack_code, "ghost");
+        assert_eq!(form.custom.project_name, Some("ghost".to_string()));
+
+        let files: &Vec<serde_json::Value> = form
+            .custom
+            .marketplace_config_files
+            .as_array()
+            .expect("marketplace_config_files should be an array");
+        let embed = files
+            .iter()
+            .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("stacker.yml"))
+            .expect("stacker.yml shape should be embedded as `stacker.yml`, not `docker-compose.yml`");
+        let content = embed
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default();
+        assert!(
+            content.contains("app:") && content.contains("ghost:5-alpine"),
+            "embedded content should be the serialized stacker.yml, got: {}",
+            content
+        );
+
+        validate_installable_form(&template, &version)
+            .expect("validator should agree with build_project_form");
+    }
+
+    #[test]
+    fn validate_installable_accepts_yaml_compose_definition() {
+        let template = models::StackTemplate {
+            slug: "umami".to_string(),
+            name: "umami".to_string(),
+            ..Default::default()
+        };
+        let version = make_yaml_version();
+
+        validate_installable_form(&template, &version)
+            .expect("a compose-YAML stack definition must pass the gate");
+    }
+
+    #[test]
+    fn validate_installable_accepts_legacy_custom_wrapped_definition() {
+        let template = models::StackTemplate {
+            slug: "legacy".to_string(),
+            name: "legacy".to_string(),
+            ..Default::default()
+        };
+        let version = models::StackTemplateVersion {
+            id: Uuid::new_v4(),
+            template_id: Uuid::new_v4(),
+            version: "1.0.0".to_string(),
+            stack_definition: json!({
+                "custom": {
+                    "custom_stack_code": "legacy",
+                    "web": [],
+                    "networks": []
+                }
+            }),
+            config_files: json!([]),
+            assets: json!([]),
+            seed_jobs: json!([]),
+            post_deploy_hooks: json!([]),
+            update_mode_capabilities: None,
+            definition_format: None,
+            changelog: None,
+            is_latest: Some(true),
+            created_at: None,
+        };
+
+        validate_installable_form(&template, &version)
+            .expect("a legacy custom-wrapped stack definition must pass the gate");
     }
     #[test]
     fn reserved_prefix_vars_rejected_in_install_inputs() {

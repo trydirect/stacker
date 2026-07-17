@@ -253,6 +253,12 @@ enum StackerCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+        /// Name of saved cloud credential to reuse (overrides auto-detected default)
+        #[arg(long, value_name = "KEY_NAME")]
+        key: Option<String>,
+        /// ID of saved cloud credential to reuse (from `stacker list clouds`)
+        #[arg(long, value_name = "CLOUD_ID")]
+        key_id: Option<i32>,
     },
     /// Show container logs
     Logs {
@@ -2706,9 +2712,11 @@ fn get_command(
             json,
             domain,
             set_values,
+            key,
+            key_id,
         } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
-                template, name, file, force, json, domain, set_values,
+                template, name, file, force, json, domain, set_values, key, key_id,
             ),
         ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {

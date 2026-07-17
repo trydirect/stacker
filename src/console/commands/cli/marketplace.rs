@@ -173,6 +173,8 @@ pub struct MarketplaceInstallCommand {
     json: bool,
     domain: Option<String>,
     set_values: Vec<String>,
+    key_name: Option<String>,
+    key_id: Option<i32>,
 }
 
 impl MarketplaceInstallCommand {
@@ -184,6 +186,8 @@ impl MarketplaceInstallCommand {
         json: bool,
         domain: Option<String>,
         set_values: Vec<String>,
+        key_name: Option<String>,
+        key_id: Option<i32>,
     ) -> Self {
         Self {
             template,
@@ -193,6 +197,8 @@ impl MarketplaceInstallCommand {
             json,
             domain,
             set_values,
+            key_name,
+            key_id,
         }
     }
 }
@@ -276,6 +282,8 @@ impl CallableTrait for MarketplaceInstallCommand {
                         &self.template,
                         self.name.as_deref(),
                         self.domain.as_deref(),
+                        self.key_name.as_deref(),
+                        self.key_id,
                     )
                     .await
                 })?;
@@ -398,7 +406,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                 "Installed '{}' as project #{} and started deployment #{}.",
                 response.template.slug, response.project.id, deployment_id
             );
-            println!("Track with: stacker deployments state {}", deployment_id);
+            println!("Track with: stacker deployment state");
             return Ok(());
         }
 
@@ -681,6 +689,8 @@ async fn generate_minimal_install_config(
     template: &str,
     name: Option<&str>,
     domain: Option<&str>,
+    key_name: Option<&str>,
+    key_id: Option<i32>,
 ) -> Result<StackerConfig, CliError> {
     use crate::cli::config_parser::{CloudConfig, DeployTarget};
 
@@ -703,11 +713,33 @@ async fn generate_minimal_install_config(
     // the user to connect a cloud provider first instead of silently
     // falling back to local.
     let clouds = client.list_clouds().await?;
-    let cloud_info = clouds.into_iter().next().ok_or_else(|| {
-        CliError::ConfigValidation(
-            "No cloud connections found. Connect one with `stacker config cloud add` (or `stacker login`) and retry.".to_string(),
-        )
-    })?;
+
+    // If --key or --key-id was provided, find the matching cloud credential.
+    // Otherwise fall back to the first available credential.
+    let cloud_info = if let Some(id) = key_id {
+        clouds.into_iter().find(|c| c.id == id).ok_or_else(|| {
+            CliError::ConfigValidation(format!(
+                "No cloud connection found with ID '{}'. See `stacker list clouds`.",
+                id
+            ))
+        })?
+    } else if let Some(name) = key_name.map(str::trim).filter(|v| !v.is_empty()) {
+        clouds
+            .into_iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                CliError::ConfigValidation(format!(
+                    "No cloud connection found with name '{}'. See `stacker list clouds`.",
+                    name
+                ))
+            })?
+    } else {
+        clouds.into_iter().next().ok_or_else(|| {
+            CliError::ConfigValidation(
+                "No cloud connections found. Connect one with `stacker config cloud add` (or `stacker login`) and retry.".to_string(),
+            )
+        })?
+    };
     let provider = cloud_provider_from_code(&cloud_info.provider).ok_or_else(|| {
         CliError::ConfigValidation(format!(
             "Unsupported cloud provider '{}' on default cloud '{}'.",
@@ -1017,16 +1049,13 @@ impl CallableTrait for MarketplaceLogsCommand {
 // ── helpers ──────────────────────────────────────────
 
 /// Format the plan/price column for display.
-/// Shows `required_plan_name` if set, otherwise formats `price` with currency,
-/// or "free" if neither indicates a paid template.
+///
+/// Mirrors the server-side `is_free` calculation in
+/// `services::marketplace_access` so the list column never disagrees with the
+/// install-time access check. A template is "free" only when `price` is
+/// zero/absent AND `required_plan_name` is absent/empty/"free"; anything else
+/// requires payment or a plan tier and must be displayed as such.
 fn display_plan(template: &MarketplaceTemplate) -> String {
-    if let Some(plan) = template
-        .required_plan_name
-        .as_deref()
-        .filter(|p| !p.is_empty())
-    {
-        return plan.to_string();
-    }
     if let Some(price) = template.price {
         if price > 0.0 {
             let cycle = template.billing_cycle.as_deref().unwrap_or("/mo");
@@ -1038,6 +1067,14 @@ fn display_plan(template: &MarketplaceTemplate) -> String {
             };
             return format!("${:.2}{}", price, cycle);
         }
+    }
+    if let Some(plan) = template
+        .required_plan_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("free"))
+    {
+        return plan.to_string();
     }
     "free".to_string()
 }
@@ -1055,7 +1092,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_install_inputs_to_deploy_form, marketplace_template_matches_slug,
+        apply_install_inputs_to_deploy_form, display_plan, marketplace_template_matches_slug,
         resolve_install_inputs, response_stack_definition,
     };
     use crate::cli::stacker_client::{
@@ -1214,5 +1251,65 @@ mod tests {
             is_from_marketplace: None,
             stack_definition: None,
         }
+    }
+
+    // display_plan must mirror the server's `is_free` calculation in
+    // services::marketplace_access — showing "free" only when both `price`
+    // and `required_plan_name` indicate a free template. Otherwise the CLI
+    // listing lies to users and `stacker install` rejects with "must
+    // purchase this template before installing it".
+    #[test]
+    fn display_plan_shows_price_when_plan_is_free_but_price_is_positive() {
+        // Real production row for `umami`: price=10.0, plan="free" (any
+        // plan tier accepted, but still a $10 one-time purchase).
+        let mut t = marketplace_template("umami");
+        t.price = Some(10.0);
+        t.required_plan_name = Some("free".to_string());
+        t.billing_cycle = Some("one_time".to_string());
+
+        assert_eq!(display_plan(&t), "$10.00");
+    }
+
+    #[test]
+    fn display_plan_treats_empty_and_free_plan_names_as_free() {
+        let mut t = marketplace_template("x");
+        assert_eq!(display_plan(&t), "free");
+
+        t.required_plan_name = Some("".to_string());
+        assert_eq!(display_plan(&t), "free");
+
+        t.required_plan_name = Some("  ".to_string());
+        assert_eq!(display_plan(&t), "free");
+
+        t.required_plan_name = Some("FREE".to_string());
+        assert_eq!(display_plan(&t), "free");
+    }
+
+    #[test]
+    fn display_plan_shows_non_free_plan_when_price_is_zero_or_missing() {
+        let mut t = marketplace_template("x");
+        t.required_plan_name = Some("professional".to_string());
+        assert_eq!(display_plan(&t), "professional");
+
+        t.price = Some(0.0);
+        assert_eq!(display_plan(&t), "professional");
+    }
+
+    #[test]
+    fn display_plan_formats_price_with_billing_cycle() {
+        let mut t = marketplace_template("x");
+        t.price = Some(5.0);
+
+        t.billing_cycle = Some("monthly".to_string());
+        assert_eq!(display_plan(&t), "$5.00/mo");
+
+        t.billing_cycle = Some("yearly".to_string());
+        assert_eq!(display_plan(&t), "$5.00/yr");
+
+        t.billing_cycle = Some("one_time".to_string());
+        assert_eq!(display_plan(&t), "$5.00");
+
+        t.billing_cycle = None;
+        assert_eq!(display_plan(&t), "$5.00/mo");
     }
 }
