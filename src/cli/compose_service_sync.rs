@@ -47,6 +47,38 @@ pub fn inject_npm_proxy_network(
     inject_external_network(compose_doc, service_name, "default_network")
 }
 
+/// Attach every service in `compose_doc` to a shared `external: true` `network`
+/// and declare it at the top level. Idempotent — services already on the network
+/// are left unchanged. Returns `true` if the document was modified.
+///
+/// Used so status-panel/agent deploys can reach the project's containers: the
+/// agent lives on `default_network`, and project containers must share it. The
+/// CLI-generated compose already joins `default_network`; this also covers
+/// user-supplied composes that define their own network.
+pub fn inject_shared_network_all_services(
+    compose_doc: &mut serde_yaml::Value,
+    network: &str,
+) -> bool {
+    let service_names: Vec<String> = compose_doc
+        .get("services")
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|services| {
+            services
+                .keys()
+                .filter_map(|key| key.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut changed = false;
+    for service_name in service_names {
+        if inject_external_network(compose_doc, &service_name, network) {
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn inject_external_network(
     compose_doc: &mut serde_yaml::Value,
     service_name: &str,
@@ -418,6 +450,37 @@ mod tests {
     };
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    #[test]
+    fn inject_shared_network_all_services_is_idempotent_and_covers_all() {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(
+            "services:\n  app:\n    image: a\n    networks: [default_network]\n  db:\n    image: b\n",
+        )
+        .unwrap();
+
+        // First pass: only `db` is missing the network → changed.
+        assert!(inject_shared_network_all_services(
+            &mut doc,
+            "default_network"
+        ));
+        for svc in ["app", "db"] {
+            let nets = doc["services"][svc]["networks"].as_sequence().unwrap();
+            assert_eq!(
+                nets.iter()
+                    .filter(|n| n.as_str() == Some("default_network"))
+                    .count(),
+                1,
+                "service {svc} should have default_network exactly once"
+            );
+        }
+        assert_eq!(doc["networks"]["default_network"]["external"], true);
+
+        // Second pass: everything already present → no change (idempotent).
+        assert!(!inject_shared_network_all_services(
+            &mut doc,
+            "default_network"
+        ));
+    }
 
     // ── inject_npm_proxy_network unit tests ──────────────────────────────────
 

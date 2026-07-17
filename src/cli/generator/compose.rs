@@ -189,12 +189,24 @@ fn build_app_service(config: &StackerConfig) -> ComposeService {
         name: "app".to_string(),
         ..Default::default()
     };
+    // The compose service (and its DNS name) stays `app` so intra-project
+    // references keep working, but the `my.stacker.service` label carries the
+    // project code so the status-panel agent can resolve this container by the
+    // app code it queries with (`stacker pipe scan --app <code>`). Previously
+    // this was hardcoded to "app" and never matched the project code.
+    let app_code = crate::helpers::stacker_labels::sanitize_service_code(
+        config
+            .project
+            .identity
+            .as_deref()
+            .unwrap_or(config.name.as_str()),
+    );
     crate::helpers::stacker_labels::insert_runtime_labels(
         &mut svc.labels,
         None::<String>,
         None,
         crate::helpers::stacker_labels::SCOPE_PROJECT,
-        "app",
+        &app_code,
         "app",
     );
 
@@ -503,6 +515,29 @@ mod tests {
         assert_eq!(compose.services.len(), 1);
         assert_eq!(compose.services[0].name, "app");
         assert!(compose.services[0].ports.contains(&"80:80".to_string()));
+    }
+
+    #[test]
+    fn app_service_label_carries_project_code_not_hardcoded_app() {
+        let config = minimal_config(AppType::Static);
+        let compose = ComposeDefinition::try_from(&config).unwrap();
+        let app = &compose.services[0];
+        // Service name and DNS stay "app" so intra-project references keep working.
+        assert_eq!(app.name, "app");
+        assert_eq!(
+            app.labels
+                .get(crate::helpers::stacker_labels::DNS)
+                .map(String::as_str),
+            Some("app")
+        );
+        // The agent-resolution label carries the project code, not "app", so
+        // `stacker pipe scan --app <code>` can resolve this container.
+        assert_eq!(
+            app.labels
+                .get(crate::helpers::stacker_labels::SERVICE)
+                .map(String::as_str),
+            Some("test-app")
+        );
     }
 
     #[test]

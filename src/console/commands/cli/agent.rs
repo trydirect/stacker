@@ -1046,6 +1046,7 @@ fn local_config_files_for_agent_deploy(
             &configured_compose_path,
             config.env_file.as_deref(),
             &reference_base,
+            false,
         )?;
         if materialize_stacker_service_in_bundle(&mut bundle, &config, app_code)? {
             result.notices.push(format!(
@@ -1065,6 +1066,7 @@ fn local_config_files_for_agent_deploy(
             compose_path,
             None,
             &app_reference_base,
+            false,
         )?;
         let project_compose = std::fs::read_to_string(&configured_compose_path).map_err(|err| {
             CliError::ConfigValidation(format!(

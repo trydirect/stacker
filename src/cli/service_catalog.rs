@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::cli::config_parser::ServiceDefinition;
+use crate::cli::config_parser::{ComposeHealthcheck, ServiceDefinition};
 use crate::cli::error::CliError;
 use crate::cli::stacker_client::StackerClient;
 
@@ -25,6 +25,59 @@ pub struct CatalogEntry {
     pub service: ServiceDefinition,
     /// Services that are commonly added alongside this one
     pub related: Vec<String>,
+}
+
+/// How the default value for a [`CatalogInput`] is produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputDefault {
+    /// No default — the user must provide a value (errors if non-interactive).
+    Required,
+    /// A fixed default, offered when prompting.
+    Literal(String),
+    /// Auto-generate a random secret; never prompted for.
+    GeneratedSecret,
+}
+
+/// A user-configurable value for a catalog service. The service definition
+/// references it as `${key}`; the resolved value is written to `.env`, never
+/// into `stacker.yml`.
+#[derive(Debug, Clone)]
+pub struct CatalogInput {
+    pub key: String,
+    pub prompt: String,
+    pub default: InputDefault,
+    /// Mask input and route the value to `.env`.
+    pub secret: bool,
+}
+
+/// User inputs for a hardcoded catalog service (by canonical code). The service
+/// template references each `key` as `${key}`. Empty for services with no
+/// configurable values.
+pub fn catalog_inputs(code: &str) -> Vec<CatalogInput> {
+    let secret = |key: &str, prompt: &str| CatalogInput {
+        key: key.to_string(),
+        prompt: prompt.to_string(),
+        default: InputDefault::GeneratedSecret,
+        secret: true,
+    };
+    match code {
+        "postgres" => vec![secret("POSTGRES_PASSWORD", "PostgreSQL password")],
+        "mysql" | "mariadb" => vec![
+            secret("MYSQL_ROOT_PASSWORD", "MySQL root password"),
+            secret("MYSQL_PASSWORD", "MySQL application-user password"),
+        ],
+        "mongodb" => vec![secret(
+            "MONGO_INITDB_ROOT_PASSWORD",
+            "MongoDB root password",
+        )],
+        "rabbitmq" => vec![secret("RABBITMQ_DEFAULT_PASS", "RabbitMQ password")],
+        "minio" => vec![secret("MINIO_ROOT_PASSWORD", "MinIO root password")],
+        "wordpress" => vec![secret(
+            "WORDPRESS_DB_PASSWORD",
+            "WordPress database password",
+        )],
+        _ => vec![],
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -198,6 +251,23 @@ impl ServiceCatalog {
 // Hardcoded service catalog
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Standard container healthcheck. The renderer emits `test:` as a YAML string,
+/// which Docker Compose runs via `/bin/sh -c` (CMD-SHELL) — so `test` is a bare
+/// shell command with no `CMD`/`CMD-SHELL` prefix.
+///
+/// Only added for services whose probe tool is guaranteed to ship in the image
+/// (`pg_isready`, `mysqladmin`, `mongosh`, `redis-cli`, `rabbitmq-diagnostics`).
+/// Images without a guaranteed probe (e.g. `curl`/`wget` may be absent) are left
+/// without a healthcheck rather than risk a permanently-unhealthy container.
+fn service_healthcheck(test: &str) -> Option<ComposeHealthcheck> {
+    Some(ComposeHealthcheck {
+        test: test.to_string(),
+        interval: "10s".into(),
+        timeout: "5s".into(),
+        retries: 5,
+    })
+}
+
 fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
     vec![
         // ── Databases ────────────────────────────────────
@@ -213,12 +283,12 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 environment: HashMap::from([
                     ("POSTGRES_DB".into(), "app_db".into()),
                     ("POSTGRES_USER".into(), "app".into()),
-                    ("POSTGRES_PASSWORD".into(), "changeme".into()),
+                    ("POSTGRES_PASSWORD".into(), "${POSTGRES_PASSWORD}".into()),
                 ]),
                 volumes: vec!["postgres_data:/var/lib/postgresql/data".into()],
                 depends_on: vec![],
                 command: None,
-                healthcheck: None,
+                healthcheck: service_healthcheck("pg_isready -U app"),
             },
             related: vec!["redis".into()],
         },
@@ -232,15 +302,18 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 image: "mysql:8.0".into(),
                 ports: vec!["3306:3306".into()],
                 environment: HashMap::from([
-                    ("MYSQL_ROOT_PASSWORD".into(), "changeme_root".into()),
+                    (
+                        "MYSQL_ROOT_PASSWORD".into(),
+                        "${MYSQL_ROOT_PASSWORD}".into(),
+                    ),
                     ("MYSQL_DATABASE".into(), "app_db".into()),
                     ("MYSQL_USER".into(), "app".into()),
-                    ("MYSQL_PASSWORD".into(), "changeme".into()),
+                    ("MYSQL_PASSWORD".into(), "${MYSQL_PASSWORD}".into()),
                 ]),
                 volumes: vec!["mysql_data:/var/lib/mysql".into()],
                 depends_on: vec![],
                 command: None,
-                healthcheck: None,
+                healthcheck: service_healthcheck("mysqladmin ping -h 127.0.0.1 --silent"),
             },
             related: vec!["redis".into(), "phpmyadmin".into()],
         },
@@ -255,12 +328,17 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 ports: vec!["27017:27017".into()],
                 environment: HashMap::from([
                     ("MONGO_INITDB_ROOT_USERNAME".into(), "admin".into()),
-                    ("MONGO_INITDB_ROOT_PASSWORD".into(), "changeme".into()),
+                    (
+                        "MONGO_INITDB_ROOT_PASSWORD".into(),
+                        "${MONGO_INITDB_ROOT_PASSWORD}".into(),
+                    ),
                 ]),
                 volumes: vec!["mongo_data:/data/db".into()],
                 depends_on: vec![],
                 command: None,
-                healthcheck: None,
+                healthcheck: service_healthcheck(
+                    "mongosh --quiet --eval 'db.adminCommand({ping:1})'",
+                ),
             },
             related: vec![],
         },
@@ -278,7 +356,7 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 volumes: vec!["redis_data:/data".into()],
                 depends_on: vec![],
                 command: None,
-                healthcheck: None,
+                healthcheck: service_healthcheck("redis-cli ping"),
             },
             related: vec![],
         },
@@ -311,12 +389,15 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 ports: vec!["5672:5672".into(), "15672:15672".into()],
                 environment: HashMap::from([
                     ("RABBITMQ_DEFAULT_USER".into(), "app".into()),
-                    ("RABBITMQ_DEFAULT_PASS".into(), "changeme".into()),
+                    (
+                        "RABBITMQ_DEFAULT_PASS".into(),
+                        "${RABBITMQ_DEFAULT_PASS}".into(),
+                    ),
                 ]),
                 volumes: vec!["rabbitmq_data:/var/lib/rabbitmq".into()],
                 depends_on: vec![],
                 command: None,
-                healthcheck: None,
+                healthcheck: service_healthcheck("rabbitmq-diagnostics -q ping"),
             },
             related: vec![],
         },
@@ -391,7 +472,10 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 environment: HashMap::from([
                     ("WORDPRESS_DB_HOST".into(), "mysql".into()),
                     ("WORDPRESS_DB_USER".into(), "wordpress".into()),
-                    ("WORDPRESS_DB_PASSWORD".into(), "changeme".into()),
+                    (
+                        "WORDPRESS_DB_PASSWORD".into(),
+                        "${WORDPRESS_DB_PASSWORD}".into(),
+                    ),
                     ("WORDPRESS_DB_NAME".into(), "wordpress".into()),
                 ]),
                 volumes: vec!["wordpress_data:/var/www/html".into()],
@@ -553,7 +637,10 @@ fn build_hardcoded_catalog() -> Vec<CatalogEntry> {
                 ports: vec!["9000:9000".into(), "9001:9001".into()],
                 environment: HashMap::from([
                     ("MINIO_ROOT_USER".into(), "admin".into()),
-                    ("MINIO_ROOT_PASSWORD".into(), "changeme123".into()),
+                    (
+                        "MINIO_ROOT_PASSWORD".into(),
+                        "${MINIO_ROOT_PASSWORD}".into(),
+                    ),
                 ]),
                 volumes: vec!["minio_data:/data".into()],
                 depends_on: vec![],
@@ -681,6 +768,78 @@ mod tests {
         let e = entry.unwrap();
         assert_eq!(e.service.image, "postgres:16-alpine");
         assert!(e.service.ports.contains(&"5432:5432".to_string()));
+    }
+
+    #[test]
+    fn test_core_data_services_have_healthchecks() {
+        let cat = ServiceCatalog::offline();
+        // Services whose probe tool ships in the image get a healthcheck.
+        for (code, needle) in [
+            ("postgres", "pg_isready"),
+            ("mysql", "mysqladmin ping"),
+            ("mongodb", "mongosh"),
+            ("redis", "redis-cli ping"),
+            ("rabbitmq", "rabbitmq-diagnostics"),
+        ] {
+            let hc = cat
+                .lookup_hardcoded(code)
+                .unwrap_or_else(|| panic!("{code} exists"))
+                .service
+                .healthcheck
+                .clone()
+                .unwrap_or_else(|| panic!("{code} should have a healthcheck"));
+            assert!(
+                hc.test.contains(needle),
+                "{code} healthcheck test '{}' should contain '{needle}'",
+                hc.test
+            );
+            assert_eq!(hc.retries, 5);
+        }
+    }
+
+    #[test]
+    fn test_catalog_inputs_and_env_references() {
+        let cat = ServiceCatalog::offline();
+
+        // Secret placeholders are replaced with ${KEY} references, never literals.
+        let pg = cat.lookup_hardcoded("postgres").expect("postgres");
+        assert_eq!(
+            pg.service
+                .environment
+                .get("POSTGRES_PASSWORD")
+                .map(String::as_str),
+            Some("${POSTGRES_PASSWORD}")
+        );
+        // Non-secret values stay literal.
+        assert_eq!(
+            pg.service
+                .environment
+                .get("POSTGRES_USER")
+                .map(String::as_str),
+            Some("app")
+        );
+
+        // catalog_inputs describes the configurable keys as generated secrets.
+        let inputs = catalog_inputs("postgres");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].key, "POSTGRES_PASSWORD");
+        assert!(inputs[0].secret);
+        assert_eq!(inputs[0].default, InputDefault::GeneratedSecret);
+
+        assert_eq!(catalog_inputs("mysql").len(), 2);
+        assert!(catalog_inputs("redis").is_empty());
+    }
+
+    #[test]
+    fn test_service_without_guaranteed_probe_has_no_healthcheck() {
+        let cat = ServiceCatalog::offline();
+        // memcached ships no probe CLI, so it is intentionally left without one.
+        assert!(cat
+            .lookup_hardcoded("memcached")
+            .expect("memcached exists")
+            .service
+            .healthcheck
+            .is_none());
     }
 
     #[test]
