@@ -431,6 +431,15 @@ impl CallableTrait for MarketplaceInstallCommand {
             );
         }
 
+        // Idempotency key for the install request. Respect an env override so
+        // CI can pin it explicitly (a re-run with the same key collapses to
+        // the original authorization for per_install-billed templates).
+        // Otherwise generate a fresh one per invocation.
+        let idempotency_key = std::env::var("STACKER_INSTALL_IDEMPOTENCY_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .unwrap_or_else(|| format!("cli-{}", uuid::Uuid::new_v4()));
+
         let response = ctx.block_on(async {
             ctx.client
                 .install_marketplace_template(
@@ -438,6 +447,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     self.name.as_deref(),
                     deploy_form,
                     install_inputs,
+                    &idempotency_key,
                 )
                 .await
         })?;
@@ -1124,6 +1134,7 @@ fn display_plan(template: &MarketplaceTemplate) -> String {
                 "one_time" | "one-time" | "once" | "free" => "",
                 "monthly" | "month" | "/mo" => "/mo",
                 "yearly" | "year" | "/yr" => "/yr",
+                "per_install" | "per-install" => "/install",
                 other => other,
             };
             return format!("${:.2}{}", price, cycle);
@@ -1294,6 +1305,8 @@ mod tests {
             template: marketplace_template("dify"),
             latest_version,
             deployment_id: None,
+            authorization: None,
+            idempotency_key: None,
         }
     }
 
@@ -1369,6 +1382,9 @@ mod tests {
 
         t.billing_cycle = Some("one_time".to_string());
         assert_eq!(display_plan(&t), "$5.00");
+
+        t.billing_cycle = Some("per_install".to_string());
+        assert_eq!(display_plan(&t), "$5.00/install");
 
         t.billing_cycle = None;
         assert_eq!(display_plan(&t), "$5.00/mo");

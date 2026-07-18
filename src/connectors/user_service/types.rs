@@ -86,3 +86,29 @@ pub struct CategoryInfo {
     #[serde(default)]
     pub priority: Option<i32>,
 }
+
+// ── Per-install billing ─────────────────────────────────
+//
+// Opaque handle to a two-phase charge held by user_service. Stacker never
+// looks inside `authorization_id` — user_service is authoritative on the
+// underlying payment intent, refund history, and expiry.
+
+/// Authorization handle returned from `/marketplace/billing/authorize`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizationHandle {
+    pub authorization_id: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    pub status: String, // "authorized" | "captured" | "voided"
+}
+
+/// Result of `/marketplace/billing/can-charge` — cheap pre-authorize probe
+/// used inside the marketplace access gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BillingCapability {
+    pub can_charge: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}

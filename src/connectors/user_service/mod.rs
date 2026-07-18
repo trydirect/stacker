@@ -26,8 +26,8 @@ pub use marketplace_webhook::{
 };
 pub use mock::MockUserServiceConnector;
 pub use types::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct,
-    UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+    StackResponse, UserPlanInfo, UserProduct, UserProfile,
 };
 
 #[cfg(test)]

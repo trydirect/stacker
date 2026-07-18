@@ -49,6 +49,9 @@ fn map_marketplace_access_error(err: services::MarketplaceAccessError) -> actix_
             JsonResponse::<models::Project>::build()
                 .internal_server_error("Failed to validate marketplace access")
         }
+        services::MarketplaceAccessError::NoPaymentMethod { .. } => {
+            JsonResponse::<models::Project>::build().payment_required(err.to_string())
+        }
         services::MarketplaceAccessError::MissingUserToken
         | services::MarketplaceAccessError::InsufficientFeaturePlan
         | services::MarketplaceAccessError::InsufficientTemplatePlan { .. }

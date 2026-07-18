@@ -1,0 +1,64 @@
+# ---
+# STATUS: pending — file extension `.feature.pending` keeps this out of the
+# auto-discovered cucumber run in `tests/bdd.rs` (which globs `tests/features`
+# for `.feature` files). Rename to `.feature` once the step definitions in
+# `tests/steps/marketplace.rs` are extended to cover the billing scenarios
+# (wiremock routes for authorize/capture/void, DB assertion helpers on
+# `marketplace_install_authorization`, and per_install feature-flag setup
+# in `ensure_shared_app_available()`).
+# ---
+Feature: Per-install billing for marketplace templates
+  Templates with billing_cycle="per_install" charge the buyer on each
+  install via a two-phase authorize/capture with user_service. This
+  contrasts with legacy "one_time" templates that check a permanent
+  ownership flag. The invariant: no money moves without a corresponding
+  install artifact, and retries with the same idempotency key never
+  double-charge.
+
+  Background:
+    Given the per_install billing feature flag is enabled
+    And a marketplace template with slug "paid-per-install" and billing_cycle "per_install" and price 9.99 USD
+    And I am authenticated as a user on the "professional" plan
+    And the user_service billing mock is running
+
+  Scenario: Successful per-install charge captures on deploy-complete
+    Given the user_service billing mock will authorize any charge
+    And the user_service billing mock will capture any authorization
+    When I POST to "/api/templates/paid-per-install/install" with idempotency key "idem-ok-1" and a deploy body
+    Then the response status is 200
+    And the response item has "authorization.status" equal to "authorized"
+    And the marketplace_install_authorization row for the response project has status "authorized"
+    When the agent posts "/api/marketplace/deploy-complete" for the resulting deployment
+    Then the response status is 200
+    And the marketplace_install_authorization row for the project has status "captured"
+    And the user_service billing mock recorded exactly 1 authorize and 1 capture
+
+  Scenario: Declined per-install charge does not create a project
+    Given the user_service billing mock will decline authorizations with reason "card_declined"
+    When I POST to "/api/templates/paid-per-install/install" with idempotency key "idem-decl-1"
+    Then the response status is 402
+    And no project exists for the current user with source template "paid-per-install"
+    And no marketplace_install_authorization row exists for idempotency key "idem-decl-1"
+
+  Scenario: Retry with same idempotency key does not double-charge
+    Given the user_service billing mock will authorize any charge
+    When I POST to "/api/templates/paid-per-install/install" with idempotency key "idem-retry-1"
+    And I POST to "/api/templates/paid-per-install/install" with idempotency key "idem-retry-1"
+    Then both responses have the same "authorization.authorization_id"
+    And both responses have the same "project.id"
+    And the user_service billing mock recorded exactly 1 authorize
+
+  Scenario: Deploy failure voids the authorization
+    Given the user_service billing mock will authorize any charge
+    And any deployment will fail with reason "agent_unreachable"
+    When I POST to "/api/templates/paid-per-install/install" with idempotency key "idem-fail-1" and a deploy body
+    Then the marketplace_install_authorization row for idempotency key "idem-fail-1" eventually has status "voided"
+    And the user_service billing mock recorded exactly 1 void with reason starting "install_failed" or "expired"
+
+  Scenario: Existing one_time templates are unaffected
+    Given a marketplace template with slug "umami" and billing_cycle "one_time" and price 10.00 USD
+    And I own the template "umami"
+    When I POST to "/api/templates/umami/install" with idempotency key "idem-umami-1"
+    Then the response status is 200
+    And no marketplace_install_authorization row exists for the response project
+    And the user_service billing mock recorded 0 authorize calls

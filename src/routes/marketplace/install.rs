@@ -8,6 +8,7 @@ use serde_valid::Validate;
 use sqlx::PgPool;
 
 use crate::configuration::Settings;
+use crate::connectors::errors::ConnectorError;
 use crate::connectors::install_service::InstallServiceConnector;
 use crate::connectors::user_service::UserServiceConnector;
 use crate::forms;
@@ -23,6 +24,12 @@ pub struct InstallTemplateRequest {
     pub deploy: Option<forms::project::Deploy>,
     #[serde(default)]
     pub install_inputs: Map<String, Value>,
+    /// Client-supplied idempotency key. Required for `per_install` templates
+    /// so retries collapse to a single authorization row. Omitted for
+    /// free / one_time templates. If missing on a per_install install the
+    /// server generates one and echoes it back in the response.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +39,24 @@ pub struct InstallTemplateResponse {
     pub latest_version: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<i32>,
+    /// Present only for `per_install` installs. Echoes the authorization
+    /// state so the CLI (and any HTTP-level retry) can reconcile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<AuthorizationSummary>,
+    /// Present only for `per_install` installs. Set to the effective key
+    /// used server-side (may be server-generated if the client omitted it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizationSummary {
+    pub authorization_id: String,
+    pub status: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 fn map_access_error(err: services::MarketplaceAccessError) -> actix_web::Error {
@@ -40,6 +65,9 @@ fn map_access_error(err: services::MarketplaceAccessError) -> actix_web::Error {
             tracing::error!("Marketplace access validation failed: {}", reason);
             JsonResponse::<serde_json::Value>::build()
                 .internal_server_error("Failed to validate marketplace access")
+        }
+        services::MarketplaceAccessError::NoPaymentMethod { .. } => {
+            JsonResponse::<serde_json::Value>::build().payment_required(err.to_string())
         }
         services::MarketplaceAccessError::MissingUserToken
         | services::MarketplaceAccessError::InsufficientFeaturePlan
@@ -476,6 +504,83 @@ fn redact_version_value(ver_value: &mut serde_json::Value, format: &str) {
     }
 }
 
+/// True when this install should go through per-install billing.
+/// Both conditions must hold: the template opts into `per_install` and the
+/// global kill switch is on. When either is false we fall through to the
+/// legacy `one_time` / `free` paths untouched.
+fn is_per_install_effective(template: &models::StackTemplate, settings: &Settings) -> bool {
+    let opted_in = template
+        .billing_cycle
+        .as_deref()
+        .map(|c| c.trim().eq_ignore_ascii_case("per_install"))
+        .unwrap_or(false);
+    opted_in && settings.per_install_billing_enabled
+}
+
+/// Convert a template's `price` (dollars, f64) to minor units (cents, i64)
+/// with checked rounding. Rejects None/<=0 for per_install templates —
+/// admin review is expected to prevent this from ever reaching install.
+fn amount_minor_for(template: &models::StackTemplate) -> Result<i64, actix_web::Error> {
+    let price = template.price.unwrap_or(0.0);
+    if price <= 0.0 {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+            "Template '{}' has billing_cycle=per_install but no positive price",
+            template.slug
+        )));
+    }
+    let cents = (price * 100.0).round() as i64;
+    if cents <= 0 {
+        return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+            "Template '{}' price rounds to zero cents",
+            template.slug
+        )));
+    }
+    Ok(cents)
+}
+
+/// Best-effort background void of an authorization on install failure.
+/// Fire-and-forget: the sweeper is the correctness backstop if this
+/// spawn is dropped or the user_service call fails.
+fn spawn_void(
+    user_service: Arc<dyn UserServiceConnector>,
+    pg_pool: PgPool,
+    user_token: String,
+    authorization_id: String,
+    reason: String,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = user_service
+            .void_install_charge(&user_token, &authorization_id, &reason)
+            .await
+        {
+            tracing::warn!(
+                "per_install void failed for {}: {} (sweeper will retry)",
+                authorization_id,
+                err
+            );
+        }
+        if let Err(err) =
+            db::marketplace_billing::mark_voided(&pg_pool, &authorization_id, &reason).await
+        {
+            tracing::warn!(
+                "per_install DB void mark failed for {}: {}",
+                authorization_id,
+                err
+            );
+        }
+    });
+}
+
+fn summarize(handle: &crate::connectors::user_service::AuthorizationHandle) -> AuthorizationSummary {
+    AuthorizationSummary {
+        authorization_id: handle.authorization_id.clone(),
+        status: handle.status.clone(),
+        amount_minor: handle.amount_minor,
+        currency: handle.currency.clone(),
+        expires_at: handle.expires_at.clone(),
+    }
+}
+
 async fn install_stack_template(
     template: models::StackTemplate,
     latest_version: models::StackTemplateVersion,
@@ -492,21 +597,167 @@ async fn install_stack_template(
         .await
         .map_err(map_access_error)?;
 
-    let form = build_project_form(&template, &latest_version, request.name.as_deref())?;
+    // Per-install billing: authorize before any DB write so a decline
+    // returns 402 with no side effects.
+    let per_install = is_per_install_effective(&template, settings);
+    let (mut authorization_state, effective_idem_key) = if per_install {
+        let user_token = user.access_token.as_deref().ok_or_else(|| {
+            JsonResponse::<serde_json::Value>::build()
+                .forbidden("User token required for per-install billing")
+        })?;
+        let amount_minor = amount_minor_for(&template)?;
+        let currency = template.currency.clone().unwrap_or_else(|| "USD".to_string());
+        let idempotency_key = request
+            .idempotency_key
+            .clone()
+            .filter(|k| !k.trim().is_empty())
+            .unwrap_or_else(|| {
+                let key = format!("srv-{}", uuid::Uuid::new_v4());
+                tracing::warn!(
+                    "install request for per_install template '{}' missing idempotency_key; generated '{}'",
+                    template.slug,
+                    key
+                );
+                key
+            });
+
+        let handle = user_service
+            .authorize_install_charge(
+                user_token,
+                &template.id,
+                amount_minor,
+                &currency,
+                &idempotency_key,
+            )
+            .await
+            .map_err(|err| match err {
+                ConnectorError::PaymentRequired(msg) => {
+                    JsonResponse::<serde_json::Value>::build()
+                        .payment_required(format!("Payment declined: {}", msg))
+                }
+                ConnectorError::Conflict(msg) => {
+                    JsonResponse::<serde_json::Value>::build()
+                        .bad_request(format!("Idempotency conflict: {}", msg))
+                }
+                other => {
+                    tracing::error!("authorize_install_charge failed: {:?}", other);
+                    JsonResponse::<serde_json::Value>::build()
+                        .internal_server_error("Failed to authorize install charge")
+                }
+            })?;
+
+        // Persist the authorization row before touching the project row so
+        // a crash between authorize and project insert still leaves us an
+        // auditable ledger entry for the sweeper.
+        let expires_at = handle
+            .expires_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let auth_row = db::marketplace_billing::insert_authorization(
+            pg_pool,
+            db::marketplace_billing::NewAuthorization {
+                user_id: user.id.clone(),
+                template_id: template.id,
+                idempotency_key: idempotency_key.clone(),
+                authorization_id: handle.authorization_id.clone(),
+                amount_minor: handle.amount_minor,
+                currency: handle.currency.clone(),
+                expires_at,
+            },
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!("insert_authorization failed: {}", err);
+            spawn_void(
+                user_service.clone(),
+                pg_pool.clone(),
+                user_token.to_string(),
+                handle.authorization_id.clone(),
+                "install_failed:db_insert_authorization".to_string(),
+            );
+            JsonResponse::<serde_json::Value>::build()
+                .internal_server_error("Failed to persist install authorization")
+        })?;
+
+        (
+            Some((auth_row, handle, user_token.to_string())),
+            Some(idempotency_key),
+        )
+    } else {
+        (None, None)
+    };
+
+    // Any error from here forward must void the authorization if one was
+    // taken. We keep the flow linear and handle each `?` explicitly via a
+    // small helper that voids on failure paths.
+    let form = match build_project_form(&template, &latest_version, request.name.as_deref()) {
+        Ok(f) => f,
+        Err(e) => {
+            if let Some((_, handle, token)) = authorization_state.take() {
+                spawn_void(
+                    user_service.clone(),
+                    pg_pool.clone(),
+                    token,
+                    handle.authorization_id,
+                    "install_failed:build_project_form".to_string(),
+                );
+            }
+            return Err(e);
+        }
+    };
+
     let mut request_json = serde_json::to_value(&form).map_err(|err| {
         tracing::error!("Failed to serialize marketplace project form: {:?}", err);
+        if let Some((_, handle, token)) = authorization_state.take() {
+            spawn_void(
+                user_service.clone(),
+                pg_pool.clone(),
+                token,
+                handle.authorization_id,
+                "install_failed:serialize_form".to_string(),
+            );
+        }
         JsonResponse::<serde_json::Value>::build().internal_server_error("Internal Server Error")
     })?;
     let install_inputs = normalized_install_inputs(&request.install_inputs);
     attach_install_inputs(&mut request_json, &install_inputs);
 
-    let mut project = insert_project_from_form(pg_pool, user, &form, request_json).await?;
+    let mut project = match insert_project_from_form(pg_pool, user, &form, request_json).await {
+        Ok(p) => p,
+        Err(e) => {
+            if let Some((_, handle, token)) = authorization_state.take() {
+                spawn_void(
+                    user_service.clone(),
+                    pg_pool.clone(),
+                    token,
+                    handle.authorization_id,
+                    "install_failed:insert_project".to_string(),
+                );
+            }
+            return Err(e);
+        }
+    };
     project.source_template_id = Some(template.id);
     project.template_version = Some(latest_version.version.clone());
     project = db::project::update(pg_pool, project).await.map_err(|err| {
         tracing::error!("Failed to update installed template metadata: {}", err);
         JsonResponse::<serde_json::Value>::build().internal_server_error("Internal Server Error")
     })?;
+
+    // Link the auth row to the freshly-committed project so
+    // deploy_complete_handler and cancel/refund paths can find it.
+    if let Some((auth_row, _handle, _token)) = authorization_state.as_ref() {
+        if let Err(err) =
+            db::marketplace_billing::attach_project(pg_pool, auth_row.id, project.id).await
+        {
+            tracing::warn!(
+                "attach_project failed for auth {}: {} (row still usable via idempotency_key)",
+                auth_row.id,
+                err
+            );
+        }
+    }
 
     let slug = template.slug.clone();
     let (project, deployment_id) = maybe_deploy_installed_project(
@@ -524,6 +775,70 @@ async fn install_stack_template(
     )
     .await?;
 
+    // Attach deployment_hash if a deployment was queued. If no deploy was
+    // requested (sync install-only) capture immediately — the value the
+    // buyer paid for is the install artifact itself.
+    if let Some((auth_row, handle, token)) = authorization_state.as_mut() {
+        if let Some(deploy_id) = deployment_id {
+            match db::deployment::fetch(pg_pool, deploy_id).await {
+                Ok(Some(deployment)) => {
+                    if let Err(err) = db::marketplace_billing::attach_deployment_hash(
+                        pg_pool,
+                        auth_row.id,
+                        &deployment.deployment_hash,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "attach_deployment_hash failed for auth {}: {}",
+                            auth_row.id,
+                            err
+                        );
+                    }
+                }
+                Ok(None) => tracing::warn!(
+                    "deployment id {} not found when linking auth {}",
+                    deploy_id,
+                    auth_row.id
+                ),
+                Err(err) => tracing::warn!(
+                    "deployment lookup failed for {}: {}",
+                    deploy_id,
+                    err
+                ),
+            }
+        } else {
+            // Install-without-deploy: synthesize a hash and capture now.
+            let synthetic = format!("install-only:{}", project.id);
+            let _ = db::marketplace_billing::attach_deployment_hash(
+                pg_pool,
+                auth_row.id,
+                &synthetic,
+            )
+            .await;
+            match user_service
+                .capture_install_charge(token, &handle.authorization_id, &synthetic)
+                .await
+            {
+                Ok(new_handle) => {
+                    let _ = db::marketplace_billing::mark_captured(
+                        pg_pool,
+                        &handle.authorization_id,
+                    )
+                    .await;
+                    *handle = new_handle;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "sync install-only capture failed for {}: {} (sweeper will reconcile)",
+                        handle.authorization_id,
+                        err
+                    );
+                }
+            }
+        }
+    }
+
     let format = latest_version
         .definition_format
         .as_deref()
@@ -534,11 +849,18 @@ async fn install_stack_template(
 
     redact_version_value(&mut ver_value, &format);
 
+    let (authorization, idempotency_key) = match (authorization_state, effective_idem_key) {
+        (Some((_, handle, _)), Some(key)) => (Some(summarize(&handle)), Some(key)),
+        _ => (None, None),
+    };
+
     Ok(InstallTemplateResponse {
         project,
         template: serde_json::to_value(template).unwrap_or_else(|_| serde_json::json!({})),
         latest_version: ver_value,
         deployment_id,
+        authorization,
+        idempotency_key,
     })
 }
 
@@ -618,6 +940,8 @@ async fn install_catalog_application(
     .await?;
 
     Ok(InstallTemplateResponse {
+        authorization: None,
+        idempotency_key: None,
         project,
         template: application,
         latest_version: serde_json::json!({
@@ -709,9 +1033,12 @@ pub async fn install_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_project_form, catalog_application_project_form,
-        ensure_catalog_application_has_deploy_context, validate_installable_form,
+        amount_minor_for, build_project_form, catalog_application_project_form,
+        ensure_catalog_application_has_deploy_context, is_per_install_effective, summarize,
+        validate_installable_form,
     };
+    use crate::configuration::Settings;
+    use crate::connectors::user_service::AuthorizationHandle;
     use crate::{forms::project::Payload, models};
     use serde_json::{json, Map};
     use uuid::Uuid;
@@ -855,6 +1182,7 @@ mod tests {
             name: None,
             deploy: None,
             install_inputs: Map::new(),
+            idempotency_key: None,
         };
 
         assert!(ensure_catalog_application_has_deploy_context("dify", &request).is_err());
@@ -1053,5 +1381,96 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── per_install helpers (pure functions) ─────────────────────────
+    //
+    // Full install-handler integration tests live under `tests/` — they
+    // need a real Postgres + wiremock and belong with the cucumber suite.
+    // The tests here pin the pure pieces that decide *whether* to bill and
+    // *how much*, plus the response-shape summarizer.
+
+    fn per_install_template_fixture() -> models::StackTemplate {
+        models::StackTemplate {
+            slug: "paid-per-install".to_string(),
+            price: Some(9.99),
+            billing_cycle: Some("per_install".to_string()),
+            currency: Some("USD".to_string()),
+            product_id: Some(42),
+            ..Default::default()
+        }
+    }
+
+    fn settings_with_billing_flag(enabled: bool) -> Settings {
+        let mut s = Settings::default();
+        s.per_install_billing_enabled = enabled;
+        s
+    }
+
+    #[test]
+    fn is_per_install_effective_requires_both_opt_in_and_flag() {
+        let template = per_install_template_fixture();
+
+        assert!(is_per_install_effective(
+            &template,
+            &settings_with_billing_flag(true)
+        ));
+        assert!(
+            !is_per_install_effective(&template, &settings_with_billing_flag(false)),
+            "kill switch off must force the gate to fall through to legacy paths"
+        );
+
+        // Template not opted in but flag on — still not per_install.
+        let mut legacy = template.clone();
+        legacy.billing_cycle = Some("one_time".to_string());
+        assert!(!is_per_install_effective(
+            &legacy,
+            &settings_with_billing_flag(true)
+        ));
+
+        // billing_cycle missing entirely — not per_install.
+        legacy.billing_cycle = None;
+        assert!(!is_per_install_effective(
+            &legacy,
+            &settings_with_billing_flag(true)
+        ));
+    }
+
+    #[test]
+    fn amount_minor_for_rounds_and_rejects_non_positive() {
+        let mut t = per_install_template_fixture();
+
+        t.price = Some(9.99);
+        assert_eq!(amount_minor_for(&t).unwrap(), 999);
+
+        t.price = Some(10.005);
+        assert_eq!(amount_minor_for(&t).unwrap(), 1001, "banker rounding to nearest cent");
+
+        // Zero and negative and missing are rejected up front — admin
+        // review should catch these before install, but we defensively
+        // fail-closed here anyway.
+        t.price = Some(0.0);
+        assert!(amount_minor_for(&t).is_err());
+        t.price = Some(-1.0);
+        assert!(amount_minor_for(&t).is_err());
+        t.price = None;
+        assert!(amount_minor_for(&t).is_err());
+    }
+
+    #[test]
+    fn summarize_flattens_authorization_handle_for_response() {
+        let h = AuthorizationHandle {
+            authorization_id: "auth-xyz".to_string(),
+            amount_minor: 999,
+            currency: "USD".to_string(),
+            expires_at: Some("2099-01-01T00:00:00Z".to_string()),
+            status: "authorized".to_string(),
+        };
+        let s = summarize(&h);
+        assert_eq!(s.authorization_id, "auth-xyz");
+        assert_eq!(s.amount_minor, 999);
+        assert_eq!(s.currency, "USD");
+        assert_eq!(s.status, "authorized");
+        assert_eq!(s.expires_at.as_deref(), Some("2099-01-01T00:00:00Z"));
     }
 }

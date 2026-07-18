@@ -8,6 +8,7 @@ pub mod command;
 pub mod dag;
 pub(crate) mod deployment;
 pub mod marketplace;
+pub mod marketplace_billing;
 pub mod pipe;
 pub mod product;
 pub mod project;

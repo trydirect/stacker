@@ -34,6 +34,13 @@ pub struct Settings {
     pub marketplace_assets: MarketplaceAssetSettings,
     #[serde(default)]
     pub payouts: PayoutSettings,
+    /// Global kill switch for the per-install billing model.
+    /// When false (the default), `billing_cycle="per_install"` templates
+    /// behave as `one_time` — no authorize/capture, no ownership check via
+    /// the new gate. See migration `20260718130000` and the plan at
+    /// `.claude/plans/per-install-charge-*.md`.
+    #[serde(default = "Settings::default_per_install_billing_enabled")]
+    pub per_install_billing_enabled: bool,
 }
 
 impl std::fmt::Debug for Settings {
@@ -91,6 +98,7 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             marketplace_assets: MarketplaceAssetSettings::default(),
             payouts: PayoutSettings::default(),
+            per_install_billing_enabled: Self::default_per_install_billing_enabled(),
         }
     }
 }
@@ -118,6 +126,10 @@ impl Settings {
 
     fn default_casbin_reload_enabled() -> bool {
         true
+    }
+
+    fn default_per_install_billing_enabled() -> bool {
+        false
     }
 
     fn default_casbin_reload_interval_secs() -> u64 {

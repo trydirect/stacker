@@ -1,7 +1,8 @@
 use uuid::Uuid;
 
 use super::types::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+    StackResponse, UserPlanInfo, UserProfile,
 };
 use crate::connectors::errors::ConnectorError;
 
@@ -79,4 +80,56 @@ pub trait UserServiceConnector: Send + Sync {
         page: Option<u32>,
         max_results: Option<u32>,
     ) -> Result<Vec<serde_json::Value>, ConnectorError>;
+
+    // ── Per-install billing (two-phase charge) ─────────────────────
+    //
+    // The four methods below implement the authorize/capture/void
+    // dance used when a template's billing_cycle is "per_install".
+    // user_service is authoritative on payment intents and idempotency;
+    // stacker holds only the opaque `authorization_id` and a local
+    // `marketplace_install_authorization` row for reconciliation.
+
+    /// Cheap capability probe used inside the access gate before
+    /// deciding whether to attempt an authorize. Returns
+    /// `can_charge=false` with a reason when the user has no payment
+    /// method on file, an expired card, etc.
+    async fn can_charge(
+        &self,
+        user_token: &str,
+    ) -> Result<BillingCapability, ConnectorError>;
+
+    /// Reserve funds for a single install. Must be idempotent on
+    /// `idempotency_key` — replay with the same key returns the same
+    /// handle. Returns `PaymentRequired` on decline, `Conflict` on
+    /// idempotency-body mismatch.
+    async fn authorize_install_charge(
+        &self,
+        user_token: &str,
+        template_id: &Uuid,
+        amount_minor: i64,
+        currency: &str,
+        idempotency_key: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError>;
+
+    /// Settle a previously-authorized charge after the install
+    /// completes successfully. `auth_token` may be a user token or a
+    /// service token depending on caller — deploy-complete uses the
+    /// service token. Attaches `deployment_hash` for user_service-side
+    /// audit.
+    async fn capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError>;
+
+    /// Release a previously-authorized charge. Called on install
+    /// failure or by the TTL sweeper. `auth_token` semantics identical
+    /// to `capture_install_charge`.
+    async fn void_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        reason: &str,
+    ) -> Result<(), ConnectorError>;
 }

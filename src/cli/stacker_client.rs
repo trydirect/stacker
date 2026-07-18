@@ -256,6 +256,25 @@ pub struct MarketplaceInstallResponse {
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
     pub deployment_id: Option<i32>,
+    /// Populated only when the template is billed per_install.
+    #[serde(default)]
+    pub authorization: Option<AuthorizationSummary>,
+    /// Populated only for per_install installs — server echoes the key it
+    /// actually used (may differ from what the client sent if the client
+    /// omitted one entirely).
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+/// CLI-side mirror of the server's `AuthorizationSummary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizationSummary {
+    pub authorization_id: String,
+    pub status: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 /// Marketplace template info as returned by `/api/templates/mine`
@@ -1871,15 +1890,27 @@ impl StackerClient {
     }
 
     /// Create a Stacker project from a marketplace template.
+    ///
+    /// `idempotency_key` is threaded both as a body field and an
+    /// `Idempotency-Key` header — server accepts either but prefers the
+    /// header. For `per_install`-billed templates, retrying with the same
+    /// key collapses to the single authorization the first call created;
+    /// omitting it there is unsafe (a network blip after a successful
+    /// authorize would double-charge on retry).
     pub async fn install_marketplace_template(
         &self,
         slug: &str,
         name: Option<&str>,
         deploy_form: Option<serde_json::Value>,
         install_inputs: Option<serde_json::Map<String, serde_json::Value>>,
+        idempotency_key: &str,
     ) -> Result<MarketplaceInstallResponse, CliError> {
         let url = format!("{}/api/templates/{}/install", self.base_url, slug);
-        let mut body = serde_json::json!({ "name": name, "deploy": deploy_form });
+        let mut body = serde_json::json!({
+            "name": name,
+            "deploy": deploy_form,
+            "idempotency_key": idempotency_key,
+        });
         if let Some(install_inputs) = install_inputs {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert(
@@ -1892,6 +1923,7 @@ impl StackerClient {
             .http
             .post(&url)
             .bearer_auth(&self.token)
+            .header("Idempotency-Key", idempotency_key)
             .json(&body)
             .send()
             .await
