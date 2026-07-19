@@ -34,6 +34,8 @@ pub struct Settings {
     pub marketplace_assets: MarketplaceAssetSettings,
     #[serde(default)]
     pub payouts: PayoutSettings,
+    #[serde(default)]
+    pub pipe: PipeSettings,
 }
 
 impl std::fmt::Debug for Settings {
@@ -66,6 +68,7 @@ impl std::fmt::Debug for Settings {
             .field("deployment", &self.deployment)
             .field("marketplace_assets", &self.marketplace_assets)
             .field("payouts", &self.payouts)
+            .field("pipe", &self.pipe)
             .finish()
     }
 }
@@ -91,6 +94,7 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             marketplace_assets: MarketplaceAssetSettings::default(),
             payouts: PayoutSettings::default(),
+            pipe: PipeSettings::default(),
         }
     }
 }
@@ -203,6 +207,53 @@ impl Default for DeploymentSettings {
         Self {
             config_base_path: Self::default_config_base_path(),
         }
+    }
+}
+
+/// How DAG/pipe steps are executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutorTransport {
+    /// Steps run synchronously inside the API process (default, always safe).
+    InProcess,
+    /// Steps are published to the `pipe_execution` exchange and run by a
+    /// standalone agent-executor scoped to the deployment hash.
+    Amqp,
+}
+
+impl Default for ExecutorTransport {
+    fn default() -> Self {
+        Self::InProcess
+    }
+}
+
+/// Pipe/DAG execution settings.
+#[derive(Debug, serde::Deserialize, Clone)]
+pub struct PipeSettings {
+    /// Selects the transport for DAG step execution. `amqp` only takes effect
+    /// for remote instances (those with a deployment hash); local instances
+    /// always run in-process regardless of this setting.
+    #[serde(default)]
+    pub executor_transport: ExecutorTransport,
+    /// Per-level timeout (seconds) when awaiting `StepResultMsg` over AMQP.
+    /// A level whose results do not all arrive within this window is failed,
+    /// preventing a lost message from stranding a step in `running` forever.
+    #[serde(default = "PipeSettings::default_step_result_timeout_secs")]
+    pub step_result_timeout_secs: u64,
+}
+
+impl Default for PipeSettings {
+    fn default() -> Self {
+        Self {
+            executor_transport: ExecutorTransport::default(),
+            step_result_timeout_secs: Self::default_step_result_timeout_secs(),
+        }
+    }
+}
+
+impl PipeSettings {
+    fn default_step_result_timeout_secs() -> u64 {
+        120
     }
 }
 

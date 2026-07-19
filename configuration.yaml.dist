@@ -23,6 +23,15 @@ amqp:
   username: guest
   password: guest
 
+# Pipe / DAG step execution
+pipe:
+  # in_process (default) runs steps synchronously in the API process.
+  # amqp publishes StepCommand to the `pipe_execution` exchange for a standalone
+  # agent-executor to run; only applies to remote instances (with a deployment hash).
+  executor_transport: in_process
+  # Per-level timeout (seconds) when awaiting step results over AMQP.
+  step_result_timeout_secs: 120
+
 # Vault configuration (can be overridden by environment variables)
 # For production, set VAULT_ADDRESS=https://vault.try.direct (not Docker-internal IPs)
 # The status panel agent authenticates through the Stacker server, which validates
