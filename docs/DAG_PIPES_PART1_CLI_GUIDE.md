@@ -232,7 +232,35 @@ stacker pipe trigger <slack-pipe-id> \
 | `--ai` | `create` | Use AI for smart field matching |
 | `--no-ai` | `create` | Use deterministic matching only |
 | `--manual` | `create` | Skip auto-matching entirely |
+| `--source-endpoint "METHOD /path"` | `create` | Specify the source endpoint by hand (skips discovery) |
+| `--target-endpoint "METHOD /path"` | `create` | Specify the target endpoint by hand (skips discovery) |
+| `--source-fields a,b,c` | `create` | Source field names for the manual endpoint |
+| `--target-fields x,y,z` | `create` | Target field names for the manual endpoint |
 | `--limit 50` | `history` | Show more results |
+
+---
+
+## Manual endpoints (skip discovery)
+
+Endpoint discovery probes the running app over HTTP, which needs the app to be
+reachable and to expose a recognizable API. When that doesn't work — or you
+already know the endpoints — declare them directly instead:
+
+```bash
+stacker pipe create directus chatwoot \
+  --source-endpoint "GET /items/articles" \
+  --target-endpoint "POST /api/v1/accounts/1/conversations" \
+  --source-fields title,body \
+  --target-fields subject,content
+```
+
+- **Both** `--source-endpoint` and `--target-endpoint` must be given together.
+- When both are set, `pipe create` does **no probing at all** — so it works even
+  if the app isn't deployed or can't be reached.
+- Format is `"METHOD /path"` (e.g. `"POST /api/v1/items"`); a bare `/path`
+  defaults to `GET`.
+- `--source-fields` / `--target-fields` are comma-separated and drive field
+  mapping just like discovered fields would.
 
 ---
 

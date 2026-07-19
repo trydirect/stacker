@@ -2147,9 +2147,17 @@ pub struct PipeCreateCommand {
     pub ml: bool,
     pub json: bool,
     pub deployment: Option<String>,
+    /// Manual source endpoint "METHOD /path"; when both source+target are set,
+    /// discovery is skipped entirely (Fix 3).
+    pub source_endpoint: Option<String>,
+    pub target_endpoint: Option<String>,
+    pub source_fields: Vec<String>,
+    pub target_fields: Vec<String>,
+    pub name: Option<String>,
 }
 
 impl PipeCreateCommand {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         source: String,
         target: String,
@@ -2159,6 +2167,11 @@ impl PipeCreateCommand {
         ml: bool,
         json: bool,
         deployment: Option<String>,
+        source_endpoint: Option<String>,
+        target_endpoint: Option<String>,
+        source_fields: Vec<String>,
+        target_fields: Vec<String>,
+        name: Option<String>,
     ) -> Self {
         Self {
             source,
@@ -2169,8 +2182,48 @@ impl PipeCreateCommand {
             ml,
             json,
             deployment,
+            source_endpoint,
+            target_endpoint,
+            source_fields,
+            target_fields,
+            name,
         }
     }
+
+    /// True when both endpoints are explicitly specified — skip all discovery.
+    fn manual_endpoints(&self) -> bool {
+        self.source_endpoint.is_some() && self.target_endpoint.is_some()
+    }
+}
+
+/// Parse a manual endpoint spec: `"METHOD /path"` (e.g. `"POST /api/v1/items"`),
+/// or a bare `"/path"` which defaults to GET.
+fn parse_endpoint_spec(spec: &str) -> Result<(String, String), CliError> {
+    let spec = spec.trim();
+    let (first, rest) = match spec.split_once(char::is_whitespace) {
+        Some((m, p)) => (m.trim(), p.trim()),
+        None => ("GET", spec),
+    };
+    if !rest.starts_with('/') {
+        return Err(CliError::ConfigValidation(format!(
+            "Invalid endpoint '{spec}'. Use 'METHOD /path', e.g. 'POST /api/v1/items'."
+        )));
+    }
+    Ok((first.to_uppercase(), rest.to_string()))
+}
+
+/// Build a `SelectableOperation` from a manual endpoint spec + field list.
+fn manual_operation(spec: &str, fields: &[String]) -> Result<SelectableOperation, CliError> {
+    let (method, path) = parse_endpoint_spec(spec)?;
+    Ok(SelectableOperation {
+        container: None,
+        adapter: None,
+        method,
+        path,
+        summary: "manually specified endpoint".to_string(),
+        fields: fields.to_vec(),
+        sample: None,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2844,6 +2897,51 @@ mod selectable_operation_tests {
     use tempfile::tempdir;
 
     #[test]
+    fn parse_endpoint_spec_method_and_path() {
+        assert_eq!(
+            parse_endpoint_spec("POST /api/v1/items").unwrap(),
+            ("POST".to_string(), "/api/v1/items".to_string())
+        );
+        // Lowercase method is normalized; extra whitespace tolerated.
+        assert_eq!(
+            parse_endpoint_spec("  get   /health ").unwrap(),
+            ("GET".to_string(), "/health".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_endpoint_spec_bare_path_defaults_to_get() {
+        assert_eq!(
+            parse_endpoint_spec("/graphql").unwrap(),
+            ("GET".to_string(), "/graphql".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_endpoint_spec_rejects_non_path() {
+        assert!(parse_endpoint_spec("POST items").is_err());
+        assert!(parse_endpoint_spec("nonsense").is_err());
+    }
+
+    #[test]
+    fn manual_operation_carries_fields_and_no_adapter() {
+        let op = manual_operation(
+            "POST /api/v1/webhook",
+            &["name".to_string(), "email".to_string()],
+        )
+        .unwrap();
+        assert_eq!(op.method, "POST");
+        assert_eq!(op.path, "/api/v1/webhook");
+        assert_eq!(op.fields, vec!["name".to_string(), "email".to_string()]);
+        assert!(op.adapter.is_none());
+        assert!(op.container.is_none());
+        // Feeds the existing template builder as a plain {path, method}.
+        let tmpl = template_endpoint_for_operation(&op);
+        assert_eq!(tmpl["method"], "POST");
+        assert_eq!(tmpl["path"], "/api/v1/webhook");
+    }
+
+    #[test]
     fn extract_operations_includes_html_forms_and_container() {
         let info = AgentCommandInfo {
             command_id: "local".to_string(),
@@ -3146,12 +3244,22 @@ impl CallableTrait for PipeCreateCommand {
         };
         let create_protocols = default_pipe_create_protocols();
 
+        // Fix 3: manual endpoints. Both sides must be given together; when set,
+        // discovery is skipped entirely and the pipe is built from the flags —
+        // no probing, so it works even if the app can't be reached.
+        if self.source_endpoint.is_some() != self.target_endpoint.is_some() {
+            return Err(Box::new(CliError::ConfigValidation(
+                "--source-endpoint and --target-endpoint must be provided together.".to_string(),
+            )));
+        }
+        let manual_mode = self.manual_endpoints();
+
         let source_adapter_meta =
             builtin_adapter_for_selector(&self.source, PipeAdapterRole::Source);
         let target_adapter_meta =
             builtin_adapter_for_selector(&self.target, PipeAdapterRole::Target);
 
-        let source_run = if source_adapter_meta.is_none() {
+        let source_run = if !manual_mode && source_adapter_meta.is_none() {
             Some(if local_mode {
                 println!(
                     "{}Preparing local discovery for source '{}'...",
@@ -3184,7 +3292,7 @@ impl CallableTrait for PipeCreateCommand {
         } else {
             None
         };
-        let target_run = if target_adapter_meta.is_none() {
+        let target_run = if !manual_mode && target_adapter_meta.is_none() {
             Some(if local_mode {
                 println!(
                     "{}Preparing local discovery for target '{}'...",
@@ -3256,13 +3364,23 @@ impl CallableTrait for PipeCreateCommand {
             return Ok(());
         }
 
-        // Step 2: Extract discovered endpoints
-        let source_ops = if let Some(metadata) = &source_adapter_meta {
+        // Step 2: Extract endpoints — manual flags take precedence over discovery.
+        let source_ops = if manual_mode {
+            vec![manual_operation(
+                self.source_endpoint.as_deref().expect("source endpoint"),
+                &self.source_fields,
+            )?]
+        } else if let Some(metadata) = &source_adapter_meta {
             vec![synthetic_adapter_operation(metadata)]
         } else {
             extract_operations(&source_run.as_ref().expect("source discovery").info)
         };
-        let target_ops = if let Some(metadata) = &target_adapter_meta {
+        let target_ops = if manual_mode {
+            vec![manual_operation(
+                self.target_endpoint.as_deref().expect("target endpoint"),
+                &self.target_fields,
+            )?]
+        } else if let Some(metadata) = &target_adapter_meta {
             vec![synthetic_adapter_operation(metadata)]
         } else {
             extract_operations(&target_run.as_ref().expect("target discovery").info)
@@ -3421,11 +3539,15 @@ impl CallableTrait for PipeCreateCommand {
         };
 
         // Step 6: Ask for pipe name
-        let default_name = format!("{}-to-{}", self.source, self.target);
-        let pipe_name: String = dialoguer::Input::new()
-            .with_prompt("Pipe name")
-            .default(default_name)
-            .interact_text()?;
+        let pipe_name: String = if let Some(name) = &self.name {
+            name.clone()
+        } else {
+            let default_name = format!("{}-to-{}", self.source, self.target);
+            dialoguer::Input::new()
+                .with_prompt("Pipe name")
+                .default(default_name)
+                .interact_text()?
+        };
 
         // Step 7: Create template via API — include matching metadata in config
         let mut config = serde_json::json!({"retry_count": 3});

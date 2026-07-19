@@ -1232,6 +1232,22 @@ enum PipeCommands {
         /// Use ML-based field matching (n-gram cosine similarity)
         #[arg(long, conflicts_with_all = ["ai", "no_ai"])]
         ml: bool,
+        /// Source endpoint as "METHOD /path" (e.g. "POST /api/v1/webhook").
+        /// Requires --target-endpoint; when both are set, discovery is skipped.
+        #[arg(long)]
+        source_endpoint: Option<String>,
+        /// Target endpoint as "METHOD /path" (e.g. "POST /api/v1/items").
+        #[arg(long)]
+        target_endpoint: Option<String>,
+        /// Comma-separated source field names (used with --source-endpoint).
+        #[arg(long, value_delimiter = ',')]
+        source_fields: Vec<String>,
+        /// Comma-separated target field names (used with --target-endpoint).
+        #[arg(long, value_delimiter = ',')]
+        target_fields: Vec<String>,
+        /// Pipe name (skips interactive prompt)
+        #[arg(long)]
+        name: Option<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2434,10 +2450,27 @@ fn get_command(
                     ai,
                     no_ai,
                     ml,
+                    source_endpoint,
+                    target_endpoint,
+                    source_fields,
+                    target_fields,
+                    name,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeCreateCommand::new(
-                    source, target, manual, ai, no_ai, ml, json, deployment,
+                    source,
+                    target,
+                    manual,
+                    ai,
+                    no_ai,
+                    ml,
+                    json,
+                    deployment,
+                    source_endpoint,
+                    target_endpoint,
+                    source_fields,
+                    target_fields,
+                    name,
                 )),
                 PipeCommands::List { json, deployment } => {
                     Box::new(pipe::PipeListCommand::new(json, deployment))
@@ -2728,7 +2761,8 @@ fn get_command(
             provider,
         } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
-                template, name, file, force, json, domain, set_values, key, key_id, region, size, provider,
+                template, name, file, force, json, domain, set_values, key, key_id, region, size,
+                provider,
             ),
         ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {
