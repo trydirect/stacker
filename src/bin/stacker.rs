@@ -1277,6 +1277,9 @@ enum PipeCommands {
         /// External source URL (agent fetches via HTTP, no curl needed)
         #[arg(long)]
         source_url: Option<String>,
+        /// Target header as "Key: Value" (repeatable, e.g. --target-header "Authorization: Bearer tok")
+        #[arg(long)]
+        target_header: Vec<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1305,6 +1308,9 @@ enum PipeCommands {
         /// External source URL (agent fetches via HTTP, no curl needed)
         #[arg(long)]
         source_url: Option<String>,
+        /// Target header as "Key: Value" (repeatable, e.g. --target-header "Authorization: Bearer tok")
+        #[arg(long)]
+        target_header: Vec<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2486,6 +2492,7 @@ fn get_command(
                     trigger,
                     poll_interval,
                     source_url,
+                    target_header,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeActivateCommand::new(
@@ -2493,6 +2500,7 @@ fn get_command(
                     trigger,
                     poll_interval,
                     source_url,
+                    target_header,
                     json,
                     deployment,
                 )),
@@ -2505,10 +2513,11 @@ fn get_command(
                     pipe_id,
                     data,
                     source_url,
+                    target_header,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeTriggerCommand::new(
-                    pipe_id, data, source_url, json, deployment,
+                    pipe_id, data, source_url, target_header, json, deployment,
                 )),
                 PipeCommands::History {
                     instance_id,

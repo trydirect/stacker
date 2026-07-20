@@ -37,6 +37,16 @@ use pipe_adapter_sdk::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+fn parse_target_headers(raw: &[String]) -> std::collections::HashMap<String, String> {
+    let mut headers = std::collections::HashMap::new();
+    for entry in raw {
+        if let Some((key, value)) = entry.split_once(':') {
+            headers.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    headers
+}
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -4357,6 +4367,7 @@ pub struct PipeActivateCommand {
     pub trigger: String,
     pub poll_interval: u32,
     pub source_url: Option<String>,
+    pub target_headers: Vec<String>,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -4367,6 +4378,7 @@ impl PipeActivateCommand {
         trigger: String,
         poll_interval: u32,
         source_url: Option<String>,
+        target_headers: Vec<String>,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -4375,6 +4387,7 @@ impl PipeActivateCommand {
             trigger,
             poll_interval,
             source_url,
+            target_headers,
             json,
             deployment,
         }
@@ -4487,6 +4500,12 @@ impl CallableTrait for PipeActivateCommand {
         progress::finish_success(&pb, "Status: active");
 
         // 2. Send activate_pipe command to agent
+        let target_headers = if self.target_headers.is_empty() {
+            None
+        } else {
+            Some(parse_target_headers(&self.target_headers))
+        };
+
         let params = serde_json::json!({
             "pipe_instance_id": self.pipe_id,
             "source_adapter": pipe.source_adapter.clone(),
@@ -4499,6 +4518,7 @@ impl CallableTrait for PipeActivateCommand {
             "target_url": pipe.target_url.clone(),
             "target_endpoint": target_endpoint,
             "target_method": target_method,
+            "target_headers": target_headers,
             "field_mapping": field_mapping,
             "trigger_type": self.trigger,
             "poll_interval_secs": self.poll_interval,
@@ -4620,6 +4640,7 @@ pub struct PipeTriggerCommand {
     pub pipe_id: String,
     pub data: Option<String>,
     pub source_url: Option<String>,
+    pub target_headers: Vec<String>,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -4629,6 +4650,7 @@ impl PipeTriggerCommand {
         pipe_id: String,
         data: Option<String>,
         source_url: Option<String>,
+        target_headers: Vec<String>,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -4636,6 +4658,7 @@ impl PipeTriggerCommand {
             pipe_id,
             data,
             source_url,
+            target_headers,
             json,
             deployment,
         }
@@ -4733,10 +4756,17 @@ impl CallableTrait for PipeTriggerCommand {
         };
         ensure_remote_pipe_command_capability(&ctx, &hash)?;
 
+        let target_headers = if self.target_headers.is_empty() {
+            None
+        } else {
+            Some(parse_target_headers(&self.target_headers))
+        };
+
         let params = serde_json::json!({
             "pipe_instance_id": self.pipe_id,
             "input_data": input_data,
             "source_url": self.source_url,
+            "target_headers": target_headers,
         });
 
         let request = AgentEnqueueRequest::new(&hash, "trigger_pipe").with_raw_parameters(params);

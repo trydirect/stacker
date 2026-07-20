@@ -1079,6 +1079,9 @@ pub struct ActivatePipeCommandRequest {
     /// Target HTTP method
     #[serde(default = "default_target_method")]
     pub target_method: String,
+    /// Optional target headers (auth tokens, API keys, etc.)
+    #[serde(default)]
+    pub target_headers: Option<std::collections::HashMap<String, String>>,
     /// Field mapping (JSONPath expressions)
     #[serde(default)]
     pub field_mapping: Option<serde_json::Value>,
@@ -1157,6 +1160,9 @@ pub struct TriggerPipeCommandRequest {
     /// Optional target method override
     #[serde(default = "default_target_method")]
     pub target_method: String,
+    /// Optional target headers (auth tokens, API keys, etc.)
+    #[serde(default)]
+    pub target_headers: Option<std::collections::HashMap<String, String>>,
     /// Optional field mapping override
     #[serde(default)]
     pub field_mapping: Option<serde_json::Value>,
