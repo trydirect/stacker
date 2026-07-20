@@ -1274,6 +1274,9 @@ enum PipeCommands {
         /// Poll interval in seconds (only for --trigger=poll)
         #[arg(long, default_value = "300")]
         poll_interval: u32,
+        /// External source URL (agent fetches via HTTP, no curl needed)
+        #[arg(long)]
+        source_url: Option<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -1299,6 +1302,9 @@ enum PipeCommands {
         /// Optional JSON input data to feed into the pipe
         #[arg(long)]
         data: Option<String>,
+        /// External source URL (agent fetches via HTTP, no curl needed)
+        #[arg(long)]
+        source_url: Option<String>,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -2479,12 +2485,14 @@ fn get_command(
                     pipe_id,
                     trigger,
                     poll_interval,
+                    source_url,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeActivateCommand::new(
                     pipe_id,
                     trigger,
                     poll_interval,
+                    source_url,
                     json,
                     deployment,
                 )),
@@ -2496,10 +2504,11 @@ fn get_command(
                 PipeCommands::Trigger {
                     pipe_id,
                     data,
+                    source_url,
                     json,
                     deployment,
                 } => Box::new(pipe::PipeTriggerCommand::new(
-                    pipe_id, data, json, deployment,
+                    pipe_id, data, source_url, json, deployment,
                 )),
                 PipeCommands::History {
                     instance_id,

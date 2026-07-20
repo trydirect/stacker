@@ -4356,6 +4356,7 @@ pub struct PipeActivateCommand {
     pub pipe_id: String,
     pub trigger: String,
     pub poll_interval: u32,
+    pub source_url: Option<String>,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -4365,6 +4366,7 @@ impl PipeActivateCommand {
         pipe_id: String,
         trigger: String,
         poll_interval: u32,
+        source_url: Option<String>,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
@@ -4372,6 +4374,7 @@ impl PipeActivateCommand {
             pipe_id,
             trigger,
             poll_interval,
+            source_url,
             json,
             deployment,
         }
@@ -4488,6 +4491,7 @@ impl CallableTrait for PipeActivateCommand {
             "pipe_instance_id": self.pipe_id,
             "source_adapter": pipe.source_adapter.clone(),
             "source_container": pipe.source_container.clone(),
+            "source_url": self.source_url,
             "source_endpoint": source_endpoint,
             "source_method": source_method,
             "target_adapter": pipe.target_adapter.clone(),
@@ -4615,6 +4619,7 @@ impl CallableTrait for PipeDeactivateCommand {
 pub struct PipeTriggerCommand {
     pub pipe_id: String,
     pub data: Option<String>,
+    pub source_url: Option<String>,
     pub json: bool,
     pub deployment: Option<String>,
 }
@@ -4623,12 +4628,14 @@ impl PipeTriggerCommand {
     pub fn new(
         pipe_id: String,
         data: Option<String>,
+        source_url: Option<String>,
         json: bool,
         deployment: Option<String>,
     ) -> Self {
         Self {
             pipe_id,
             data,
+            source_url,
             json,
             deployment,
         }
@@ -4729,6 +4736,7 @@ impl CallableTrait for PipeTriggerCommand {
         let params = serde_json::json!({
             "pipe_instance_id": self.pipe_id,
             "input_data": input_data,
+            "source_url": self.source_url,
         });
 
         let request = AgentEnqueueRequest::new(&hash, "trigger_pipe").with_raw_parameters(params);
