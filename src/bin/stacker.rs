@@ -2517,7 +2517,12 @@ fn get_command(
                     json,
                     deployment,
                 } => Box::new(pipe::PipeTriggerCommand::new(
-                    pipe_id, data, source_url, target_header, json, deployment,
+                    pipe_id,
+                    data,
+                    source_url,
+                    target_header,
+                    json,
+                    deployment,
                 )),
                 PipeCommands::History {
                     instance_id,
