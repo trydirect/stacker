@@ -108,9 +108,8 @@ fn classify_definition(
         if obj.contains_key("custom") {
             return Ok(DefinitionShape::LegacyForm(sd));
         }
-        let yaml = serde_yaml::to_string(sd).map_err(|err| {
-            format!("Failed to serialize stacker.yml stack definition: {}", err)
-        })?;
+        let yaml = serde_yaml::to_string(sd)
+            .map_err(|err| format!("Failed to serialize stacker.yml stack definition: {}", err))?;
         return Ok(DefinitionShape::StackerConfig(yaml));
     }
     Err(format!(
@@ -907,7 +906,9 @@ mod tests {
         let embed = files
             .iter()
             .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("stacker.yml"))
-            .expect("stacker.yml shape should be embedded as `stacker.yml`, not `docker-compose.yml`");
+            .expect(
+                "stacker.yml shape should be embedded as `stacker.yml`, not `docker-compose.yml`",
+            );
         let content = embed
             .get("content")
             .and_then(|c| c.as_str())

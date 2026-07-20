@@ -1875,7 +1875,10 @@ pub(crate) fn resolve_docker_registry_credentials(
     } else {
         // Always send docker_registry so the install service overrides any
         // regional Vault defaults (e.g. Aliyun) with Docker Hub (empty string).
-        creds.insert("docker_registry".to_string(), serde_json::Value::String(String::new()));
+        creds.insert(
+            "docker_registry".to_string(),
+            serde_json::Value::String(String::new()),
+        );
     }
 
     creds
@@ -3544,10 +3547,7 @@ mod tests {
 
     #[test]
     fn test_resolve_docker_registry_credentials_sends_empty_when_no_config() {
-        let config = ConfigBuilder::new()
-            .name("public-app")
-            .build()
-            .unwrap();
+        let config = ConfigBuilder::new().name("public-app").build().unwrap();
 
         let creds = resolve_docker_registry_credentials(&config);
         assert!(creds.get("docker_username").is_none());

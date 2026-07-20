@@ -234,7 +234,12 @@ impl MarketplaceInstallCommand {
         }
 
         // Apply provider override
-        if let Some(provider) = self.provider.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if let Some(provider) = self
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             if let Some(cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
                 let provider_code = crate::cli::install_runner::provider_code_for_remote(provider);
                 cloud.insert("provider".into(), serde_json::json!(provider_code));
@@ -242,14 +247,24 @@ impl MarketplaceInstallCommand {
         }
 
         // Apply region override
-        if let Some(region) = self.region.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if let Some(region) = self
+            .region
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
                 server.insert("region".into(), serde_json::json!(region));
             }
         }
 
         // Apply size override
-        if let Some(size) = self.size.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if let Some(size) = self
+            .size
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
                 server.insert("server".into(), serde_json::json!(size));
             }
@@ -795,10 +810,7 @@ async fn generate_minimal_install_config(
         .filter(|v| !v.is_empty())
         .unwrap_or(&cloud_info.provider);
     let provider = cloud_provider_from_code(provider_code).ok_or_else(|| {
-        CliError::ConfigValidation(format!(
-            "Unsupported cloud provider '{}'.",
-            provider_code
-        ))
+        CliError::ConfigValidation(format!("Unsupported cloud provider '{}'.", provider_code))
     })?;
     eprintln!(
         "Using cloud connection '{}' (provider: {}).",
@@ -808,8 +820,14 @@ async fn generate_minimal_install_config(
     let cloud_config = CloudConfig {
         provider,
         orchestrator: Default::default(),
-        region: region_override.map(str::trim).filter(|v| !v.is_empty()).map(String::from),
-        size: size_override.map(str::trim).filter(|v| !v.is_empty()).map(String::from),
+        region: region_override
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from),
+        size: size_override
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from),
         install_image: None,
         remote_payload_file: None,
         ssh_key: None,
