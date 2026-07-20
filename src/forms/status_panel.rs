@@ -1043,6 +1043,9 @@ pub struct ActivatePipeCommandRequest {
     /// Source container name
     #[serde(default)]
     pub source_container: Option<String>,
+    /// External source URL (agent fetches via HTTP, no curl needed)
+    #[serde(default)]
+    pub source_url: Option<String>,
     /// Source endpoint path to watch
     #[serde(default = "default_pipe_source_endpoint")]
     pub source_endpoint: String,
@@ -1130,6 +1133,9 @@ pub struct TriggerPipeCommandRequest {
     /// Optional source container override
     #[serde(default)]
     pub source_container: Option<String>,
+    /// Optional external source URL (agent fetches via HTTP, no curl needed)
+    #[serde(default)]
+    pub source_url: Option<String>,
     /// Optional source endpoint override
     #[serde(default = "default_pipe_source_endpoint")]
     pub source_endpoint: String,
