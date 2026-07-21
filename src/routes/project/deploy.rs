@@ -1321,6 +1321,21 @@ fn embedded_marketplace_compose(metadata: &serde_json::Value) -> Option<String> 
     compose_content_from_config_files(cf).ok().flatten()
 }
 
+/// Whether a docker-compose YAML string defines at least one service.
+///
+/// Guards against shipping an empty stack (only `version:`, or no `services:`
+/// block) to the remote host, which otherwise fails deep in ansible with an
+/// opaque "empty compose file".
+fn compose_defines_services(compose: &str) -> bool {
+    serde_yaml::from_str::<serde_yaml::Value>(compose)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("services"))
+        .and_then(|s| s.as_mapping())
+        .map(|m| !m.is_empty())
+        .unwrap_or(false)
+}
+
 async fn load_project_template_version(
     pg_pool: &PgPool,
     project: &models::Project,
@@ -1378,6 +1393,21 @@ async fn execute_deployment(
             dc.build()
                 .map_err(|err| JsonResponse::<models::Project>::build().internal_server_error(err))
         })?;
+
+    // Refuse to provision and ship a compose that defines no services. Without
+    // this guard an empty stack (e.g. an unapproved or catalog-only template
+    // that yielded no definition) reaches the remote host and fails deep in
+    // ansible with an opaque "empty compose file", after a server has already
+    // been provisioned and must be torn down.
+    if !compose_defines_services(&fc) {
+        return Err(
+            JsonResponse::<models::Project>::build().bad_request(format!(
+                "Deployment aborted: project #{} produced a docker-compose with no services. \
+             This usually means the stack template has no installable definition.",
+                id
+            )),
+        );
+    }
 
     let mut new_public_key: Option<String> = None;
     let mut bootstrap_private_key: Option<String> = None;
@@ -2295,12 +2325,12 @@ pub async fn rollback(
 mod tests {
     use super::{
         apply_deploy_bundle, build_runtime_artifact_bundle, compose_content_from_config_files,
-        default_status_panel_npm_credentials, derive_public_ports_from_metadata,
-        embedded_marketplace_compose, ensure_trailing_newline, find_matching_hetzner_server,
-        hetzner_server_ip, preserve_marketplace_runtime_artifacts, resolve_provided_ssh_keypair,
-        should_seed_default_status_panel_npm_credentials, sync_runtime_artifact_bundle,
-        validate_min_cpu_requirement, validate_min_disk_requirement, validate_min_ram_requirement,
-        HetznerIpv4, HetznerPublicNet, HetznerServer,
+        compose_defines_services, default_status_panel_npm_credentials,
+        derive_public_ports_from_metadata, embedded_marketplace_compose, ensure_trailing_newline,
+        find_matching_hetzner_server, hetzner_server_ip, preserve_marketplace_runtime_artifacts,
+        resolve_provided_ssh_keypair, should_seed_default_status_panel_npm_credentials,
+        sync_runtime_artifact_bundle, validate_min_cpu_requirement, validate_min_disk_requirement,
+        validate_min_ram_requirement, HetznerIpv4, HetznerPublicNet, HetznerServer,
     };
     use crate::configuration::Settings;
     use crate::connectors::app_service_catalog::ServerCapacity;
@@ -2308,6 +2338,24 @@ mod tests {
     use crate::models::{self, StackTemplateVersion};
     use serde_json::json;
     use uuid::Uuid;
+
+    #[test]
+    fn compose_defines_services_detects_real_and_empty_composes() {
+        // Real compose with services.
+        assert!(compose_defines_services(
+            "version: '3.8'\nservices:\n  ghost:\n    image: ghost:5-alpine\n"
+        ));
+
+        // Only an obsolete version key, no services (the ghost-deploy failure).
+        assert!(!compose_defines_services("version: '3.8'\n"));
+
+        // Explicit but empty services map.
+        assert!(!compose_defines_services("services: {}\n"));
+
+        // Empty / whitespace / invalid input.
+        assert!(!compose_defines_services(""));
+        assert!(!compose_defines_services("   \n"));
+    }
 
     fn build_template(slug: &str) -> models::StackTemplate {
         models::StackTemplate {

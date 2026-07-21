@@ -681,6 +681,27 @@ pub async fn install_handler(
                 .internal_server_error("Internal Server Error"));
         }
         Err(db::marketplace::SlugLookupError::NotFound) => {
+            // `get_by_slug_with_latest` only matches approved templates. If a
+            // row exists for this slug but isn't approved, fall through to the
+            // catalog path would silently deploy an empty stack (the real
+            // stack_definition lives on the unapproved row and is never read).
+            // Fail loudly instead.
+            if let Some(status) = db::marketplace::status_by_slug(pg_pool.get_ref(), &slug)
+                .await
+                .map_err(|_| {
+                    JsonResponse::<serde_json::Value>::build()
+                        .internal_server_error("Internal Server Error")
+                })?
+            {
+                return Err(
+                    JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                        "Template '{}' exists but is not approved for install (status: {}). \
+                     Only approved templates can be installed.",
+                        slug, status
+                    )),
+                );
+            }
+
             install_catalog_application(
                 &slug,
                 &request,

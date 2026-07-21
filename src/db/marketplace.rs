@@ -377,6 +377,21 @@ pub async fn get_by_slug_with_latest(
     Ok((template, version))
 }
 
+/// Returns the raw `status` of a template by slug, regardless of approval
+/// state. Used to distinguish "exists but not approved" from "unknown slug"
+/// so install doesn't silently fall through to the catalog path (which would
+/// deploy an empty stack) for a real-but-unapproved template.
+pub async fn status_by_slug(pool: &PgPool, slug: &str) -> Result<Option<String>, SlugLookupError> {
+    sqlx::query_scalar::<_, String>("SELECT status FROM stack_template WHERE slug = $1")
+        .bind(slug)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("status_by_slug error: {:?}", e);
+            SlugLookupError::Internal
+        })
+}
+
 pub async fn get_by_id(
     pool: &PgPool,
     template_id: uuid::Uuid,
