@@ -59,15 +59,16 @@ impl CallableTrait for MarketplaceTemplatesCommand {
         }
 
         println!(
-            "{:<24} {:<28} {:<14} {}",
-            "ITEM", "NAME", "PLAN", "DESCRIPTION"
+            "{:<24} {:<28} {:<20} {:<14} {}",
+            "ITEM", "NAME", "VENDOR", "PLAN", "DESCRIPTION"
         );
-        println!("{}", "\u{2500}".repeat(92));
+        println!("{}", "\u{2500}".repeat(114));
         for template in &templates {
             println!(
-                "{:<24} {:<28} {:<14} {}",
+                "{:<24} {:<28} {:<20} {:<14} {}",
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
+                truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
                 display_plan(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
@@ -83,10 +84,6 @@ impl CallableTrait for MarketplaceTemplatesCommand {
         Ok(())
     }
 }
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// marketplace find/install
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct MarketplaceFindCommand {
     query: String,
@@ -140,15 +137,16 @@ impl CallableTrait for MarketplaceFindCommand {
         }
 
         println!(
-            "{:<24} {:<28} {:<14} {}",
-            "ITEM", "NAME", "PLAN", "DESCRIPTION"
+            "{:<24} {:<28} {:<20} {:<14} {}",
+            "ITEM", "NAME", "VENDOR", "PLAN", "DESCRIPTION"
         );
-        println!("{}", "\u{2500}".repeat(92));
+        println!("{}", "\u{2500}".repeat(114));
         for template in &templates {
             println!(
-                "{:<24} {:<28} {:<14} {}",
+                "{:<24} {:<28} {:<20} {:<14} {}",
                 truncate(&template.slug, 22),
                 truncate(&template.name, 26),
+                truncate(template.creator_name.as_deref().unwrap_or("-"), 18),
                 display_plan(template),
                 truncate(template.description.as_deref().unwrap_or(""), 26),
             );
@@ -1323,6 +1321,7 @@ mod tests {
             price: None,
             billing_cycle: None,
             is_from_marketplace: None,
+            creator_name: None,
             stack_definition: None,
         }
     }

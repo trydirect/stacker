@@ -247,6 +247,8 @@ pub struct MarketplaceTemplate {
     pub price: Option<f64>,
     pub billing_cycle: Option<String>,
     pub is_from_marketplace: Option<bool>,
+    #[serde(default)]
+    pub creator_name: Option<String>,
     pub stack_definition: Option<serde_json::Value>,
 }
 
