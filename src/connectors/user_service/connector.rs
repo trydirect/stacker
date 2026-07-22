@@ -81,6 +81,16 @@ pub trait UserServiceConnector: Send + Sync {
         max_results: Option<u32>,
     ) -> Result<Vec<serde_json::Value>, ConnectorError>;
 
+    /// Fetch a single catalog application by code, enriched with its docker
+    /// image and default env/ports from the app catalog. Unlike the search
+    /// endpoint, this carries the fields needed to synthesize a compose.
+    /// Returns `None` when the catalog has no such application.
+    async fn get_catalog_application(
+        &self,
+        user_token: &str,
+        code: &str,
+    ) -> Result<Option<serde_json::Value>, ConnectorError>;
+
     // ── Per-install billing (two-phase charge) ─────────────────────
     //
     // The four methods below implement the authorize/capture/void

@@ -275,6 +275,136 @@ fn build_form_from_yaml_embed(
     })
 }
 
+/// Overlay the deployable fields from an enriched catalog application onto the
+/// summary object. The enriched `/applications/catalog/{code}` endpoint is
+/// authoritative for these, so its values win when present and non-null.
+fn merge_catalog_enrichment(application: &mut Value, enriched: &Value) {
+    let (Some(target), Some(source)) = (application.as_object_mut(), enriched.as_object()) else {
+        return;
+    };
+    for key in [
+        "docker_image",
+        "default_port",
+        "default_ports",
+        "default_env",
+        "default_config_files",
+    ] {
+        if let Some(value) = source.get(key).filter(|v| !v.is_null()) {
+            target.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+fn json_scalar_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Synthesize a minimal single-service docker-compose from a catalog
+/// application's enriched fields.
+///
+/// A catalog application is a single container described by `docker_image`
+/// (+ `default_port`/`default_ports`/`default_env`), not a multi-service
+/// stack. We render one service and embed it as `docker-compose.yml`, exactly
+/// how DB-backed templates ship their compose — so the rest of the deploy path
+/// (including the empty-compose guard) treats it uniformly.
+///
+/// Returns `None` when the application has no docker image, i.e. nothing
+/// deployable; the caller turns that into a clear install error.
+fn synthesize_catalog_compose(application: &Value, service_code: &str) -> Option<String> {
+    let image = application
+        .get("docker_image")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+
+    // Ports: prefer an explicit `default_ports` list, else `default_port`.
+    let mut ports: Vec<serde_yaml::Value> = Vec::new();
+    if let Some(arr) = application.get("default_ports").and_then(|v| v.as_array()) {
+        for p in arr {
+            if let Some(n) = p.as_i64() {
+                ports.push(serde_yaml::Value::String(format!("{n}:{n}")));
+            } else if let Some(s) = p.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                let mapping = if s.contains(':') {
+                    s.to_string()
+                } else {
+                    format!("{s}:{s}")
+                };
+                ports.push(serde_yaml::Value::String(mapping));
+            }
+        }
+    }
+    if ports.is_empty() {
+        if let Some(n) = application.get("default_port").and_then(|v| v.as_i64()) {
+            ports.push(serde_yaml::Value::String(format!("{n}:{n}")));
+        }
+    }
+
+    // Environment: accept an object ({KEY: value}) or a list of {key,value} /
+    // "KEY=value" entries. Anything unrecognized is skipped rather than
+    // guessed at.
+    let mut env = serde_yaml::Mapping::new();
+    match application.get("default_env") {
+        Some(Value::Object(map)) => {
+            for (k, v) in map {
+                if let Some(s) = json_scalar_to_string(v) {
+                    env.insert(k.clone().into(), s.into());
+                }
+            }
+        }
+        Some(Value::Array(arr)) => {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    if let (Some(k), Some(v)) = (
+                        obj.get("key").and_then(|x| x.as_str()),
+                        obj.get("value"),
+                    ) {
+                        if let Some(s) = json_scalar_to_string(v) {
+                            env.insert(k.into(), s.into());
+                        }
+                    }
+                } else if let Some((k, v)) = item.as_str().and_then(|s| s.split_once('=')) {
+                    env.insert(k.into(), v.into());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut service = serde_yaml::Mapping::new();
+    service.insert("image".into(), image.into());
+    if !ports.is_empty() {
+        service.insert("ports".into(), serde_yaml::Value::Sequence(ports));
+    }
+    if !env.is_empty() {
+        service.insert("environment".into(), serde_yaml::Value::Mapping(env));
+    }
+    service.insert("restart".into(), "unless-stopped".into());
+    service.insert(
+        "networks".into(),
+        serde_yaml::Value::Sequence(vec!["default_network".into()]),
+    );
+
+    let mut services = serde_yaml::Mapping::new();
+    services.insert(service_code.into(), serde_yaml::Value::Mapping(service));
+
+    let mut default_network = serde_yaml::Mapping::new();
+    default_network.insert("external".into(), serde_yaml::Value::Bool(true));
+    default_network.insert("name".into(), "default_network".into());
+    let mut networks = serde_yaml::Mapping::new();
+    networks.insert("default_network".into(), serde_yaml::Value::Mapping(default_network));
+
+    let mut root = serde_yaml::Mapping::new();
+    root.insert("services".into(), serde_yaml::Value::Mapping(services));
+    root.insert("networks".into(), serde_yaml::Value::Mapping(networks));
+
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(root)).ok()
+}
+
 fn catalog_application_project_form(
     application: &serde_json::Value,
     slug: &str,
@@ -289,6 +419,18 @@ fn catalog_application_project_form(
         .filter(|name| !name.is_empty())
         .unwrap_or(app_name);
     let stack_code = normalized_project_name(project_name);
+
+    // Catalog apps carry no stack_definition; synthesize a one-service compose
+    // from the application's docker image so the deploy has something to ship.
+    // Embedded as `marketplace_config_files` (same channel DB templates use),
+    // it is picked up by `embedded_marketplace_compose` at deploy time.
+    let marketplace_config_files = match synthesize_catalog_compose(application, &stack_code) {
+        Some(compose) => serde_json::json!([{
+            "name": "docker-compose.yml",
+            "content": compose,
+        }]),
+        None => serde_json::json!([]),
+    };
 
     let form_value = serde_json::json!({
         "custom": {
@@ -307,6 +449,7 @@ fn catalog_application_project_form(
             "feature": [],
             "service": [],
             "networks": [],
+            "marketplace_config_files": marketplace_config_files,
             "catalog_application": application
         }
     });
@@ -896,7 +1039,7 @@ async fn install_catalog_application(
         })?;
 
     let slug_lc = slug.to_ascii_lowercase();
-    let application = applications
+    let mut application = applications
         .into_iter()
         .find(|application| catalog_application_matches_slug(application, &slug_lc))
         .ok_or_else(|| {
@@ -905,6 +1048,21 @@ async fn install_catalog_application(
                 slug
             ))
         })?;
+
+    // The search result is a summary and may lack the docker image / default
+    // env & ports. Enrich from the catalog endpoint so we can synthesize a
+    // deployable compose; missing enrichment is non-fatal (best effort).
+    match user_service.get_catalog_application(token, slug).await {
+        Ok(Some(enriched)) => merge_catalog_enrichment(&mut application, &enriched),
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!(
+                "Catalog enrichment lookup failed for '{}': {:?} (continuing with summary)",
+                slug,
+                err
+            );
+        }
+    }
 
     let form = catalog_application_project_form(&application, slug, request.name.as_deref())?;
     let mut request_json = serde_json::to_value(&form).map_err(|err| {
@@ -1034,8 +1192,8 @@ pub async fn install_handler(
 mod tests {
     use super::{
         amount_minor_for, build_project_form, catalog_application_project_form,
-        ensure_catalog_application_has_deploy_context, is_per_install_effective, summarize,
-        validate_installable_form,
+        ensure_catalog_application_has_deploy_context, is_per_install_effective,
+        merge_catalog_enrichment, summarize, synthesize_catalog_compose, validate_installable_form,
     };
     use crate::configuration::Settings;
     use crate::connectors::user_service::AuthorizationHandle;
@@ -1158,6 +1316,84 @@ mod tests {
             payload.custom.catalog_application["is_from_marketplace"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn synthesize_catalog_compose_builds_single_service_from_image_and_port() {
+        let application = json!({
+            "code": "n8n",
+            "docker_image": "n8nio/n8n:latest",
+            "default_port": 5678,
+            "default_env": { "N8N_PORT": "5678", "GENERIC_TIMEZONE": "UTC" }
+        });
+
+        let compose = synthesize_catalog_compose(&application, "n8n")
+            .expect("compose should be synthesized when a docker image is present");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+        let svc = &parsed["services"]["n8n"];
+
+        assert_eq!(svc["image"], serde_yaml::Value::from("n8nio/n8n:latest"));
+        assert_eq!(svc["ports"][0], serde_yaml::Value::from("5678:5678"));
+        assert_eq!(svc["environment"]["N8N_PORT"], serde_yaml::Value::from("5678"));
+        assert_eq!(svc["restart"], serde_yaml::Value::from("unless-stopped"));
+        // External default_network is declared so the stack joins the shared net.
+        assert_eq!(parsed["networks"]["default_network"]["external"], serde_yaml::Value::from(true));
+    }
+
+    #[test]
+    fn synthesize_catalog_compose_returns_none_without_image() {
+        let application = json!({ "code": "n8n", "default_port": 5678 });
+        assert!(synthesize_catalog_compose(&application, "n8n").is_none());
+    }
+
+    #[test]
+    fn synthesize_catalog_compose_accepts_kv_list_env() {
+        let application = json!({
+            "docker_image": "img:1",
+            "default_env": [ { "key": "A", "value": "1" }, "B=2" ]
+        });
+        let compose = synthesize_catalog_compose(&application, "svc").unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+        assert_eq!(parsed["services"]["svc"]["environment"]["A"], serde_yaml::Value::from("1"));
+        assert_eq!(parsed["services"]["svc"]["environment"]["B"], serde_yaml::Value::from("2"));
+    }
+
+    #[test]
+    fn catalog_form_embeds_synthesized_compose_when_image_present() {
+        let application = json!({
+            "code": "n8n",
+            "name": "n8n",
+            "docker_image": "n8nio/n8n:latest",
+            "default_port": 5678
+        });
+
+        let form = catalog_application_project_form(&application, "n8n", None).unwrap();
+        let files = &form.custom.marketplace_config_files;
+        let arr = files.as_array().expect("marketplace_config_files should be an array");
+        let compose = arr
+            .iter()
+            .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("docker-compose.yml"))
+            .and_then(|f| f.get("content"))
+            .and_then(|c| c.as_str())
+            .expect("a docker-compose.yml should be embedded");
+        assert!(compose.contains("n8nio/n8n:latest"));
+        assert!(compose.contains("services:"));
+    }
+
+    #[test]
+    fn merge_catalog_enrichment_overlays_deployable_fields() {
+        let mut application = json!({ "code": "n8n", "name": "n8n" });
+        let enriched = json!({
+            "docker_image": "n8nio/n8n:latest",
+            "default_port": 5678,
+            "default_env": null
+        });
+        merge_catalog_enrichment(&mut application, &enriched);
+
+        assert_eq!(application["docker_image"], json!("n8nio/n8n:latest"));
+        assert_eq!(application["default_port"], json!(5678));
+        // Null enriched values must not overwrite / introduce nulls.
+        assert!(application.get("default_env").is_none());
     }
 
     #[test]

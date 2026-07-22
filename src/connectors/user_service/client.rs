@@ -637,6 +637,17 @@ impl UserServiceConnector for UserServiceClient {
         .await
     }
 
+    async fn get_catalog_application(
+        &self,
+        user_token: &str,
+        code: &str,
+    ) -> Result<Option<serde_json::Value>, ConnectorError> {
+        let app = UserServiceClient::fetch_app_catalog(self, user_token, code).await?;
+        app.map(|app| serde_json::to_value(app))
+            .transpose()
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
     async fn can_charge(
         &self,
         user_token: &str,

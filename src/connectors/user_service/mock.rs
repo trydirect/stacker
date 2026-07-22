@@ -243,6 +243,14 @@ impl UserServiceConnector for MockUserServiceConnector {
         Ok(items)
     }
 
+    async fn get_catalog_application(
+        &self,
+        _user_token: &str,
+        _code: &str,
+    ) -> Result<Option<serde_json::Value>, ConnectorError> {
+        Ok(None)
+    }
+
     async fn can_charge(
         &self,
         _user_token: &str,
