@@ -1659,6 +1659,8 @@ fn convert_compose_to_stacker(ai_output: &str, repo_name: &str) -> Option<Stacke
         env: HashMap::new(),
         config_contract: crate::cli::config_parser::ConfigContract::default(),
         origin: crate::cli::config_parser::ConfigOrigin::UserAuthored,
+        // `init` always writes an explicit `app:` section for the detected app.
+        app_present: true,
     };
 
     // Strip port ranges

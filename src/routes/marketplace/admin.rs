@@ -134,6 +134,17 @@ pub async fn approve_handler(
             JsonResponse::<serde_json::Value>::build().not_found("Template not found")
         })?;
 
+    // Fetch the latest version so the webhook can federate the stack_definition
+    // (compose) to the User Service cache — without it, /applications serves a
+    // null definition and installs produce an empty compose. Best-effort: a
+    // missing version must not block approval.
+    let latest_version = db::marketplace::get_latest_version(pg_pool.get_ref(), id)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!("Failed to load latest version for webhook federation: {}", err);
+            None
+        });
+
     // Send webhook asynchronously (non-blocking)
     // Don't fail the approval if webhook send fails - template is already approved
     let template_clone = template.clone();
@@ -149,6 +160,7 @@ pub async fn approve_handler(
                         &template_clone,
                         &template_clone.creator_user_id,
                         template_clone.category_code.clone(),
+                        latest_version.as_ref(),
                     )
                     .instrument(span)
                     .await

@@ -845,6 +845,18 @@ pub struct StackerConfig {
     /// [`MARKETPLACE_ORIGIN_MARKER`].
     #[serde(skip)]
     pub origin: ConfigOrigin,
+
+    /// Whether the source config explicitly declared an `app:` section.
+    ///
+    /// `app` is a non-optional field with serde defaults, so a config that
+    /// omits `app:` still deserializes to a default `AppSource`. This flag
+    /// distinguishes "user/template actually declared an app to build" from
+    /// "app was defaulted in". Set at load time by `from_file`/`from_str`
+    /// (raw key present) and by `ConfigBuilder` (app setters used). The compose
+    /// generator uses it to avoid synthesizing a phantom `app` service for
+    /// services-only configs. Not serialized.
+    #[serde(skip)]
+    pub app_present: bool,
 }
 
 impl StackerConfig {
@@ -873,8 +885,10 @@ impl StackerConfig {
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
         let env_file_vars = load_env_file_vars_from_yaml(path, &raw_content);
         resolve_env_placeholders_in_value(&mut parsed, &env_file_vars)?;
+        let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -894,8 +908,10 @@ impl StackerConfig {
         let raw_content = std::fs::read_to_string(path)?;
         let origin = detect_origin_from_raw(&raw_content);
         let parsed: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+        let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -904,8 +920,10 @@ impl StackerConfig {
         let origin = detect_origin_from_raw(yaml);
         let mut parsed: serde_yaml::Value = serde_yaml::from_str(yaml)?;
         resolve_env_placeholders_in_value(&mut parsed, &HashMap::new())?;
+        let app_present = parsed.get("app").is_some();
         let mut config = deserialize_config_value(parsed)?;
         config.origin = origin;
+        config.app_present = app_present;
         Ok(config)
     }
 
@@ -1500,6 +1518,14 @@ impl ConfigBuilder {
             .name
             .ok_or_else(|| CliError::ConfigValidation("name is required".into()))?;
 
+        // Any app-related builder setter marks the app as explicitly declared,
+        // so the compose generator materializes it even alongside services.
+        let app_present = self.app_type.is_some()
+            || self.app_image.is_some()
+            || self.app_dockerfile.is_some()
+            || !self.app_volumes.is_empty()
+            || !self.build_args.is_empty();
+
         let build_config = if self.build_args.is_empty() {
             None
         } else {
@@ -1550,6 +1576,7 @@ impl ConfigBuilder {
             env: self.env,
             config_contract: ConfigContract::default(),
             origin: ConfigOrigin::UserAuthored,
+            app_present,
         })
     }
 }

@@ -377,6 +377,42 @@ pub async fn get_by_slug_with_latest(
     Ok((template, version))
 }
 
+/// Fetch the latest version row for a template by its id. Used to federate the
+/// `stack_definition` (compose) to the User Service on approval/publish.
+pub async fn get_latest_version(
+    pool: &PgPool,
+    template_id: uuid::Uuid,
+) -> Result<Option<StackTemplateVersion>, String> {
+    let query_span =
+        tracing::info_span!("marketplace_get_latest_version", template_id = %template_id);
+
+    sqlx::query_as::<_, StackTemplateVersion>(
+        r#"SELECT
+            id,
+            template_id,
+            version,
+            stack_definition,
+            config_files,
+            assets,
+            seed_jobs,
+            post_deploy_hooks,
+            update_mode_capabilities,
+            definition_format,
+            changelog,
+            is_latest,
+            created_at
+        FROM stack_template_version WHERE template_id = $1 AND is_latest = true LIMIT 1"#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .instrument(query_span)
+    .await
+    .map_err(|e| {
+        tracing::error!("get_latest_version error: {:?}", e);
+        "Internal Server Error".to_string()
+    })
+}
+
 pub async fn get_by_id(
     pool: &PgPool,
     template_id: uuid::Uuid,
