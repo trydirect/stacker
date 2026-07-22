@@ -11,6 +11,10 @@ pub enum MarketplaceAccessError {
     InsufficientFeaturePlan,
     InsufficientTemplatePlan { required_plan: String },
     TemplateNotOwned,
+    /// The template is priced per-install and the user has no viable
+    /// payment method on file (declined at the `can_charge` probe, before
+    /// any authorize attempt).
+    NoPaymentMethod { reason: String },
     ValidationFailed(String),
 }
 
@@ -32,6 +36,11 @@ impl std::fmt::Display for MarketplaceAccessError {
             Self::TemplateNotOwned => {
                 write!(f, "You must purchase this template before installing it")
             }
+            Self::NoPaymentMethod { reason } => write!(
+                f,
+                "A valid payment method is required to install this template ({})",
+                reason
+            ),
             Self::ValidationFailed(reason) => {
                 write!(f, "Failed to validate marketplace access: {}", reason)
             }
@@ -104,6 +113,30 @@ pub async fn validate_marketplace_template_access(
         }
     }
 
+    let is_per_install = template
+        .billing_cycle
+        .as_deref()
+        .map(|c| c.trim().eq_ignore_ascii_case("per_install"))
+        .unwrap_or(false);
+
+    // Per-install templates skip the ownership check entirely — there is no
+    // permanent purchase for these. Instead we probe the user's payment
+    // capability so `stacker install` fails fast with a clear 402 if the
+    // user has no card on file, rather than deep inside the install handler
+    // after the actual authorize attempt.
+    if is_per_install {
+        let capability = user_service
+            .can_charge(user_token)
+            .await
+            .map_err(validation_failed)?;
+        if !capability.can_charge {
+            return Err(MarketplaceAccessError::NoPaymentMethod {
+                reason: capability.reason.unwrap_or_else(|| "unknown".to_string()),
+            });
+        }
+        return Ok(());
+    }
+
     let no_price = template.price.map(|p| p <= 0.0).unwrap_or(true);
     let no_plan = template
         .required_plan_name
@@ -126,18 +159,47 @@ pub async fn validate_marketplace_template_access(
 mod tests {
     use super::*;
     use crate::connectors::user_service::{
-        CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct,
-        UserProfile,
+        AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+        StackResponse, UserPlanInfo, UserProduct, UserProfile,
     };
     use crate::connectors::ConnectorError;
     use async_trait::async_trait;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::Mutex;
     use uuid::Uuid;
+
+    /// Recorded billing-side calls for post-hoc assertion. Used by the
+    /// per-install billing tests to check that the access gate called
+    /// `can_charge` at the right moment and never invoked authorize/capture/void
+    /// (those are the install handler's responsibility).
+    #[derive(Debug, Clone, PartialEq)]
+    enum CapturedCall {
+        CanCharge,
+        Authorize {
+            template_id: Uuid,
+            amount_minor: i64,
+            currency: String,
+            idempotency_key: String,
+        },
+        Capture {
+            authorization_id: String,
+            deployment_hash: String,
+        },
+        Void {
+            authorization_id: String,
+            reason: String,
+        },
+    }
 
     struct TestUserService {
         plans: HashMap<String, bool>,
         owned_identifiers: HashSet<String>,
         fail_plan_check: bool,
+        can_charge_result: Mutex<BillingCapability>,
+        authorize_responses: Mutex<VecDeque<Result<AuthorizationHandle, ConnectorError>>>,
+        capture_responses: Mutex<VecDeque<Result<AuthorizationHandle, ConnectorError>>>,
+        void_responses: Mutex<VecDeque<Result<(), ConnectorError>>>,
+        captured_calls: Mutex<Vec<CapturedCall>>,
     }
 
     impl TestUserService {
@@ -152,6 +214,14 @@ mod tests {
                     .map(|identifier| (*identifier).to_string())
                     .collect(),
                 fail_plan_check: false,
+                can_charge_result: Mutex::new(BillingCapability {
+                    can_charge: true,
+                    reason: None,
+                }),
+                authorize_responses: Mutex::new(VecDeque::new()),
+                capture_responses: Mutex::new(VecDeque::new()),
+                void_responses: Mutex::new(VecDeque::new()),
+                captured_calls: Mutex::new(Vec::new()),
             }
         }
 
@@ -160,6 +230,23 @@ mod tests {
         fn with_plan_check_failure(mut self) -> Self {
             self.fail_plan_check = true;
             self
+        }
+
+        /// Preload the can-charge response used by the per_install access-gate
+        /// branch. Default is `{can_charge: true, reason: None}`.
+        #[allow(dead_code)]
+        fn with_can_charge(self, can_charge: bool, reason: Option<&str>) -> Self {
+            *self.can_charge_result.lock().unwrap() = BillingCapability {
+                can_charge,
+                reason: reason.map(str::to_string),
+            };
+            self
+        }
+
+        /// Snapshot the CapturedCall vector for assertions.
+        #[allow(dead_code)]
+        fn calls(&self) -> Vec<CapturedCall> {
+            self.captured_calls.lock().unwrap().clone()
         }
     }
 
@@ -255,6 +342,94 @@ mod tests {
             _max_results: Option<u32>,
         ) -> Result<Vec<serde_json::Value>, ConnectorError> {
             unimplemented!()
+        }
+
+        async fn can_charge(
+            &self,
+            _user_token: &str,
+        ) -> Result<BillingCapability, ConnectorError> {
+            self.captured_calls
+                .lock()
+                .unwrap()
+                .push(CapturedCall::CanCharge);
+            Ok(self.can_charge_result.lock().unwrap().clone())
+        }
+
+        async fn authorize_install_charge(
+            &self,
+            _user_token: &str,
+            template_id: &Uuid,
+            amount_minor: i64,
+            currency: &str,
+            idempotency_key: &str,
+        ) -> Result<AuthorizationHandle, ConnectorError> {
+            self.captured_calls
+                .lock()
+                .unwrap()
+                .push(CapturedCall::Authorize {
+                    template_id: *template_id,
+                    amount_minor,
+                    currency: currency.to_string(),
+                    idempotency_key: idempotency_key.to_string(),
+                });
+            self.authorize_responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Ok(AuthorizationHandle {
+                        authorization_id: format!("test-auth-{}", idempotency_key),
+                        amount_minor,
+                        currency: currency.to_string(),
+                        expires_at: Some("2099-01-01T00:00:00Z".to_string()),
+                        status: "authorized".to_string(),
+                    })
+                })
+        }
+
+        async fn capture_install_charge(
+            &self,
+            _auth_token: &str,
+            authorization_id: &str,
+            deployment_hash: &str,
+        ) -> Result<AuthorizationHandle, ConnectorError> {
+            self.captured_calls
+                .lock()
+                .unwrap()
+                .push(CapturedCall::Capture {
+                    authorization_id: authorization_id.to_string(),
+                    deployment_hash: deployment_hash.to_string(),
+                });
+            self.capture_responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Ok(AuthorizationHandle {
+                        authorization_id: authorization_id.to_string(),
+                        amount_minor: 0,
+                        currency: "USD".to_string(),
+                        expires_at: None,
+                        status: "captured".to_string(),
+                    })
+                })
+        }
+
+        async fn void_install_charge(
+            &self,
+            _auth_token: &str,
+            authorization_id: &str,
+            reason: &str,
+        ) -> Result<(), ConnectorError> {
+            self.captured_calls.lock().unwrap().push(CapturedCall::Void {
+                authorization_id: authorization_id.to_string(),
+                reason: reason.to_string(),
+            });
+            self.void_responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(()))
         }
     }
 
@@ -488,5 +663,122 @@ mod tests {
             result,
             Err(MarketplaceAccessError::ValidationFailed(_))
         ));
+    }
+
+    // ── per_install access-gate tests ───────────────────────────────
+    //
+    // These pin the semantics documented in the plan: a template with
+    // billing_cycle="per_install" bypasses ownership entirely, but must
+    // still clear the feature-plan gate and expose a valid payment method.
+
+    fn per_install_template() -> models::StackTemplate {
+        models::StackTemplate {
+            slug: "paid-per-install".to_string(),
+            product_id: Some(2001),
+            price: Some(9.99),
+            billing_cycle: Some("per_install".to_string()),
+            required_plan_name: None,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn per_install_template_skips_ownership_and_passes_when_can_charge() {
+        // No `owned_identifiers` on purpose — ownership must NOT be consulted
+        // for per_install templates.
+        let svc = Arc::new(TestUserService::new(&[("professional", true)], &[]));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &per_install_template())
+                .await;
+
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let calls = svc.calls();
+        assert!(
+            calls.contains(&CapturedCall::CanCharge),
+            "gate must consult can_charge for per_install templates: {:?}",
+            calls
+        );
+        assert!(
+            !calls.iter().any(|c| matches!(c, CapturedCall::Authorize { .. })),
+            "gate must NOT authorize — the install handler does that: {:?}",
+            calls
+        );
+    }
+
+    #[tokio::test]
+    async fn per_install_template_rejects_when_no_payment_method() {
+        let svc = Arc::new(
+            TestUserService::new(&[("professional", true)], &[])
+                .with_can_charge(false, Some("no_payment_method")),
+        );
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &per_install_template())
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::NoPaymentMethod { ref reason })
+                if reason == "no_payment_method"
+        ));
+    }
+
+    #[tokio::test]
+    async fn per_install_template_still_requires_feature_plan() {
+        // Team/Pro feature-plan gate must precede the per_install branch —
+        // a user without the "professional" tier gets rejected before we
+        // ever probe payment capability.
+        let svc = Arc::new(TestUserService::new(&[("professional", false)], &[]));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &per_install_template())
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::InsufficientFeaturePlan)
+        ));
+        assert!(
+            !svc.calls().contains(&CapturedCall::CanCharge),
+            "can_charge must not be probed when the feature-plan gate fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_time_template_ownership_check_unchanged() {
+        // Regression: `one_time` templates (umami-shape) still use the
+        // ownership gate after the split-out per_install branch.
+        // umami's row carries required_plan_name="free", which the gate
+        // still consults via user_has_plan — every user has the "free"
+        // tier in production, so we grant it in the mock too.
+        let svc = Arc::new(TestUserService::new(
+            &[("professional", true), ("free", true)],
+            &[],
+        ));
+        let user_service: Arc<dyn UserServiceConnector> = svc.clone();
+        let template = models::StackTemplate {
+            slug: "umami".to_string(),
+            product_id: Some(-961115967),
+            price: Some(10.0),
+            billing_cycle: Some("one_time".to_string()),
+            required_plan_name: Some("free".to_string()),
+            ..Default::default()
+        };
+
+        let result =
+            validate_marketplace_template_access(&user_service, &test_user(), &template).await;
+
+        assert!(matches!(
+            result,
+            Err(MarketplaceAccessError::TemplateNotOwned)
+        ));
+        assert!(
+            !svc.calls().contains(&CapturedCall::CanCharge),
+            "can_charge must NOT be probed for one_time templates"
+        );
     }
 }

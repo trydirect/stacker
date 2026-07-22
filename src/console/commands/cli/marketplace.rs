@@ -234,12 +234,7 @@ impl MarketplaceInstallCommand {
         }
 
         // Apply provider override
-        if let Some(provider) = self
-            .provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
+        if let Some(provider) = self.provider.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
             if let Some(cloud) = form.get_mut("cloud").and_then(|v| v.as_object_mut()) {
                 let provider_code = crate::cli::install_runner::provider_code_for_remote(provider);
                 cloud.insert("provider".into(), serde_json::json!(provider_code));
@@ -247,24 +242,14 @@ impl MarketplaceInstallCommand {
         }
 
         // Apply region override
-        if let Some(region) = self
-            .region
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
+        if let Some(region) = self.region.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
             if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
                 server.insert("region".into(), serde_json::json!(region));
             }
         }
 
         // Apply size override
-        if let Some(size) = self
-            .size
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
+        if let Some(size) = self.size.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
             if let Some(server) = form.get_mut("server").and_then(|v| v.as_object_mut()) {
                 server.insert("server".into(), serde_json::json!(size));
             }
@@ -446,6 +431,15 @@ impl CallableTrait for MarketplaceInstallCommand {
             );
         }
 
+        // Idempotency key for the install request. Respect an env override so
+        // CI can pin it explicitly (a re-run with the same key collapses to
+        // the original authorization for per_install-billed templates).
+        // Otherwise generate a fresh one per invocation.
+        let idempotency_key = std::env::var("STACKER_INSTALL_IDEMPOTENCY_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .unwrap_or_else(|| format!("cli-{}", uuid::Uuid::new_v4()));
+
         let response = ctx.block_on(async {
             ctx.client
                 .install_marketplace_template(
@@ -453,6 +447,7 @@ impl CallableTrait for MarketplaceInstallCommand {
                     self.name.as_deref(),
                     deploy_form,
                     install_inputs,
+                    &idempotency_key,
                 )
                 .await
         })?;
@@ -810,7 +805,10 @@ async fn generate_minimal_install_config(
         .filter(|v| !v.is_empty())
         .unwrap_or(&cloud_info.provider);
     let provider = cloud_provider_from_code(provider_code).ok_or_else(|| {
-        CliError::ConfigValidation(format!("Unsupported cloud provider '{}'.", provider_code))
+        CliError::ConfigValidation(format!(
+            "Unsupported cloud provider '{}'.",
+            provider_code
+        ))
     })?;
     eprintln!(
         "Using cloud connection '{}' (provider: {}).",
@@ -820,14 +818,8 @@ async fn generate_minimal_install_config(
     let cloud_config = CloudConfig {
         provider,
         orchestrator: Default::default(),
-        region: region_override
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(String::from),
-        size: size_override
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(String::from),
+        region: region_override.map(str::trim).filter(|v| !v.is_empty()).map(String::from),
+        size: size_override.map(str::trim).filter(|v| !v.is_empty()).map(String::from),
         install_image: None,
         remote_payload_file: None,
         ssh_key: None,
@@ -1142,6 +1134,7 @@ fn display_plan(template: &MarketplaceTemplate) -> String {
                 "one_time" | "one-time" | "once" | "free" => "",
                 "monthly" | "month" | "/mo" => "/mo",
                 "yearly" | "year" | "/yr" => "/yr",
+                "per_install" | "per-install" => "/install",
                 other => other,
             };
             return format!("${:.2}{}", price, cycle);
@@ -1312,6 +1305,8 @@ mod tests {
             template: marketplace_template("dify"),
             latest_version,
             deployment_id: None,
+            authorization: None,
+            idempotency_key: None,
         }
     }
 
@@ -1387,6 +1382,9 @@ mod tests {
 
         t.billing_cycle = Some("one_time".to_string());
         assert_eq!(display_plan(&t), "$5.00");
+
+        t.billing_cycle = Some("per_install".to_string());
+        assert_eq!(display_plan(&t), "$5.00/install");
 
         t.billing_cycle = None;
         assert_eq!(display_plan(&t), "$5.00/mo");

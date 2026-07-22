@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stacker v0.3.1 - AI Infrastructure CLI by TryDirect</title>
-  <meta name="description" content="Stacker v0.3.1 initializes projects straight from GitHub, connects apps with authenticated pipes, deploys to cloud or bare metal, and manages remote secrets, firewalls, and agents - all from your terminal.">
+  <title>Stacker v0.2.9 — AI Infrastructure CLI by TryDirect</title>
+  <meta name="description" content="Stacker v0.2.9 scans your project, deploys to cloud or bare metal, manages remote service secrets, cloud firewalls, agents, and app pipes — all from your terminal.">
   <meta name="theme-color" content="#7e57c2">
   <link rel="icon" type="image/png" href="assets/stacker-logo.png">
   <link rel="stylesheet" href="styles.css">
@@ -28,7 +28,6 @@
         <a href="#release" class="nav__link">Release</a>
         <a href="#ai" class="nav__link">AI Engine</a>
         <a href="#examples" class="nav__link">Examples</a>
-        <a href="#awesome" class="nav__link">Test Stacks</a>
         <a href="#commands" class="nav__link">Commands</a>
         <a href="#providers" class="nav__link">Providers</a>
       </div>
@@ -53,17 +52,16 @@
       <div class="hero__content">
         <div class="hero__badge" data-animate="fade-up">
           <span class="hero__badge-dot"></span>
-          New Release v0.3.1 &middot; AI-Powered &middot; Cloud + Bare Metal
+          New Release v0.2.9 &middot; AI-Powered &middot; Cloud + Bare Metal
         </div>
         <h1 class="hero__title" data-animate="fade-up" data-delay="100">
           Ship your stack from code to server<br>
           <span class="gradient-text">with one CLI.</span>
         </h1>
         <p class="hero__subtitle" data-animate="fade-up" data-delay="200">
-          Stacker scans your project - or clones it straight from GitHub - generates a
-          production-ready <code>stacker.yml</code>, deploys to cloud or bare metal, manages
-          remote agents, links apps with authenticated pipes, and ships marketplace-ready
-          stacks - all from your terminal.
+          Stacker scans your project, generates a production-ready <code>stacker.yml</code>,
+          deploys to cloud or bare metal, manages remote agents, links apps with pipes,
+          and ships marketplace-ready stacks — all from your terminal.
         </p>
         <div class="hero__actions" data-animate="fade-up" data-delay="300">
           <a href="#quickstart" class="btn btn--primary btn--lg">
@@ -76,21 +74,20 @@
           </a>
         </div>
         <div class="hero__release" data-animate="fade-up" data-delay="350">
-          <div class="hero__release-version">v0.3.1</div>
+          <div class="hero__release-version">v0.2.9</div>
           <p class="hero__release-text">
-            Since v0.3.0: <strong>init straight from GitHub</strong>, <strong>authenticated app pipes</strong>,
-            <strong>non-interactive pipe create</strong>, a <strong>service password generator</strong>,
-            <strong>one-command marketplace install</strong>, and more reliable config bundling.
+            Latest release includes <strong>AI config setup CLI</strong>, <strong>OAuth device auth</strong>,
+            <strong>.env bootstrapping</strong>, <strong>Hetzner location fixes</strong>, and hardened agent health &amp; logs.
           </p>
           <div class="hero__release-chips">
-            <span class="hero__release-chip">Init from GitHub</span>
-            <span class="hero__release-chip">Authenticated pipes</span>
-            <span class="hero__release-chip">Pipe --source-url</span>
-            <span class="hero__release-chip">Non-interactive create</span>
-            <span class="hero__release-chip">Service passwords</span>
-            <span class="hero__release-chip">Marketplace install</span>
-            <span class="hero__release-chip">Bind-mount fixes</span>
-            <span class="hero__release-chip">OpenSSH keys</span>
+            <span class="hero__release-chip">AI setup CLI</span>
+            <span class="hero__release-chip">Device auth</span>
+            <span class="hero__release-chip">.env bootstrap</span>
+            <span class="hero__release-chip">Preflight checks</span>
+            <span class="hero__release-chip">npm networking</span>
+            <span class="hero__release-chip">Agent health</span>
+            <span class="hero__release-chip">Config promote</span>
+            <span class="hero__release-chip">Hetzner fixes</span>
           </div>
         </div>
         <div class="hero__terminal" data-animate="fade-up" data-delay="400">
@@ -141,14 +138,6 @@
           <h3 class="feature-card__title">Deep Project Scanning</h3>
           <p class="feature-card__desc">Automatically detects <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>package.json</code>, <code>Cargo.toml</code>, <code>requirements.txt</code>, and the rest of the stack before it writes config.</p>
         </div>
-        <div class="feature-card" data-animate="fade-up" data-delay="150">
-          <div class="feature-card__icon feature-card__icon--scan">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 2v10l7 4"/></svg>
-          </div>
-          <h3 class="feature-card__title">Init Straight from GitHub</h3>
-          <p class="feature-card__desc">Run <code>stacker init --from-github &lt;owner/repo&gt;</code> to clone a repository, detect its type and Compose services, infer healthchecks, and generate <code>stacker.yml</code>, <code>.env.example</code>, and a <code>generate-secrets.sh</code> helper - no local checkout required.</p>
-          <div class="feature-card__tag">New in v0.3.1</div>
-        </div>
         <div class="feature-card" data-animate="fade-up" data-delay="200">
           <div class="feature-card__icon feature-card__icon--providers">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -181,8 +170,8 @@
           <div class="feature-card__icon feature-card__icon--pipe">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 7h4a3 3 0 0 1 3 3v1"/><path d="M17 17h-4a3 3 0 0 1-3-3v-1"/><circle cx="7" cy="7" r="3"/><circle cx="17" cy="17" r="3"/></svg>
           </div>
-          <h3 class="feature-card__title">Authenticated App Pipes</h3>
-          <p class="feature-card__desc">Discover endpoints, map fields, and connect apps with <code>stacker pipe</code>. Now with <code>target_headers</code> for authenticated delivery and <code>--source-url</code> so the agent-executor fetches inputs over HTTP - no <code>curl</code> inside the container.</p>
+          <h3 class="feature-card__title">Pipes &amp; Container Linking</h3>
+          <p class="feature-card__desc">Discover endpoints, map fields, trigger flows, replay executions, and connect apps together with <code>stacker pipe</code> automation.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
           <div class="feature-card__icon feature-card__icon--marketplace">
@@ -196,14 +185,14 @@
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           </div>
           <h3 class="feature-card__title">Service Catalog</h3>
-          <p class="feature-card__desc">20+ built-in service templates - Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI update the stack for you.</p>
+          <p class="feature-card__desc">20+ built-in service templates — Postgres, Redis, WordPress, Elasticsearch, and more. Add with <code>stacker service add</code> or let AI update the stack for you.</p>
         </div>
         <div class="feature-card" data-animate="fade-up" data-delay="100">
           <div class="feature-card__icon feature-card__icon--ssh">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
           </div>
           <h3 class="feature-card__title">SSH Key Management</h3>
-          <p class="feature-card__desc">Generate, view, and upload SSH keys for your servers - all stored securely in HashiCorp Vault. No manual key juggling.</p>
+          <p class="feature-card__desc">Generate, view, and upload SSH keys for your servers — all stored securely in HashiCorp Vault. No manual key juggling.</p>
         </div>
       </div>
     </div>
@@ -214,54 +203,14 @@
     <div class="container">
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">Latest Release</span>
-        <h2 class="section__title">Stacker v0.3.1<br><span class="gradient-text">connects apps and starts from anywhere.</span></h2>
-        <p class="section__desc">New since v0.3.0: initialize projects straight from a GitHub URL, wire apps together with authenticated pipes, generate service passwords automatically, install marketplace stacks in one command, and ship more reliable config bundling for remote deploys.</p>
+        <h2 class="section__title">Stacker v0.2.9<br><span class="gradient-text">brings smarter onboarding &amp; deploy reliability.</span></h2>
+        <p class="section__desc">The newest release adds AI config setup from the CLI, OAuth device auth, .env bootstrapping on deploy, improved Hetzner support, and hardened agent health and log workflows.</p>
       </div>
       <div class="release__grid">
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="0">
-          <span class="release-card__eyebrow">Init</span>
-          <h3 class="release-card__title">stacker init --from-github</h3>
-          <p class="release-card__desc">Clone a repo with <code>--from-github &lt;owner/repo&gt;</code> (or <code>-g</code>), auto-detect the project type and Compose services, infer healthchecks for Postgres, Redis, MySQL, Mongo, RabbitMQ, and Elasticsearch, and write <code>stacker.yml</code> plus <code>.env.example</code> and <code>scripts/generate-secrets.sh</code>.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="100">
-          <span class="release-card__eyebrow">Pipes</span>
-          <h3 class="release-card__title">Authenticated pipe delivery</h3>
-          <p class="release-card__desc">Attach <code>target_headers</code> to a pipe so deliveries to downstream apps carry auth tokens or signatures. Combined with <code>--source-url</code>, the agent-executor fetches inputs over HTTP and forwards them with the right credentials.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="200">
-          <span class="release-card__eyebrow">Pipes</span>
-          <h3 class="release-card__title">Non-interactive pipe create</h3>
-          <p class="release-card__desc">Pass <code>--name</code> to <code>stacker pipe create</code> for fully scripted, non-interactive setup. Activating a pipe now spins up the agent-executor automatically and probes the target container before wiring the flow.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="300">
-          <span class="release-card__eyebrow">Services</span>
-          <h3 class="release-card__title">Service password generator</h3>
-          <p class="release-card__desc"><code>stacker service add</code> now generates strong passwords for services that need them, so templates like Postgres, MySQL, and MinIO come with secure credentials out of the box instead of placeholder defaults.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="0">
-          <span class="release-card__eyebrow">Marketplace</span>
-          <h3 class="release-card__title">One-command marketplace install</h3>
-          <p class="release-card__desc">Install a marketplace stack directly from its Compose definition and pass cloud parameters inline on the CLI command, so provisioning and deploying a published stack is a single step.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="100">
-          <span class="release-card__eyebrow">Deploy</span>
-          <h3 class="release-card__title">Reliable config bundling</h3>
-          <p class="release-card__desc">Directory bind mounts such as <code>./library</code>, <code>./assets</code>, and <code>./config</code> now pass through to remote targets, <code>env_file</code> references stay project-relative, and deploy-time files are mirrored into the installer runtime contract before Compose starts.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="200">
-          <span class="release-card__eyebrow">Security</span>
-          <h3 class="release-card__title">OpenSSH-format SSH keys</h3>
-          <p class="release-card__desc">Generated Ed25519 keypairs are validated in canonical OpenSSH format and covered by dedicated key-format tests, so keys uploaded to your servers and cloud providers work without manual conversion.</p>
-        </article>
-        <article class="release-card release-card--fresh" data-animate="fade-up" data-delay="300">
-          <span class="release-card__eyebrow">Cloud</span>
-          <h3 class="release-card__title">Web UI firewall port fix</h3>
-          <p class="release-card__desc">Cloud firewall port handling is fixed for the web UI path, so public ports opened from the dashboard and the CLI stay consistent across provider firewall rules.</p>
-        </article>
         <article class="release-card" data-animate="fade-up" data-delay="0">
           <span class="release-card__eyebrow">AI Setup</span>
           <h3 class="release-card__title">stacker config setup ai</h3>
-          <p class="release-card__desc">Configure your AI provider, endpoint, model, and tasks directly from the CLI - Ollama-friendly with <code>--provider</code>, <code>--endpoint</code>, and <code>--model</code> flags.</p>
+          <p class="release-card__desc">Configure your AI provider, endpoint, model, and tasks directly from the CLI — Ollama-friendly with <code>--provider</code>, <code>--endpoint</code>, and <code>--model</code> flags.</p>
         </article>
         <article class="release-card" data-animate="fade-up" data-delay="100">
           <span class="release-card__eyebrow">Auth</span>
@@ -328,7 +277,7 @@
       <div class="section__header" data-animate="fade-up">
         <span class="section__label">AI Engine</span>
         <h2 class="section__title">Your infrastructure,<br><span class="gradient-text">understood by AI.</span></h2>
-        <p class="section__desc">Stacker's AI engine doesn't just guess - it deeply analyzes your project to generate the perfect deployment configuration.</p>
+        <p class="section__desc">Stacker's AI engine doesn't just guess — it deeply analyzes your project to generate the perfect deployment configuration.</p>
       </div>
       <div class="ai-section__flow" data-animate="fade-up" data-delay="100">
         <div class="ai-step">
@@ -451,27 +400,6 @@
     </div>
   </section>
 
-  <!-- Awesome Self-Hosted Section -->
-  <section class="section awesome" id="awesome">
-    <div class="container">
-      <div class="cta__inner" data-animate="fade-up">
-        <div class="cta__glow" aria-hidden="true"></div>
-        <span class="section__label">Try it for real</span>
-        <h2 class="cta__title">Real stacks.<br><span class="gradient-text">Real deploys. Test them yourself.</span></h2>
-        <p class="cta__desc">We curate <strong>awesome-selfhosted-stacker</strong> - a growing catalog of ready-to-run, self-hosted apps with <code>stacker.yml</code> configs you can actually deploy. Clone one, run <code>stacker deploy</code>, and see the whole workflow end to end on your own cloud or bare-metal server.</p>
-        <div class="cta__actions">
-          <a href="https://github.com/trydirect/awesome-selfhosted-stacker" target="_blank" rel="noopener" class="btn btn--primary btn--lg">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-            Browse awesome-selfhosted-stacker
-          </a>
-          <a href="https://github.com/trydirect/awesome-selfhosted-stacker" target="_blank" rel="noopener" class="btn btn--ghost btn--lg">
-            Contribute a stack
-          </a>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- Quick Start Section -->
   <section class="section quickstart" id="quickstart">
     <div class="container">
@@ -578,9 +506,9 @@
         <div class="command-card" data-command="init">
           <div class="command-card__header">
             <code class="command-card__cmd">stacker init</code>
-            <span class="command-card__flag">--from-github</span>
+            <span class="command-card__flag">--with-ai</span>
           </div>
-          <p class="command-card__desc">Scan a local project or clone one with <code>--from-github &lt;owner/repo&gt;</code> to generate <code>stacker.yml</code> - with optional <code>--with-ai</code> assistance.</p>
+          <p class="command-card__desc">Scan your project and generate <code>stacker.yml</code> — with optional AI assistance.</p>
         </div>
         <div class="command-card" data-command="deploy">
           <div class="command-card__header">
@@ -631,14 +559,14 @@
             <code class="command-card__cmd">stacker service</code>
             <span class="command-card__flag">add &lt;name&gt;</span>
           </div>
-          <p class="command-card__desc">Add services from 20+ built-in templates - Postgres, Redis, WordPress, and more. Auto-adds dependencies.</p>
+          <p class="command-card__desc">Add services from 20+ built-in templates — Postgres, Redis, WordPress, and more. Auto-adds dependencies.</p>
         </div>
         <div class="command-card" data-command="pipe">
           <div class="command-card__header">
             <code class="command-card__cmd">stacker pipe</code>
-            <span class="command-card__flag">create --name</span>
+            <span class="command-card__flag">create</span>
           </div>
-          <p class="command-card__desc">Connect apps and activate flows non-interactively with <code>--name</code>, authenticate delivery via <code>target_headers</code>, and fetch inputs over HTTP with <code>--source-url</code>.</p>
+          <p class="command-card__desc">Discover endpoints, connect apps, activate flows, replay executions, and inspect automation history.</p>
         </div>
         <div class="command-card" data-command="agent">
           <div class="command-card__header">
@@ -757,7 +685,7 @@
       <div class="cta__inner" data-animate="fade-up">
         <div class="cta__glow" aria-hidden="true"></div>
         <h2 class="cta__title">Ready to deploy<br><span class="gradient-text">smarter?</span></h2>
-        <p class="cta__desc">Ship with Stacker v0.3.1: init from GitHub, authenticated app pipes, generated service passwords, one-command marketplace install, bare-metal deploys, and agent ops in one place.</p>
+        <p class="cta__desc">Ship with the current Stacker release: AI config, bare-metal deploys, service secrets, cloud firewalls, pipes, and agent ops in one place.</p>
         <div class="cta__actions">
           <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener" class="btn btn--primary btn--lg">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
@@ -809,7 +737,6 @@
           <div class="footer__col">
             <h4>Resources</h4>
             <a href="https://github.com/trydirect/stacker" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://github.com/trydirect/awesome-selfhosted-stacker" target="_blank" rel="noopener">Test Stacks</a>
             <a href="https://github.com/trydirect/stacker/blob/main/docs/STACKER_YML_REFERENCE.md" target="_blank" rel="noopener">Documentation</a>
             <a href="https://github.com/trydirect/stacker/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
           </div>

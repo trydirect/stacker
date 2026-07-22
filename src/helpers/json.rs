@@ -96,6 +96,13 @@ where
         ErrorForbidden(self.set_msg(msg).to_string())
     }
 
+    /// HTTP 402 Payment Required — used by the per-install billing gate
+    /// when a template requires payment and the user has no viable payment
+    /// method (or an authorize was declined by user_service).
+    pub(crate) fn payment_required<I: Into<String>>(self, msg: I) -> Error {
+        actix_web::error::ErrorPaymentRequired(self.set_msg(msg).to_string())
+    }
+
     pub(crate) fn conflict<I: Into<String>>(self, msg: I) -> Error {
         actix_web::error::ErrorConflict(self.set_msg(msg).to_string())
     }

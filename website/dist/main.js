@@ -1,6 +1,6 @@
 "use strict";
 // ============================================================
-// Stacker Website - TypeScript Interactions
+// Stacker Website — TypeScript Interactions
 // Particle system, typing effect, scroll animations, counters
 // ============================================================
 class ParticleSystem {
@@ -198,7 +198,7 @@ class ScrollAnimator {
         document.querySelectorAll('[data-animate]').forEach((el) => {
             const rect = el.getBoundingClientRect();
             if (rect.top < vh) {
-                // Element is already in the viewport - show it immediately
+                // Element is already in the viewport — show it immediately
                 const delay = parseInt(el.dataset.delay || '0', 10);
                 setTimeout(() => el.classList.add('is-visible'), delay);
             }
@@ -343,7 +343,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const heroOutput = document.getElementById('heroOutput');
     if (heroCommand && heroOutput) {
         new TypeWriter(heroCommand, heroOutput, [
-            'stacker init --from-github trydirect/awesome-selfhosted-stacker',
             'stacker init --with-ai',
             'stacker service add wordpress',
             'stacker deploy --target server --runtime kata',
@@ -351,12 +350,6 @@ document.addEventListener('DOMContentLoaded', () => {
             './stacker ai ask "how do I connect my metal bare server"',
             'stacker agent configure-firewall --public-ports 80/tcp,443/tcp',
         ], [
-            [
-                '▸ Cloning github.com/trydirect/awesome-selfhosted-stacker...',
-                '✓ Detected: Node.js + PostgreSQL + Redis from compose',
-                '✓ Wrote stacker.yml, .env.example, generate-secrets.sh',
-                '✓ Ready to deploy - run: stacker deploy',
-            ],
             [
                 '▸ Scanning project structure...',
                 '✓ Detected: Python + FastAPI + PostgreSQL + Redis',

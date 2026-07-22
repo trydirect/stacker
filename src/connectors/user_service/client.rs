@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::connector::UserServiceConnector;
 use super::types::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProfile,
+    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+    StackResponse, UserPlanInfo, UserProfile,
 };
 use super::utils::is_plan_higher_tier;
 
@@ -634,6 +635,126 @@ impl UserServiceConnector for UserServiceClient {
             max_results,
         )
         .await
+    }
+
+    async fn can_charge(
+        &self,
+        user_token: &str,
+    ) -> Result<BillingCapability, ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/can-charge", self.base_url);
+        let resp = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", user_token))
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<BillingCapability>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn authorize_install_charge(
+        &self,
+        user_token: &str,
+        template_id: &Uuid,
+        amount_minor: i64,
+        currency: &str,
+        idempotency_key: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/authorize", self.base_url);
+        let payload = serde_json::json!({
+            "template_id": template_id.to_string(),
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "idempotency_key": idempotency_key,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", user_token))
+            .header("Idempotency-Key", idempotency_key)
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<AuthorizationHandle>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn capture_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/capture", self.base_url);
+        let payload = serde_json::json!({
+            "authorization_id": authorization_id,
+            "deployment_hash": deployment_hash,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(ConnectorError::from)?;
+        if !status.is_success() {
+            return Err(map_billing_error_status(status.as_u16(), &text));
+        }
+        serde_json::from_str::<AuthorizationHandle>(&text)
+            .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
+    }
+
+    async fn void_install_charge(
+        &self,
+        auth_token: &str,
+        authorization_id: &str,
+        reason: &str,
+    ) -> Result<(), ConnectorError> {
+        let url = format!("{}/api/1.0/marketplace/billing/void", self.base_url);
+        let payload = serde_json::json!({
+            "authorization_id": authorization_id,
+            "reason": reason,
+        });
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        Err(map_billing_error_status(status.as_u16(), &text))
+    }
+}
+
+/// Map a non-2xx billing response to the appropriate ConnectorError.
+/// Split out so all four billing methods share the same error semantics.
+fn map_billing_error_status(status: u16, body: &str) -> ConnectorError {
+    let body = body.to_string();
+    match status {
+        402 => ConnectorError::PaymentRequired(body),
+        409 => ConnectorError::Conflict(body),
+        401 | 403 => ConnectorError::Unauthorized(body),
+        404 => ConnectorError::NotFound(body),
+        429 => ConnectorError::RateLimited(body),
+        500..=599 => ConnectorError::ServiceUnavailable(body),
+        _ => ConnectorError::HttpError(format!("billing http {}: {}", status, body)),
     }
 }
 

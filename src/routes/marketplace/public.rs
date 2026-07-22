@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use crate::configuration::Settings;
+use crate::connectors::user_service::UserServiceConnector;
 use crate::db;
 use crate::helpers::redact::{redact_sensitive_json_values, redact_yaml_string};
 use crate::helpers::JsonResponse;
@@ -280,6 +283,7 @@ pub async fn deploy_complete_handler(
     body: web::Json<DeployCompleteRequest>,
     pg_pool: web::Data<PgPool>,
     settings: web::Data<Settings>,
+    user_service: web::Data<Arc<dyn UserServiceConnector>>,
 ) -> Result<impl Responder> {
     require_stacker_service_auth(&req)?;
 
@@ -323,6 +327,56 @@ pub async fn deploy_complete_handler(
             JsonResponse::<serde_json::Value>::build().not_found("Marketplace template not found")
         );
     };
+
+    // Per-install billing: capture the previously-authorized charge now that
+    // the deploy has confirmed successful. Lookup is by deployment_hash on the
+    // authorization row (populated at install time); non-per_install rows
+    // simply won't match and this becomes a no-op. Non-fatal on capture
+    // failure — the sweeper reconciles stragglers.
+    match db::marketplace_billing::find_by_deployment_hash(
+        pg_pool.get_ref(),
+        &payload.deployment_hash,
+    )
+    .await
+    {
+        Ok(Some(auth_row)) if auth_row.status == "authorized" => {
+            let service_token = std::env::var("STACKER_SERVICE_TOKEN").unwrap_or_default();
+            match user_service
+                .capture_install_charge(
+                    &service_token,
+                    &auth_row.authorization_id,
+                    &payload.deployment_hash,
+                )
+                .await
+            {
+                Ok(_handle) => {
+                    if let Err(err) = db::marketplace_billing::mark_captured(
+                        pg_pool.get_ref(),
+                        &auth_row.authorization_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "mark_captured DB write failed for {}: {}",
+                            auth_row.authorization_id,
+                            err
+                        );
+                    }
+                }
+                Err(err) => tracing::warn!(
+                    "capture_install_charge failed for {} (deploy already succeeded, sweeper will retry): {}",
+                    auth_row.authorization_id,
+                    err
+                ),
+            }
+        }
+        Ok(_) => {} // no per_install authorization for this deployment
+        Err(err) => tracing::warn!(
+            "find_by_deployment_hash failed for {}: {}",
+            payload.deployment_hash,
+            err
+        ),
+    }
 
     let response = DeployCompleteResponse {
         success: true,

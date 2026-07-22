@@ -1043,9 +1043,6 @@ pub struct ActivatePipeCommandRequest {
     /// Source container name
     #[serde(default)]
     pub source_container: Option<String>,
-    /// External source URL (agent fetches via HTTP, no curl needed)
-    #[serde(default)]
-    pub source_url: Option<String>,
     /// Source endpoint path to watch
     #[serde(default = "default_pipe_source_endpoint")]
     pub source_endpoint: String,
@@ -1079,9 +1076,6 @@ pub struct ActivatePipeCommandRequest {
     /// Target HTTP method
     #[serde(default = "default_target_method")]
     pub target_method: String,
-    /// Optional target headers (auth tokens, API keys, etc.)
-    #[serde(default)]
-    pub target_headers: Option<std::collections::HashMap<String, String>>,
     /// Field mapping (JSONPath expressions)
     #[serde(default)]
     pub field_mapping: Option<serde_json::Value>,
@@ -1136,9 +1130,6 @@ pub struct TriggerPipeCommandRequest {
     /// Optional source container override
     #[serde(default)]
     pub source_container: Option<String>,
-    /// Optional external source URL (agent fetches via HTTP, no curl needed)
-    #[serde(default)]
-    pub source_url: Option<String>,
     /// Optional source endpoint override
     #[serde(default = "default_pipe_source_endpoint")]
     pub source_endpoint: String,
@@ -1160,9 +1151,6 @@ pub struct TriggerPipeCommandRequest {
     /// Optional target method override
     #[serde(default = "default_target_method")]
     pub target_method: String,
-    /// Optional target headers (auth tokens, API keys, etc.)
-    #[serde(default)]
-    pub target_headers: Option<std::collections::HashMap<String, String>>,
     /// Optional field mapping override
     #[serde(default)]
     pub field_mapping: Option<serde_json::Value>,

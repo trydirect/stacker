@@ -178,9 +178,7 @@ impl MqManager {
                 msg
             })?;
 
-        // Return the SAME channel the queue was declared and bound on. Previously
-        // this created a fresh channel, which has no knowledge of the binding, so
-        // a `basic_consume` on it received nothing. Callers consume on this channel.
+        let channel = self.create_channel().await?;
         Ok(channel)
     }
 }

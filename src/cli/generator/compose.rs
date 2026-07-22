@@ -4,8 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::cli::config_parser::{
-    AppType, ComposeHealthcheck, ConfigOrigin, DomainConfig, ProxyType, ServiceDefinition,
-    StackerConfig,
+    AppType, ComposeHealthcheck, DomainConfig, ProxyType, ServiceDefinition, StackerConfig,
 };
 use crate::cli::error::CliError;
 
@@ -116,23 +115,15 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
         let mut named_volumes: Vec<String> = Vec::new();
 
         // --- Main app service ---
-        // A marketplace-generated config describes its whole stack in
-        // `services:` — there is no local application to build. Synthesizing an
-        // `app` service there produces a phantom `build: .stacker/Dockerfile`
-        // whose context is never shipped to the remote host, failing the
-        // deploy with "lstat /home/.../.stacker: no such file or directory".
-        // Skip it unless the app section carries an explicit source.
-        if config_has_buildable_app(config) {
-            let app_service = build_app_service(config);
-            for vol in &app_service.volumes {
-                if let Some(named) = extract_named_volume(vol) {
-                    if !named_volumes.contains(&named) {
-                        named_volumes.push(named);
-                    }
+        let app_service = build_app_service(config);
+        for vol in &app_service.volumes {
+            if let Some(named) = extract_named_volume(vol) {
+                if !named_volumes.contains(&named) {
+                    named_volumes.push(named);
                 }
             }
-            compose.services.push(app_service);
         }
+        compose.services.push(app_service);
 
         // --- Additional services (databases, caches, etc.) ---
         for svc_def in &config.services {
@@ -192,19 +183,6 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Internal construction helpers (SRP: each builds one aspect)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Whether the config's `app` section should be materialized as a service.
-///
-/// User-authored configs always keep their app (it builds from the project
-/// directory). Marketplace-generated configs express the entire stack in
-/// `services:` and have no local app to build, so the default `app` is skipped
-/// unless it declares an explicit source (image / dockerfile / build).
-fn config_has_buildable_app(config: &StackerConfig) -> bool {
-    if config.origin != ConfigOrigin::MarketplaceGenerated {
-        return true;
-    }
-    config.app.image.is_some() || config.app.dockerfile.is_some() || config.app.build.is_some()
-}
 
 fn build_app_service(config: &StackerConfig) -> ComposeService {
     let mut svc = ComposeService {
@@ -583,64 +561,6 @@ mod tests {
         let app = &compose.services[0];
         assert!(app.build_context.is_some());
         assert!(app.image.is_none());
-    }
-
-    fn ghost_service() -> ServiceDefinition {
-        ServiceDefinition {
-            name: "ghost".to_string(),
-            image: "ghost:5-alpine".to_string(),
-            ports: vec!["2368:2368".to_string()],
-            environment: HashMap::new(),
-            volumes: vec![],
-            depends_on: vec![],
-            command: None,
-            healthcheck: None,
-        }
-    }
-
-    #[test]
-    fn marketplace_config_without_app_source_omits_phantom_app_service() {
-        let mut config = minimal_config(AppType::Static);
-        config.origin = ConfigOrigin::MarketplaceGenerated;
-        config.services = vec![ghost_service()];
-
-        let compose = ComposeDefinition::try_from(&config).unwrap();
-        let names: Vec<&str> = compose.services.iter().map(|s| s.name.as_str()).collect();
-
-        // No phantom `app` (which would build from an unshipped .stacker/Dockerfile).
-        assert!(
-            !names.contains(&"app"),
-            "marketplace stack must not synthesize an app service, got {:?}",
-            names
-        );
-        assert!(names.contains(&"ghost"));
-    }
-
-    #[test]
-    fn marketplace_config_with_explicit_app_image_keeps_app_service() {
-        let mut config = minimal_config(AppType::Static);
-        config.origin = ConfigOrigin::MarketplaceGenerated;
-        config.app.image = Some("myorg/app:1.0".to_string());
-        config.services = vec![ghost_service()];
-
-        let compose = ComposeDefinition::try_from(&config).unwrap();
-        let names: Vec<&str> = compose.services.iter().map(|s| s.name.as_str()).collect();
-
-        assert!(names.contains(&"app"));
-        assert!(names.contains(&"ghost"));
-    }
-
-    #[test]
-    fn user_authored_config_with_services_still_gets_app_service() {
-        let mut config = minimal_config(AppType::Static);
-        // Default origin is UserAuthored.
-        config.services = vec![ghost_service()];
-
-        let compose = ComposeDefinition::try_from(&config).unwrap();
-        let names: Vec<&str> = compose.services.iter().map(|s| s.name.as_str()).collect();
-
-        assert!(names.contains(&"app"), "user app must be preserved");
-        assert!(names.contains(&"ghost"));
     }
 
     #[test]

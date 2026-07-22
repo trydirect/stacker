@@ -107,6 +107,15 @@ pub async fn run(
         connectors::init_user_service(&settings.connectors, api_pool.clone());
     let dockerhub_connector = connectors::init_dockerhub(&settings.connectors).await;
     let install_service_connector = connectors::init_install_service(&settings.connectors);
+
+    // Start the per-install billing sweeper. No-ops when the feature flag
+    // is off; when on, ticks every 60s to void expired-but-uncaptured
+    // authorizations so stacker's ledger reconciles with user_service.
+    crate::services::install_authorization_sweeper::spawn(
+        api_pool.get_ref().clone(),
+        user_service_connector.get_ref().clone(),
+        settings.per_install_billing_enabled,
+    );
     let payout_provider = crate::services::init_payout_provider(&settings.payouts)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string()))?;
     let payout_provider = web::Data::new(payout_provider);

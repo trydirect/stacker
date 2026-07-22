@@ -229,10 +229,7 @@ pub struct AuthorizePublicKeyResponse {
 // Marketplace response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Marketplace template as returned by `GET /api/templates` (summary; list
-/// form) and `GET /api/templates/{slug}` (detail). In the list form
-/// `stack_definition` is absent; `get_marketplace_template` populates it from
-/// the detail response's `latest_version.stack_definition`.
+/// Marketplace template summary as returned by `GET /api/templates`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceTemplate {
     pub id: Option<serde_json::Value>,
@@ -259,6 +256,25 @@ pub struct MarketplaceInstallResponse {
     pub template: MarketplaceTemplate,
     pub latest_version: serde_json::Value,
     pub deployment_id: Option<i32>,
+    /// Populated only when the template is billed per_install.
+    #[serde(default)]
+    pub authorization: Option<AuthorizationSummary>,
+    /// Populated only for per_install installs — server echoes the key it
+    /// actually used (may differ from what the client sent if the client
+    /// omitted one entirely).
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+/// CLI-side mirror of the server's `AuthorizationSummary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizationSummary {
+    pub authorization_id: String,
+    pub status: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 /// Marketplace template info as returned by `/api/templates/mine`
@@ -1864,38 +1880,37 @@ impl StackerClient {
         let Some(item) = api.item else {
             return Ok(None);
         };
-        // The server nests the full definition under `latest_version`
-        // (see marketplace `detail_handler`), while the summary fields live
-        // under `template`. Pull the definition across so callers that read
-        // `MarketplaceTemplate.stack_definition` (e.g. the service catalog)
-        // actually see it instead of always getting `None`.
-        let latest_stack_definition = item
-            .get("latest_version")
-            .and_then(|lv| lv.get("stack_definition"))
-            .filter(|sd| !sd.is_null())
-            .cloned();
         let template = item.get("template").cloned().unwrap_or(item);
-        let mut template: MarketplaceTemplate =
-            serde_json::from_value(template).map_err(|e| CliError::DeployFailed {
+        serde_json::from_value(template)
+            .map(Some)
+            .map_err(|e| CliError::DeployFailed {
                 target: crate::cli::config_parser::DeployTarget::Cloud,
                 reason: format!("Invalid marketplace template response: {}", e),
-            })?;
-        if template.stack_definition.is_none() {
-            template.stack_definition = latest_stack_definition;
-        }
-        Ok(Some(template))
+            })
     }
 
     /// Create a Stacker project from a marketplace template.
+    ///
+    /// `idempotency_key` is threaded both as a body field and an
+    /// `Idempotency-Key` header — server accepts either but prefers the
+    /// header. For `per_install`-billed templates, retrying with the same
+    /// key collapses to the single authorization the first call created;
+    /// omitting it there is unsafe (a network blip after a successful
+    /// authorize would double-charge on retry).
     pub async fn install_marketplace_template(
         &self,
         slug: &str,
         name: Option<&str>,
         deploy_form: Option<serde_json::Value>,
         install_inputs: Option<serde_json::Map<String, serde_json::Value>>,
+        idempotency_key: &str,
     ) -> Result<MarketplaceInstallResponse, CliError> {
         let url = format!("{}/api/templates/{}/install", self.base_url, slug);
-        let mut body = serde_json::json!({ "name": name, "deploy": deploy_form });
+        let mut body = serde_json::json!({
+            "name": name,
+            "deploy": deploy_form,
+            "idempotency_key": idempotency_key,
+        });
         if let Some(install_inputs) = install_inputs {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert(
@@ -1908,6 +1923,7 @@ impl StackerClient {
             .http
             .post(&url)
             .bearer_auth(&self.token)
+            .header("Idempotency-Key", idempotency_key)
             .json(&body)
             .send()
             .await
@@ -5153,83 +5169,6 @@ mod tests {
                 .and_then(|meta| meta.get("deployment_hash")),
             Some(&serde_json::json!("hash-123"))
         );
-    }
-
-    #[tokio::test]
-    async fn test_get_marketplace_template_pulls_stack_definition_from_latest_version() {
-        let server = MockServer::start().await;
-
-        // Mirror the server's `detail_handler` shape: summary fields under
-        // `template`, full definition under `latest_version.stack_definition`.
-        Mock::given(method("GET"))
-            .and(path("/api/templates/n8n"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "_status": "OK",
-                "item": {
-                    "template": {
-                        "id": "abc-123",
-                        "slug": "n8n",
-                        "name": "n8n",
-                        "status": "approved"
-                    },
-                    "latest_version": {
-                        "definition_format": "yaml",
-                        "stack_definition": "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
-                    }
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let client = StackerClient::new(&server.uri(), "token");
-        let template = client
-            .get_marketplace_template("n8n")
-            .await
-            .expect("request should succeed")
-            .expect("template should be present");
-
-        assert_eq!(template.slug, "n8n");
-        assert_eq!(
-            template.stack_definition,
-            Some(serde_json::json!(
-                "version: '3.8'\nservices:\n  n8n:\n    image: n8nio/n8n:latest"
-            )),
-            "stack_definition must be lifted out of latest_version",
-        );
-    }
-
-    #[tokio::test]
-    async fn test_get_marketplace_template_leaves_definition_none_when_absent() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/templates/bare"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "_status": "OK",
-                "item": {
-                    "template": {
-                        "id": "def-456",
-                        "slug": "bare",
-                        "name": "bare",
-                        "status": "approved"
-                    },
-                    "latest_version": {
-                        "definition_format": "yaml",
-                        "stack_definition": null
-                    }
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let client = StackerClient::new(&server.uri(), "token");
-        let template = client
-            .get_marketplace_template("bare")
-            .await
-            .expect("request should succeed")
-            .expect("template should be present");
-
-        assert_eq!(template.stack_definition, None);
     }
 
     #[tokio::test]

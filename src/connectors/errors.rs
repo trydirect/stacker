@@ -19,6 +19,11 @@ pub enum ConnectorError {
     RateLimited(String),
     /// Internal error in connector
     Internal(String),
+    /// Payment required — the external service declined a billing operation
+    /// (e.g. no payment method, card declined). Surfaced as HTTP 402 upstream.
+    PaymentRequired(String),
+    /// Idempotency-key collision or state-transition conflict (HTTP 409).
+    Conflict(String),
 }
 
 impl fmt::Display for ConnectorError {
@@ -31,6 +36,8 @@ impl fmt::Display for ConnectorError {
             Self::NotFound(msg) => write!(f, "Not found: {}", msg),
             Self::RateLimited(msg) => write!(f, "Rate limited: {}", msg),
             Self::Internal(msg) => write!(f, "Internal error: {}", msg),
+            Self::PaymentRequired(msg) => write!(f, "Payment required: {}", msg),
+            Self::Conflict(msg) => write!(f, "Conflict: {}", msg),
         }
     }
 }
@@ -47,6 +54,8 @@ impl ResponseError for ConnectorError {
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "Resource not found"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+            Self::PaymentRequired(_) => (StatusCode::PAYMENT_REQUIRED, "Payment required"),
+            Self::Conflict(_) => (StatusCode::CONFLICT, "Conflict"),
         };
 
         HttpResponse::build(status).json(json!({
@@ -64,6 +73,8 @@ impl ResponseError for ConnectorError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::PaymentRequired(_) => StatusCode::PAYMENT_REQUIRED,
+            Self::Conflict(_) => StatusCode::CONFLICT,
         }
     }
 }

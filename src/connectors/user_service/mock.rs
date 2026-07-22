@@ -3,8 +3,8 @@ use uuid::Uuid;
 use crate::connectors::errors::ConnectorError;
 
 use super::{
-    CategoryInfo, PlanDefinition, ProductInfo, StackResponse, UserPlanInfo, UserProduct,
-    UserProfile, UserServiceConnector,
+    AuthorizationHandle, BillingCapability, CategoryInfo, PlanDefinition, ProductInfo,
+    StackResponse, UserPlanInfo, UserProduct, UserProfile, UserServiceConnector,
 };
 
 /// Mock User Service for testing - always succeeds
@@ -241,5 +241,56 @@ impl UserServiceConnector for MockUserServiceConnector {
         }
 
         Ok(items)
+    }
+
+    async fn can_charge(
+        &self,
+        _user_token: &str,
+    ) -> Result<BillingCapability, ConnectorError> {
+        Ok(BillingCapability {
+            can_charge: true,
+            reason: None,
+        })
+    }
+
+    async fn authorize_install_charge(
+        &self,
+        _user_token: &str,
+        _template_id: &Uuid,
+        amount_minor: i64,
+        currency: &str,
+        idempotency_key: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        Ok(AuthorizationHandle {
+            authorization_id: format!("mock-auth-{}", idempotency_key),
+            amount_minor,
+            currency: currency.to_string(),
+            expires_at: Some("2099-01-01T00:00:00Z".to_string()),
+            status: "authorized".to_string(),
+        })
+    }
+
+    async fn capture_install_charge(
+        &self,
+        _auth_token: &str,
+        authorization_id: &str,
+        _deployment_hash: &str,
+    ) -> Result<AuthorizationHandle, ConnectorError> {
+        Ok(AuthorizationHandle {
+            authorization_id: authorization_id.to_string(),
+            amount_minor: 0,
+            currency: "USD".to_string(),
+            expires_at: None,
+            status: "captured".to_string(),
+        })
+    }
+
+    async fn void_install_charge(
+        &self,
+        _auth_token: &str,
+        _authorization_id: &str,
+        _reason: &str,
+    ) -> Result<(), ConnectorError> {
+        Ok(())
     }
 }
