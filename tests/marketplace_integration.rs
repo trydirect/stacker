@@ -204,6 +204,7 @@ fn test_webhook_payload_for_template_approval() {
             "supported_clouds": ["hetzner"],
             "min_ram_mb": 2048
         })),
+        ..Default::default()
     };
 
     // Verify payload has all required fields for approval
@@ -255,6 +256,7 @@ fn test_webhook_payload_for_template_update_price() {
             "supported_os": ["ubuntu-22.04"],
             "min_disk_gb": 20
         })),
+        ..Default::default()
     };
 
     assert_eq!(payload.action, "template_updated");
@@ -298,6 +300,7 @@ fn test_webhook_payload_for_template_rejection() {
         next_action_hint: None,
         vendor_email: None,
         infrastructure_requirements: None,
+        ..Default::default()
     };
 
     assert_eq!(payload.action, "template_rejected");
@@ -339,6 +342,7 @@ fn test_webhook_payload_for_template_needs_changes() {
         ),
         vendor_email: None,
         infrastructure_requirements: Some(serde_json::json!({"min_ram_mb": 2048})),
+        ..Default::default()
     };
 
     assert_eq!(payload.action, "template_needs_changes");
