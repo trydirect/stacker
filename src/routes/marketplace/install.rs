@@ -1360,6 +1360,10 @@ mod tests {
             "name": "Dify",
             "description": "Dify AI application platform",
             "categories": ["AI"],
+            // A single-app catalog entry carries a real container image; without
+            // one it is not installable (catalog_application_project_form now
+            // fails loud rather than shipping an empty compose).
+            "docker_image": "langgenius/dify-api",
             "is_from_marketplace": true
         });
 
@@ -1433,6 +1437,74 @@ mod tests {
             parsed["services"]["svc"]["environment"]["B"],
             serde_yaml::Value::from("2")
         );
+    }
+
+    #[test]
+    fn synthesize_catalog_compose_builds_multi_service_stack_from_members() {
+        // A stack (e.g. LAMP) carries no top-level image; each member service
+        // provides its own real container image. The synthesizer must emit one
+        // compose service per member, keyed by member code, and never fall back
+        // to the empty stack-level docker_image.
+        let application = json!({
+            "code": "lamp",
+            "kind": "stack",
+            "docker_image": "",
+            "services": [
+                {
+                    "code": "apache",
+                    "docker_image": "trydirect/php",
+                    "default_ports": [80],
+                    "default_env": { "PHP_ENV": "prod" }
+                },
+                {
+                    "code": "mariadb",
+                    "docker_image": "mariadb:11",
+                    "default_env": [ { "key": "MARIADB_ROOT_PASSWORD", "value": "secret" } ]
+                }
+            ]
+        });
+
+        let compose = synthesize_catalog_compose(&application, "lamp")
+            .expect("a stack with member images should synthesize a multi-service compose");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
+        let services = parsed["services"].as_mapping().expect("services mapping");
+
+        // One service per member, keyed by member code (not the stack code).
+        assert_eq!(services.len(), 2);
+        assert_eq!(
+            parsed["services"]["apache"]["image"],
+            serde_yaml::Value::from("trydirect/php")
+        );
+        assert_eq!(
+            parsed["services"]["apache"]["ports"][0],
+            serde_yaml::Value::from("80:80")
+        );
+        assert_eq!(
+            parsed["services"]["apache"]["environment"]["PHP_ENV"],
+            serde_yaml::Value::from("prod")
+        );
+        assert_eq!(
+            parsed["services"]["mariadb"]["image"],
+            serde_yaml::Value::from("mariadb:11")
+        );
+        assert_eq!(
+            parsed["services"]["mariadb"]["environment"]["MARIADB_ROOT_PASSWORD"],
+            serde_yaml::Value::from("secret")
+        );
+        // The empty stack-level docker_image must never leak in as a service.
+        assert!(services.get(serde_yaml::Value::from("lamp")).is_none());
+    }
+
+    #[test]
+    fn synthesize_catalog_compose_returns_none_for_stack_without_member_images() {
+        // A stack whose members all lack images cannot be synthesized -> None,
+        // so the caller fails loud rather than shipping an empty compose.
+        let application = json!({
+            "kind": "stack",
+            "docker_image": "",
+            "services": [ { "code": "apache" }, { "code": "mariadb" } ]
+        });
+        assert!(synthesize_catalog_compose(&application, "lamp").is_none());
     }
 
     #[test]
