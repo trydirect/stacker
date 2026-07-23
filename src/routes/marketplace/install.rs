@@ -494,9 +494,19 @@ fn catalog_application_project_form(
             "content": compose,
         }]),
         None => {
+            let is_stack = application.get("kind").and_then(|v| v.as_str()) == Some("stack")
+                || application
+                    .get("services")
+                    .and_then(|v| v.as_array())
+                    .is_some();
+            let reason = if is_stack {
+                "none of its member apps resolved a container image (each member app needs its own dockerhub_image)"
+            } else {
+                "the catalog entry is missing a dockerhub_image"
+            };
             return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
-                "Catalog application '{}' cannot be installed: no container image was available to synthesize a docker-compose file. This usually means the catalog entry (or its member apps) is missing a dockerhub_image.",
-                slug
+                "Catalog application '{}' cannot be installed: no container image was available to synthesize a docker-compose file — {}.",
+                slug, reason
             )));
         }
     };
