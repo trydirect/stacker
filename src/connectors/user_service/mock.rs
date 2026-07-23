@@ -251,10 +251,7 @@ impl UserServiceConnector for MockUserServiceConnector {
         Ok(None)
     }
 
-    async fn can_charge(
-        &self,
-        _user_token: &str,
-    ) -> Result<BillingCapability, ConnectorError> {
+    async fn can_charge(&self, _user_token: &str) -> Result<BillingCapability, ConnectorError> {
         Ok(BillingCapability {
             can_charge: true,
             reason: None,

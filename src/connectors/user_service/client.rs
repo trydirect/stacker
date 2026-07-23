@@ -648,10 +648,7 @@ impl UserServiceConnector for UserServiceClient {
             .map_err(|e| ConnectorError::InvalidResponse(e.to_string()))
     }
 
-    async fn can_charge(
-        &self,
-        user_token: &str,
-    ) -> Result<BillingCapability, ConnectorError> {
+    async fn can_charge(&self, user_token: &str) -> Result<BillingCapability, ConnectorError> {
         let url = format!("{}/api/1.0/marketplace/billing/can-charge", self.base_url);
         let resp = self
             .http_client

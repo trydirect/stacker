@@ -125,18 +125,11 @@ pub(crate) fn application_from_stack_view(item: StackViewItem) -> Application {
         .or_else(|| value.get("category"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let docker_image = value
-        .get("image")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            value
-                .get("images")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        });
+    // IMPORTANT: `value["image"]`/`value["images"]` on a stack_view row are the
+    // cloud/server OS image (e.g. "docker-ce"), NOT a container image, so they
+    // must never be used as docker_image. Resolve the real image from the member
+    // apps' dockerhub_* fields instead (mirrors the User Service fix).
+    let docker_image = resolve_stack_view_docker_image(&value);
     let default_port = value
         .get("ports")
         .and_then(|v| v.as_array())
@@ -160,5 +153,57 @@ pub(crate) fn application_from_stack_view(item: StackViewItem) -> Application {
         default_env: None,
         default_ports: None,
         default_config_files: None,
+        services: None,
+    }
+}
+
+/// Build a container image string for a single stack member app from its
+/// `dockerhub_*` fields (defaults the org to "trydirect"), mirroring the User
+/// Service `_build_docker_image` helper. Returns None when no image is set.
+fn member_docker_image(member: &serde_json::Value) -> Option<String> {
+    let image = member
+        .get("dockerhub_image")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let name = member
+        .get("dockerhub_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("trydirect");
+    if let Some(repo) = member
+        .get("dockerhub_repo")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(format!("{name}/{repo}"))
+    } else {
+        Some(format!("{name}/{image}"))
+    }
+}
+
+/// Resolve a container image for a stack_view row without ever falling back to
+/// the cloud OS `image` column. Multi-app stacks have no single image (-> None);
+/// a single-member entry resolves that member's real image.
+fn resolve_stack_view_docker_image(value: &serde_json::Value) -> Option<String> {
+    if value
+        .get("is_stack")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let members: Vec<&serde_json::Value> = ["apps", "services", "features"]
+        .iter()
+        .filter_map(|k| value.get(*k))
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .collect();
+    if members.len() == 1 {
+        member_docker_image(members[0])
+    } else {
+        None
     }
 }

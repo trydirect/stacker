@@ -9,12 +9,16 @@ const MARKETPLACE_INSTALL_MIN_PLAN: &str = "professional";
 pub enum MarketplaceAccessError {
     MissingUserToken,
     InsufficientFeaturePlan,
-    InsufficientTemplatePlan { required_plan: String },
+    InsufficientTemplatePlan {
+        required_plan: String,
+    },
     TemplateNotOwned,
     /// The template is priced per-install and the user has no viable
     /// payment method on file (declined at the `can_charge` probe, before
     /// any authorize attempt).
-    NoPaymentMethod { reason: String },
+    NoPaymentMethod {
+        reason: String,
+    },
     ValidationFailed(String),
 }
 
@@ -352,10 +356,7 @@ mod tests {
             unimplemented!()
         }
 
-        async fn can_charge(
-            &self,
-            _user_token: &str,
-        ) -> Result<BillingCapability, ConnectorError> {
+        async fn can_charge(&self, _user_token: &str) -> Result<BillingCapability, ConnectorError> {
             self.captured_calls
                 .lock()
                 .unwrap()
@@ -429,10 +430,13 @@ mod tests {
             authorization_id: &str,
             reason: &str,
         ) -> Result<(), ConnectorError> {
-            self.captured_calls.lock().unwrap().push(CapturedCall::Void {
-                authorization_id: authorization_id.to_string(),
-                reason: reason.to_string(),
-            });
+            self.captured_calls
+                .lock()
+                .unwrap()
+                .push(CapturedCall::Void {
+                    authorization_id: authorization_id.to_string(),
+                    reason: reason.to_string(),
+                });
             self.void_responses
                 .lock()
                 .unwrap()
@@ -697,9 +701,12 @@ mod tests {
         let svc = Arc::new(TestUserService::new(&[("professional", true)], &[]));
         let user_service: Arc<dyn UserServiceConnector> = svc.clone();
 
-        let result =
-            validate_marketplace_template_access(&user_service, &test_user(), &per_install_template())
-                .await;
+        let result = validate_marketplace_template_access(
+            &user_service,
+            &test_user(),
+            &per_install_template(),
+        )
+        .await;
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
         let calls = svc.calls();
@@ -709,7 +716,9 @@ mod tests {
             calls
         );
         assert!(
-            !calls.iter().any(|c| matches!(c, CapturedCall::Authorize { .. })),
+            !calls
+                .iter()
+                .any(|c| matches!(c, CapturedCall::Authorize { .. })),
             "gate must NOT authorize — the install handler does that: {:?}",
             calls
         );
@@ -723,9 +732,12 @@ mod tests {
         );
         let user_service: Arc<dyn UserServiceConnector> = svc.clone();
 
-        let result =
-            validate_marketplace_template_access(&user_service, &test_user(), &per_install_template())
-                .await;
+        let result = validate_marketplace_template_access(
+            &user_service,
+            &test_user(),
+            &per_install_template(),
+        )
+        .await;
 
         assert!(matches!(
             result,
@@ -742,9 +754,12 @@ mod tests {
         let svc = Arc::new(TestUserService::new(&[("professional", false)], &[]));
         let user_service: Arc<dyn UserServiceConnector> = svc.clone();
 
-        let result =
-            validate_marketplace_template_access(&user_service, &test_user(), &per_install_template())
-                .await;
+        let result = validate_marketplace_template_access(
+            &user_service,
+            &test_user(),
+            &per_install_template(),
+        )
+        .await;
 
         assert!(matches!(
             result,

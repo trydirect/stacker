@@ -103,10 +103,7 @@ pub trait UserServiceConnector: Send + Sync {
     /// deciding whether to attempt an authorize. Returns
     /// `can_charge=false` with a reason when the user has no payment
     /// method on file, an expired card, etc.
-    async fn can_charge(
-        &self,
-        user_token: &str,
-    ) -> Result<BillingCapability, ConnectorError>;
+    async fn can_charge(&self, user_token: &str) -> Result<BillingCapability, ConnectorError>;
 
     /// Reserve funds for a single install. Must be idempotent on
     /// `idempotency_key` — replay with the same key returns the same

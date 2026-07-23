@@ -102,11 +102,7 @@ pub async fn insert_authorization(
 }
 
 /// Link the authorization to the freshly-inserted project row.
-pub async fn attach_project(
-    pool: &PgPool,
-    auth_id: Uuid,
-    project_id: i32,
-) -> Result<(), String> {
+pub async fn attach_project(pool: &PgPool, auth_id: Uuid, project_id: i32) -> Result<(), String> {
     sqlx::query(
         r#"UPDATE marketplace_install_authorization
            SET project_id = $1, updated_at = now()
@@ -143,10 +139,7 @@ pub async fn attach_deployment_hash(
 /// Terminal state transition on successful capture. Idempotent — re-running
 /// with the same `authorization_id` is a no-op if the row is already
 /// captured.
-pub async fn mark_captured(
-    pool: &PgPool,
-    authorization_id: &str,
-) -> Result<(), String> {
+pub async fn mark_captured(pool: &PgPool, authorization_id: &str) -> Result<(), String> {
     sqlx::query(
         r#"UPDATE marketplace_install_authorization
            SET status = 'captured', updated_at = now()

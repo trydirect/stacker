@@ -141,7 +141,10 @@ pub async fn approve_handler(
     let latest_version = db::marketplace::get_latest_version(pg_pool.get_ref(), id)
         .await
         .unwrap_or_else(|err| {
-            tracing::warn!("Failed to load latest version for webhook federation: {}", err);
+            tracing::warn!(
+                "Failed to load latest version for webhook federation: {}",
+                err
+            );
             None
         });
 

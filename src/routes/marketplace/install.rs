@@ -136,9 +136,8 @@ fn classify_definition(
         if obj.contains_key("custom") {
             return Ok(DefinitionShape::LegacyForm(sd));
         }
-        let yaml = serde_yaml::to_string(sd).map_err(|err| {
-            format!("Failed to serialize stacker.yml stack definition: {}", err)
-        })?;
+        let yaml = serde_yaml::to_string(sd)
+            .map_err(|err| format!("Failed to serialize stacker.yml stack definition: {}", err))?;
         return Ok(DefinitionShape::StackerConfig(yaml));
     }
     Err(format!(
@@ -316,15 +315,71 @@ fn json_scalar_to_string(value: &Value) -> Option<String> {
 /// Returns `None` when the application has no docker image, i.e. nothing
 /// deployable; the caller turns that into a clear install error.
 fn synthesize_catalog_compose(application: &Value, service_code: &str) -> Option<String> {
+    let mut services = serde_yaml::Mapping::new();
+
+    // Multi-service stack: one compose service per member app, each with its
+    // own real container image. Members without an image are skipped; if that
+    // leaves nothing, return None so the caller can fail loudly rather than
+    // shipping an empty/bogus compose.
+    if let Some(members) = application.get("services").and_then(|v| v.as_array()) {
+        for member in members {
+            let image = member
+                .get("docker_image")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some(image) = image else { continue };
+            let key = member
+                .get("code")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(service_code);
+            services.insert(
+                key.into(),
+                build_compose_service(
+                    image,
+                    member.get("default_ports"),
+                    member.get("default_port"),
+                    member.get("default_env"),
+                ),
+            );
+        }
+        if services.is_empty() {
+            return None;
+        }
+        return compose_document(services);
+    }
+
+    // Single catalog app: one service from the top-level docker_image.
     let image = application
         .get("docker_image")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
+    services.insert(
+        service_code.into(),
+        build_compose_service(
+            image,
+            application.get("default_ports"),
+            application.get("default_port"),
+            application.get("default_env"),
+        ),
+    );
+    compose_document(services)
+}
 
+/// Build a single compose service mapping (image + ports + env + restart +
+/// default_network) from catalog fields.
+fn build_compose_service(
+    image: &str,
+    default_ports: Option<&Value>,
+    default_port: Option<&Value>,
+    default_env: Option<&Value>,
+) -> serde_yaml::Value {
     // Ports: prefer an explicit `default_ports` list, else `default_port`.
     let mut ports: Vec<serde_yaml::Value> = Vec::new();
-    if let Some(arr) = application.get("default_ports").and_then(|v| v.as_array()) {
+    if let Some(arr) = default_ports.and_then(|v| v.as_array()) {
         for p in arr {
             if let Some(n) = p.as_i64() {
                 ports.push(serde_yaml::Value::String(format!("{n}:{n}")));
@@ -339,7 +394,7 @@ fn synthesize_catalog_compose(application: &Value, service_code: &str) -> Option
         }
     }
     if ports.is_empty() {
-        if let Some(n) = application.get("default_port").and_then(|v| v.as_i64()) {
+        if let Some(n) = default_port.and_then(|v| v.as_i64()) {
             ports.push(serde_yaml::Value::String(format!("{n}:{n}")));
         }
     }
@@ -348,7 +403,7 @@ fn synthesize_catalog_compose(application: &Value, service_code: &str) -> Option
     // "KEY=value" entries. Anything unrecognized is skipped rather than
     // guessed at.
     let mut env = serde_yaml::Mapping::new();
-    match application.get("default_env") {
+    match default_env {
         Some(Value::Object(map)) => {
             for (k, v) in map {
                 if let Some(s) = json_scalar_to_string(v) {
@@ -359,10 +414,9 @@ fn synthesize_catalog_compose(application: &Value, service_code: &str) -> Option
         Some(Value::Array(arr)) => {
             for item in arr {
                 if let Some(obj) = item.as_object() {
-                    if let (Some(k), Some(v)) = (
-                        obj.get("key").and_then(|x| x.as_str()),
-                        obj.get("value"),
-                    ) {
+                    if let (Some(k), Some(v)) =
+                        (obj.get("key").and_then(|x| x.as_str()), obj.get("value"))
+                    {
                         if let Some(s) = json_scalar_to_string(v) {
                             env.insert(k.into(), s.into());
                         }
@@ -388,15 +442,20 @@ fn synthesize_catalog_compose(application: &Value, service_code: &str) -> Option
         "networks".into(),
         serde_yaml::Value::Sequence(vec!["default_network".into()]),
     );
+    serde_yaml::Value::Mapping(service)
+}
 
-    let mut services = serde_yaml::Mapping::new();
-    services.insert(service_code.into(), serde_yaml::Value::Mapping(service));
-
+/// Wrap synthesized services into a full compose document (with the shared
+/// external `default_network`) and serialize to YAML.
+fn compose_document(services: serde_yaml::Mapping) -> Option<String> {
     let mut default_network = serde_yaml::Mapping::new();
     default_network.insert("external".into(), serde_yaml::Value::Bool(true));
     default_network.insert("name".into(), "default_network".into());
     let mut networks = serde_yaml::Mapping::new();
-    networks.insert("default_network".into(), serde_yaml::Value::Mapping(default_network));
+    networks.insert(
+        "default_network".into(),
+        serde_yaml::Value::Mapping(default_network),
+    );
 
     let mut root = serde_yaml::Mapping::new();
     root.insert("services".into(), serde_yaml::Value::Mapping(services));
@@ -420,16 +479,26 @@ fn catalog_application_project_form(
         .unwrap_or(app_name);
     let stack_code = normalized_project_name(project_name);
 
-    // Catalog apps carry no stack_definition; synthesize a one-service compose
-    // from the application's docker image so the deploy has something to ship.
-    // Embedded as `marketplace_config_files` (same channel DB templates use),
-    // it is picked up by `embedded_marketplace_compose` at deploy time.
+    // Catalog apps carry no stack_definition; synthesize a compose from the
+    // application's real container image(s) -- one service for a single app, or
+    // one per member for a stack. Embedded as `marketplace_config_files` (same
+    // channel DB templates use), it is picked up by `embedded_marketplace_compose`
+    // at deploy time.
+    //
+    // Fail loudly if nothing could be synthesized: a missing/empty image means
+    // the catalog entry is incomplete, and shipping an empty compose would only
+    // surface later as an opaque `docker compose up` failure on the server.
     let marketplace_config_files = match synthesize_catalog_compose(application, &stack_code) {
         Some(compose) => serde_json::json!([{
             "name": "docker-compose.yml",
             "content": compose,
         }]),
-        None => serde_json::json!([]),
+        None => {
+            return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Catalog application '{}' cannot be installed: no container image was available to synthesize a docker-compose file. This usually means the catalog entry (or its member apps) is missing a dockerhub_image.",
+                slug
+            )));
+        }
     };
 
     let form_value = serde_json::json!({
@@ -666,17 +735,21 @@ fn is_per_install_effective(template: &models::StackTemplate, settings: &Setting
 fn amount_minor_for(template: &models::StackTemplate) -> Result<i64, actix_web::Error> {
     let price = template.price.unwrap_or(0.0);
     if price <= 0.0 {
-        return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
-            "Template '{}' has billing_cycle=per_install but no positive price",
-            template.slug
-        )));
+        return Err(
+            JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Template '{}' has billing_cycle=per_install but no positive price",
+                template.slug
+            )),
+        );
     }
     let cents = (price * 100.0).round() as i64;
     if cents <= 0 {
-        return Err(JsonResponse::<serde_json::Value>::build().bad_request(format!(
-            "Template '{}' price rounds to zero cents",
-            template.slug
-        )));
+        return Err(
+            JsonResponse::<serde_json::Value>::build().bad_request(format!(
+                "Template '{}' price rounds to zero cents",
+                template.slug
+            )),
+        );
     }
     Ok(cents)
 }
@@ -714,7 +787,9 @@ fn spawn_void(
     });
 }
 
-fn summarize(handle: &crate::connectors::user_service::AuthorizationHandle) -> AuthorizationSummary {
+fn summarize(
+    handle: &crate::connectors::user_service::AuthorizationHandle,
+) -> AuthorizationSummary {
     AuthorizationSummary {
         authorization_id: handle.authorization_id.clone(),
         status: handle.status.clone(),
@@ -749,7 +824,10 @@ async fn install_stack_template(
                 .forbidden("User token required for per-install billing")
         })?;
         let amount_minor = amount_minor_for(&template)?;
-        let currency = template.currency.clone().unwrap_or_else(|| "USD".to_string());
+        let currency = template
+            .currency
+            .clone()
+            .unwrap_or_else(|| "USD".to_string());
         let idempotency_key = request
             .idempotency_key
             .clone()
@@ -774,14 +852,10 @@ async fn install_stack_template(
             )
             .await
             .map_err(|err| match err {
-                ConnectorError::PaymentRequired(msg) => {
-                    JsonResponse::<serde_json::Value>::build()
-                        .payment_required(format!("Payment declined: {}", msg))
-                }
-                ConnectorError::Conflict(msg) => {
-                    JsonResponse::<serde_json::Value>::build()
-                        .bad_request(format!("Idempotency conflict: {}", msg))
-                }
+                ConnectorError::PaymentRequired(msg) => JsonResponse::<serde_json::Value>::build()
+                    .payment_required(format!("Payment declined: {}", msg)),
+                ConnectorError::Conflict(msg) => JsonResponse::<serde_json::Value>::build()
+                    .bad_request(format!("Idempotency conflict: {}", msg)),
                 other => {
                     tracing::error!("authorize_install_charge failed: {:?}", other);
                     JsonResponse::<serde_json::Value>::build()
@@ -944,31 +1018,22 @@ async fn install_stack_template(
                     deploy_id,
                     auth_row.id
                 ),
-                Err(err) => tracing::warn!(
-                    "deployment lookup failed for {}: {}",
-                    deploy_id,
-                    err
-                ),
+                Err(err) => tracing::warn!("deployment lookup failed for {}: {}", deploy_id, err),
             }
         } else {
             // Install-without-deploy: synthesize a hash and capture now.
             let synthetic = format!("install-only:{}", project.id);
-            let _ = db::marketplace_billing::attach_deployment_hash(
-                pg_pool,
-                auth_row.id,
-                &synthetic,
-            )
-            .await;
+            let _ =
+                db::marketplace_billing::attach_deployment_hash(pg_pool, auth_row.id, &synthetic)
+                    .await;
             match user_service
                 .capture_install_charge(token, &handle.authorization_id, &synthetic)
                 .await
             {
                 Ok(new_handle) => {
-                    let _ = db::marketplace_billing::mark_captured(
-                        pg_pool,
-                        &handle.authorization_id,
-                    )
-                    .await;
+                    let _ =
+                        db::marketplace_billing::mark_captured(pg_pool, &handle.authorization_id)
+                            .await;
                     *handle = new_handle;
                 }
                 Err(err) => {
@@ -1334,10 +1399,16 @@ mod tests {
 
         assert_eq!(svc["image"], serde_yaml::Value::from("n8nio/n8n:latest"));
         assert_eq!(svc["ports"][0], serde_yaml::Value::from("5678:5678"));
-        assert_eq!(svc["environment"]["N8N_PORT"], serde_yaml::Value::from("5678"));
+        assert_eq!(
+            svc["environment"]["N8N_PORT"],
+            serde_yaml::Value::from("5678")
+        );
         assert_eq!(svc["restart"], serde_yaml::Value::from("unless-stopped"));
         // External default_network is declared so the stack joins the shared net.
-        assert_eq!(parsed["networks"]["default_network"]["external"], serde_yaml::Value::from(true));
+        assert_eq!(
+            parsed["networks"]["default_network"]["external"],
+            serde_yaml::Value::from(true)
+        );
     }
 
     #[test]
@@ -1354,8 +1425,14 @@ mod tests {
         });
         let compose = synthesize_catalog_compose(&application, "svc").unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&compose).unwrap();
-        assert_eq!(parsed["services"]["svc"]["environment"]["A"], serde_yaml::Value::from("1"));
-        assert_eq!(parsed["services"]["svc"]["environment"]["B"], serde_yaml::Value::from("2"));
+        assert_eq!(
+            parsed["services"]["svc"]["environment"]["A"],
+            serde_yaml::Value::from("1")
+        );
+        assert_eq!(
+            parsed["services"]["svc"]["environment"]["B"],
+            serde_yaml::Value::from("2")
+        );
     }
 
     #[test]
@@ -1369,7 +1446,9 @@ mod tests {
 
         let form = catalog_application_project_form(&application, "n8n", None).unwrap();
         let files = &form.custom.marketplace_config_files;
-        let arr = files.as_array().expect("marketplace_config_files should be an array");
+        let arr = files
+            .as_array()
+            .expect("marketplace_config_files should be an array");
         let compose = arr
             .iter()
             .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("docker-compose.yml"))
@@ -1471,7 +1550,9 @@ mod tests {
         let embed = files
             .iter()
             .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("stacker.yml"))
-            .expect("stacker.yml shape should be embedded as `stacker.yml`, not `docker-compose.yml`");
+            .expect(
+                "stacker.yml shape should be embedded as `stacker.yml`, not `docker-compose.yml`",
+            );
         let content = embed
             .get("content")
             .and_then(|c| c.as_str())
@@ -1680,7 +1761,11 @@ mod tests {
         assert_eq!(amount_minor_for(&t).unwrap(), 999);
 
         t.price = Some(10.005);
-        assert_eq!(amount_minor_for(&t).unwrap(), 1001, "banker rounding to nearest cent");
+        assert_eq!(
+            amount_minor_for(&t).unwrap(),
+            1001,
+            "banker rounding to nearest cent"
+        );
 
         // Zero and negative and missing are rejected up front — admin
         // review should catch these before install, but we defensively

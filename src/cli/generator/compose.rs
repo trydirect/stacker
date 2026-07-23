@@ -209,8 +209,7 @@ impl TryFrom<&StackerConfig> for ComposeDefinition {
 /// This is origin-independent: it fixes both marketplace-generated and
 /// user-authored services-only configs.
 fn config_has_buildable_app(config: &StackerConfig) -> bool {
-    if config.app.image.is_some() || config.app.dockerfile.is_some() || config.app.build.is_some()
-    {
+    if config.app.image.is_some() || config.app.dockerfile.is_some() || config.app.build.is_some() {
         return true;
     }
     if config.app_present {
@@ -666,7 +665,11 @@ services:
         let config = StackerConfig::from_str(yaml).unwrap();
         assert!(config.app_present);
         let names = service_names(&config);
-        assert!(names.contains(&"app".to_string()), "declared app must be kept: {:?}", names);
+        assert!(
+            names.contains(&"app".to_string()),
+            "declared app must be kept: {:?}",
+            names
+        );
         assert!(names.contains(&"db".to_string()));
     }
 

@@ -2026,10 +2026,9 @@ impl CallableTrait for InitCommand {
             if self.with_cloud {
                 eprintln!("☁ Running cloud setup wizard...");
                 let path_str = config_path.to_string_lossy().to_string();
-                let applied =
-                    crate::console::commands::cli::config::run_setup_cloud_interactive(
-                        &path_str, None,
-                    )?;
+                let applied = crate::console::commands::cli::config::run_setup_cloud_interactive(
+                    &path_str, None,
+                )?;
                 for item in applied {
                     eprintln!("  - {}", item);
                 }

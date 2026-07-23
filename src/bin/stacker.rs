@@ -2728,7 +2728,8 @@ fn get_command(
             provider,
         } => Box::new(
             stacker::console::commands::cli::marketplace::MarketplaceInstallCommand::new(
-                template, name, file, force, json, domain, set_values, key, key_id, region, size, provider,
+                template, name, file, force, json, domain, set_values, key, key_id, region, size,
+                provider,
             ),
         ),
         StackerCommands::Marketplace { command: mkt_cmd } => match mkt_cmd {

@@ -40,9 +40,7 @@ pub fn spawn(
     per_install_enabled: bool,
 ) {
     if !per_install_enabled {
-        tracing::info!(
-            "install_authorization_sweeper skipped: per_install billing disabled"
-        );
+        tracing::info!("install_authorization_sweeper skipped: per_install billing disabled");
         return;
     }
     tokio::spawn(async move {
@@ -56,10 +54,7 @@ pub fn spawn(
     });
 }
 
-async fn tick_once(
-    pool: &PgPool,
-    user_service: &dyn UserServiceConnector,
-) -> Result<(), String> {
+async fn tick_once(pool: &PgPool, user_service: &dyn UserServiceConnector) -> Result<(), String> {
     let cutoff = Utc::now() - chrono::Duration::seconds(GRACE_SECS);
     let expired =
         db::marketplace_billing::list_expired_authorized(pool, cutoff, BATCH_LIMIT).await?;
