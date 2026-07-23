@@ -287,6 +287,13 @@ fn merge_catalog_enrichment(application: &mut Value, enriched: &Value) {
         "default_ports",
         "default_env",
         "default_config_files",
+        // Multi-service stacks: the enriched catalog entry carries `services[]`
+        // (one per member app, each with its own image) and a `kind:"stack"`
+        // marker. These MUST be overlaid too, otherwise the service-less search
+        // summary reaches synthesize_catalog_compose and it wrongly takes the
+        // single-app path -> "missing a dockerhub_image" for real stacks.
+        "services",
+        "kind",
     ] {
         if let Some(value) = source.get(key).filter(|v| !v.is_null()) {
             target.insert(key.to_string(), value.clone());
@@ -1515,6 +1522,57 @@ mod tests {
             "services": [ { "code": "apache" }, { "code": "mariadb" } ]
         });
         assert!(synthesize_catalog_compose(&application, "lamp").is_none());
+    }
+
+    #[test]
+    fn full_production_lamp_payload_deserializes_and_synthesizes_13_services() {
+        // The EXACT bytes returned by GET /applications/catalog/lamp in production
+        // (all 13 members). Proves the full response parses into Application, that
+        // services[] survives the get_catalog_application round-trip, and that the
+        // synthesizer emits a multi-service compose. If this passes, a runtime
+        // "single-app fail-loud" cannot be a deserialization problem.
+        let raw = include_str!("lamp_catalog_fixture.json");
+
+        let app: crate::connectors::user_service::app::Application = serde_json::from_str(raw)
+            .expect("full production LAMP payload must deserialize into Application");
+        let value = serde_json::to_value(&app).expect("Application must reserialize");
+
+        let services = value
+            .get("services")
+            .and_then(|v| v.as_array())
+            .expect("services[] must survive the Application round-trip");
+        assert_eq!(services.len(), 13, "expected all 13 members to survive");
+
+        let compose = synthesize_catalog_compose(&value, "lamp")
+            .expect("full payload must synthesize a multi-service compose");
+        for img in ["trydirect/mysql", "trydirect/apache", "trydirect/nginx-proxy-manager"] {
+            assert!(compose.contains(img), "compose missing {img}:\n{compose}");
+        }
+    }
+
+    #[test]
+    fn merge_catalog_enrichment_carries_services_into_synthesized_stack() {
+        // Reproduces the real install_catalog_application flow: a service-less
+        // search summary is enriched from /applications/catalog, then synthesized.
+        // The stack's services[]/kind must survive merge_catalog_enrichment,
+        // otherwise synthesize wrongly takes the single-app path and fails loud.
+        let enriched: serde_json::Value =
+            serde_json::from_str(include_str!("lamp_catalog_fixture.json")).unwrap();
+        let mut summary = json!({ "code": "lamp", "name": "LAMP", "is_from_marketplace": true });
+
+        merge_catalog_enrichment(&mut summary, &enriched);
+
+        assert_eq!(summary.get("kind").and_then(|v| v.as_str()), Some("stack"));
+        let services = summary
+            .get("services")
+            .and_then(|v| v.as_array())
+            .expect("services[] must be carried into the summary by the merge");
+        assert_eq!(services.len(), 13);
+
+        let compose = synthesize_catalog_compose(&summary, "lamp")
+            .expect("merged stack summary must synthesize a multi-service compose");
+        assert!(compose.contains("trydirect/mysql"), "compose:\n{compose}");
+        assert!(compose.contains("trydirect/apache"), "compose:\n{compose}");
     }
 
     #[test]
