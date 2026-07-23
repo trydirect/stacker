@@ -1518,6 +1518,45 @@ mod tests {
     }
 
     #[test]
+    fn real_stack_catalog_payload_round_trips_and_synthesizes_multi_service() {
+        // Exact shape returned by GET /applications/catalog/lamp in production:
+        // kind:"stack", empty top-level docker_image, member services[] with real
+        // images, null/list default_ports, object default_env. This reproduces the
+        // full server path: fetch_app_catalog deserializes into Application, then
+        // get_catalog_application reserializes via serde_json::to_value, then the
+        // synthesizer runs. `services[]` must survive the round-trip.
+        let raw = r#"{
+            "_id": 54, "code": "lamp", "name": "LAMP", "kind": "stack",
+            "docker_image": "",
+            "services": [
+                {"_id":1,"code":"mysql","name":"MySQL","role":null,"type":"service",
+                 "docker_image":"trydirect/mysql","default_ports":null,
+                 "default_env":{"MYSQL_HOST":"mysqldb","MYSQL_PORT":"3306"},
+                 "default_config_files":[]},
+                {"_id":9,"code":"statuspanel","name":"Status Panel","role":"statuspanel",
+                 "type":"feature","docker_image":"trydirect/status",
+                 "default_ports":["5000"],"default_env":{},"default_config_files":[]}
+            ]
+        }"#;
+
+        let app: crate::connectors::user_service::app::Application =
+            serde_json::from_str(raw).expect("catalog stack payload must deserialize into Application");
+        let value = serde_json::to_value(&app).expect("Application must reserialize");
+
+        // The critical invariant: services[] survives the typed round-trip.
+        let services = value
+            .get("services")
+            .and_then(|v| v.as_array())
+            .expect("services[] must survive the Application round-trip");
+        assert_eq!(services.len(), 2, "round-trip dropped services: {value}");
+
+        let compose = synthesize_catalog_compose(&value, "lamp")
+            .expect("stack payload must synthesize a multi-service compose, not fail loud");
+        assert!(compose.contains("trydirect/mysql"), "compose: {compose}");
+        assert!(compose.contains("trydirect/status"), "compose: {compose}");
+    }
+
+    #[test]
     fn catalog_form_embeds_synthesized_compose_when_image_present() {
         let application = json!({
             "code": "n8n",
